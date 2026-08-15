@@ -1,0 +1,56 @@
+[package]
+name = "open-mind-ai"
+version = "0.1.0"
+description = "Local-first portable AI desktop workstation"
+authors = ["OpenMindAI"]
+edition = "2021"
+
+[lib]
+name = "open_mind_ai_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+docx-rs = "0.4.22"
+flate2 = "1"
+futures-util = "0.3"
+genpdf = "0.2.0"
+lopdf = "0.44.0"
+pulldown-cmark = "0.13.4"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+rusqlite = { version = "0.32", features = ["bundled", "chrono"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sysinfo = "0.32"
+tar = "0.4"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-process = "2"
+tauri-plugin-updater = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync"] }
+tokio-util = "0.7"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+windows = { version = "0.61.3", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common"
+] }
+zip = "2"
+
+[dev-dependencies]
+tempfile = "3"

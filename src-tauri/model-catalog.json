@@ -1,0 +1,18 @@
+{
+  "catalogVersion": 1,
+  "models": [
+    {
+      "id": "qwen3-4b-q4km",
+      "name": "Qwen3 4B",
+      "version": "1",
+      "family": "qwen",
+      "repo": "Qwen/Qwen3-4B-GGUF",
+      "quantization": "Q4_K_M",
+      "required": true,
+      "capabilities": ["chat", "reasoning", "code"],
+      "sizeBytes": 2497280256,
+      "minRamBytes": 8589934592,
+      "minVramBytes": null
+    }
+  ]
+}

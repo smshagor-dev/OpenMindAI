@@ -1,0 +1,89 @@
+# ==================================================
+# OpenMindAI local/runtime data
+# NEVER COMMIT THESE
+# ==================================================
+
+/models/**
+/runtimes/**
+/data/**
+/cache/**
+/temp/**
+/logs/**
+/generated/**
+/workspaces/**
+/knowledge/**
+/backups/**
+/config/**
+/app/**
+/docs/**
+
+# Legacy/development fallback runtime root.
+OpenMindAI/
+
+# AI models
+*.gguf
+*.ggml
+*.safetensors
+*.bin
+*.onnx
+*.part
+
+# SQLite runtime/user databases
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Local environment configuration
+.env
+.env.local
+.env.*.local
+
+# Updater signing keys — NEVER commit a real release signing key.
+.updater-dev-key.pem
+.updater-dev-key.pem.pub
+*.key
+*.pem
+
+# Runtime/download artifacts
+*.zip
+*.7z
+*.tar
+*.tar.gz
+
+# Temporary files
+*.tmp
+*.temp
+
+# Rust build output
+/src-tauri/target/
+target/
+
+# Machine-local cargo override (target-dir redirected off exFAT G: — see file comment)
+/src-tauri/.cargo/config.toml
+
+# Frontend build output
+/dist/
+dist/
+
+# Node dependencies
+/node_modules/
+node_modules/
+
+# Vite cache
+.vite/
+
+# Logs
+*.log
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+
+.idea/
