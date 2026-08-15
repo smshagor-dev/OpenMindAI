@@ -1,157 +1,200 @@
 # OpenMindAI
 
-### Your Private, Local, Offline AI Workspace
+OpenMindAI is a local-first, offline-first AI desktop application. It
+downloads and runs an open-weight language model directly on your computer
+— no cloud account, no API key, no subscription. After first-run setup, it
+works fully offline.
 
-OpenMindAI is a local-first Windows desktop AI assistant. It downloads and
-runs an open-weight language model directly on your computer — GPU
-accelerated where available, CPU otherwise — and stores your conversations
-in a local database you control. After a one-time setup, it works fully
-offline. No OpenAI/Anthropic/Google API key, no cloud account, no
-subscription.
+Official repository: https://github.com/smshagor-dev/OpenMindAI
 
-## Key features
+## Quick Download
 
-- **Runs locally** — chat, reasoning, and coding help powered by a model
-  running on your own hardware, not a remote API.
-- **Offline after setup** — see [docs/OFFLINE-MODE.md](docs/OFFLINE-MODE.md)
-  for exactly what does and doesn't need internet.
-- **Automatic hardware setup** — detects your CPU/GPU and installs the right
-  AI engine build (CUDA, HIP, SYCL, Vulkan, or CPU fallback) for it.
-- **No account, no cloud database** — a local SQLite database under a
-  storage folder you pick during setup.
-- **Persistent chat history** with streaming responses and cancellation.
-- **Maintenance built in** — health diagnostics, one-button repair, database
-  backups, and an in-app log viewer, all from Settings → Maintenance.
-- **Update-aware** — checks for application and model updates in the
-  background, never blocking offline use if you're not connected.
+| Platform | File | Status |
+| --- | --- | --- |
+| Windows — Recommended | `OpenMindAI-Setup-v1.0.0-x64.exe` | Available with the v1.0.0 release |
+| Windows — Git Bootstrap | [`OpenMindAI-Setup.bat`](https://raw.githubusercontent.com/smshagor-dev/OpenMindAI/main/OpenMindAI-Setup.bat) | Tested / Stable |
+| Linux | [`openmindai-setup.sh`](https://raw.githubusercontent.com/smshagor-dev/OpenMindAI/main/openmindai-setup.sh) | Implemented / Not yet run-tested on real Linux |
+| macOS | [`OpenMindAI-Setup.command`](https://raw.githubusercontent.com/smshagor-dev/OpenMindAI/main/OpenMindAI-Setup.command) | Implemented / Not yet run-tested on real macOS |
 
-## Why OpenMindAI
+The Windows `.exe` installer is the simplest path once it's published as
+part of the v1.0.0 GitHub Release. The bootstrap scripts (`.bat`/`.sh`/
+`.command`) work today — they clone the official source and build/launch
+OpenMindAI directly, and will automatically switch to downloading a
+prebuilt release once one is published. See
+[Support Matrix](#support-matrix) below for validation status.
 
-Most AI chat apps are a thin client for someone else's cloud API — your
-prompts and conversations leave your machine, and the assistant stops
-working the moment you're offline or a subscription lapses. OpenMindAI
-inverts that: the model runs on your computer, your conversations are
-stored in a database you control, and internet is only needed for the
-one-time download of the AI engine and model (and for optional update
-checks afterward).
+## Windows Installation
 
-## How it works
+1. Download `OpenMindAI-Setup-v1.0.0-x64.exe`.
+2. Run it. It's currently **unsigned** (no code-signing certificate yet),
+   so Windows SmartScreen will warn — click "More info" → "Run anyway" if
+   you trust the source, or verify it against the published
+   `SHA256SUMS.txt` first.
+3. Choose your AI storage location and a local profile name.
+4. OpenMindAI configures its local database, detects your hardware,
+   downloads the matching AI engine, then downloads and verifies the AI
+   model (Qwen3 4B).
+5. OpenMindAI opens. Chat now works fully offline.
 
-1. **Download & run the installer.** No Node.js, npm, Rust, Cargo, or Git
-   required — those are developer-setup tools, not end-user requirements.
-2. **Pick a storage folder** for your AI data (`OPENMINDAI_ROOT`) and a
-   local profile name.
-3. **OpenMindAI configures itself** — creates the local database, detects
-   your hardware, downloads and validates the right AI engine, then
-   downloads and verifies the AI model.
-4. **Start chatting**, fully offline from then on.
+## Windows Git Bootstrap
 
-See [docs/INSTALLATION.md](docs/INSTALLATION.md) for the detailed walkthrough.
+1. Download `OpenMindAI-Setup.bat`.
+2. Put it in the folder/drive you want OpenMindAI's source and build in —
+   any drive, including a USB or external SSD, with or without spaces in
+   the path.
+3. Double-click it.
+4. It checks for Git (installing it via `winget` if missing and available),
+   then clones the official repository:
+   `https://github.com/smshagor-dev/OpenMindAI.git`
+5. It looks for a compatible prebuilt release; if none exists yet, it
+   builds OpenMindAI from source automatically (requires Node.js and
+   Rust/Cargo — it tells you clearly if either is missing, with where to
+   get it, rather than failing silently).
+6. OpenMindAI launches and first-run setup begins.
+7. Running the `.bat` again later reuses the existing installation — it
+   does not re-clone, re-install dependencies, or rebuild unless something
+   actually changed.
 
-## Architecture
+You never need to type a Git command yourself.
 
-```mermaid
-flowchart TD
-    UI["React UI<br/>(Tauri window)"] --> Core["Rust Core"]
-    Core --> Root["PortableRootManager<br/>(OPENMINDAI_ROOT)"]
-    Core --> DB["SQLite<br/>(WAL, migrations)"]
-    Core --> HW["HardwareProfiler"]
-    Core --> RT["Runtime Installer /<br/>LlamaRuntimeManager"]
-    Core --> Models["Model Download /<br/>Model Registry / Catalog"]
-    Core --> Maint["Maintenance<br/>(diagnostics, repair, backup)"]
-    Core --> Upd["Update Manager<br/>(app + model)"]
-    RT --> Llama["llama.cpp<br/>(local process, 127.0.0.1 only)"]
-    Llama --> GGUF["Local GGUF model<br/>(e.g. Qwen3 4B)"]
-    GGUF --> Accel["GPU / VRAM or CPU"]
+## Linux Installation
+
+```sh
+chmod +x openmindai-setup.sh
+./openmindai-setup.sh
 ```
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the service-level
-breakdown.
+It detects your package manager (`apt`, `dnf`, `yum`, `pacman`, `zypper`,
+or `apk`), installs Git if missing (asking for `sudo` only when actually
+needed), clones the official repository, and either downloads a compatible
+prebuilt release or builds from source. x86_64 is the only architecture
+currently targeted — ARM64 is not yet built or tested. This script has been
+written and reviewed but not yet run-tested on a real Linux machine; treat
+it as beta until that's done.
 
-## System requirements
+## macOS Installation
 
-- Windows 10 or 11, 64-bit.
-- ~5 GB free disk space (AI engine + model; more for additional models).
-- Any CPU works (CPU-only fallback); a supported GPU (NVIDIA, AMD, or
-  Intel) accelerates inference.
-- Internet access for first-run setup and optional update checks.
+Double-click `OpenMindAI-Setup.command`, or from Terminal:
 
-## Download OpenMindAI
+```sh
+chmod +x OpenMindAI-Setup.command
+./OpenMindAI-Setup.command
+```
 
-Grab the latest `OpenMindAI-Setup-x64.exe` from your release source, verify
-it against the published `SHA256SUMS.txt` if you'd like, and see
-[docs/INSTALLATION.md](docs/INSTALLATION.md) to continue. The installer is
-currently unsigned (no code-signing certificate configured yet — see
-[docs/RELEASE.md](docs/RELEASE.md)), so Windows SmartScreen will warn on
-first run; that's expected.
+Detects Intel vs. Apple Silicon automatically. Uses Apple's own Xcode
+Command Line Tools for Git if it's missing (or Homebrew, if you already
+have it installed — OpenMindAI never installs Homebrew for you without
+asking). A downloaded/built OpenMindAI app is not currently signed or
+notarized, so Gatekeeper will warn on first open; you'll need to allow it
+via System Settings → Privacy & Security. This script has been written and
+reviewed but not yet run-tested on a real Mac; treat it as experimental
+until that's done.
 
-## Models
+## First Launch
 
-OpenMindAI ships against **Qwen3 4B (Q4_K_M)** by default. Model weights are
-never stored in this Git repository — they're downloaded and verified
-during setup. See [docs/MODEL-MANAGEMENT.md](docs/MODEL-MANAGEMENT.md) for
-how models are downloaded, verified, and (in the future) updated.
+Every platform follows the same setup: choose AI storage → create a local
+profile → OpenMindAI detects your hardware → downloads the AI engine →
+downloads and verifies the AI model (Qwen3 4B, `Q4_K_M`) → ready to chat.
+
+## Portable Mode
+
+If OpenMindAI (or one of the bootstrap scripts) finds an `openmindai.marker`
+file near its own location, it treats that folder as its data root instead
+of asking where to store data. This makes the whole install portable —
+models, runtime, and database move with the folder. If a portable install
+moves to a different drive letter (e.g. `G:\OpenMindAI` becomes
+`H:\OpenMindAI` after being plugged into a different port), it keeps
+working: paths are resolved relative to the marker's location, not a fixed
+drive letter.
+
+## Offline Mode
+
+**Needs internet:** first-run setup (downloading the AI engine and model),
+the Git bootstrap's source clone/update step, and update checks.
+
+**Works fully offline:** chatting, conversation history, local settings,
+GPU/CPU inference, and the Maintenance Center's diagnostics/repair/backup
+tools — once setup has completed once.
+
+If a bootstrap script or OpenMindAI itself can't reach the internet on a
+later run, it skips the update/clone step entirely and launches your
+existing installation immediately. It never refuses to start just because
+GitHub or an update server is unreachable.
 
 ## Updates
 
-OpenMindAI checks for application and model updates in the background so
-you don't have to manually watch for new releases — see
-[docs/UPDATES.md](docs/UPDATES.md) for exactly how that works today,
-including what's still pending before it's fully live in production.
+Application updates and model updates are independent, and both are
+notify-first, not silent:
 
-## Documentation
+- **Application updates** — OpenMindAI checks for a newer release in the
+  background and lets you download, verify, and install it from inside the
+  app, with an explicit restart step you control.
+- **Model updates** — checked separately; large model downloads are never
+  started automatically unless you opt in.
 
-| Topic | Doc |
+The bootstrap scripts (`.bat`/`.sh`/`.command`) intentionally don't
+implement their own separate update-checking logic — they only handle
+getting OpenMindAI installed and launched. All update checking happens
+inside the app itself, so there's one update system, not two competing
+ones.
+
+## Storage
+
+All of OpenMindAI's data — models, runtime, database, chat history, cache,
+generated files, workspaces, knowledge, backups, logs — lives under a
+folder you choose during setup, referred to as `OPENMINDAI_ROOT`. This is
+kept separate from wherever the application itself or its source code is
+installed.
+
+## Model
+
+OpenMindAI ships against **Qwen3 4B (`Q4_K_M`)** by default. Model weights
+are never stored in this Git repository — they're downloaded and
+checksum-verified during setup.
+
+## Support Matrix
+
+| Platform | Status |
 | --- | --- |
-| Installing OpenMindAI | [docs/INSTALLATION.md](docs/INSTALLATION.md) |
-| What works offline | [docs/OFFLINE-MODE.md](docs/OFFLINE-MODE.md) |
-| Storage layout / `OPENMINDAI_ROOT` | [docs/PORTABLE-STORAGE.md](docs/PORTABLE-STORAGE.md) |
-| The local database | [docs/DATABASE.md](docs/DATABASE.md) |
-| The AI engine (llama.cpp) | [docs/AI-RUNTIME.md](docs/AI-RUNTIME.md) |
-| Models | [docs/MODEL-MANAGEMENT.md](docs/MODEL-MANAGEMENT.md) |
-| Application & model updates | [docs/UPDATES.md](docs/UPDATES.md) |
-| Maintenance Center | [docs/MAINTENANCE.md](docs/MAINTENANCE.md) |
-| Troubleshooting | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) |
-| Architecture | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
-| Hardware detection details | [docs/HARDWARE-DETECTION.md](docs/HARDWARE-DETECTION.md) |
-| Release process | [docs/RELEASE.md](docs/RELEASE.md) |
-| Roadmap | [docs/ROADMAP.md](docs/ROADMAP.md) |
+| Windows x64 | Tested / Stable |
+| Linux x64 | Implemented / Not yet run-tested on real hardware |
+| macOS (Intel / Apple Silicon) | Implemented / Not yet run-tested on real hardware |
+| Linux ARM64 | Not implemented |
 
-## For developers
+## Troubleshooting
 
-Building OpenMindAI from source requires Node.js/npm and Rust/Cargo — see
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for environment setup. Quick
-start:
+- **Git not found / can't install it automatically** — install it yourself
+  (Windows: https://git-scm.com/download/win · Linux: your distro's package
+  manager · macOS: `xcode-select --install`), then run setup again.
+- **No internet on first run** — setup can't complete without it (the AI
+  engine and model have to be downloaded once). Connect and try again.
+- **Model download interrupted** — resumes automatically from where it left
+  off; no need to start over.
+- **No compatible AI runtime / GPU not detected** — OpenMindAI falls back
+  automatically (GPU backend → Vulkan → CPU); chat still works, just slower
+  without GPU acceleration.
+- **Storage location unreachable** (e.g. an external drive unplugged) —
+  OpenMindAI won't silently create a new, different storage location; it
+  tells you the original one is missing so you don't lose track of your
+  data.
+- **Windows SmartScreen warning** — expected for the unsigned installer;
+  verify against `SHA256SUMS.txt` instead.
 
-```powershell
+## Build From Source
+
+For developers only — normal users should use the downloads above.
+
+```sh
+git clone https://github.com/smshagor-dev/OpenMindAI.git
+cd OpenMindAI
 npm install
 npm run tauri dev
 ```
 
-Production build / installer:
-
-```powershell
-npm run build
-scripts\build-installer.ps1
-```
-
-## Privacy
-
-Your conversations, local database, installed models, and generated files
-live under your chosen `OPENMINDAI_ROOT` — see
-[docs/PORTABLE-STORAGE.md](docs/PORTABLE-STORAGE.md). There is no telemetry:
-no analytics or usage data is collected or sent anywhere. See
-[docs/OFFLINE-MODE.md](docs/OFFLINE-MODE.md) for the full privacy/offline
-picture.
-
-## Credits
-
-Built with [Tauri](https://tauri.app/), [React](https://react.dev/),
-[Rust](https://www.rust-lang.org/), [SQLite](https://www.sqlite.org/),
-[llama.cpp](https://github.com/ggml-org/llama.cpp), and
-[Qwen](https://github.com/QwenLM/Qwen3). Full attribution and license list:
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Requires Node.js/npm and Rust/Cargo (Windows also needs MSVC Build Tools).
+Production build: `npm run build && npm run tauri -- build`.
 
 ## License
 
-[Apache License 2.0](LICENSE).
+[Apache License 2.0](LICENSE). Third-party attributions:
+[THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).

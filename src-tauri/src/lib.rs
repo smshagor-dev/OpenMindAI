@@ -743,8 +743,16 @@ fn check_model_updates(state: State<AppState>) -> Result<ModelCatalogReport, app
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
     let installed = ModelRegistry::new(&db, &state.root).discover_gguf_models()?;
     let report = model_catalog::check_model_updates(&installed, &hardware)?;
-    let updates = report.entries.iter().filter(|status| status.update_available).count();
-    tracing::info!(entries = report.entries.len(), updates_available = updates, "model catalog checked");
+    let updates = report
+        .entries
+        .iter()
+        .filter(|status| status.update_available)
+        .count();
+    tracing::info!(
+        entries = report.entries.len(),
+        updates_available = updates,
+        "model catalog checked"
+    );
     Ok(report)
 }
 
@@ -1233,8 +1241,8 @@ pub fn run() {
                 .join(config.database)
         })
         .unwrap_or_else(|| root.database_path());
-    let database = Database::open(database_path.clone())
-        .expect("failed to initialize SQLite database");
+    let database =
+        Database::open(database_path.clone()).expect("failed to initialize SQLite database");
     let runtime = LlamaRuntimeManager::new(root.clone());
     let downloads = ModelDownloadManager::new(root.clone());
     let runtime_installer = RuntimeInstaller::new(root.clone());

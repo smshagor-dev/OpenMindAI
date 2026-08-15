@@ -149,13 +149,8 @@ pub async fn stream_chat_completion(
         }
     });
 
-    let response = post_completion_with_retry(
-        request.client,
-        request.endpoint,
-        &body,
-        &cancellation,
-    )
-    .await?;
+    let response =
+        post_completion_with_retry(request.client, request.endpoint, &body, &cancellation).await?;
 
     let mut stream = response.bytes_stream();
     let mut sse_buffer = String::new();
@@ -259,7 +254,9 @@ async fn post_completion_with_retry(
             .await
             .map_err(|error| AppError::InferenceServerUnavailable(error.to_string()))?;
 
-        if response.status() == StatusCode::SERVICE_UNAVAILABLE && attempt < COMPLETION_RETRY_ATTEMPTS {
+        if response.status() == StatusCode::SERVICE_UNAVAILABLE
+            && attempt < COMPLETION_RETRY_ATTEMPTS
+        {
             attempt += 1;
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_millis(COMPLETION_RETRY_DELAY_MS)) => continue,

@@ -204,11 +204,8 @@ impl ModelDownloadManager {
             // it before trusting it, so a corrupted-but-present model from a
             // prior interrupted run or disk fault gets re-downloaded instead
             // of silently "completing" with a bad file every launch.
-            let verification = verify_existing_file(
-                &final_path,
-                metadata.size_bytes,
-                metadata.sha256.as_deref(),
-            )?;
+            let verification =
+                verify_existing_file(&final_path, metadata.size_bytes, metadata.sha256.as_deref())?;
 
             if let Some(verification) = verification {
                 self.write_manifest(&model_dir, &metadata, &final_path, verification)?;
@@ -350,7 +347,10 @@ impl ModelDownloadManager {
         let sibling = model
             .siblings
             .iter()
-            .find(|sibling| sibling.rfilename.ends_with(".gguf") && sibling.rfilename.contains(quantization.as_str()))
+            .find(|sibling| {
+                sibling.rfilename.ends_with(".gguf")
+                    && sibling.rfilename.contains(quantization.as_str())
+            })
             .ok_or_else(|| {
                 AppError::ModelDownloadFailed("official Q4_K_M GGUF file not found".to_string())
             })?;

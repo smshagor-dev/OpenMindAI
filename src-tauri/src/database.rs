@@ -192,7 +192,9 @@ mod tests {
         let database = Database::open(path).unwrap();
         let applied: i64 = database
             .connection
-            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(applied, MIGRATIONS.len() as i64);
     }
@@ -215,7 +217,9 @@ mod tests {
         let database = Database::open(path).unwrap();
         let applied: i64 = database
             .connection
-            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(applied, MIGRATIONS.len() as i64);
     }
