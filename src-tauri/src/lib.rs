@@ -44,7 +44,7 @@ use reqwest::Client;
 use runtime::{allocate_local_port, LlamaRuntimeManager, LlamaRuntimeStatus, RuntimeInventory};
 use runtime_install::{RuntimeInstallStatus, RuntimeInstaller};
 use settings::{AppPreferences, SettingsRepository, UserProfile};
-use storage::{StorageMonitor, StorageSummary};
+use storage::{CacheClearResult, StorageMonitor, StorageSummary};
 use tauri::{AppHandle, Emitter, State};
 
 struct AppState {
@@ -639,6 +639,13 @@ async fn activate_model(
 #[tauri::command]
 fn get_storage_summary(state: State<AppState>) -> Result<StorageSummary, app_error::AppError> {
     StorageMonitor::new(&state.root).summary()
+}
+
+#[tauri::command]
+fn clear_cache(state: State<AppState>) -> Result<CacheClearResult, app_error::AppError> {
+    let result = StorageMonitor::new(&state.root).clear_cache()?;
+    tracing::info!(bytes_freed = result.bytes_freed, "cache cleared");
+    Ok(result)
 }
 
 #[tauri::command]
@@ -1299,6 +1306,7 @@ pub fn run() {
             plan_model_launch,
             activate_model,
             get_storage_summary,
+            clear_cache,
             run_diagnostics,
             repair_installation,
             backup_database,

@@ -17,6 +17,7 @@ import type {
   DiagnosticReport,
   RepairSummary,
   BackupInfo,
+  CacheClearResult,
   ModelCatalogReport,
   LaunchPlan,
   LibraryEntry,
@@ -81,6 +82,7 @@ export const api = {
   validateModel: (modelId: string) => call<ModelRecord>("validate_model", { modelId }),
   planModelLaunch: (modelId: string) => call<LaunchPlan>("plan_model_launch", { modelId }),
   storage: () => call<StorageSummary>("get_storage_summary"),
+  clearCache: () => call<CacheClearResult>("clear_cache"),
   runDiagnostics: () => call<DiagnosticReport>("run_diagnostics"),
   repairInstallation: () => call<RepairSummary>("repair_installation"),
   backupDatabase: () => call<BackupInfo>("backup_database"),
@@ -330,6 +332,9 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
       generatedBytes: 0,
       availableBytes: null,
     } as T);
+  }
+  if (command === "clear_cache") {
+    return Promise.resolve({ bytesFreed: 0 } as T);
   }
   if (command === "run_diagnostics") {
     return Promise.resolve({ checks: [] } as T);

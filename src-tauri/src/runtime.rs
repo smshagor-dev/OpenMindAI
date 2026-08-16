@@ -1,6 +1,7 @@
 use std::{
     fs,
-    net::{SocketAddr, TcpListener},
+    io::{Read, Write},
+    net::{SocketAddr, TcpListener, ToSocketAddrs},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
@@ -302,7 +303,7 @@ impl LlamaRuntimeManager {
         self.endpoint = Some(format!("http://{}:{}", config.host, config.port));
         self.loaded_model_path = Some(model_path_string);
 
-        if wait_for_localhost(config.port, Duration::from_secs(45)) {
+        if wait_for_model_health(&config.host, config.port, Duration::from_secs(120)) {
             self.state = ServerState::Ready;
             self.status(hardware)
         } else {
@@ -527,6 +528,46 @@ fn wait_for_localhost(port: u16, timeout: Duration) -> bool {
         thread::sleep(Duration::from_millis(100));
     }
     false
+}
+
+/// Polls llama-server's `/health` endpoint rather than just the TCP port.
+/// The HTTP listener accepts connections the moment the process starts --
+/// well before the model finishes loading into memory -- so a bare
+/// `wait_for_localhost` marks the server "Ready" while `/v1/chat/completions`
+/// is still answering 503, which is what surfaced as a raw 503 to users.
+/// `/health` only returns 200 once the model is actually loaded.
+fn wait_for_model_health(host: &str, port: u16, timeout: Duration) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if http_health_ok(host, port) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(300));
+    }
+    false
+}
+
+fn http_health_ok(host: &str, port: u16) -> bool {
+    let Ok(mut addrs) = (host, port).to_socket_addrs() else {
+        return false;
+    };
+    let Some(addr) = addrs.next() else {
+        return false;
+    };
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(500))
+    else {
+        return false;
+    };
+    if stream.set_read_timeout(Some(Duration::from_secs(2))).is_err() {
+        return false;
+    }
+    let request = format!("GET /health HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")
 }
 
 #[cfg(test)]

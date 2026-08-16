@@ -11,6 +11,7 @@ import type {
   StorageSummary,
 } from "../types";
 import { formatBytes, formatError, formatTime } from "../lib/format";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 export function MaintenanceCenter(props: {
   root: PortableRootInfo | null;
@@ -30,6 +31,10 @@ export function MaintenanceCenter(props: {
   const [backupError, setBackupError] = useState<string | null>(null);
   const [recentLogs, setRecentLogs] = useState<string | null>(null);
   const [logsLoading, setLogsLoading] = useState(false);
+  const [clearCacheConfirmOpen, setClearCacheConfirmOpen] = useState(false);
+  const [cacheClearing, setCacheClearing] = useState(false);
+  const [cacheClearError, setCacheClearError] = useState<string | null>(null);
+  const [cacheClearedBytes, setCacheClearedBytes] = useState<number | null>(null);
 
   useEffect(() => {
     void api.listBackups().then(setBackups);
@@ -69,6 +74,21 @@ export function MaintenanceCenter(props: {
     }
   };
 
+  const clearCache = async () => {
+    setClearCacheConfirmOpen(false);
+    setCacheClearing(true);
+    setCacheClearError(null);
+    try {
+      const result = await api.clearCache();
+      setCacheClearedBytes(result.bytesFreed);
+      await props.refresh();
+    } catch (caught) {
+      setCacheClearError(formatError(caught));
+    } finally {
+      setCacheClearing(false);
+    }
+  };
+
   const createBackup = async () => {
     setBackupCreating(true);
     setBackupError(null);
@@ -89,7 +109,33 @@ export function MaintenanceCenter(props: {
         <Info label="Storage" value={props.root?.writable ? "Healthy" : "Not writable"} />
         <Info label="AI Runtime" value={props.runtimeStatus?.available ? "Ready" : "Not installed"} />
         <Info label="AI Model" value={modelReady ? "Verified" : "Not installed"} />
+      </div>
+
+      <div className="maintenance-block">
+        <h3>Storage</h3>
+        <Info label="AI Models" value={formatBytes(props.storage?.modelsBytes) ?? "Unknown"} />
+        <Info label="Conversations & Database" value={formatBytes(props.storage?.databaseBytes) ?? "Unknown"} />
+        <Info label="Generated Files" value={formatBytes(props.storage?.generatedBytes) ?? "Unknown"} />
+        <Info label="Cache" value={formatBytes(props.storage?.cacheBytes) ?? "Unknown"} />
         <Info label="Available space" value={formatBytes(props.storage?.availableBytes) ?? "Unknown"} />
+        <p className="muted">
+          Clearing the cache removes temporary and regenerable files only. Your models,
+          conversations, and generated files are never touched.
+        </p>
+        <div className="button-row">
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={() => setClearCacheConfirmOpen(true)}
+            disabled={cacheClearing}
+          >
+            {cacheClearing ? "Clearing…" : "Clear Cache"}
+          </button>
+        </div>
+        {cacheClearError ? <p className="setup-warning">{cacheClearError}</p> : null}
+        {cacheClearedBytes !== null && !cacheClearError ? (
+          <p className="muted">Freed {formatBytes(cacheClearedBytes)}.</p>
+        ) : null}
       </div>
 
       <div className="maintenance-block">
@@ -177,6 +223,15 @@ export function MaintenanceCenter(props: {
           )
         ) : null}
       </div>
+
+      <ConfirmDialog
+        open={clearCacheConfirmOpen}
+        title="Clear cache?"
+        description="This removes temporary and regenerable files. Your models, conversations, and generated files are never touched."
+        confirmLabel="Clear Cache"
+        onConfirm={() => void clearCache()}
+        onCancel={() => setClearCacheConfirmOpen(false)}
+      />
     </>
   );
 }

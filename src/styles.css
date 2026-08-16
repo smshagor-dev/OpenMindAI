@@ -2532,6 +2532,7 @@ button {
 
 .button-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 12px;
 }
@@ -2544,6 +2545,14 @@ button {
   border-radius: 8px;
   background: var(--surface);
   color: var(--text);
+}
+
+.button-row .ghost-button,
+.button-row .primary-button,
+.button-row .danger-button {
+  display: inline-flex;
+  width: auto;
+  height: auto;
 }
 
 @media (max-width: 860px) {
@@ -2579,6 +2588,12 @@ button {
     align-items: start;
     gap: 8px;
     padding: 12px 0;
+  }
+
+  .info-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+    padding: 8px 0;
   }
 
   .segmented {
@@ -2751,8 +2766,9 @@ button {
 
 .maintenance-check-list li {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 12px;
+  gap: 4px 12px;
   padding: 6px 0;
   border-bottom: 1px solid var(--border);
   font-size: 13px;

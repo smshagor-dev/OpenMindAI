@@ -359,6 +359,10 @@ export interface StorageSummary {
   availableBytes: number | null;
 }
 
+export interface CacheClearResult {
+  bytesFreed: number;
+}
+
 export type ThemeMode = "system" | "dark" | "light";
 
 export interface AppPreferences {
