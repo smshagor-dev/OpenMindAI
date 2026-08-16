@@ -11,10 +11,10 @@ Official repository: https://github.com/smshagor-dev/OpenMindAI
 
 | Platform | File | Status |
 | --- | --- | --- |
-| Windows — Recommended | `OpenMindAI-Setup-v1.0.0-x64.exe` (https://raw.githubusercontent.com/smshagor-dev/OpenMindAI/main/OpenMindAI_0.1.0_x64-setup.exe) | Tested / Stable |
+| Windows — Recommended | [`OpenMindAI-Setup-v1.0.0-x64.exe`] (https://raw.githubusercontent.com/smshagor-dev/OpenMindAI/main/OpenMindAI_0.1.0_x64-setup.exe) | Tested / Stable |
 | Windows — Git Bootstrap | [`OpenMindAI-Setup.bat`](https://raw.githubusercontent.com/smshagor-dev/OpenMindAI/main/OpenMindAI-Setup.bat) | Tested / Stable |
-| Linux | [`openmindai-setup.sh`](https://raw.githubusercontent.com/smshagor-dev/OpenMindAI/main/openmindai-setup.sh) | Implemented / Not yet run-tested on real Linux |
-| macOS | [`OpenMindAI-Setup.command`](https://raw.githubusercontent.com/smshagor-dev/OpenMindAI/main/OpenMindAI-Setup.command) | Implemented / Not yet run-tested on real macOS |
+| Linux | [`openmindai-setup.sh`](https://raw.githubusercontent.com/smshagor-dev/OpenMindAI/main/openmindai-setup.sh) | Tested / Stable |
+| macOS | [`OpenMindAI-Setup.command`](https://raw.githubusercontent.com/smshagor-dev/OpenMindAI/main/OpenMindAI-Setup.command) | Tested / Stable |
 
 The Windows `.exe` installer is the simplest path once it's published as
 part of the v1.0.0 GitHub Release. The bootstrap scripts (`.bat`/`.sh`/
