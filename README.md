@@ -11,13 +11,13 @@ Official repository: https://github.com/smshagor-dev/OpenMindAI
 
 | Platform | File | Status |
 | --- | --- | --- |
-| Windows — Recommended | [OpenMindAI-Setup-v1.0.0-x64.exe](https://raw.githubusercontent.com/smshagor-dev/OpenMindAI/main/OpenMindAI_0.1.0_x64-setup.exe) | Tested / Stable |
+| Windows — Recommended | [OpenMindAI-Setup-v1.0.1-x64.exe](https://raw.githubusercontent.com/smshagor-dev/OpenMindAI/main/OpenMindAI_1.0.1_x64-setup.exe) | Tested / Stable |
 | Windows — Git Bootstrap | [`OpenMindAI-Setup.bat`](https://raw.githubusercontent.com/smshagor-dev/OpenMindAI/main/OpenMindAI-Setup.bat) | Tested / Stable |
 | Linux | [`openmindai-setup.sh`](https://raw.githubusercontent.com/smshagor-dev/OpenMindAI/main/openmindai-setup.sh) | Tested / Stable |
 | macOS | [`OpenMindAI-Setup.command`](https://raw.githubusercontent.com/smshagor-dev/OpenMindAI/main/OpenMindAI-Setup.command) | Tested / Stable |
 
 The Windows `.exe` installer is the simplest path once it's published as
-part of the v1.0.0 GitHub Release. The bootstrap scripts (`.bat`/`.sh`/
+part of the v1.0.1 GitHub Release. The bootstrap scripts (`.bat`/`.sh`/
 `.command`) work today — they clone the official source and build/launch
 OpenMindAI directly, and will automatically switch to downloading a
 prebuilt release once one is published. See
@@ -25,7 +25,7 @@ prebuilt release once one is published. See
 
 ## Windows Installation
 
-1. Download `OpenMindAI-Setup-v1.0.0-x64.exe`.
+1. Download `OpenMindAI-Setup-v1.0.1-x64.exe`.
 2. Run it. It's currently **unsigned** (no code-signing certificate yet),
    so Windows SmartScreen will warn — click "More info" → "Run anyway" if
    you trust the source, or verify it against the published
