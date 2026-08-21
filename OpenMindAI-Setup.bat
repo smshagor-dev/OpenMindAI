@@ -2,6 +2,7 @@
 setlocal EnableExtensions
 
 rem OpenMindAI universal Windows bootstrap launcher.
+rem Version: 2.0.0
 rem Kept intentionally small -- all real logic lives in
 rem bootstrap\windows\bootstrap.ps1 (PowerShell). This file just locates
 rem itself, finds/fetches that script, and hands off to it.

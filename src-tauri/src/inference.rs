@@ -27,6 +27,8 @@ pub struct StreamStartedEvent {
     pub conversation_id: String,
     pub user: Message,
     pub assistant: Message,
+    pub routed_model_name: String,
+    pub routing_reason: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

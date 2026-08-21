@@ -11,13 +11,13 @@ Official repository: https://github.com/smshagor-dev/OpenMindAI
 
 | Platform | File | Status |
 | --- | --- | --- |
-| Windows — Recommended | [OpenMindAI-Setup-v1.0.1-x64.exe](https://raw.githubusercontent.com/smshagor-dev/OpenMindAI/main/OpenMindAI_1.0.1_x64-setup.exe) | Tested / Stable |
+| Windows — Recommended | [OpenMindAI-Setup-v2.0.0-x64.exe](https://raw.githubusercontent.com/smshagor-dev/OpenMindAI/main/OpenMindAI_2.0.0_x64-setup.exe) | Tested / Stable |
 | Windows — Git Bootstrap | [`OpenMindAI-Setup.bat`](https://raw.githubusercontent.com/smshagor-dev/OpenMindAI/main/OpenMindAI-Setup.bat) | Tested / Stable |
 | Linux | [`openmindai-setup.sh`](https://raw.githubusercontent.com/smshagor-dev/OpenMindAI/main/openmindai-setup.sh) | Tested / Stable |
 | macOS | [`OpenMindAI-Setup.command`](https://raw.githubusercontent.com/smshagor-dev/OpenMindAI/main/OpenMindAI-Setup.command) | Tested / Stable |
 
 The Windows `.exe` installer is the simplest path once it's published as
-part of the v1.0.1 GitHub Release. The bootstrap scripts (`.bat`/`.sh`/
+part of the v2.0.0 GitHub Release. The bootstrap scripts (`.bat`/`.sh`/
 `.command`) work today — they clone the official source and build/launch
 OpenMindAI directly, and will automatically switch to downloading a
 prebuilt release once one is published. See
@@ -25,7 +25,7 @@ prebuilt release once one is published. See
 
 ## Windows Installation
 
-1. Download `OpenMindAI-Setup-v1.0.1-x64.exe`.
+1. Download `OpenMindAI-Setup-v2.0.0-x64.exe` or `OpenMindAI_2.0.0_x64-setup.exe`.
 2. Run it. It's currently **unsigned** (no code-signing certificate yet),
    so Windows SmartScreen will warn — click "More info" → "Run anyway" if
    you trust the source, or verify it against the published
@@ -106,6 +106,11 @@ moves to a different drive letter (e.g. `G:\OpenMindAI` becomes
 `H:\OpenMindAI` after being plugged into a different port), it keeps
 working: paths are resolved relative to the marker's location, not a fixed
 drive letter.
+
+For the current repository-root portable build, keep `openmindai.marker` in
+the project root next to the generated installer. The marker content is
+intentionally simple and includes the release marker (`open-mind-ai-root`,
+`version=2.0.0`); OpenMindAI only needs the file to exist.
 
 ## Offline Mode
 
@@ -193,6 +198,16 @@ npm run tauri dev
 
 Requires Node.js/npm and Rust/Cargo (Windows also needs MSVC Build Tools).
 Production build: `npm run build && npm run tauri -- build`.
+
+Release installer build for Windows:
+
+```powershell
+.\scripts\build-installer.ps1
+```
+
+The build script creates the NSIS installer, writes `SHA256SUMS.txt`, and
+copies the release artifacts into the project root. For v2.0.0, the root
+installer file is `OpenMindAI_2.0.0_x64-setup.exe`.
 
 ## License
 

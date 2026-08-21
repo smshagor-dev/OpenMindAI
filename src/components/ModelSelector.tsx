@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Check, Loader2 } from "lucide-react";
 import type { ModelRecord, RuntimeInventory } from "../types";
-import { formatBytes } from "../lib/format";
 
 export function ModelSelector(props: {
   models: ModelRecord[];
@@ -25,10 +24,11 @@ export function ModelSelector(props: {
     return () => window.removeEventListener("mousedown", onClickOutside);
   }, [open]);
 
+  const visibleModels = dedupeModelsByPersonalName(props.models, props.activeModelId);
   const activeModel = props.models.find((model) => model.id === props.activeModelId) ?? null;
   const label = props.switching
     ? "Loading model..."
-    : activeModel?.name ?? (props.models[0]?.name ?? "No model installed");
+    : displayModelName(activeModel ?? visibleModels[0] ?? null);
 
   return (
     <div className="model-selector" ref={containerRef}>
@@ -36,7 +36,7 @@ export function ModelSelector(props: {
         type="button"
         className="model-selector-trigger"
         onClick={() => setOpen((value) => !value)}
-        disabled={props.models.length === 0}
+        disabled={visibleModels.length === 0}
         aria-haspopup="listbox"
         aria-expanded={open}
       >
@@ -46,14 +46,14 @@ export function ModelSelector(props: {
       </button>
       {open ? (
         <div className="model-selector-menu" role="listbox">
-          {props.models.length === 0 ? (
+          {visibleModels.length === 0 ? (
             <p className="muted model-selector-empty">
-              No GGUF models installed yet. Add one from Settings &gt; Models.
+              No OpenMindAI model installed yet. Add one from Settings &gt; Models.
             </p>
           ) : (
-            props.models.map((model) => {
+            visibleModels.map((model) => {
               const selected =
-                model.id === props.activeModelId || (!props.activeModelId && model === props.models[0]);
+                model.id === props.activeModelId || (!props.activeModelId && model === visibleModels[0]);
               return (
                 <button
                   type="button"
@@ -67,27 +67,72 @@ export function ModelSelector(props: {
                   }}
                 >
                   <div className="model-selector-item-text">
-                    <strong>{model.name}</strong>
-                    <small>
-                      {[model.family, model.quantization, formatBytes(model.sizeBytes)]
-                        .filter(Boolean)
-                        .join(" · ")}
-                    </small>
+                    <strong>{displayModelName(model)}</strong>
                   </div>
                   {selected ? <Check size={15} className="model-selector-check" /> : null}
                 </button>
               );
             })
           )}
-          <div className="model-selector-footer">
-            <span>
-              Runtime: {props.runtime?.selected?.manifest.runtimeName ?? "Not detected"}
-              {props.runtime?.selected ? ` · ${props.runtime.selected.manifest.backend}` : ""}
-            </span>
-          </div>
         </div>
       ) : null}
       {props.switchError ? <p className="model-selector-error">{props.switchError}</p> : null}
     </div>
   );
+}
+
+function dedupeModelsByPersonalName(models: ModelRecord[], activeModelId: string | null): ModelRecord[] {
+  const bestByName = new Map<string, ModelRecord>();
+  for (const model of models) {
+    const name = displayModelName(model);
+    const current = bestByName.get(name);
+    if (!current || modelPreferenceScore(model, activeModelId) > modelPreferenceScore(current, activeModelId)) {
+      bestByName.set(name, model);
+    }
+  }
+  return Array.from(bestByName.values()).sort((left, right) =>
+    displayModelName(left).localeCompare(displayModelName(right)),
+  );
+}
+
+function modelPreferenceScore(model: ModelRecord, activeModelId: string | null): number {
+  let score = 0;
+  if (model.id === activeModelId) score += 1000;
+  if (model.enabled) score += 100;
+  if (model.state === "loaded") score += 50;
+  if (model.state === "ready") score += 40;
+  if (model.verification === "verified") score += 30;
+  if (model.path.toLowerCase().includes("q4_k_m")) score += 20;
+  if (model.path.toLowerCase().includes("q8_0")) score -= 20;
+  return score;
+}
+
+function displayModelName(model: ModelRecord | null): string {
+  if (!model) return "No model installed";
+  if (model.name.startsWith("OpenMindAI")) return model.name;
+
+  const repoName = modelNameByRepo(model.sourceRepository);
+  if (repoName) return repoName;
+
+  const pathName = modelNameByPath(model.path);
+  if (pathName) return pathName;
+
+  return "OpenMindAI Model";
+}
+
+function modelNameByRepo(repo: string | null): string | null {
+  const names: Record<string, string> = {
+    "Qwen/Qwen3-4B-GGUF": "OpenMindAI Core",
+    "Qwen/Qwen3-8B-GGUF": "OpenMindAI Titan",
+    "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF": "OpenMindAI Lens",
+  };
+  return repo ? names[repo] ?? null : null;
+}
+
+function modelNameByPath(path: string): string | null {
+  const normalized = path.replace(/\\/g, "/").toLowerCase();
+  if (normalized.includes("/qwen3-4b/")) return "OpenMindAI Core";
+  if (normalized.includes("/qwen3-8b/")) return "OpenMindAI Titan";
+  if (normalized.includes("/qwen2.5-vl-3b/")) return "OpenMindAI Lens";
+  return null;
 }

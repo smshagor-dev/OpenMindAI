@@ -12,6 +12,7 @@ if ($Version -notmatch '^\d+\.\d+\.\d+$') {
 $repoRoot = Join-Path $PSScriptRoot ".."
 $targets = @(
   @{ Path = Join-Path $repoRoot "package.json"; Pattern = '(?m)^(\s*"version":\s*")[^"]+(")' },
+  @{ Path = Join-Path $repoRoot "package-lock.json"; Pattern = '(?m)^(\s*"version":\s*")[^"]+(")' ; Expected = 2 },
   @{ Path = Join-Path $repoRoot "src-tauri\tauri.conf.json"; Pattern = '(?m)^(\s*"version":\s*")[^"]+(")' },
   @{ Path = Join-Path $repoRoot "src-tauri\Cargo.toml"; Pattern = '(?m)^(version = ")[^"]+(")' }
 )
@@ -22,8 +23,9 @@ $originals = @{}
 foreach ($target in $targets) {
   $content = Get-Content -Path $target.Path -Raw
   $matches = [regex]::Matches($content, $target.Pattern)
-  if ($matches.Count -ne 1) {
-    throw "Expected exactly one version field in $($target.Path), found $($matches.Count)"
+  $expected = if ($target.Expected) { $target.Expected } else { 1 }
+  if ($matches.Count -ne $expected) {
+    throw "Expected $expected version field(s) in $($target.Path), found $($matches.Count)"
   }
   $originals[$target.Path] = $content
 }

@@ -30,10 +30,10 @@ export function StatusBar(props: {
   const model = props.models.find((item) => item.id === props.activeModelId) ?? props.models[0] ?? null;
   const backend = props.runtime?.selected?.manifest.backend;
   const backendLabel = backend ? (BACKEND_LABELS[backend] ?? backend) : null;
-  const modeLabel = props.root?.mode === "portableMarker" ? "Portable mode" : "Local Active";
+  const modeLabel = props.root?.mode === "portableMarker" ? "Portable mode" : "System Active";
   const modelReady = model ? model.state === "ready" || model.state === "loaded" : false;
   const backendReady = Boolean(backend);
-  const portableReady = props.root?.mode === "portableMarker";
+  const portableReady = Boolean(props.root);
 
   return (
     <div className="status-bar">

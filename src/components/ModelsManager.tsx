@@ -1,25 +1,53 @@
-import { useEffect, useState } from "react";
-import { HardDrive, RefreshCw, StopCircle } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { CheckCircle2, Download, PauseCircle, RefreshCw, StopCircle, Trash2 } from "lucide-react";
 import { api } from "../api";
-import type { DownloadStatus, LaunchPlan, ModelRecord, PortableRootInfo, RuntimeInventory } from "../types";
+import type {
+  DownloadStatus,
+  HardwareProfile,
+  LaunchPlan,
+  ModelCatalogReport,
+  ModelCatalogStatus,
+  ModelRecord,
+  PortableRootInfo,
+  RuntimeInventory,
+} from "../types";
 import { formatBytes } from "../lib/format";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 export function ModelsManager(props: {
+  hardware: HardwareProfile | null;
   models: ModelRecord[];
   runtime: RuntimeInventory | null;
   root: PortableRootInfo | null;
   refresh: () => void | Promise<void>;
+  variant?: "settings" | "setup";
+  showRootInfo?: boolean;
+  showRuntimeInfo?: boolean;
+  allowDelete?: boolean;
 }) {
   const [downloadStatus, setDownloadStatus] = useState<DownloadStatus | null>(null);
+  const [catalog, setCatalog] = useState<ModelCatalogReport | null>(null);
   const [launchPlan, setLaunchPlan] = useState<LaunchPlan | null>(null);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ModelCatalogStatus | null>(null);
+
+  const refreshCatalog = async () => {
+    try {
+      setCatalog(await api.checkModelUpdates());
+      setCatalogError(null);
+    } catch (error) {
+      setCatalogError(error instanceof Error ? error.message : String(error));
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
     const refreshStatus = async () => {
-      const status = await api.qwenDownloadStatus();
+      const status = await api.modelDownloadStatus();
       if (!cancelled) setDownloadStatus(status);
     };
     void refreshStatus();
+    void refreshCatalog();
     const interval = window.setInterval(() => void refreshStatus(), 1000);
     return () => {
       cancelled = true;
@@ -27,14 +55,55 @@ export function ModelsManager(props: {
     };
   }, []);
 
-  const downloadQwen = async () => {
+  const recommendedIds = useMemo(() => recommendedModelIds(catalog?.entries ?? [], props.hardware), [catalog, props.hardware]);
+
+  const groupedCatalog = useMemo(() => {
+    const groups = new Map<string, ModelCatalogStatus[]>();
+    for (const item of catalog?.entries ?? []) {
+      const label = collectionLabel(item.entry.kind);
+      groups.set(label, [...(groups.get(label) ?? []), item]);
+    }
+    return Array.from(groups.entries()).map(([label, entries]) => [
+      label,
+      [...entries].sort((left, right) => {
+        const leftScore = modelSortScore(left, recommendedIds);
+        const rightScore = modelSortScore(right, recommendedIds);
+        return rightScore - leftScore || left.entry.name.localeCompare(right.entry.name);
+      }),
+    ] as const);
+  }, [catalog, recommendedIds]);
+
+  const primaryRecommendation = useMemo(() => {
+    const entries = catalog?.entries ?? [];
+    return (
+      entries.find((item) => recommendedIds.has(item.entry.id) && item.entry.kind === "chat") ??
+      entries.find((item) => recommendedIds.has(item.entry.id)) ??
+      null
+    );
+  }, [catalog, recommendedIds]);
+  const downloadedCount = catalog?.entries.filter((item) => item.installed).length ?? 0;
+  const recommendedCount = catalog?.entries.filter((item) => recommendedIds.has(item.entry.id)).length ?? 0;
+  const activeDownload = catalog?.entries.find((item) => item.entry.id === downloadStatus?.modelId) ?? null;
+
+  const downloadModel = async (modelId: string) => {
     setLaunchPlan(null);
-    setDownloadStatus(await api.downloadQwenModel());
-    await props.refresh();
+    try {
+      setDownloadStatus(await api.downloadCatalogModel(modelId));
+      await props.refresh();
+      await refreshCatalog();
+    } catch {
+      setDownloadStatus(await api.modelDownloadStatus());
+    }
   };
-  const cancelQwenDownload = async () => {
-    setDownloadStatus(await api.cancelQwenDownload());
+
+  const cancelDownload = async () => {
+    setDownloadStatus(await api.cancelModelDownload());
   };
+
+  const pauseDownload = async () => {
+    setDownloadStatus(await api.pauseModelDownload());
+  };
+
   const validateFirstModel = async () => {
     const model = props.models[0];
     if (!model) return;
@@ -42,59 +111,58 @@ export function ModelsManager(props: {
     setLaunchPlan(await api.planModelLaunch(model.id));
   };
 
+  const deleteModel = async () => {
+    if (!deleteTarget) return;
+    await api.deleteCatalogModel(deleteTarget.entry.id);
+    setDeleteTarget(null);
+    await props.refresh();
+    await refreshCatalog();
+  };
+
   return (
     <>
-      <Info label="Model folder" value={props.root?.modelsDir} />
-      <div className="model-download-card">
-        <div>
-          <strong>Qwen3 4B</strong>
-          <span>Official Qwen/Qwen3-4B-GGUF · Q4_K_M · {formatBytes(downloadStatus?.totalBytes ?? 2497280256)}</span>
-        </div>
-        <div className="download-progress">
-          <span>{downloadStatus ? downloadStatus.state : "not installed"}</span>
-          {downloadStatus?.totalBytes ? (
-            <small>
-              {formatBytes(downloadStatus.downloadedBytes)} / {formatBytes(downloadStatus.totalBytes)}
-              {downloadStatus.percentage != null ? ` · ${downloadStatus.percentage.toFixed(1)}%` : ""}
-              {downloadStatus.speedBytesPerSec ? ` · ${formatBytes(downloadStatus.speedBytesPerSec)}/s` : ""}
-            </small>
-          ) : null}
-        </div>
-        <div className="button-row">
-          <button type="button" onClick={downloadQwen} title="Download Qwen3 4B">
-            <HardDrive size={16} />
-          </button>
-          <button type="button" onClick={cancelQwenDownload} title="Cancel download">
-            <StopCircle size={16} />
-          </button>
-          <button type="button" onClick={validateFirstModel} title="Validate and plan launch" disabled={props.models.length === 0}>
-            <RefreshCw size={16} />
-          </button>
-        </div>
-        {downloadStatus?.error ? <p className="muted">{downloadStatus.error}</p> : null}
-      </div>
-      {props.models.length === 0 ? (
-        <p className="muted">No GGUF models discovered under OpenMindAI Root.</p>
-      ) : (
-        props.models.map((model) => (
-          <div className="sub-panel" key={model.id}>
-            <Info label="Name" value={model.name} />
-            <Info label="Format" value={model.format} />
-            <Info label="Quantization" value={model.quantization ?? "Unknown"} />
-            <Info label="Size" value={formatBytes(model.sizeBytes)} />
-            <Info label="Enabled" value={model.enabled ? "Yes" : "No"} />
-            <Info label="State" value={model.state} />
-            <Info label="Source" value={model.sourceRepository ?? "Unknown"} />
-            <Info label="Verification" value={model.verification ?? "Unknown"} />
-            <Info label="Context" value={model.contextLength ? String(model.contextLength) : "Unknown"} />
-            <Info label="Path" value={model.path} />
-          </div>
-        ))
-      )}
-      <div className="sub-panel">
+      {props.showRootInfo === false ? null : <Info label="Model folder" value={props.root?.modelsDir} />}
+      {catalogError ? <p className="model-selector-error">{catalogError}</p> : null}
+      <ModelCatalogOverview
+        variant={props.variant ?? "settings"}
+        hardware={props.hardware}
+        primary={primaryRecommendation}
+        downloadStatus={downloadStatus}
+        activeDownloadName={activeDownload?.entry.name ?? null}
+        downloadedCount={downloadedCount}
+        recommendedCount={recommendedCount}
+        onDownload={primaryRecommendation ? () => downloadModel(primaryRecommendation.entry.id) : undefined}
+        onPause={pauseDownload}
+        onCancel={cancelDownload}
+      />
+
+      {groupedCatalog.map(([group, entries]) => (
+        <section className="model-catalog-section" key={group}>
+          <h3>{group}</h3>
+          {entries.map((item) => (
+            <CatalogModelCard
+              key={item.entry.id}
+              item={item}
+              status={downloadStatus?.modelId === item.entry.id ? downloadStatus : null}
+              recommended={recommendedIds.has(item.entry.id)}
+              onDownload={() => downloadModel(item.entry.id)}
+              onPause={pauseDownload}
+              onCancel={cancelDownload}
+              onDelete={props.allowDelete === false ? undefined : () => setDeleteTarget(item)}
+            />
+          ))}
+        </section>
+      ))}
+
+      {props.showRuntimeInfo === false ? null : <div className="sub-panel">
         <Info label="Runtime selected" value={props.runtime?.selected?.manifest.runtimeName ?? "None"} />
         <Info label="Runtime backend" value={props.runtime?.selected?.manifest.backend} />
         <Info label="llama.cpp device" value={props.runtime?.selected?.deviceOutput?.slice(0, 180)} />
+        <div className="button-row">
+          <button type="button" onClick={validateFirstModel} title="Validate and plan first chat model" disabled={props.models.length === 0}>
+            <RefreshCw size={16} />
+          </button>
+        </div>
         {launchPlan ? (
           <>
             <Info label="Planned context" value={String(launchPlan.config.contextSize)} />
@@ -103,9 +171,229 @@ export function ModelsManager(props: {
             <Info label="Flash attention" value={launchPlan.config.flashAttention ? "On" : "Off"} />
           </>
         ) : null}
-      </div>
+      </div>}
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title={`Delete ${deleteTarget?.entry.name ?? "model"}?`}
+        description="This will permanently delete all downloaded data for this model from your OpenMindAI Root. You will need to download it again before using it."
+        confirmLabel="Delete model"
+        danger
+        onConfirm={() => void deleteModel()}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </>
   );
+}
+
+function ModelCatalogOverview(props: {
+  variant: "settings" | "setup";
+  hardware: HardwareProfile | null;
+  primary: ModelCatalogStatus | null;
+  downloadStatus: DownloadStatus | null;
+  activeDownloadName: string | null;
+  downloadedCount: number;
+  recommendedCount: number;
+  onDownload?: () => void | Promise<void>;
+  onPause: () => void | Promise<void>;
+  onCancel: () => void | Promise<void>;
+}) {
+  const primaryStatus = props.downloadStatus?.modelId === props.primary?.entry.id ? props.downloadStatus : null;
+  const busy =
+    props.downloadStatus?.state === "resolving" ||
+    props.downloadStatus?.state === "downloading" ||
+    props.downloadStatus?.state === "verifying";
+  const title = props.variant === "setup" ? "Start with the best local model" : "Model library";
+  const hardwareLabel = props.hardware?.backends.cuda
+    ? "NVIDIA CUDA ready"
+    : props.hardware?.recommendedInferenceGpu
+      ? `${props.hardware.recommendedInferenceGpu} ready`
+      : "CPU ready";
+
+  return (
+    <section className="model-catalog-overview">
+      <div className="model-catalog-overview-main">
+        <span className="model-catalog-eyebrow">{hardwareLabel}</span>
+        <strong>{props.primary?.entry.name ?? title}</strong>
+        <p>
+          {props.primary
+            ? `${props.primary.entry.name} is recommended for this computer.`
+            : "OpenMindAI will recommend the best model after hardware detection finishes."}
+        </p>
+        <div className="model-catalog-stats">
+          <span>{props.recommendedCount} recommended</span>
+          <span>{props.downloadedCount} downloaded</span>
+          {props.activeDownloadName && props.downloadStatus ? (
+            <span>
+              {props.activeDownloadName}
+              {props.downloadStatus.speedBytesPerSec ? ` · ${formatBytes(props.downloadStatus.speedBytesPerSec)}/s` : ""}
+            </span>
+          ) : null}
+        </div>
+      </div>
+      <div className="button-row model-catalog-overview-actions">
+        {props.primary?.installed ? (
+          <button type="button" title={`${props.primary.entry.name} verified`} disabled>
+            <CheckCircle2 size={16} />
+          </button>
+        ) : primaryStatus && busy ? (
+          <>
+            <button type="button" onClick={props.onPause} title="Pause download">
+              <PauseCircle size={16} />
+            </button>
+            <button type="button" onClick={props.onCancel} title="Cancel download">
+              <StopCircle size={16} />
+            </button>
+          </>
+        ) : props.primary ? (
+          <button
+            type="button"
+            className="primary-button"
+            onClick={props.onDownload}
+            title={`Download ${props.primary.entry.name}`}
+            disabled={!props.primary.downloadSupported || busy}
+          >
+            <Download size={16} />
+          </button>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function CatalogModelCard(props: {
+  item: ModelCatalogStatus;
+  status: DownloadStatus | null;
+  recommended: boolean;
+  onDownload: () => void | Promise<void>;
+  onPause: () => void | Promise<void>;
+  onCancel: () => void | Promise<void>;
+  onDelete?: () => void;
+}) {
+  const entry = props.item.entry;
+  const busy = props.status?.state === "resolving" || props.status?.state === "downloading" || props.status?.state === "verifying";
+  const paused = props.status?.state === "pausedInterrupted";
+  return (
+    <div className="model-download-card">
+      <div>
+        <strong>
+          {entry.name}
+          <span className={props.item.installed ? "model-badge downloaded" : "model-badge"}>
+            {props.item.installed ? "Downloaded" : "Download"}
+          </span>
+          {props.recommended ? <span className="model-badge recommended">Recommended</span> : null}
+          {props.item.installed ? <CheckCircle2 size={15} /> : null}
+        </strong>
+        <span>
+          OpenMindAI local package · {entry.quantization} · {entry.runtime} · {formatBytes(entry.sizeBytes)}
+        </span>
+        <small>{entry.description}</small>
+      </div>
+      <div className="download-progress">
+        <span>
+          {props.item.installed ? "Ready" : props.item.compatible ? "Available" : "Needs stronger hardware"}
+        </span>
+        {props.status?.totalBytes ? (
+          <small>
+            {formatBytes(props.status.downloadedBytes)} / {formatBytes(props.status.totalBytes)}
+            {props.status.percentage != null ? ` · ${props.status.percentage.toFixed(1)}%` : ""}
+            {props.status.speedBytesPerSec ? ` · ${formatBytes(props.status.speedBytesPerSec)}/s` : ""}
+          </small>
+        ) : props.item.installed ? null : (
+          <small>{systemFitLabel(props.item)}</small>
+        )}
+      </div>
+      <div className="button-row">
+        {props.item.installed ? (
+          <>
+            <button type="button" title={`${entry.name} verified`} disabled>
+              <CheckCircle2 size={16} />
+            </button>
+            {props.onDelete ? (
+              <button type="button" className="danger-button" onClick={props.onDelete} title={`Delete ${entry.name}`}>
+                <Trash2 size={16} />
+              </button>
+            ) : null}
+          </>
+        ) : busy ? (
+          <>
+            <button type="button" onClick={props.onPause} title="Pause download">
+              <PauseCircle size={16} />
+            </button>
+            <button type="button" onClick={props.onCancel} title="Cancel download">
+              <StopCircle size={16} />
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={props.onDownload}
+            title={`${paused ? "Resume" : "Download"} ${entry.name}`}
+            disabled={!props.item.downloadSupported}
+          >
+            <Download size={16} />
+          </button>
+        )}
+      </div>
+      {props.status?.error ? <p className="muted">{props.status.error}</p> : null}
+    </div>
+  );
+}
+
+function collectionLabel(kind: string) {
+  const labels: Record<string, string> = {
+    chat: "OpenMindAI Core",
+    vision: "OpenMindAI Lens",
+    "speech-to-text": "OpenMindAI Hear",
+    "text-to-speech": "OpenMindAI Speak",
+    image: "OpenMindAI Canvas",
+    audio: "OpenMindAI Soundscape",
+    video: "OpenMindAI Motion",
+  };
+  return labels[kind] ?? kind;
+}
+
+function recommendedModelIds(entries: ModelCatalogStatus[], hardware: HardwareProfile | null) {
+  const ids = new Set<string>();
+  const compatible = entries.filter((entry) => entry.compatible);
+  const hasNvidia = Boolean(hardware?.backends.cuda);
+  const hasLargeMemory =
+    (hardware?.memory.totalBytes ?? 0) >= 32 * 1024 * 1024 * 1024 ||
+    (hardware?.gpus ?? []).some((gpu) => (gpu.dedicatedVramBytes ?? 0) >= 12 * 1024 * 1024 * 1024);
+
+  addPreferred(ids, compatible, "chat", hasNvidia ? "qwen3-8b-q4km" : "qwen3-4b-q4km");
+  addPreferred(ids, compatible, "vision", "qwen25-vl-3b-q4km");
+  addPreferred(ids, compatible, "speech-to-text", "whisper-large-v3-turbo-q5");
+  addPreferred(ids, compatible, "text-to-speech", "kokoro-82m-onnx");
+  addPreferred(ids, compatible, "image", hasNvidia && hasLargeMemory ? "flux1-schnell" : "sdxl-base-1");
+  addPreferred(ids, compatible, "audio", "stable-audio-open");
+  addPreferred(ids, compatible, "video", hasNvidia && hasLargeMemory ? "wan21-t2v-13b" : "ltx-video");
+
+  return ids;
+}
+
+function addPreferred(ids: Set<string>, entries: ModelCatalogStatus[], kind: string, preferredId: string) {
+  const preferred = entries.find((entry) => entry.entry.id === preferredId);
+  if (preferred) {
+    ids.add(preferred.entry.id);
+    return;
+  }
+  const fallback = entries.find((entry) => entry.entry.kind === kind);
+  if (fallback) ids.add(fallback.entry.id);
+}
+
+function modelSortScore(item: ModelCatalogStatus, recommendedIds: Set<string>) {
+  let score = 0;
+  if (item.installed) score += 100;
+  if (recommendedIds.has(item.entry.id)) score += 50;
+  if (item.compatible) score += 10;
+  if (item.downloadSupported) score += 5;
+  return score;
+}
+
+function systemFitLabel(item: ModelCatalogStatus) {
+  if (item.installed) return "Ready";
+  if (!item.compatible) return "Not recommended for this PC";
+  return item.downloadSupported ? "Ready for this PC" : "Manual setup required";
 }
 
 function Info(props: { label: string; value?: string | null }) {

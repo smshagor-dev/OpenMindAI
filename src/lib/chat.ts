@@ -1,7 +1,17 @@
 import type { Message } from "../types";
 import { formatBytes } from "./format";
 
-export type ChatMode = "chat" | "search" | "research" | "thinking" | "document" | "pdf" | "image" | "vision";
+export type ChatMode =
+  | "chat"
+  | "search"
+  | "research"
+  | "thinking"
+  | "document"
+  | "pdf"
+  | "image"
+  | "video"
+  | "voice"
+  | "vision";
 
 export interface AttachmentDraft {
   id: string;
@@ -76,6 +86,8 @@ export function inferChatMode(prompt: string, attachments: AttachmentDraft[]): C
   if (/\b(pdf|export pdf|make a pdf|pdf ready)\b/.test(text)) return "pdf";
   if (/\b(document|write a doc|report|proposal|resume|cv|letter|contract|outline)\b/.test(text)) return "document";
   if (/\b(create image|make image|generate image|draw|poster|logo|thumbnail|illustration)\b/.test(text)) return "image";
+  if (/\b(create video|make video|generate video|video clip|animation|animate)\b/.test(text)) return "video";
+  if (/\b(create voice|make voice|generate voice|voiceover|voice over|narration|text to speech|tts)\b/.test(text)) return "voice";
   if (/\b(think|reason|solve|debug|step by step|carefully)\b/.test(text)) return "thinking";
   return "chat";
 }
@@ -129,6 +141,10 @@ export function modeInstruction(mode: ChatMode) {
       return "[Mode: PDF Draft]\nCreate PDF-ready content. Use clean headings, short paragraphs, tables where useful, and include a suggested filename. Do not claim a PDF file was generated unless an export tool is available.";
     case "image":
       return "[Mode: Image Creation]\nCreate a production-quality image generation prompt with subject, composition, style, lighting, camera/framing, colors, negative prompt, and recommended aspect ratio. Do not claim an image file was generated unless an image generator is connected.";
+    case "video":
+      return "[Mode: Video Creation]\nCreate a production-quality video generation prompt with subject, scene progression, camera motion, timing, lighting, style, negative prompt, and recommended duration/aspect ratio. Do not claim a video file was generated unless a video generator is connected.";
+    case "voice":
+      return "[Mode: Voice Creation]\nCreate a production-quality voice generation prompt or script with voice style, pacing, emotion, pronunciation notes, format, and final narration copy. Do not claim audio was generated unless a voice generator is connected.";
     case "vision":
       return "[Mode: Image/Vision Review]\nAnalyze attached image metadata or any user-provided visual description. If no vision model is installed, clearly ask for a description or OCR/text export for exact visual analysis.";
     default:

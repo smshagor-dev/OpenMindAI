@@ -197,6 +197,8 @@ impl<'a> ArtifactManager<'a> {
         let subdir = match kind {
             "pdf" | "docx" => "generated/exports",
             "image" => "generated/images",
+            "audio" => "generated/audio",
+            "video" => "generated/video",
             _ => "generated/files",
         };
         let dir = self.root.resolve_relative(subdir)?;
@@ -232,7 +234,9 @@ pub fn mime_type_for(kind: &str) -> &'static str {
         "pdf" => "application/pdf",
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "markdown" => "text/markdown",
-        "image" => "image/png",
+        "image" => "image/svg+xml",
+        "audio" => "audio/wav",
+        "video" => "video/mp4",
         _ => "text/plain",
     }
 }
@@ -243,7 +247,9 @@ fn default_extension(kind: &str) -> &'static str {
         "markdown" => "md",
         "pdf" => "pdf",
         "docx" => "docx",
-        "image" => "png",
+        "image" => "svg",
+        "audio" => "wav",
+        "video" => "mp4",
         _ => "txt",
     }
 }

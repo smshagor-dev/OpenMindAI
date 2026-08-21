@@ -31,9 +31,11 @@ docs/
 # Downloaded/built release artifacts and bootstrap scratch space -- never
 # commit a compiled installer or a bootstrap-cloned copy of the source.
 *.exe
+!OpenMindAI_*_x64-setup.exe
 *.msi
 *.dmg
 *.AppImage
+!SHA256SUMS.txt
 /release-download/
 
 # AI models

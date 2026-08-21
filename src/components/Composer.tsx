@@ -9,12 +9,15 @@ import {
   Plus,
   Send,
   Square,
+  Video,
+  Volume2,
   X,
 } from "lucide-react";
-import type { RefObject } from "react";
+import type { ReactNode, RefObject } from "react";
 import type { ModelRecord, RuntimeInventory } from "../types";
 import { formatBytes } from "../lib/format";
 import type { AttachmentDraft } from "../lib/chat";
+import { api } from "../api";
 import { ModelSelector } from "./ModelSelector";
 
 export function Composer(props: {
@@ -95,6 +98,9 @@ export function Composer(props: {
             onCreateDocument={() => insertTemplate("Create a Word document about: ")}
             onCreatePdf={() => insertTemplate("Create a PDF document about: ")}
             onCreateMarkdown={() => insertTemplate("Create a Markdown document about: ")}
+            onGenerateImage={() => insertTemplate("Generate an image of: ")}
+            onGenerateVideo={() => insertTemplate("Generate a video of: ")}
+            onGenerateVoice={() => insertTemplate("Generate a voice narration for: ")}
           />
           <input
             ref={fileInputRef}
@@ -149,7 +155,7 @@ export function Composer(props: {
         </div>
       </div>
       {micNote ? (
-        <p className="composer-note">Voice input isn&rsquo;t available yet — it needs a local speech-to-text runtime.</p>
+        <p className="composer-note">Voice input is not available yet. It needs a local speech-to-text runtime.</p>
       ) : null}
       {props.note ? <p className="composer-note">{props.note}</p> : null}
     </form>
@@ -161,17 +167,43 @@ function ComposerTools(props: {
   onCreateDocument: () => void;
   onCreatePdf: () => void;
   onCreateMarkdown: () => void;
+  onGenerateImage: () => void;
+  onGenerateVideo: () => void;
+  onGenerateVoice: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [imageNote, setImageNote] = useState(false);
+  const [generationModels, setGenerationModels] = useState({
+    image: false,
+    video: false,
+    voice: false,
+  });
   const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .checkModelUpdates()
+      .then((catalog) => {
+        if (cancelled) return;
+        setGenerationModels({
+          image: catalog.entries.some((item) => item.installed && item.entry.kind === "image"),
+          video: catalog.entries.some((item) => item.installed && item.entry.kind === "video"),
+          voice: catalog.entries.some((item) => item.installed && item.entry.kind === "text-to-speech"),
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setGenerationModels({ image: false, video: false, voice: false });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!open) return;
     const onClickOutside = (event: MouseEvent) => {
       if (ref.current && !ref.current.contains(event.target as Node)) {
         setOpen(false);
-        setImageNote(false);
       }
     };
     window.addEventListener("mousedown", onClickOutside);
@@ -193,6 +225,7 @@ function ComposerTools(props: {
       {open ? (
         <div className="composer-tools-menu" role="menu">
           <button
+            type="button"
             role="menuitem"
             onClick={() => {
               props.onAttachFiles();
@@ -208,6 +241,7 @@ function ComposerTools(props: {
             </span>
           </button>
           <button
+            type="button"
             role="menuitem"
             onClick={() => {
               props.onCreateDocument();
@@ -223,6 +257,7 @@ function ComposerTools(props: {
             </span>
           </button>
           <button
+            type="button"
             role="menuitem"
             onClick={() => {
               props.onCreatePdf();
@@ -238,6 +273,7 @@ function ComposerTools(props: {
             </span>
           </button>
           <button
+            type="button"
             role="menuitem"
             onClick={() => {
               props.onCreateMarkdown();
@@ -252,29 +288,64 @@ function ComposerTools(props: {
               <small>Generate a .md document</small>
             </span>
           </button>
-          <button
-            role="menuitem"
-            className="composer-tools-disabled"
-            onClick={() => setImageNote((value) => !value)}
-          >
-            <span className="tool-menu-icon">
-              <Image size={16} />
-            </span>
-            <span className="tool-menu-text">
-              <strong>
-                Generate image <small className="tool-menu-badge">Not installed</small>
-              </strong>
-              <small>Needs a local image model &amp; runtime</small>
-            </span>
-          </button>
-          {imageNote ? (
-            <p className="composer-tools-note">
-              Local image generation isn&rsquo;t installed yet — it needs its own downloaded model and runtime,
-              similar to the local chat model.
-            </p>
-          ) : null}
+          <GenerationTool
+            enabled={generationModels.image}
+            icon={<Image size={16} />}
+            title="Generate image"
+            description="Create with OpenMindAI Canvas"
+            onClick={() => {
+              props.onGenerateImage();
+              setOpen(false);
+            }}
+          />
+          <GenerationTool
+            enabled={generationModels.video}
+            icon={<Video size={16} />}
+            title="Generate video"
+            description="Create with OpenMindAI Motion"
+            onClick={() => {
+              props.onGenerateVideo();
+              setOpen(false);
+            }}
+          />
+          <GenerationTool
+            enabled={generationModels.voice}
+            icon={<Volume2 size={16} />}
+            title="Generate voice"
+            description="Create with OpenMindAI Speak"
+            onClick={() => {
+              props.onGenerateVoice();
+              setOpen(false);
+            }}
+          />
         </div>
       ) : null}
     </div>
+  );
+}
+
+function GenerationTool(props: {
+  enabled: boolean;
+  icon: ReactNode;
+  title: string;
+  description: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      className={props.enabled ? "" : "composer-tools-disabled"}
+      onClick={props.enabled ? props.onClick : undefined}
+    >
+      <span className="tool-menu-icon">{props.icon}</span>
+      <span className="tool-menu-text">
+        <strong>
+          {props.title}
+          {!props.enabled ? <small className="tool-menu-badge tool-menu-badge-required">Model download required</small> : null}
+        </strong>
+        <small>{props.enabled ? props.description : "Download the model from Settings > Models"}</small>
+      </span>
+    </button>
   );
 }

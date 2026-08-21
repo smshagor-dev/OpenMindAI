@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
-import { Code2, FileSearch, FileText, HardDrive, Image } from "lucide-react";
+import { Code2, FileSearch, FileText, HardDrive, Image, Video, Volume2 } from "lucide-react";
 import type {
   AppPreferences,
   Artifact,
@@ -17,7 +17,9 @@ import type { PreviewTarget } from "./PreviewPanel";
 
 const SUGGESTIONS = [
   { id: "code", label: "Write or debug code", icon: Code2, prompt: "Help me write or debug code: " },
-  { id: "image", label: "Generate an image", icon: Image, prompt: null },
+  { id: "image", label: "Generate an image", icon: Image, prompt: "Generate an image of: " },
+  { id: "video", label: "Generate a video", icon: Video, prompt: "Generate a video of: " },
+  { id: "voice", label: "Generate voice", icon: Volume2, prompt: "Generate a voice narration for: " },
   { id: "document", label: "Create a document or PDF", icon: FileText, prompt: "Create a document about: " },
   { id: "file", label: "Analyze a local file", icon: FileSearch, prompt: "Analyze this file: " },
 ];
@@ -44,6 +46,7 @@ export function ChatView(props: {
   stopGeneration: () => void;
   regenerate: (assistantMessageId: string) => void;
   retry: (assistantMessageId: string) => void;
+  editUserMessage: (content: string) => void;
   composerRef: RefObject<HTMLTextAreaElement>;
   streaming: boolean;
   models: ModelRecord[];
@@ -63,7 +66,6 @@ export function ChatView(props: {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(true);
   const isEmpty = props.messages.length === 0;
-  const [imageNote, setImageNote] = useState(false);
 
   useEffect(() => {
     if (stickToBottom.current) {
@@ -119,10 +121,6 @@ export function ChatView(props: {
                       className="suggestion-row-item"
                       key={suggestion.id}
                       onClick={() => {
-                        if (suggestion.prompt === null) {
-                          setImageNote((value) => !value);
-                          return;
-                        }
                         props.setPrompt(suggestion.prompt);
                         props.composerRef.current?.focus();
                       }}
@@ -133,13 +131,8 @@ export function ChatView(props: {
                   );
                 })}
               </div>
-              {imageNote ? (
-                <p className="chat-empty-note">
-                  Local image generation isn&rsquo;t installed yet — it needs its own downloaded model and runtime.
-                </p>
-              ) : null}
               <p className="chat-empty-footer">
-                <HardDrive size={13} /> Local-first workspace · chats, models and artifacts remain under the
+                <HardDrive size={13} /> Local-first workspace - chats, models and artifacts remain under the
                 portable root
               </p>
             </div>
@@ -162,6 +155,7 @@ export function ChatView(props: {
               onRevealArtifact={props.onRevealArtifact}
               onRetryArtifact={props.onRetryArtifact}
               onPreview={props.onPreview}
+              onEditUser={message.role === "user" ? () => props.editUserMessage(message.content) : undefined}
             />
           ))
         )}

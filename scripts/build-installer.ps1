@@ -30,9 +30,13 @@ if (-not (Test-Path $bundleDir)) {
   throw "Expected NSIS bundle output at $bundleDir but it does not exist"
 }
 
-$artifacts = Get-ChildItem -Path $bundleDir -File | Where-Object { $_.Extension -in ".exe", ".sig" }
+$packageJson = Get-Content -Path (Join-Path $repoRoot "package.json") -Raw | ConvertFrom-Json
+$version = $packageJson.version
+$artifacts = Get-ChildItem -Path $bundleDir -File | Where-Object {
+  ($_.Extension -in ".exe", ".sig") -and $_.Name -like "*_$version`_*"
+}
 if ($artifacts.Count -eq 0) {
-  throw "No installer artifacts found under $bundleDir"
+  throw "No v$version installer artifacts found under $bundleDir"
 }
 
 $checksumPath = Join-Path $bundleDir "SHA256SUMS.txt"
@@ -45,12 +49,27 @@ $lines = foreach ($artifact in $artifacts) {
 # checksum file. Hex hashes and these filenames are pure ASCII anyway.
 Set-Content -Path $checksumPath -Value $lines -Encoding ascii
 
+$rootArtifacts = @()
+foreach ($artifact in $artifacts) {
+  $destination = Join-Path $repoRoot $artifact.Name
+  Copy-Item -LiteralPath $artifact.FullName -Destination $destination -Force
+  $rootArtifacts += $destination
+}
+$rootChecksumPath = Join-Path $repoRoot "SHA256SUMS.txt"
+Copy-Item -LiteralPath $checksumPath -Destination $rootChecksumPath -Force
+
 Write-Host ""
 Write-Host "Installer build complete:" -ForegroundColor Green
 foreach ($artifact in $artifacts) {
   Write-Host "  $($artifact.FullName)"
 }
 Write-Host "  $checksumPath"
+Write-Host ""
+Write-Host "Copied release files to project root:" -ForegroundColor Green
+foreach ($artifact in $rootArtifacts) {
+  Write-Host "  $artifact"
+}
+Write-Host "  $rootChecksumPath"
 Write-Host ""
 Write-Host "This build is unsigned (no Windows code-signing certificate configured yet)." -ForegroundColor Yellow
 Write-Host "Windows SmartScreen will warn on first run -- verify the checksum above instead."

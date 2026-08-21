@@ -221,6 +221,8 @@ export interface RuntimeInstallStatus {
 }
 
 export interface DownloadStatus {
+  modelId: string;
+  name: string;
   state:
     | "queued"
     | "resolving"
@@ -274,6 +276,8 @@ export interface StreamStartedEvent {
   conversationId: string;
   user: Message;
   assistant: Message;
+  routedModelName: string;
+  routingReason: string;
 }
 
 export interface StreamDoneEvent {
@@ -282,7 +286,7 @@ export interface StreamDoneEvent {
   status: Message["status"];
 }
 
-export type ArtifactKind = "text" | "markdown" | "code" | "pdf" | "docx" | "image";
+export type ArtifactKind = "text" | "markdown" | "code" | "pdf" | "docx" | "image" | "audio" | "video";
 export type ArtifactStatus = "generating" | "ready" | "failed";
 
 export interface Artifact {
@@ -316,6 +320,28 @@ export interface LibraryEntry {
   error: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ProjectFile {
+  id: string;
+  projectId: string;
+  name: string;
+  sizeBytes: number;
+  mimeType: string | null;
+  contentText: string | null;
+  status: "ready" | "tracked" | "skipped" | "failed";
+  error: string | null;
+  addedAt: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  instructions: string;
+  createdAt: string;
+  updatedAt: string;
+  conversationIds: string[];
+  files: ProjectFile[];
 }
 
 export interface GithubAccount {
@@ -398,6 +424,8 @@ export interface ModelCatalogEntry {
   name: string;
   version: string;
   family: string;
+  kind: string;
+  runtime: string;
   repo: string;
   quantization: string;
   required: boolean;
@@ -405,12 +433,22 @@ export interface ModelCatalogEntry {
   sizeBytes: number;
   minRamBytes: number;
   minVramBytes: number | null;
+  license: string;
+  description: string;
+  download: {
+    strategy: "singleFile";
+    filenamePattern: string;
+    destinationDir: string;
+    format: string;
+  } | null;
 }
 
 export interface ModelCatalogStatus {
   entry: ModelCatalogEntry;
   installed: boolean;
   compatible: boolean;
+  downloadSupported: boolean;
+  installedPath: string | null;
   updateAvailable: boolean;
 }
 

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FileCode, FileText, FileType, Folder, Loader2, RefreshCw } from "lucide-react";
+import { FileCode, FileText, FileType, Folder, Image, Loader2, RefreshCw, Video, Volume2 } from "lucide-react";
 import type { Artifact } from "../types";
 import { formatBytes } from "../lib/format";
 import { renderMarkdown } from "../lib/markdown";
@@ -11,6 +11,8 @@ const KIND_LABELS: Record<Artifact["kind"], string> = {
   pdf: "PDF document",
   docx: "Word document",
   image: "Image",
+  audio: "Voice audio",
+  video: "Video",
 };
 
 export function KindIcon(props: { kind: Artifact["kind"] }) {
@@ -21,6 +23,12 @@ export function KindIcon(props: { kind: Artifact["kind"] }) {
       return <FileType size={20} />;
     case "code":
       return <FileCode size={20} />;
+    case "image":
+      return <Image size={20} />;
+    case "audio":
+      return <Volume2 size={20} />;
+    case "video":
+      return <Video size={20} />;
     default:
       return <FileText size={20} />;
   }
@@ -55,6 +63,12 @@ export function ArtifactCard(props: {
               ? "Creating PDF..."
               : artifact.kind === "docx"
                 ? "Creating document..."
+                : artifact.kind === "image"
+                  ? "Generating image..."
+                  : artifact.kind === "audio"
+                    ? "Generating voice..."
+                    : artifact.kind === "video"
+                      ? "Generating video..."
                 : "Generating..."}
           </span>
         ) : null}

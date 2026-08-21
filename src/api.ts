@@ -26,6 +26,8 @@ import type {
   ModelRecord,
   PerformanceProfile,
   PortableRootInfo,
+  Project,
+  ProjectFile,
   RuntimeInventory,
   StorageSummary,
   UserProfile,
@@ -73,12 +75,46 @@ export const api = {
   completeMessage: (messageId: string, status: Message["status"]) =>
     call<void>("complete_message", { messageId, status }),
   deleteMessage: (messageId: string) => call<void>("delete_message", { messageId }),
+  projects: () => call<Project[]>("list_projects"),
+  createProject: (name: string) => call<Project>("create_project", { name }),
+  updateProject: (projectId: string, name: string, instructions: string) =>
+    call<Project>("update_project", { projectId, name, instructions }),
+  deleteProject: (projectId: string) => call<void>("delete_project", { projectId }),
+  linkProjectConversation: (projectId: string, conversationId: string) =>
+    call<void>("link_project_conversation", { projectId, conversationId }),
+  unlinkProjectConversation: (projectId: string, conversationId: string) =>
+    call<void>("unlink_project_conversation", { projectId, conversationId }),
+  addProjectFile: (
+    projectId: string,
+    name: string,
+    sizeBytes: number,
+    mimeType: string | null,
+    contentText: string | null,
+    status: ProjectFile["status"],
+    error: string | null,
+  ) =>
+    call<ProjectFile>("add_project_file", {
+      projectId,
+      name,
+      sizeBytes,
+      mimeType,
+      contentText,
+      status,
+      error,
+    }),
+  deleteProjectFile: (projectId: string, fileId: string) =>
+    call<void>("delete_project_file", { projectId, fileId }),
   hardware: () => call<HardwareProfile>("detect_hardware"),
   performance: () => call<PerformanceProfile>("get_performance_profile"),
   models: () => call<ModelRecord[]>("discover_models"),
   qwenDownloadStatus: () => call<DownloadStatus>("get_qwen_download_status"),
+  modelDownloadStatus: () => call<DownloadStatus>("get_model_download_status"),
   downloadQwenModel: () => call<DownloadStatus>("download_qwen_model"),
+  downloadCatalogModel: (modelId: string) => call<DownloadStatus>("download_catalog_model", { modelId }),
   cancelQwenDownload: () => call<DownloadStatus>("cancel_qwen_download"),
+  cancelModelDownload: () => call<DownloadStatus>("cancel_model_download"),
+  pauseModelDownload: () => call<DownloadStatus>("pause_model_download"),
+  deleteCatalogModel: (modelId: string) => call<void>("delete_catalog_model", { modelId }),
   validateModel: (modelId: string) => call<ModelRecord>("validate_model", { modelId }),
   planModelLaunch: (modelId: string) => call<LaunchPlan>("plan_model_launch", { modelId }),
   storage: () => call<StorageSummary>("get_storage_summary"),
@@ -142,9 +178,16 @@ export const api = {
       content,
       title,
     }),
+  createGenerationArtifact: (
+    conversationId: string,
+    messageId: string | null,
+    kind: "image" | "video" | "voice",
+    prompt: string,
+  ) => call<Artifact>("create_generation_artifact", { conversationId, messageId, kind, prompt }),
   listArtifacts: (conversationId: string) => call<Artifact[]>("list_artifacts", { conversationId }),
   listLibraryEntries: () => call<LibraryEntry[]>("list_library_entries"),
   openArtifact: (artifactId: string) => call<void>("open_artifact", { artifactId }),
+  openExternalUrl: (url: string) => call<void>("open_external_url", { url }),
   revealArtifactInFolder: (artifactId: string) =>
     call<void>("reveal_artifact_in_folder", { artifactId }),
 };
@@ -212,27 +255,69 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
     } as T);
   }
   if (command === "delete_message") return Promise.resolve(undefined as T);
-  if (command === "create_text_artifact" || command === "create_document_artifact") {
+  if (command === "list_projects") return Promise.resolve([] as T);
+  if (command === "create_project" || command === "update_project") {
+    return Promise.resolve({
+      id: (args?.projectId as string) || crypto.randomUUID(),
+      name: (args?.name as string) || "New project",
+      instructions: (args?.instructions as string) || "",
+      createdAt: now,
+      updatedAt: now,
+      conversationIds: [],
+      files: [],
+    } as T);
+  }
+  if (
+    command === "delete_project" ||
+    command === "link_project_conversation" ||
+    command === "unlink_project_conversation" ||
+    command === "delete_project_file"
+  ) {
+    return Promise.resolve(undefined as T);
+  }
+  if (command === "add_project_file") {
+    return Promise.resolve({
+      id: crypto.randomUUID(),
+      projectId: (args?.projectId as string) || "",
+      name: (args?.name as string) || "file",
+      sizeBytes: (args?.sizeBytes as number) || 0,
+      mimeType: (args?.mimeType as string) || null,
+      contentText: (args?.contentText as string) || null,
+      status: (args?.status as ProjectFile["status"]) || "tracked",
+      error: (args?.error as string) || null,
+      addedAt: now,
+    } as T);
+  }
+  if (command === "create_text_artifact" || command === "create_document_artifact" || command === "create_generation_artifact") {
     const kind = (args?.kind as string) ?? "text";
     const content = (args?.content as string) ?? "";
+    const prompt = (args?.prompt as string) ?? "";
+    const artifactKind = kind === "voice" ? "audio" : kind;
     return Promise.resolve({
       id: crypto.randomUUID(),
       conversationId: (args?.conversationId as string) ?? "",
       messageId: (args?.messageId as string) ?? null,
-      name: (args?.filename as string) || `artifact.${kind}`,
-      path: `generated/files/artifact.${kind}`,
+      name: (args?.filename as string) || `artifact.${artifactKind}`,
+      path: `generated/files/artifact.${artifactKind}`,
       mimeType: "text/plain",
-      kind,
-      sizeBytes: content.length,
+      kind: artifactKind,
+      sizeBytes: content.length || prompt.length,
       pageCount: null,
-      status: "ready",
-      error: null,
+      status: command === "create_generation_artifact" && kind !== "image" ? "failed" : "ready",
+      error:
+        command === "create_generation_artifact" && kind !== "image"
+          ? "Local media runtime connector is not available in browser preview."
+          : null,
       createdAt: now,
       updatedAt: now,
     } as T);
   }
   if (command === "list_artifacts" || command === "list_library_entries") return Promise.resolve([] as T);
   if (command === "open_artifact" || command === "reveal_artifact_in_folder") {
+    return Promise.resolve(undefined as T);
+  }
+  if (command === "open_external_url") {
+    window.open((args?.url as string) ?? "", "_blank", "noopener,noreferrer");
     return Promise.resolve(undefined as T);
   }
   if (command === "regenerate_message") {
@@ -281,8 +366,18 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
     } as T);
   }
   if (command === "discover_models") return Promise.resolve([] as T);
-  if (command === "get_qwen_download_status" || command === "download_qwen_model" || command === "cancel_qwen_download") {
+  if (
+    command === "get_qwen_download_status" ||
+    command === "get_model_download_status" ||
+    command === "download_qwen_model" ||
+    command === "download_catalog_model" ||
+    command === "cancel_qwen_download" ||
+    command === "cancel_model_download" ||
+    command === "pause_model_download"
+  ) {
     return Promise.resolve({
+      modelId: (args?.modelId as string) ?? "qwen3-4b-q4km",
+      name: "OpenMindAI Core",
       state: "queued",
       repo: "Qwen/Qwen3-4B-GGUF",
       quantization: "Q4_K_M",
@@ -336,6 +431,9 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
   if (command === "clear_cache") {
     return Promise.resolve({ bytesFreed: 0 } as T);
   }
+  if (command === "delete_catalog_model") {
+    return Promise.resolve(undefined as T);
+  }
   if (command === "run_diagnostics") {
     return Promise.resolve({ checks: [] } as T);
   }
@@ -355,7 +453,40 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
     return Promise.resolve("" as T);
   }
   if (command === "check_model_updates") {
-    return Promise.resolve({ entries: [] } as T);
+    return Promise.resolve({
+      entries: [
+        {
+          entry: {
+            id: "qwen3-4b-q4km",
+            name: "OpenMindAI Core",
+            version: "1",
+            family: "qwen",
+            kind: "chat",
+            runtime: "llama.cpp",
+            repo: "Qwen/Qwen3-4B-GGUF",
+            quantization: "Q4_K_M",
+            required: true,
+            capabilities: ["chat", "reasoning", "code"],
+            sizeBytes: 2497280256,
+            minRamBytes: 8589934592,
+            minVramBytes: null,
+            license: "apache-2.0",
+            description: "Balanced everyday local brain for writing, coding, and reasoning.",
+            download: {
+              strategy: "singleFile",
+              filenamePattern: "*.gguf",
+              destinationDir: "models/llm/qwen/qwen3-4b",
+              format: "gguf",
+            },
+          },
+          installed: false,
+          compatible: true,
+          downloadSupported: true,
+          installedPath: null,
+          updateAvailable: false,
+        },
+      ],
+    } as T);
   }
   if (command === "get_app_preferences" || command === "save_app_preferences") {
     return Promise.resolve({

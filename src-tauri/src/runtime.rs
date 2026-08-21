@@ -8,6 +8,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +20,9 @@ use crate::{
     launch_planner::ModelLaunchConfig,
     portable_root::PortableRootManager,
 };
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -181,7 +187,8 @@ impl LlamaRuntimeManager {
         let stderr = fs::File::create(stderr_path)?;
 
         self.state = ServerState::Starting;
-        let child = Command::new(server_path)
+        let mut command = Command::new(server_path);
+        command
             .args([
                 "--host",
                 "127.0.0.1",
@@ -190,7 +197,9 @@ impl LlamaRuntimeManager {
                 "--no-webui",
             ])
             .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr))
+            .stderr(Stdio::from(stderr));
+        hide_console_window(&mut command);
+        let child = command
             .spawn()
             .map_err(|error| AppError::RuntimeStartFailed(error.to_string()))?;
 
@@ -292,10 +301,13 @@ impl LlamaRuntimeManager {
             args.push("--flash-attn".to_string());
         }
 
-        let child = Command::new(server_path)
+        let mut command = Command::new(server_path);
+        command
             .args(args)
             .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr))
+            .stderr(Stdio::from(stderr));
+        hide_console_window(&mut command);
+        let child = command
             .spawn()
             .map_err(|error| AppError::ModelLoadFailed(error.to_string()))?;
 
@@ -479,10 +491,13 @@ fn run_probe(
     timeout: Duration,
 ) -> Result<String, AppError> {
     let path = root.resolve_relative(relative)?;
-    let mut child = Command::new(path)
+    let mut command = Command::new(path);
+    command
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    hide_console_window(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|error| AppError::RuntimeStartFailed(error.to_string()))?;
 
@@ -507,6 +522,13 @@ fn run_probe(
     Err(AppError::RuntimeStartFailed(
         "runtime probe timed out".to_string(),
     ))
+}
+
+fn hide_console_window(command: &mut Command) {
+    #[cfg(target_os = "windows")]
+    {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
 }
 
 pub fn allocate_local_port() -> Result<u16, AppError> {
@@ -558,7 +580,10 @@ fn http_health_ok(host: &str, port: u16) -> bool {
     else {
         return false;
     };
-    if stream.set_read_timeout(Some(Duration::from_secs(2))).is_err() {
+    if stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .is_err()
+    {
         return false;
     }
     let request = format!("GET /health HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");

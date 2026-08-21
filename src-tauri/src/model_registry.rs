@@ -107,9 +107,14 @@ impl<'a> ModelRegistry<'a> {
             .optional()?;
 
         if let Some(id) = existing {
+            let name = read_model_manifest(&canonical)
+                .as_ref()
+                .map(display_name_from_manifest);
             self.database.connection().execute(
-                "UPDATE model_registry SET path = ?1, updated_at = ?2 WHERE id = ?3",
-                params![relative_path, Utc::now().to_rfc3339(), id],
+                "UPDATE model_registry
+                 SET path = ?1, name = COALESCE(?2, name), updated_at = ?3
+                 WHERE id = ?4",
+                params![relative_path, name, Utc::now().to_rfc3339(), id],
             )?;
             return Ok(());
         }
@@ -190,6 +195,18 @@ impl<'a> ModelRegistry<'a> {
         validate_gguf_header(&model_path, self.root)?;
         Ok(model)
     }
+
+    pub fn remove_by_path_prefix(&self, relative_prefix: &str) -> Result<(), AppError> {
+        let prefix = relative_prefix
+            .replace('\\', "/")
+            .trim_end_matches('/')
+            .to_string();
+        self.database.connection().execute(
+            "DELETE FROM model_registry WHERE path = ?1 OR path LIKE ?2",
+            params![prefix, format!("{prefix}/%")],
+        )?;
+        Ok(())
+    }
 }
 
 fn read_model_manifest(model_path: impl AsRef<Path>) -> Option<QwenModelManifest> {
@@ -211,15 +228,22 @@ fn resolve_model_path(
 }
 
 fn display_name_from_manifest(manifest: &QwenModelManifest) -> String {
-    if manifest.repo == "Qwen/Qwen3-4B-GGUF" {
-        "Qwen3 4B".to_string()
-    } else {
-        manifest
-            .filename
-            .strip_suffix(".gguf")
-            .unwrap_or(&manifest.filename)
-            .to_string()
-    }
+    crate::model_catalog::load_catalog()
+        .ok()
+        .and_then(|catalog| {
+            catalog
+                .models
+                .into_iter()
+                .find(|entry| entry.repo == manifest.repo)
+        })
+        .map(|entry| entry.name)
+        .unwrap_or_else(|| {
+            manifest
+                .filename
+                .strip_suffix(".gguf")
+                .unwrap_or(&manifest.filename)
+                .to_string()
+        })
 }
 
 fn infer_family(name: &str) -> String {
@@ -240,12 +264,7 @@ fn infer_quantization(name: &str) -> Option<String> {
 }
 
 fn verification_for(path: &str) -> Option<String> {
-    let manifest = read_model_manifest(Path::new(path)).or_else(|| {
-        PortableRootManager::resolve()
-            .ok()
-            .and_then(|root| resolve_model_path(&root, path).ok())
-            .and_then(read_model_manifest)
-    })?;
+    let manifest = model_manifest_for_path(path)?;
     Some(
         match manifest.verification {
             VerificationState::Verified => "verified",
@@ -254,6 +273,15 @@ fn verification_for(path: &str) -> Option<String> {
         }
         .to_string(),
     )
+}
+
+fn model_manifest_for_path(path: &str) -> Option<QwenModelManifest> {
+    read_model_manifest(Path::new(path)).or_else(|| {
+        PortableRootManager::resolve()
+            .ok()
+            .and_then(|root| resolve_model_path(&root, path).ok())
+            .and_then(read_model_manifest)
+    })
 }
 
 fn scan_directory(directory: &Path, found: &mut Vec<std::path::PathBuf>) -> Result<(), AppError> {
@@ -296,7 +324,7 @@ fn map_model(row: &rusqlite::Row<'_>) -> rusqlite::Result<ModelRecord> {
         context_length: row.get(8)?,
         preferred_backend: row.get(9)?,
         enabled: row.get::<_, i64>(10)? != 0,
-        source_repository: read_model_manifest(Path::new(&path)).map(|manifest| manifest.repo),
+        source_repository: model_manifest_for_path(&path).map(|manifest| manifest.repo),
         verification: verification_for(&path),
         state: ModelLifecycleState::Ready,
         created_at: row.get(11)?,
@@ -348,7 +376,7 @@ mod tests {
             .find(|model| model.source_repository.as_deref() == Some("Qwen/Qwen3-4B-GGUF"))
             .expect("Qwen model should be registered");
 
-        assert_eq!(qwen.name, "Qwen3 4B");
+        assert_eq!(qwen.name, "OpenMindAI Core");
         assert_eq!(qwen.family.as_deref(), Some("qwen3"));
         assert_eq!(qwen.quantization.as_deref(), Some("Q4_K_M"));
         assert_eq!(qwen.size_bytes, 2_497_280_256);

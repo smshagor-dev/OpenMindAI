@@ -32,6 +32,16 @@ const MIGRATIONS: &[Migration] = &[
         name: "002_artifacts",
         sql: include_str!("../migrations/002_artifacts.sql"),
     },
+    Migration {
+        number: 3,
+        name: "003_projects",
+        sql: include_str!("../migrations/003_projects.sql"),
+    },
+    Migration {
+        number: 4,
+        name: "004_project_file_ingestion",
+        sql: include_str!("../migrations/004_project_file_ingestion.sql"),
+    },
 ];
 
 pub struct Database {

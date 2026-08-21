@@ -9,7 +9,7 @@ use crate::app_error::AppError;
 
 const MARKER_FILE: &str = "openmindai.marker";
 const INSTALL_CONFIG_FILE: &str = "install.json";
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 pub const DEFAULT_PROFILE_NAME: &str = "openmindai";
 /// Rough initial footprint for a first-run install: llama.cpp runtime +
 /// Qwen3 4B Q4_K_M model + database + safety margin. Used only to preview

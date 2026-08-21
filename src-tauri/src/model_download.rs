@@ -16,7 +16,9 @@ use tokio::{fs as async_fs, io::AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    app_error::AppError, model_catalog::ModelCatalogEntry, portable_root::PortableRootManager,
+    app_error::AppError,
+    model_catalog::{entry_by_id, wildcard_match, ModelCatalogDownload, ModelCatalogEntry},
+    portable_root::PortableRootManager,
 };
 
 const SAFE_SPACE_MARGIN: u64 = 768 * 1024 * 1024;
@@ -37,6 +39,8 @@ pub enum DownloadState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DownloadStatus {
+    pub model_id: String,
+    pub name: String,
     pub state: DownloadState,
     pub repo: String,
     pub quantization: String,
@@ -138,6 +142,14 @@ impl ModelDownloadManager {
     }
 
     pub fn cancel(&self) -> Result<DownloadStatus, AppError> {
+        self.stop_download(DownloadState::Cancelled)
+    }
+
+    pub fn pause(&self) -> Result<DownloadStatus, AppError> {
+        self.stop_download(DownloadState::PausedInterrupted)
+    }
+
+    fn stop_download(&self, state: DownloadState) -> Result<DownloadStatus, AppError> {
         if let Some(token) = self
             .cancel_token
             .lock()
@@ -146,12 +158,18 @@ impl ModelDownloadManager {
         {
             token.cancel();
         }
-        self.set_state(DownloadState::Cancelled, None)?;
+        self.set_state(state, None)?;
         self.status()
     }
 
     pub async fn download_qwen_q4_k_m(&self) -> Result<DownloadStatus, AppError> {
-        tracing::info!(repo = %self.catalog_entry.repo, "installing AI model");
+        self.download_catalog_model(&self.catalog_entry.id).await
+    }
+
+    pub async fn download_catalog_model(&self, model_id: &str) -> Result<DownloadStatus, AppError> {
+        let entry = entry_by_id(model_id)?;
+        tracing::info!(repo = %entry.repo, model_id = %entry.id, "installing AI model");
+        self.update_status(|status| *status = DownloadStatus::queued(&entry))?;
         self.set_state(DownloadState::Resolving, None)?;
         let token = CancellationToken::new();
         *self
@@ -160,7 +178,7 @@ impl ModelDownloadManager {
             .map_err(|_| AppError::internal("download cancel lock poisoned"))? =
             Some(token.clone());
 
-        let result = self.download_qwen_inner(token).await;
+        let result = self.download_entry_inner(entry, token).await;
         *self
             .cancel_token
             .lock()
@@ -174,19 +192,28 @@ impl ModelDownloadManager {
             Err(error) => {
                 let message = error.to_string();
                 tracing::warn!(%message, "AI model install failed");
-                let _ = self.set_state(DownloadState::Failed, Some(message.clone()));
+                if !matches!(error, AppError::InferenceCancelled(_)) {
+                    let _ = self.set_state(DownloadState::Failed, Some(message.clone()));
+                }
                 Err(AppError::ModelDownloadFailed(message))
             }
         }
     }
 
-    async fn download_qwen_inner(
+    async fn download_entry_inner(
         &self,
+        entry: ModelCatalogEntry,
         token: CancellationToken,
     ) -> Result<DownloadStatus, AppError> {
-        let metadata = self.resolve_qwen_metadata().await?;
+        let metadata = self.resolve_model_metadata(&entry).await?;
         let filename = metadata.filename.clone();
-        let model_dir = self.root.resolve_relative("models/llm/qwen/qwen3-4b")?;
+        let download = entry.download.as_ref().ok_or_else(|| {
+            AppError::ModelUnsupported(format!(
+                "{} has no downloadable file configured",
+                entry.name
+            ))
+        })?;
+        let model_dir = self.root.resolve_relative(&download.destination_dir)?;
         fs::create_dir_all(&model_dir)?;
         ensure_contained(self.root.root(), &model_dir)?;
 
@@ -276,10 +303,9 @@ impl ModelDownloadManager {
         while let Some(chunk) = stream.next().await {
             if token.is_cancelled() {
                 file.flush().await?;
-                self.set_state(DownloadState::Cancelled, None)?;
-                return Err(AppError::InferenceCancelled(
-                    "download cancelled".to_string(),
-                ));
+                let state = self.status()?.state;
+                self.set_state(state, None)?;
+                return Err(AppError::InferenceCancelled("download stopped".to_string()));
             }
             let chunk = chunk.map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?;
             file.write_all(&chunk).await?;
@@ -328,9 +354,18 @@ impl ModelDownloadManager {
         self.status()
     }
 
-    async fn resolve_qwen_metadata(&self) -> Result<QwenModelManifest, AppError> {
-        let repo = &self.catalog_entry.repo;
-        let quantization = &self.catalog_entry.quantization;
+    async fn resolve_model_metadata(
+        &self,
+        entry: &ModelCatalogEntry,
+    ) -> Result<QwenModelManifest, AppError> {
+        let repo = &entry.repo;
+        let quantization = &entry.quantization;
+        let download = entry.download.as_ref().ok_or_else(|| {
+            AppError::ModelUnsupported(format!(
+                "{} has no downloadable file configured",
+                entry.name
+            ))
+        })?;
         let api_url = format!("https://huggingface.co/api/models/{repo}?blobs=true");
         let model: HuggingFaceModel = self
             .client
@@ -344,16 +379,12 @@ impl ModelDownloadManager {
             .await
             .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?;
 
-        let sibling = model
-            .siblings
-            .iter()
-            .find(|sibling| {
-                sibling.rfilename.ends_with(".gguf")
-                    && sibling.rfilename.contains(quantization.as_str())
-            })
-            .ok_or_else(|| {
-                AppError::ModelDownloadFailed("official Q4_K_M GGUF file not found".to_string())
-            })?;
+        let sibling = select_sibling(&model.siblings, download).ok_or_else(|| {
+            AppError::ModelDownloadFailed(format!(
+                "no file matching {} found in {repo}",
+                download.filename_pattern
+            ))
+        })?;
         let filename = sibling.rfilename.clone();
         let source_url = format!("https://huggingface.co/{repo}/resolve/main/{filename}");
         let size_bytes = sibling
@@ -432,6 +463,8 @@ impl ModelDownloadManager {
 impl DownloadStatus {
     fn queued(catalog_entry: &ModelCatalogEntry) -> Self {
         Self {
+            model_id: catalog_entry.id.clone(),
+            name: catalog_entry.name.clone(),
             state: DownloadState::Queued,
             repo: catalog_entry.repo.clone(),
             quantization: catalog_entry.quantization.clone(),
@@ -444,6 +477,23 @@ impl DownloadStatus {
             error: None,
         }
     }
+}
+
+fn select_sibling<'a>(
+    siblings: &'a [HuggingFaceSibling],
+    download: &ModelCatalogDownload,
+) -> Option<&'a HuggingFaceSibling> {
+    siblings
+        .iter()
+        .filter(|sibling| wildcard_match(&download.filename_pattern, &sibling.rfilename))
+        .max_by_key(|sibling| {
+            sibling
+                .lfs
+                .as_ref()
+                .and_then(|lfs| lfs.size)
+                .or(sibling.size)
+                .unwrap_or(0)
+        })
 }
 
 pub fn validate_gguf_header(path: &Path, root: &PortableRootManager) -> Result<(), AppError> {
@@ -647,12 +697,15 @@ mod tests {
 
         let metadata = tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(async { manager.resolve_qwen_metadata().await })
+            .block_on(async { manager.resolve_model_metadata(&manager.catalog_entry).await })
             .unwrap();
         let part_path = root
             .resolve_relative(format!("temp/downloads/{}.part", metadata.filename))
             .unwrap();
-        if observed_progress > 0 {
+        let final_path = root
+            .resolve_relative(format!("models/llm/qwen/qwen3-4b/{}", metadata.filename))
+            .unwrap();
+        if observed_progress > 0 && !final_path.exists() {
             assert!(part_path.exists());
             assert!(fs::metadata(&part_path).unwrap().len() > 0);
         }
@@ -665,9 +718,6 @@ mod tests {
         assert_eq!(final_status.downloaded_bytes, metadata.size_bytes);
         assert!(!part_path.exists());
 
-        let final_path = root
-            .resolve_relative(format!("models/llm/qwen/qwen3-4b/{}", metadata.filename))
-            .unwrap();
         validate_gguf_header(&final_path, &root).unwrap();
         assert_eq!(
             fs::metadata(&final_path).unwrap().len(),

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { CheckCheck, Copy, Download, Eye, RefreshCw, RotateCcw } from "lucide-react";
+import { CheckCheck, Copy, Download, Eye, Pencil, RefreshCw, RotateCcw } from "lucide-react";
 import type { Artifact, ArtifactKind, Message } from "../types";
 import {
   highlightCode,
@@ -36,12 +36,19 @@ export function MessageItem(props: {
   onRevealArtifact: (artifact: Artifact) => void;
   onRetryArtifact: (artifact: Artifact) => void;
   onPreview: (target: PreviewTarget) => void;
+  onEditUser?: () => void;
 }) {
   const message = props.message;
   const isAssistant = message.role === "assistant";
   const isThinking = isAssistant && message.status === "streaming" && message.content.trim().length === 0;
   const canSave = isAssistant && message.status === "completed" && message.content.trim().length > 0;
   const showActions = isAssistant && !isThinking && message.status !== "streaming" && message.content.trim().length > 0;
+  const [copied, setCopied] = useState(false);
+  const copyMessage = async () => {
+    await navigator.clipboard.writeText(message.content);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1400);
+  };
 
   return (
     <article className={`message ${message.role}`}>
@@ -73,8 +80,22 @@ export function MessageItem(props: {
       )}
 
       {message.role === "user" ? (
-        <div className="message-timestamp message-timestamp-user">
-          {formatTime(message.createdAt)} <CheckCheck size={13} />
+        <div className="message-actions-row message-actions-user">
+          <button
+            className="message-action-pill"
+            title="Copy"
+            onClick={() => void copyMessage()}
+          >
+            <Copy size={14} /> {copied ? "Copied" : "Copy"}
+          </button>
+          {props.onEditUser ? (
+            <button className="message-action-pill" title="Edit and resend" onClick={props.onEditUser}>
+              <Pencil size={14} /> Edit
+            </button>
+          ) : null}
+          <span className="message-timestamp message-timestamp-user">
+            {formatTime(message.createdAt)} <CheckCheck size={13} />
+          </span>
         </div>
       ) : null}
 
@@ -106,9 +127,9 @@ export function MessageItem(props: {
           <button
             className="message-action-pill"
             title="Copy"
-            onClick={() => navigator.clipboard.writeText(message.content)}
+            onClick={() => void copyMessage()}
           >
-            <Copy size={14} /> Copy
+            <Copy size={14} /> {copied ? "Copied" : "Copy"}
           </button>
           {props.canRegenerate ? (
             <button className="message-action-pill" title="Regenerate" onClick={props.onRegenerate}>

@@ -2,10 +2,16 @@ use serde::{Deserialize, Serialize};
 use sysinfo::System;
 
 #[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_DESC1, DXGI_ADAPTER_FLAG_SOFTWARE,
     DXGI_ERROR_NOT_FOUND,
 };
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -188,12 +194,20 @@ fn recommended_backend(vendor: &GpuVendor, has_vulkan: bool) -> BackendKind {
 }
 
 fn command_available(command: &str) -> bool {
-    std::process::Command::new(command)
+    let mut command = std::process::Command::new(command);
+    command
         .arg("--help")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok()
+        .stderr(std::process::Stdio::null());
+    hide_console_window(&mut command);
+    command.status().is_ok()
+}
+
+fn hide_console_window(command: &mut std::process::Command) {
+    #[cfg(target_os = "windows")]
+    {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
 }
 
 #[cfg(target_os = "windows")]

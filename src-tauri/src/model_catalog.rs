@@ -1,10 +1,12 @@
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 
-use crate::{app_error::AppError, hardware::HardwareProfile, model_registry::ModelRecord};
+use crate::{
+    app_error::AppError, hardware::HardwareProfile, model_registry::ModelRecord,
+    portable_root::PortableRootManager,
+};
 
-/// Source-controlled catalog, not fetched remotely — matches the spec's
-/// "source-controlled catalog... optionally a remotely retrievable
-/// production catalog" where the remote part is explicit future work.
 const CATALOG_JSON: &str = include_str!("../model-catalog.json");
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -21,9 +23,8 @@ pub struct ModelCatalogEntry {
     pub name: String,
     pub version: String,
     pub family: String,
-    /// The Hugging Face repo this entry downloads from — the single source
-    /// of truth `model_download.rs` reads instead of duplicating its own
-    /// hardcoded repo constant (see `ModelDownloadManager::catalog_entry`).
+    pub kind: String,
+    pub runtime: String,
     pub repo: String,
     pub quantization: String,
     pub required: bool,
@@ -31,6 +32,24 @@ pub struct ModelCatalogEntry {
     pub size_bytes: u64,
     pub min_ram_bytes: u64,
     pub min_vram_bytes: Option<u64>,
+    pub license: String,
+    pub description: String,
+    pub download: Option<ModelCatalogDownload>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCatalogDownload {
+    pub strategy: ModelDownloadStrategy,
+    pub filename_pattern: String,
+    pub destination_dir: String,
+    pub format: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelDownloadStrategy {
+    SingleFile,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -39,6 +58,8 @@ pub struct ModelCatalogStatus {
     pub entry: ModelCatalogEntry,
     pub installed: bool,
     pub compatible: bool,
+    pub download_supported: bool,
+    pub installed_path: Option<String>,
     pub update_available: bool,
 }
 
@@ -52,12 +73,6 @@ pub fn load_catalog() -> Result<ModelCatalog, AppError> {
     serde_json::from_str(CATALOG_JSON).map_err(|error| AppError::internal(error.to_string()))
 }
 
-/// The catalog's required first-run model — v1 ships exactly one, so this is
-/// unambiguous. `model_download.rs`'s automatic setup download reads the
-/// repo/quantization to fetch from here rather than duplicating them as
-/// separate hardcoded constants; once a second catalog entry ever exists,
-/// callers of this function are exactly the call sites that need to grow
-/// real model selection instead of assuming "the one required entry".
 pub fn required_entry() -> Result<ModelCatalogEntry, AppError> {
     load_catalog()?
         .models
@@ -66,15 +81,18 @@ pub fn required_entry() -> Result<ModelCatalogEntry, AppError> {
         .ok_or_else(|| AppError::internal("model catalog has no required entry"))
 }
 
-/// Cross-references the (source-controlled) catalog against what's actually
-/// installed and this machine's hardware. v1's catalog has exactly one
-/// entry, and it's the model the app already ships against, so
-/// `update_available` is honestly always `false` today — not an
-/// unimplemented check, just the correct answer until a second catalog
-/// entry actually exists.
+pub fn entry_by_id(id: &str) -> Result<ModelCatalogEntry, AppError> {
+    load_catalog()?
+        .models
+        .into_iter()
+        .find(|entry| entry.id == id)
+        .ok_or_else(|| AppError::ModelNotFound(id.to_string()))
+}
+
 pub fn check_model_updates(
     installed: &[ModelRecord],
     hardware: &HardwareProfile,
+    root: &PortableRootManager,
 ) -> Result<ModelCatalogReport, AppError> {
     let catalog = load_catalog()?;
     let total_ram = hardware.memory.total_bytes;
@@ -88,10 +106,7 @@ pub fn check_model_updates(
         .models
         .into_iter()
         .map(|entry| {
-            let installed_flag = installed.iter().any(|model| {
-                model.family.as_deref() == Some(entry.family.as_str())
-                    && model.quantization.as_deref() == Some(entry.quantization.as_str())
-            });
+            let installed_path = installed_path_for(&entry, installed, root);
             let compatible = total_ram >= entry.min_ram_bytes
                 && match entry.min_vram_bytes {
                     Some(required) => max_vram
@@ -99,10 +114,16 @@ pub fn check_model_updates(
                         .unwrap_or(false),
                     None => true,
                 };
+            let download_supported = entry
+                .download
+                .as_ref()
+                .is_some_and(|download| download.strategy == ModelDownloadStrategy::SingleFile);
             ModelCatalogStatus {
                 entry,
-                installed: installed_flag,
+                installed: installed_path.is_some(),
                 compatible,
+                download_supported,
+                installed_path,
                 update_available: false,
             }
         })
@@ -111,16 +132,167 @@ pub fn check_model_updates(
     Ok(ModelCatalogReport { entries })
 }
 
+fn installed_path_for(
+    entry: &ModelCatalogEntry,
+    installed: &[ModelRecord],
+    root: &PortableRootManager,
+) -> Option<String> {
+    installed
+        .iter()
+        .find(|model| {
+            model.source_repository.as_deref() == Some(entry.repo.as_str())
+                || (model.family.as_deref() == Some(entry.family.as_str())
+                    && model.quantization.as_deref() == Some(entry.quantization.as_str()))
+        })
+        .map(|model| model.path.clone())
+        .or_else(|| {
+            entry
+                .download
+                .as_ref()
+                .and_then(|download| find_downloaded_file(root, download))
+        })
+}
+
+fn find_downloaded_file(
+    root: &PortableRootManager,
+    download: &ModelCatalogDownload,
+) -> Option<String> {
+    let dir = root.resolve_relative(&download.destination_dir).ok()?;
+    if !dir.exists() {
+        return None;
+    }
+    find_file_matching(&dir, &download.filename_pattern)
+        .and_then(|path| path.strip_prefix(root.root()).ok().map(Path::to_path_buf))
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+}
+
+pub fn delete_catalog_model(root: &PortableRootManager, model_id: &str) -> Result<(), AppError> {
+    let entry = entry_by_id(model_id)?;
+    let download = entry.download.as_ref().ok_or_else(|| {
+        AppError::ModelUnsupported(format!(
+            "{} has no removable model data configured",
+            entry.name
+        ))
+    })?;
+    let target_dir = root.resolve_relative(&download.destination_dir)?;
+    if !target_dir.exists() {
+        return Ok(());
+    }
+    ensure_under_root(root, &target_dir)?;
+
+    if let Some(file) = find_file_matching(&target_dir, &download.filename_pattern) {
+        ensure_under_root(root, &file)?;
+        std::fs::remove_file(file)?;
+    }
+
+    let manifest = target_dir.join("model-manifest.json");
+    if manifest.exists() {
+        ensure_under_root(root, &manifest)?;
+        std::fs::remove_file(manifest)?;
+    }
+
+    remove_empty_dirs_up_to(root.root(), target_dir)?;
+    Ok(())
+}
+
+fn ensure_under_root(root: &PortableRootManager, path: &Path) -> Result<(), AppError> {
+    let canonical_root = std::fs::canonicalize(root.root())?;
+    let canonical_path = std::fs::canonicalize(path)?;
+    if !canonical_path.starts_with(canonical_root) {
+        return Err(AppError::ModelInvalid(
+            "model path escapes OpenMindAI Root".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn remove_empty_dirs_up_to(root: &Path, mut dir: PathBuf) -> Result<(), AppError> {
+    let canonical_root = std::fs::canonicalize(root)?;
+    loop {
+        if !dir.exists() {
+            break;
+        }
+        let canonical_dir = std::fs::canonicalize(&dir)?;
+        if canonical_dir == canonical_root || !canonical_dir.starts_with(&canonical_root) {
+            break;
+        }
+        if std::fs::read_dir(&dir)?.next().is_some() {
+            break;
+        }
+        std::fs::remove_dir(&dir)?;
+        let Some(parent) = dir.parent() else {
+            break;
+        };
+        dir = parent.to_path_buf();
+    }
+    Ok(())
+}
+
+fn find_file_matching(dir: &Path, pattern: &str) -> Option<std::path::PathBuf> {
+    for entry in std::fs::read_dir(dir).ok()? {
+        let path = entry.ok()?.path();
+        if path.is_dir() {
+            if let Some(found) = find_file_matching(&path, pattern) {
+                return Some(found);
+            }
+        } else if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| wildcard_match(pattern, name))
+        {
+            return Some(path);
+        }
+    }
+    None
+}
+
+pub(crate) fn wildcard_match(pattern: &str, value: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    let pattern = pattern.to_ascii_lowercase();
+    let value = value.to_ascii_lowercase();
+    let parts = pattern.split('*').collect::<Vec<_>>();
+    if parts.len() == 1 {
+        return pattern == value;
+    }
+
+    let mut cursor = 0;
+    for (index, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        let Some(found) = value[cursor..].find(part) else {
+            return false;
+        };
+        if index == 0 && found != 0 {
+            return false;
+        }
+        cursor += found + part.len();
+    }
+
+    pattern
+        .ends_with('*')
+        .then_some(true)
+        .unwrap_or_else(|| parts.last().is_none_or(|last| value.ends_with(last)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::hardware::{BackendKind, CpuProfile, GpuInfo, GpuVendor, MemoryProfile};
 
     #[test]
-    fn bundled_catalog_parses_and_has_one_entry() {
+    fn bundled_catalog_parses_and_has_entries() {
         let catalog = load_catalog().unwrap();
-        assert_eq!(catalog.models.len(), 1);
+        assert!(catalog.models.len() > 1);
         assert_eq!(catalog.models[0].family, "qwen");
+        assert!(catalog.models.iter().any(|entry| entry.kind == "image"));
+        assert!(catalog.models.iter().any(|entry| entry.kind == "video"));
+        assert!(catalog
+            .models
+            .iter()
+            .any(|entry| entry.kind == "speech-to-text"));
     }
 
     fn hardware_with(total_ram_bytes: u64, vram_bytes: Option<u64>) -> HardwareProfile {
@@ -192,9 +364,13 @@ mod tests {
             created_at: chrono::Utc::now().to_rfc3339(),
             updated_at: chrono::Utc::now().to_rfc3339(),
         }];
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
 
-        let report = check_model_updates(&installed, &hardware).unwrap();
-        assert_eq!(report.entries.len(), 1);
+        let report = check_model_updates(&installed, &hardware, &root).unwrap();
+
+        assert!(report.entries.len() > 1);
         assert!(report.entries[0].installed);
         assert!(!report.entries[0].update_available);
     }
@@ -202,7 +378,22 @@ mod tests {
     #[test]
     fn flags_incompatible_hardware() {
         let low_ram_hardware = hardware_with(2 * 1024 * 1024 * 1024, None);
-        let report = check_model_updates(&[], &low_ram_hardware).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+
+        let report = check_model_updates(&[], &low_ram_hardware, &root).unwrap();
+
         assert!(!report.entries[0].compatible);
+    }
+
+    #[test]
+    fn wildcard_patterns_match_download_files() {
+        assert!(wildcard_match("*Q4_K_M*.gguf", "Qwen3-8B-Q4_K_M.gguf"));
+        assert!(wildcard_match(
+            "ggml-large-v3-turbo-q5_0.bin",
+            "ggml-large-v3-turbo-q5_0.bin"
+        ));
+        assert!(!wildcard_match("*quantized*.onnx", "model.onnx"));
     }
 }

@@ -53,13 +53,19 @@ impl ModelLaunchPlanner {
             .recommended_inference_gpu
             .as_ref()
             .and_then(|id| hardware.gpus.iter().find(|gpu| &gpu.id == id));
-        let backend = if selected_gpu
-            .is_some_and(|gpu| gpu.available_backends.contains(&BackendKind::Vulkan))
-        {
-            BackendKind::Vulkan
-        } else {
-            BackendKind::Cpu
-        };
+        let backend = selected_gpu
+            .map(|gpu| {
+                if gpu.recommended_backend != BackendKind::Cpu
+                    && gpu.available_backends.contains(&gpu.recommended_backend)
+                {
+                    gpu.recommended_backend.clone()
+                } else if gpu.available_backends.contains(&BackendKind::Vulkan) {
+                    BackendKind::Vulkan
+                } else {
+                    BackendKind::Cpu
+                }
+            })
+            .unwrap_or(BackendKind::Cpu);
         let dedicated_vram_budget_bytes = selected_gpu
             .and_then(|gpu| gpu.dedicated_vram_bytes)
             .map(safe_dedicated_vram_budget);
@@ -70,6 +76,9 @@ impl ModelLaunchPlanner {
             .saturating_add(estimated_context_bytes)
             .saturating_add(768 * 1024 * 1024);
         let gpu_layers = match (backend.clone(), dedicated_vram_budget_bytes) {
+            (BackendKind::Cuda, Some(budget)) if budget > total_estimate => 999,
+            (BackendKind::Cuda, Some(budget)) if budget > estimated_model_bytes / 2 => 32,
+            (BackendKind::Cuda, Some(_)) => 16,
             (BackendKind::Vulkan, Some(budget)) if budget > total_estimate => 999,
             (BackendKind::Vulkan, Some(budget)) if budget > estimated_model_bytes / 2 => 24,
             (BackendKind::Vulkan, Some(_)) => 12,
@@ -87,6 +96,8 @@ impl ModelLaunchPlanner {
                 "Flash attention disabled until llama.cpp/Vulkan capability probe proves support."
                     .to_string(),
             );
+        } else if matches!(backend, BackendKind::Cuda) {
+            notes.push("NVIDIA CUDA backend selected for local model launch.".to_string());
         }
 
         LaunchPlan {
@@ -149,6 +160,23 @@ mod tests {
         let plan = ModelLaunchPlanner::plan(&model(2_497_280_256), &hardware, 8080);
         assert_eq!(plan.config.backend, BackendKind::Cpu);
         assert_eq!(plan.config.gpu_layers, 0);
+    }
+
+    #[test]
+    fn prefers_cuda_for_nvidia_gpu() {
+        let mut hardware = hardware_with_vram(8 * 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024);
+        hardware.gpus[0].name = "NVIDIA GeForce RTX".to_string();
+        hardware.gpus[0].vendor = GpuVendor::Nvidia;
+        hardware.gpus[0].vendor_id = Some(0x10DE);
+        hardware.gpus[0].available_backends =
+            vec![BackendKind::Cpu, BackendKind::Cuda, BackendKind::Vulkan];
+        hardware.gpus[0].recommended_backend = BackendKind::Cuda;
+        hardware.backends.cuda = true;
+
+        let plan = ModelLaunchPlanner::plan(&model(2_497_280_256), &hardware, 8080);
+
+        assert_eq!(plan.config.backend, BackendKind::Cuda);
+        assert!(plan.config.gpu_layers > 0);
     }
 
     fn model(size_bytes: i64) -> ModelRecord {

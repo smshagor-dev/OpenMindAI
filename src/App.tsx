@@ -16,6 +16,7 @@ import type {
   ModelRecord,
   PerformanceProfile,
   PortableRootInfo,
+  Project,
   RuntimeInventory,
   StreamChunkEvent,
   StreamDoneEvent,
@@ -35,6 +36,8 @@ import { ModelsManager } from "./components/ModelsManager";
 import { TitleBarControls } from "./components/TitleBarControls";
 import { StatusBar } from "./components/StatusBar";
 import { PreviewPanel, type PreviewTarget } from "./components/PreviewPanel";
+import { ToolsWorkspace } from "./components/ToolsWorkspace";
+import { ProjectsWorkspace } from "./components/ProjectsWorkspace";
 import { notifyUser } from "./lib/notify";
 import {
   buildMessageContent,
@@ -45,10 +48,11 @@ import {
   settledValue,
   titleFromPrompt,
   type AttachmentDraft,
+  type ChatMode,
 } from "./lib/chat";
 import { formatError } from "./lib/format";
 
-type View = "chat" | "settings";
+type View = "chat" | "settings" | "tools" | "projects";
 
 interface RealtimeActivity {
   typing: boolean;
@@ -304,6 +308,14 @@ export function App() {
           event.payload.assistant,
         ]);
         setStreamingId(event.payload.assistant.id);
+        setActivity((current) => ({ ...current, typing: true }));
+        setConversations((items) =>
+          items.map((item) =>
+            item.id === event.payload.conversationId
+              ? { ...item, activeModelId: event.payload.assistant.modelId }
+              : item,
+          ),
+        );
       }),
       listen<StreamChunkEvent>("inference:chunk", (event) => {
         setMessages((items) =>
@@ -323,6 +335,7 @@ export function App() {
           ),
         );
         setStreamingId((current) => (current === event.payload.messageId ? null : current));
+        setActivity((current) => ({ ...current, typing: false, detail: null }));
       }),
       listen<Artifact>("artifact:started", (event) =>
         setArtifacts((items) => upsertArtifactInList(items, event.payload)),
@@ -419,7 +432,15 @@ export function App() {
           );
         }
       }
-      await api.sendChatMessage(conversationId, messageContent, inferredMode);
+      const assistant = await api.sendChatMessage(conversationId, messageContent, inferredMode);
+      const generationKind = generationKindForMode(inferredMode);
+      if (generationKind) {
+        const artifact = await api.createGenerationArtifact(conversationId, assistant.id, generationKind, content);
+        setArtifacts((items) => upsertArtifactInList(items, artifact));
+        if (preferences?.openArtifactsAfterGeneration && artifact.status === "ready") {
+          void api.openArtifact(artifact.id).catch(showError);
+        }
+      }
       setStreamingId(null);
       await refreshMessages(conversationId, setMessages, showError);
       await refreshApp();
@@ -437,12 +458,34 @@ export function App() {
       showError(caught);
       await refreshMessages(conversationId, setMessages, showError);
     }
-  }, [activeId, attachments, conversations, pendingModelId, preferences?.autoGenerateTitles, prompt, refreshApp, showError, streamingId]);
+  }, [activeId, attachments, conversations, pendingModelId, preferences?.autoGenerateTitles, preferences?.openArtifactsAfterGeneration, prompt, refreshApp, showError, streamingId]);
 
   const stopGeneration = useCallback(async () => {
     if (!streamingId || !activeId) return;
     await api.cancelGeneration(activeId);
   }, [activeId, streamingId]);
+
+  const editUserMessage = useCallback((content: string) => {
+    setPrompt(content);
+    setView("chat");
+    window.setTimeout(() => {
+      const node = composerRef.current;
+      if (!node) return;
+      node.focus();
+      node.setSelectionRange(node.value.length, node.value.length);
+    }, 0);
+  }, []);
+
+  const startToolPrompt = useCallback((content: string) => {
+    setPrompt(content);
+    setView("chat");
+    window.setTimeout(() => {
+      const node = composerRef.current;
+      if (!node) return;
+      node.focus();
+      node.setSelectionRange(node.value.length, node.value.length);
+    }, 0);
+  }, []);
 
   const regenerate = useCallback(
     async (assistantMessageId: string) => {
@@ -580,6 +623,18 @@ export function App() {
     setView("chat");
   }
 
+  async function createProjectConversation(project: Project) {
+    const title = `${project.name}: New chat`;
+    const conversation = await api.createConversation(title);
+    setConversations((items) => [conversation, ...items]);
+    setActiveId(conversation.id);
+    setView("chat");
+    setMessages([]);
+    await refreshApp();
+    window.setTimeout(() => composerRef.current?.focus(), 0);
+    return conversation;
+  }
+
   async function renameActiveConversation() {
     if (!activeConversation) return;
     const nextTitle = titleDraft.trim();
@@ -693,6 +748,7 @@ export function App() {
         hardware={hardware}
         models={models}
         runtime={runtime}
+        root={root}
         pending={installationStatus?.pending}
         refresh={refreshApp}
         onDismiss={() => setWizardActive(false)}
@@ -736,6 +792,8 @@ export function App() {
         onDuplicate={duplicateConversation}
         onOpenLibrary={() => setLibraryOpen(true)}
         onOpenModels={() => setModelsOpen(true)}
+        onOpenTools={() => setView("tools")}
+        onOpenProjects={() => setView("projects")}
         onOpenSettings={(section) => {
           setSettingsSection(section ?? "general");
           setView("settings");
@@ -769,7 +827,15 @@ export function App() {
                 </button>
               </form>
             ) : (
-              <h1>{view === "chat" ? activeConversation?.title : "Settings"}</h1>
+              <h1>
+                {view === "chat"
+                  ? activeConversation?.title
+                  : view === "tools"
+                    ? "Tools"
+                    : view === "projects"
+                      ? "Projects"
+                      : "Settings"}
+              </h1>
             )}
           </div>
           <div className="topbar-center">
@@ -824,6 +890,7 @@ export function App() {
             stopGeneration={stopGeneration}
             regenerate={regenerate}
             retry={regenerate}
+            editUserMessage={editUserMessage}
             composerRef={composerRef}
             streaming={Boolean(streamingId)}
             models={models}
@@ -838,6 +905,32 @@ export function App() {
             onRevealArtifact={revealArtifactHandler}
             onRetryArtifact={retryArtifact}
             onPreview={setPreviewTarget}
+          />
+        ) : view === "tools" ? (
+          <ToolsWorkspace
+            models={models}
+            runtime={runtime}
+            storage={storage}
+            onStartPrompt={startToolPrompt}
+            onAttachFiles={(files) => {
+              void addFiles(files);
+              setView("chat");
+            }}
+            onOpenLibrary={() => setLibraryOpen(true)}
+            onOpenModels={() => setModelsOpen(true)}
+            onOpenSettings={(section) => {
+              setSettingsSection(section ?? "general");
+              setView("settings");
+            }}
+          />
+        ) : view === "projects" ? (
+          <ProjectsWorkspace
+            conversations={conversations}
+            onOpenConversation={(id) => {
+              setView("chat");
+              setActiveId(id);
+            }}
+            onCreateProjectChat={createProjectConversation}
           />
         ) : (
           <SettingsDialog
@@ -890,7 +983,7 @@ export function App() {
             onClick={(event) => event.stopPropagation()}
           >
             <h2>Models</h2>
-            <ModelsManager models={models} runtime={runtime} root={root} refresh={refreshApp} />
+            <ModelsManager hardware={hardware} models={models} runtime={runtime} root={root} refresh={refreshApp} />
             <div className="modal-actions">
               <button type="button" className="ghost-button" onClick={() => setModelsOpen(false)}>
                 Close
@@ -931,4 +1024,9 @@ function upsertArtifactInList(items: Artifact[], next: Artifact) {
   const copy = items.slice();
   copy[index] = next;
   return copy;
+}
+
+function generationKindForMode(mode: ChatMode): "image" | "video" | "voice" | null {
+  if (mode === "image" || mode === "video" || mode === "voice") return mode;
+  return null;
 }

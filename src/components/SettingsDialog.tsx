@@ -248,7 +248,13 @@ export function SettingsDialog(props: {
 
         {activeSection === "models" && (
           <SettingsGroup title="Models">
-            <ModelsManager models={props.models} runtime={props.runtime} root={props.root} refresh={props.refresh} />
+            <ModelsManager
+              hardware={props.hardware}
+              models={props.models}
+              runtime={props.runtime}
+              root={props.root}
+              refresh={props.refresh}
+            />
           </SettingsGroup>
         )}
 

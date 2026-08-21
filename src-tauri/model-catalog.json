@@ -1,18 +1,235 @@
 {
-  "catalogVersion": 1,
+  "catalogVersion": 2,
   "models": [
     {
       "id": "qwen3-4b-q4km",
-      "name": "Qwen3 4B",
+      "name": "OpenMindAI Core",
       "version": "1",
       "family": "qwen",
+      "kind": "chat",
+      "runtime": "llama.cpp",
       "repo": "Qwen/Qwen3-4B-GGUF",
       "quantization": "Q4_K_M",
       "required": true,
       "capabilities": ["chat", "reasoning", "code"],
       "sizeBytes": 2497280256,
       "minRamBytes": 8589934592,
-      "minVramBytes": null
+      "minVramBytes": null,
+      "license": "apache-2.0",
+      "description": "Balanced everyday local brain for writing, coding, and reasoning.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "*Q4_K_M*.gguf",
+        "destinationDir": "models/llm/qwen/qwen3-4b",
+        "format": "gguf"
+      }
+    },
+    {
+      "id": "qwen3-8b-q4km",
+      "name": "OpenMindAI Titan",
+      "version": "1",
+      "family": "qwen",
+      "kind": "chat",
+      "runtime": "llama.cpp",
+      "repo": "Qwen/Qwen3-8B-GGUF",
+      "quantization": "Q4_K_M",
+      "required": false,
+      "capabilities": ["chat", "reasoning", "code"],
+      "sizeBytes": 5200000000,
+      "minRamBytes": 17179869184,
+      "minVramBytes": 8589934592,
+      "license": "apache-2.0",
+      "description": "Stronger local brain tuned for NVIDIA/CUDA PCs.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "*Q4_K_M*.gguf",
+        "destinationDir": "models/llm/qwen/qwen3-8b",
+        "format": "gguf"
+      }
+    },
+    {
+      "id": "qwen25-vl-3b-q4km",
+      "name": "OpenMindAI Lens",
+      "version": "1",
+      "family": "qwen-vl",
+      "kind": "vision",
+      "runtime": "llama.cpp",
+      "repo": "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF",
+      "quantization": "Q4_K_M",
+      "required": false,
+      "capabilities": ["vision", "ocr", "image-review"],
+      "sizeBytes": 3000000000,
+      "minRamBytes": 8589934592,
+      "minVramBytes": 4294967296,
+      "license": "apache-2.0",
+      "description": "Reads screenshots, documents, charts, and visual context locally.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "*Q4_K_M*.gguf",
+        "destinationDir": "models/vision/qwen2.5-vl-3b",
+        "format": "gguf"
+      }
+    },
+    {
+      "id": "whisper-large-v3-turbo-q5",
+      "name": "OpenMindAI Hear",
+      "version": "1",
+      "family": "whisper",
+      "kind": "speech-to-text",
+      "runtime": "whisper.cpp",
+      "repo": "ggerganov/whisper.cpp",
+      "quantization": "Q5_0",
+      "required": false,
+      "capabilities": ["transcription", "translation", "audio"],
+      "sizeBytes": 574000000,
+      "minRamBytes": 4294967296,
+      "minVramBytes": null,
+      "license": "mit",
+      "description": "Turns meetings, notes, and spoken input into text locally.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "ggml-large-v3-turbo-q5_0.bin",
+        "destinationDir": "models/audio/whisper",
+        "format": "ggml"
+      }
+    },
+    {
+      "id": "kokoro-82m-onnx",
+      "name": "OpenMindAI Speak",
+      "version": "1.0",
+      "family": "kokoro",
+      "kind": "text-to-speech",
+      "runtime": "onnx",
+      "repo": "onnx-community/Kokoro-82M-v1.0-ONNX",
+      "quantization": "ONNX",
+      "required": false,
+      "capabilities": ["tts", "voice"],
+      "sizeBytes": 360000000,
+      "minRamBytes": 4294967296,
+      "minVramBytes": null,
+      "license": "apache-2.0",
+      "description": "Fast local spoken replies with a small footprint.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "*quantized*.onnx",
+        "destinationDir": "models/audio/kokoro",
+        "format": "onnx"
+      }
+    },
+    {
+      "id": "sdxl-base-1",
+      "name": "OpenMindAI Canvas",
+      "version": "1.0",
+      "family": "stable-diffusion",
+      "kind": "image",
+      "runtime": "ComfyUI",
+      "repo": "stabilityai/stable-diffusion-xl-base-1.0",
+      "quantization": "FP16",
+      "required": false,
+      "capabilities": ["text-to-image", "image"],
+      "sizeBytes": 6930000000,
+      "minRamBytes": 17179869184,
+      "minVramBytes": 8589934592,
+      "license": "openrail++",
+      "description": "Balanced creative generation package for local studio work.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "*.safetensors",
+        "destinationDir": "models/image/sdxl",
+        "format": "safetensors"
+      }
+    },
+    {
+      "id": "flux1-schnell",
+      "name": "OpenMindAI Canvas Pro",
+      "version": "1",
+      "family": "flux",
+      "kind": "image",
+      "runtime": "ComfyUI",
+      "repo": "black-forest-labs/FLUX.1-schnell",
+      "quantization": "BF16",
+      "required": false,
+      "capabilities": ["text-to-image", "image"],
+      "sizeBytes": 24000000000,
+      "minRamBytes": 34359738368,
+      "minVramBytes": 12884901888,
+      "license": "apache-2.0",
+      "description": "High quality creative generation package for strong NVIDIA GPUs.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "*.safetensors",
+        "destinationDir": "models/image/flux",
+        "format": "safetensors"
+      }
+    },
+    {
+      "id": "stable-audio-open",
+      "name": "OpenMindAI Soundscape",
+      "version": "1.0",
+      "family": "stable-audio",
+      "kind": "audio",
+      "runtime": "stable-audio-tools",
+      "repo": "stabilityai/stable-audio-open-1.0",
+      "quantization": "FP16",
+      "required": false,
+      "capabilities": ["text-to-audio", "music", "sound"],
+      "sizeBytes": 4500000000,
+      "minRamBytes": 17179869184,
+      "minVramBytes": 8589934592,
+      "license": "stability-ai-nc",
+      "description": "Local music, ambience, and sound design package.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "*.safetensors",
+        "destinationDir": "models/audio/stable-audio",
+        "format": "safetensors"
+      }
+    },
+    {
+      "id": "ltx-video",
+      "name": "OpenMindAI Motion",
+      "version": "1",
+      "family": "ltx-video",
+      "kind": "video",
+      "runtime": "ComfyUI",
+      "repo": "Lightricks/LTX-Video",
+      "quantization": "FP16",
+      "required": false,
+      "capabilities": ["text-to-video", "image-to-video", "video"],
+      "sizeBytes": 10000000000,
+      "minRamBytes": 34359738368,
+      "minVramBytes": 12884901888,
+      "license": "openrail-m",
+      "description": "Efficient local motion generation package.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "*.safetensors",
+        "destinationDir": "models/video/ltx-video",
+        "format": "safetensors"
+      }
+    },
+    {
+      "id": "wan21-t2v-13b",
+      "name": "OpenMindAI Motion Pro",
+      "version": "2.1",
+      "family": "wan",
+      "kind": "video",
+      "runtime": "ComfyUI",
+      "repo": "Wan-AI/Wan2.1-T2V-1.3B",
+      "quantization": "FP16",
+      "required": false,
+      "capabilities": ["text-to-video", "video"],
+      "sizeBytes": 9000000000,
+      "minRamBytes": 34359738368,
+      "minVramBytes": 12884901888,
+      "license": "apache-2.0",
+      "description": "Higher quality motion generation package for NVIDIA/CUDA systems.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "*.safetensors",
+        "destinationDir": "models/video/wan2.1",
+        "format": "safetensors"
+      }
     }
   ]
 }

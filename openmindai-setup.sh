@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # OpenMindAI universal Linux bootstrap launcher.
+# Version: 2.0.0
 # Kept intentionally small -- real logic lives in bootstrap/linux/bootstrap.sh.
 # Usage: chmod +x openmindai-setup.sh && ./openmindai-setup.sh
 set -u

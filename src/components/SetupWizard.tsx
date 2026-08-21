@@ -3,16 +3,17 @@ import { open as openFolderPicker } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { api } from "../api";
 import type {
-  DownloadStatus,
   HardwareProfile,
   ModelRecord,
   PendingSetup,
+  PortableRootInfo,
   RuntimeInstallStatus,
   RuntimeInventory,
   StorageLocationCheck,
 } from "../types";
 import { formatBytes, formatError } from "../lib/format";
 import { notifyUser } from "../lib/notify";
+import { ModelsManager } from "./ModelsManager";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
 const DEFAULT_STORAGE_PATH = "C:\\OpenMindAI";
@@ -32,13 +33,14 @@ export function SetupWizard(props: {
   hardware?: HardwareProfile | null;
   models?: ModelRecord[];
   runtime?: RuntimeInventory | null;
+  root?: PortableRootInfo | null;
   pending?: PendingSetup | null;
   refresh?: () => Promise<void>;
   onDismiss?: () => void;
 }) {
   return (
     <div className="setup-wizard">
-      <div className="setup-card">
+      <div className={`setup-card ${props.mode === "preparing" ? "setup-card-wide" : ""}`}>
         {props.mode === "full" ? (
           <FullSetupFlow pending={props.pending ?? null} />
         ) : (
@@ -46,6 +48,7 @@ export function SetupWizard(props: {
             hardware={props.hardware ?? null}
             models={props.models ?? []}
             runtime={props.runtime ?? null}
+            root={props.root ?? null}
             refresh={props.refresh}
             onDismiss={props.onDismiss}
           />
@@ -239,15 +242,18 @@ function PreparingFlow(props: {
   hardware: HardwareProfile | null;
   models: ModelRecord[];
   runtime: RuntimeInventory | null;
+  root: PortableRootInfo | null;
   refresh?: () => Promise<void>;
   onDismiss?: () => void;
 }) {
-  const modelReady = props.models.some((model) => model.state === "ready" || model.state === "loaded");
+  const modelReady = props.models.some(
+    (model) =>
+      (model.state === "ready" || model.state === "loaded") &&
+      model.enabled &&
+      model.capabilities.toLowerCase().includes("chat"),
+  );
   const runtimeReady = props.runtime?.selected != null;
 
-  const [downloadStatus, setDownloadStatus] = useState<DownloadStatus | null>(null);
-  const [downloadError, setDownloadError] = useState<string | null>(null);
-  const downloadStartedRef = useRef(false);
   const notifiedRef = useRef(false);
   const modelReadyPersistedRef = useRef(false);
 
@@ -255,19 +261,6 @@ function PreparingFlow(props: {
   const [runtimeInstallError, setRuntimeInstallError] = useState<string | null>(null);
   const runtimeInstallStartedRef = useRef(false);
   const runtimeReadyPersistedRef = useRef(false);
-
-  useEffect(() => {
-    if (modelReady || downloadStartedRef.current) return;
-    downloadStartedRef.current = true;
-    api
-      .downloadQwenModel()
-      .then((status) => {
-        setDownloadStatus(status);
-        return props.refresh?.();
-      })
-      .catch((caught) => setDownloadError(formatError(caught)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modelReady]);
 
   useEffect(() => {
     if (runtimeReady || runtimeInstallStartedRef.current) return;
@@ -303,13 +296,12 @@ function PreparingFlow(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    if (modelReady) return;
-    const interval = window.setInterval(() => {
-      void api.qwenDownloadStatus().then(setDownloadStatus);
-    }, 1000);
-    return () => window.clearInterval(interval);
-  }, [modelReady]);
+  const cancelRuntimeInstall = useCallback(() => {
+    void api
+      .cancelRuntimeInstall()
+      .then(setRuntimeInstallStatus)
+      .catch((caught) => setRuntimeInstallError(formatError(caught)));
+  }, []);
 
   useEffect(() => {
     if (modelReady && runtimeReady) return;
@@ -362,10 +354,6 @@ function PreparingFlow(props: {
     );
   }
 
-  const percentage = downloadStatus?.percentage ?? 0;
-  const downloaded = downloadStatus ? formatBytes(downloadStatus.downloadedBytes) : null;
-  const total = downloadStatus?.totalBytes != null ? formatBytes(downloadStatus.totalBytes) : null;
-
   return (
     <div className="setup-step">
       <h1>Preparing OpenMindAI</h1>
@@ -377,7 +365,7 @@ function PreparingFlow(props: {
           {runtimeReady ? "✓ AI engine ready" : "○ Installing AI engine"}
         </li>
         <li className={modelReady ? "" : "setup-checklist-pending"}>
-          {modelReady ? "✓ AI model installed" : "○ Downloading AI model"}
+          {modelReady ? "✓ Chat model installed" : "○ Choose and download a chat model"}
         </li>
       </ul>
 
@@ -397,17 +385,20 @@ function PreparingFlow(props: {
       ) : null}
 
       {!modelReady ? (
-        <div className="setup-progress">
-          <div className="setup-progress-bar">
-            <div className="setup-progress-fill" style={{ width: `${Math.min(100, Math.max(0, percentage))}%` }} />
-          </div>
-          <p className="muted">
-            {downloaded ?? "0 B"} {total ? `/ ${total}` : ""} {downloadStatus?.state ? `· ${downloadStatus.state}` : ""}
-          </p>
+        <div className="setup-model-catalog">
+          <ModelsManager
+            hardware={props.hardware}
+            models={props.models}
+            runtime={props.runtime}
+            root={props.root}
+            refresh={props.refresh ?? (() => undefined)}
+            variant="setup"
+            showRootInfo={false}
+            showRuntimeInfo={false}
+            allowDelete={false}
+          />
         </div>
       ) : null}
-
-      {downloadError ? <p className="setup-warning">{downloadError}</p> : null}
 
       {runtimeInstallError || runtimeInstallStatus?.state === "failed" ? (
         <p className="setup-warning">
@@ -419,12 +410,17 @@ function PreparingFlow(props: {
       ) : null}
 
       <div className="setup-actions">
+        {!runtimeReady && runtimeInstallStatus?.state !== "cancelled" ? (
+          <button type="button" className="ghost-button" onClick={cancelRuntimeInstall}>
+            Cancel engine install
+          </button>
+        ) : null}
         <button
           type="button"
           className="ghost-button"
           onClick={() => {
             void props.refresh?.();
-            if (runtimeInstallStatus?.state === "failed") retryRuntimeInstall();
+            if (!runtimeReady) retryRuntimeInstall();
           }}
         >
           Retry
