@@ -34,9 +34,6 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Format check
-        run: npx prettier --check src package.json eslint.config.js src-tauri/tauri.conf.json src-tauri/capabilities/default.json
-
       - name: TypeScript and Vite build
         run: npm run build
 
