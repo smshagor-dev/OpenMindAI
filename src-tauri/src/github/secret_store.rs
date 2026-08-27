@@ -123,14 +123,8 @@ mod platform {
     pub(super) fn get_secret(slot: &str) -> Result<Option<String>, AppError> {
         let target_name = wide(&target(slot));
         let mut credential: *mut CredentialW = ptr::null_mut();
-        let result = unsafe {
-            CredReadW(
-                target_name.as_ptr(),
-                CRED_TYPE_GENERIC,
-                0,
-                &mut credential,
-            )
-        };
+        let result =
+            unsafe { CredReadW(target_name.as_ptr(), CRED_TYPE_GENERIC, 0, &mut credential) };
 
         if result == 0 {
             let error = io::Error::last_os_error();
@@ -150,7 +144,8 @@ mod platform {
 
         let bytes = unsafe {
             let credential_ref = &mut *credential;
-            if credential_ref.credential_blob.is_null() || credential_ref.credential_blob_size == 0 {
+            if credential_ref.credential_blob.is_null() || credential_ref.credential_blob_size == 0
+            {
                 Vec::new()
             } else {
                 slice::from_raw_parts(
@@ -163,7 +158,8 @@ mod platform {
 
         unsafe {
             let credential_ref = &mut *credential;
-            if !credential_ref.credential_blob.is_null() && credential_ref.credential_blob_size > 0 {
+            if !credential_ref.credential_blob.is_null() && credential_ref.credential_blob_size > 0
+            {
                 ptr::write_bytes(
                     credential_ref.credential_blob,
                     0,
@@ -263,13 +259,7 @@ mod platform {
             return Ok(());
         }
         let output = Command::new("/usr/bin/security")
-            .args([
-                "delete-generic-password",
-                "-a",
-                slot,
-                "-s",
-                SERVICE_NAME,
-            ])
+            .args(["delete-generic-password", "-a", slot, "-s", SERVICE_NAME])
             .output()
             .map_err(|error| store_error(format!("could not open macOS Keychain: {error}")))?;
         if !output.status.success() {
