@@ -54,11 +54,12 @@ export function splitMarkdownBlocks(content: string): MarkdownBlock[] {
 }
 
 export function renderMarkdown(content: string) {
-  return marked.parse(escapeHtml(content), {
+  const rendered = marked.parse(escapeHtml(content), {
     async: false,
     breaks: true,
     gfm: true,
   }) as string;
+  return sanitizeRenderedHtml(rendered);
 }
 
 export function highlightCode(code: string, language: string | null) {
@@ -93,4 +94,63 @@ export function escapeHtml(value: string) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function sanitizeRenderedHtml(html: string) {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+
+  for (const element of Array.from(template.content.querySelectorAll("*"))) {
+    for (const attribute of Array.from(element.attributes)) {
+      const name = attribute.name.toLowerCase();
+      if (name.startsWith("on") || name === "style" || name === "srcdoc") {
+        element.removeAttribute(attribute.name);
+      }
+    }
+  }
+
+  for (const anchor of Array.from(template.content.querySelectorAll("a"))) {
+    const href = sanitizeUrl(anchor.getAttribute("href"), false);
+    if (!href) {
+      anchor.removeAttribute("href");
+      anchor.removeAttribute("target");
+      anchor.removeAttribute("rel");
+      continue;
+    }
+    anchor.setAttribute("href", href);
+    if (/^https?:/i.test(href)) {
+      anchor.setAttribute("target", "_blank");
+      anchor.setAttribute("rel", "noopener noreferrer");
+    }
+  }
+
+  for (const image of Array.from(template.content.querySelectorAll("img"))) {
+    const src = sanitizeUrl(image.getAttribute("src"), true);
+    if (!src) {
+      image.removeAttribute("src");
+      continue;
+    }
+    image.setAttribute("src", src);
+    image.setAttribute("loading", "lazy");
+    image.setAttribute("referrerpolicy", "no-referrer");
+  }
+
+  return template.innerHTML;
+}
+
+function sanitizeUrl(raw: string | null, image: boolean) {
+  if (!raw) return null;
+  const value = raw.trim().replace(/[\u0000-\u001f\u007f]/g, "");
+  if (!value) return null;
+  if (!image && value.startsWith("#")) return value;
+  if (image && /^data:image\/(?:png|jpe?g|gif|webp);base64,/i.test(value)) return value;
+
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === "https:" || parsed.protocol === "http:") return parsed.toString();
+    if (!image && (parsed.protocol === "mailto:" || parsed.protocol === "tel:")) return parsed.toString();
+  } catch {
+    return null;
+  }
+  return null;
 }
