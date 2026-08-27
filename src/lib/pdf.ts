@@ -27,18 +27,15 @@ export async function extractPdfText(file: File): Promise<PdfExtractionResult> {
   const bytes = new Uint8Array(await file.arrayBuffer());
   const task = getDocument({
     data: bytes,
-    isEvalSupported: false,
     useWorkerFetch: false,
   });
 
-  let document: Awaited<typeof task.promise> | null = null;
   try {
-    document = await task.promise;
-    const pageCount = document.numPages;
-    const pagesRead = Math.min(pageCount, MAX_PDF_PAGES);
+    const document = await task.promise;
+    const pagesRead = Math.min(document.numPages, MAX_PDF_PAGES);
     const chunks: string[] = [];
     let currentLength = 0;
-    let truncated = pageCount > pagesRead;
+    let truncated = document.numPages > pagesRead;
 
     for (let pageNumber = 1; pageNumber <= pagesRead; pageNumber += 1) {
       const page = await document.getPage(pageNumber);
@@ -85,15 +82,11 @@ export async function extractPdfText(file: File): Promise<PdfExtractionResult> {
 
     return {
       text,
-      pageCount,
+      pageCount: document.numPages,
       pagesRead,
       truncated,
     };
   } finally {
-    if (document) {
-      await document.destroy().catch(() => undefined);
-    } else {
-      await task.destroy().catch(() => undefined);
-    }
+    await task.destroy().catch(() => undefined);
   }
 }
