@@ -1,5 +1,6 @@
 import type { Message } from "../types";
 import { formatBytes } from "./format";
+import { extractPdfText } from "./pdf";
 
 export type ChatMode =
   | "chat"
@@ -50,9 +51,22 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
   if (isTextLike && file.size <= maxPreviewBytes) {
     contentPreview = await file.text();
   } else if (kind === "image") {
-    contentPreview = `[Image attached: ${file.name}. Local vision model support is not installed yet, so analyze only visible metadata or user-provided description.]`;
+    contentPreview = `[Image attached: ${file.name}. Exact visual analysis requires the local OpenMindAI Lens vision runtime. Do not infer unseen image content from metadata alone.]`;
   } else if (kind === "pdf") {
-    contentPreview = `[PDF attached: ${file.name}. PDF text extraction is not installed yet. Ask the user to paste text or provide a text export if exact contents are required.]`;
+    try {
+      const extracted = await extractPdfText(file);
+      const status = [
+        `${extracted.pageCount} page${extracted.pageCount === 1 ? "" : "s"}`,
+        `${extracted.pagesRead} processed`,
+        extracted.truncated ? "text truncated to fit local chat context" : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      contentPreview = `[PDF text extracted locally: ${status}. Page markers below correspond to the original PDF.]\n\n${extracted.text}`;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      contentPreview = `[PDF attached: ${file.name}. Local PDF extraction could not produce usable text: ${message} Do not claim to have read inaccessible pages. If this is a scanned/image-only PDF, use OCR/vision once OpenMindAI Lens is available.]`;
+    }
   }
 
   return {
@@ -126,19 +140,22 @@ export function modeInstruction(mode: ChatMode) {
     case "search":
       return [
         "[Mode: Web Search]",
-        "Answer like a search assistant. If live web access is unavailable in this local runtime, say that clearly, then provide the best offline answer and list exact search queries/sources the user should verify.",
+        "Use live web evidence supplied by the local retrieval backend when available. Cite current factual claims with the numbered sources provided by that backend. If retrieval fails, state that clearly and do not fabricate current sources.",
       ].join("\n");
     case "research":
       return [
         "[Mode: Deep Research]",
-        "Create a structured research brief with summary, key points, assumptions, evidence needed, risks, and next actions. If live web access is unavailable, clearly mark it as offline research planning.",
+        "Use the live evidence supplied by the local research retrieval backend, cross-check claims across sources, distinguish evidence from inference, surface uncertainty, and cite numbered sources. If live retrieval fails, say so rather than inventing evidence.",
       ].join("\n");
     case "thinking":
       return "[Mode: Think carefully before answering. Give the final answer clearly, with concise reasoning.]";
     case "document":
       return "[Mode: Document Writer]\nCreate polished document-ready content with title, sections, clear formatting, and final copy the user can paste into a document.";
     case "pdf":
-      return "[Mode: PDF Draft]\nCreate PDF-ready content. Use clean headings, short paragraphs, tables where useful, and include a suggested filename. Do not claim a PDF file was generated unless an export tool is available.";
+      return [
+        "[Mode: PDF]",
+        "If an attached PDF includes locally extracted text, answer from that text and use the supplied Page markers when page-specific attribution helps. Never claim to have read pages whose text was unavailable. If the request is to create/export a PDF instead, produce clean PDF-ready content with headings, concise paragraphs, and tables where useful.",
+      ].join("\n");
     case "image":
       return "[Mode: Image Creation]\nCreate a production-quality image generation prompt with subject, composition, style, lighting, camera/framing, colors, negative prompt, and recommended aspect ratio. Do not claim an image file was generated unless an image generator is connected.";
     case "video":
@@ -146,7 +163,7 @@ export function modeInstruction(mode: ChatMode) {
     case "voice":
       return "[Mode: Voice Creation]\nCreate a production-quality voice generation prompt or script with voice style, pacing, emotion, pronunciation notes, format, and final narration copy. Do not claim audio was generated unless a voice generator is connected.";
     case "vision":
-      return "[Mode: Image/Vision Review]\nAnalyze attached image metadata or any user-provided visual description. If no vision model is installed, clearly ask for a description or OCR/text export for exact visual analysis.";
+      return "[Mode: Image/Vision Review]\nUse the local vision runtime when the attached image has been made available to it. Never invent visual details from file metadata. If the vision runtime is unavailable, say so clearly.";
     default:
       return "";
   }
