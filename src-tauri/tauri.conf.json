@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "OpenMindAI",
         "width": 1280,
         "height": 820,
@@ -21,13 +22,13 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https: wss:; img-src 'self' asset: http://asset.localhost data: blob: https:; media-src 'self' asset: http://asset.localhost blob: data:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'none'"
     }
   },
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "createUpdaterArtifacts": false,
+    "createUpdaterArtifacts": true,
     "licenseFile": "../LICENSE",
     "icon": [
       "icons/32x32.png",
@@ -48,8 +49,11 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI3MjlGRkJDQURGNjJEMjQKUldRa0xmYXR2UDhwSitNU3RxcHp2TTBmRmVCZlFTSmp4R3VvSytZSmRBRnppZk5xUSs5Q1EyMEQK",
       "endpoints": [
-        "https://REPLACE-BEFORE-RELEASE.invalid/openmindai/{{target}}/{{arch}}/{{current_version}}"
-      ]
+        "https://github.com/smshagor-dev/OpenMindAI/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }
