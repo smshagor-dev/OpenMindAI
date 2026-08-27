@@ -1,0 +1,72 @@
+name: Apply vision media pipeline
+
+on:
+  push:
+    branches:
+      - production-readiness-completion
+    paths:
+      - scripts/apply_vision_media_pipeline.py
+      - .github/workflows/apply-vision-media-pipeline.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout work branch
+        uses: actions/checkout@v4
+        with:
+          ref: production-readiness-completion
+
+      - name: Apply vision media pipeline patch
+        run: python scripts/apply_vision_media_pipeline.py
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Format frontend changes
+        run: npx prettier --write src/lib/chat.ts src/api.ts src/App.tsx
+
+      - name: Frontend lint
+        run: npm run lint
+
+      - name: Frontend build
+        run: npm run build
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Format Rust changes
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+
+      - name: Rust clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --all-features
+
+      - name: Commit validated vision media pipeline
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/lib/chat.ts src/api.ts src/App.tsx src-tauri/src/inference.rs src-tauri/src/lib.rs
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Add real local vision media pipeline"
+          git push origin HEAD:production-readiness-completion
