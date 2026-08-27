@@ -298,6 +298,10 @@ fn scan_directory(directory: &Path, found: &mut Vec<std::path::PathBuf>) -> Resu
             .extension()
             .and_then(|value| value.to_str())
             .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
+            && !path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.to_ascii_lowercase().starts_with("mmproj-"))
         {
             found.push(path);
         }

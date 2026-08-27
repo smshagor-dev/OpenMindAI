@@ -1,19 +1,21 @@
 use std::path::Path;
 
-use genpdf::{elements, style, Element as _};
+use printpdf::*;
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 use crate::app_error::AppError;
 
 const REGULAR_FONT: &[u8] = include_bytes!("../assets/fonts/DejaVuSans-Regular.ttf");
 const BOLD_FONT: &[u8] = include_bytes!("../assets/fonts/DejaVuSans-Bold.ttf");
-const ITALIC_FONT: &[u8] = include_bytes!("../assets/fonts/DejaVuSans-Italic.ttf");
-const BOLD_ITALIC_FONT: &[u8] = include_bytes!("../assets/fonts/DejaVuSans-BoldItalic.ttf");
 const MONO_REGULAR_FONT: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono-Regular.ttf");
-const MONO_BOLD_FONT: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono-Bold.ttf");
-const MONO_ITALIC_FONT: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono-Italic.ttf");
-const MONO_BOLD_ITALIC_FONT: &[u8] =
-    include_bytes!("../assets/fonts/DejaVuSansMono-BoldItalic.ttf");
+
+const PAGE_WIDTH_MM: f32 = 210.0;
+const PAGE_HEIGHT_MM: f32 = 297.0;
+const LEFT_MARGIN_MM: f32 = 18.0;
+const RIGHT_MARGIN_MM: f32 = 18.0;
+const TOP_MARGIN_MM: f32 = 18.0;
+const BOTTOM_MARGIN_MM: f32 = 18.0;
+const CONTENT_WIDTH_MM: f32 = PAGE_WIDTH_MM - LEFT_MARGIN_MM - RIGHT_MARGIN_MM;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PdfMeta {
@@ -222,10 +224,6 @@ fn parse_markdown_blocks(markdown: &str) -> Vec<Block> {
                 }
             }
             Event::HardBreak => {
-                // Paragraph/Run text in genpdf and docx-rs has no concept of an embedded line
-                // break (it isn't a glyph either font can render) -- collapse to a space so a
-                // hard break inside a paragraph degrades to normal word-wrapped text instead of
-                // showing a missing-glyph box.
                 if in_item {
                     item_buffer.push(' ');
                 } else {
@@ -239,153 +237,288 @@ fn parse_markdown_blocks(markdown: &str) -> Vec<Block> {
     blocks
 }
 
+#[derive(Debug, Clone, Copy)]
+enum PdfFontKind {
+    Regular,
+    Bold,
+    Mono,
+}
+
+#[derive(Clone)]
+struct PdfFonts {
+    regular: FontId,
+    bold: FontId,
+    mono: FontId,
+}
+
+impl PdfFonts {
+    fn handle(&self, kind: PdfFontKind) -> PdfFontHandle {
+        let id = match kind {
+            PdfFontKind::Regular => self.regular.clone(),
+            PdfFontKind::Bold => self.bold.clone(),
+            PdfFontKind::Mono => self.mono.clone(),
+        };
+        PdfFontHandle::External(id)
+    }
+}
+
+struct PdfLayout {
+    pages: Vec<PdfPage>,
+    ops: Vec<Op>,
+    cursor_y_mm: f32,
+    fonts: PdfFonts,
+}
+
+impl PdfLayout {
+    fn new(fonts: PdfFonts) -> Self {
+        Self {
+            pages: Vec::new(),
+            ops: Vec::new(),
+            cursor_y_mm: PAGE_HEIGHT_MM - TOP_MARGIN_MM,
+            fonts,
+        }
+    }
+
+    fn finish(mut self) -> Vec<PdfPage> {
+        self.finish_page();
+        self.pages
+    }
+
+    fn finish_page(&mut self) {
+        if self.ops.is_empty() {
+            return;
+        }
+        self.pages.push(PdfPage::new(
+            Mm(PAGE_WIDTH_MM),
+            Mm(PAGE_HEIGHT_MM),
+            std::mem::take(&mut self.ops),
+        ));
+        self.cursor_y_mm = PAGE_HEIGHT_MM - TOP_MARGIN_MM;
+    }
+
+    fn ensure_space(&mut self, height_mm: f32) {
+        if self.cursor_y_mm - height_mm < BOTTOM_MARGIN_MM {
+            self.finish_page();
+        }
+    }
+
+    fn add_gap(&mut self, gap_mm: f32) {
+        self.ensure_space(gap_mm);
+        self.cursor_y_mm -= gap_mm;
+    }
+
+    fn push_wrapped(&mut self, text: &str, kind: PdfFontKind, size_pt: f32, gap_after_mm: f32) {
+        let line_height_pt = size_pt * 1.32;
+        let line_height_mm = line_height_pt * 0.352_778;
+        let max_chars = approximate_chars_per_line(size_pt, matches!(kind, PdfFontKind::Mono));
+        let lines = wrap_text(text, max_chars);
+
+        if lines.is_empty() {
+            self.add_gap(gap_after_mm);
+            return;
+        }
+
+        for line in lines {
+            self.ensure_space(line_height_mm);
+            self.ops.extend([
+                Op::StartTextSection,
+                Op::SetTextCursor {
+                    pos: Point::new(Mm(LEFT_MARGIN_MM), Mm(self.cursor_y_mm)),
+                },
+                Op::SetLineHeight {
+                    lh: Pt(line_height_pt),
+                },
+                Op::SetFont {
+                    font: self.fonts.handle(kind),
+                    size: Pt(size_pt),
+                },
+                Op::ShowText {
+                    items: vec![TextItem::Text(line)],
+                },
+                Op::EndTextSection,
+            ]);
+            self.cursor_y_mm -= line_height_mm;
+        }
+        self.add_gap(gap_after_mm);
+    }
+
+    fn push_code(&mut self, code: &str) {
+        if code.trim().is_empty() {
+            return;
+        }
+        self.add_gap(1.5);
+        for line in code.lines() {
+            self.push_wrapped(line, PdfFontKind::Mono, 9.0, 0.2);
+        }
+        self.add_gap(1.5);
+    }
+
+    fn push_block(&mut self, block: Block) {
+        match block {
+            Block::Heading { level, text } => {
+                let size = match level {
+                    1 => 18.0,
+                    2 => 16.0,
+                    3 => 14.0,
+                    4 => 13.0,
+                    _ => 12.0,
+                };
+                self.add_gap(1.5);
+                self.push_wrapped(&text, PdfFontKind::Bold, size, 2.0);
+            }
+            Block::Paragraph { text } => {
+                self.push_wrapped(&text, PdfFontKind::Regular, 11.0, 2.4);
+            }
+            Block::UnorderedList { items } => {
+                for item in items {
+                    self.push_wrapped(
+                        &format!("\u{2022}  {item}"),
+                        PdfFontKind::Regular,
+                        11.0,
+                        0.8,
+                    );
+                }
+                self.add_gap(1.0);
+            }
+            Block::OrderedList { start, items } => {
+                for (index, item) in items.into_iter().enumerate() {
+                    self.push_wrapped(
+                        &format!("{}.  {item}", start + index as u64),
+                        PdfFontKind::Regular,
+                        11.0,
+                        0.8,
+                    );
+                }
+                self.add_gap(1.0);
+            }
+            Block::Code { code } => self.push_code(&code),
+            Block::Table { headers, rows } => {
+                if headers.is_empty() {
+                    return;
+                }
+                self.push_wrapped(&headers.join("  |  "), PdfFontKind::Bold, 9.5, 0.8);
+                self.push_wrapped(
+                    &headers
+                        .iter()
+                        .map(|_| "--------")
+                        .collect::<Vec<_>>()
+                        .join("-+-"),
+                    PdfFontKind::Mono,
+                    8.0,
+                    0.5,
+                );
+                for row in rows {
+                    let normalized = (0..headers.len())
+                        .map(|index| row.get(index).cloned().unwrap_or_default())
+                        .collect::<Vec<_>>();
+                    self.push_wrapped(&normalized.join("  |  "), PdfFontKind::Regular, 9.5, 0.7);
+                }
+                self.add_gap(1.4);
+            }
+            Block::Rule => {
+                self.push_wrapped(&"\u{2014}".repeat(45), PdfFontKind::Regular, 9.0, 1.5);
+            }
+        }
+    }
+}
+
+fn approximate_chars_per_line(size_pt: f32, mono: bool) -> usize {
+    let average_em = if mono { 0.62 } else { 0.52 };
+    let average_char_mm = size_pt * 0.352_778 * average_em;
+    (CONTENT_WIDTH_MM / average_char_mm).floor().max(20.0) as usize
+}
+
+fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
+    let mut output = Vec::new();
+
+    for source_line in text.lines() {
+        if source_line.trim().is_empty() {
+            output.push(String::new());
+            continue;
+        }
+
+        let mut current = String::new();
+        for word in source_line.split_whitespace() {
+            if word.chars().count() > max_chars {
+                if !current.is_empty() {
+                    output.push(std::mem::take(&mut current));
+                }
+                let chars = word.chars().collect::<Vec<_>>();
+                for chunk in chars.chunks(max_chars) {
+                    output.push(chunk.iter().collect());
+                }
+                continue;
+            }
+
+            let proposed_len =
+                current.chars().count() + usize::from(!current.is_empty()) + word.chars().count();
+            if proposed_len > max_chars && !current.is_empty() {
+                output.push(std::mem::take(&mut current));
+            }
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(word);
+        }
+        if !current.is_empty() {
+            output.push(current);
+        }
+    }
+
+    output
+}
+
 pub fn generate_pdf(markdown: &str, title: &str, dest: &Path) -> Result<PdfMeta, AppError> {
     let blocks = parse_markdown_blocks(markdown);
+    let mut warnings = Vec::new();
+    let mut doc = PdfDocument::new(title);
 
-    let font_family = genpdf::fonts::FontFamily {
-        regular: load_font(REGULAR_FONT)?,
-        bold: load_font(BOLD_FONT)?,
-        italic: load_font(ITALIC_FONT)?,
-        bold_italic: load_font(BOLD_ITALIC_FONT)?,
+    let regular = ParsedFont::from_bytes(REGULAR_FONT, 0, &mut warnings).ok_or_else(|| {
+        AppError::ArtifactGenerationFailed("could not parse bundled regular PDF font".to_string())
+    })?;
+    let bold = ParsedFont::from_bytes(BOLD_FONT, 0, &mut warnings).ok_or_else(|| {
+        AppError::ArtifactGenerationFailed("could not parse bundled bold PDF font".to_string())
+    })?;
+    let mono = ParsedFont::from_bytes(MONO_REGULAR_FONT, 0, &mut warnings).ok_or_else(|| {
+        AppError::ArtifactGenerationFailed("could not parse bundled monospace PDF font".to_string())
+    })?;
+
+    let fonts = PdfFonts {
+        regular: doc.add_font(&regular),
+        bold: doc.add_font(&bold),
+        mono: doc.add_font(&mono),
     };
-    let mut doc = genpdf::Document::new(font_family);
-    doc.set_title(title);
-    doc.set_font_size(11);
-    doc.set_line_spacing(1.25);
-
-    let mono_family = doc.add_font_family(genpdf::fonts::FontFamily {
-        regular: load_font(MONO_REGULAR_FONT)?,
-        bold: load_font(MONO_BOLD_FONT)?,
-        italic: load_font(MONO_ITALIC_FONT)?,
-        bold_italic: load_font(MONO_BOLD_ITALIC_FONT)?,
-    });
-
-    let mut decorator = genpdf::SimplePageDecorator::new();
-    decorator.set_margins(20);
-    doc.set_page_decorator(decorator);
-
-    doc.push(elements::Paragraph::new(style::StyledString::new(
-        title.to_string(),
-        style::Style::new().bold().with_font_size(20),
-    )));
-    doc.push(elements::Break::new(1.5));
-
+    let mut layout = PdfLayout::new(fonts);
+    layout.push_wrapped(title, PdfFontKind::Bold, 20.0, 5.0);
     for block in blocks {
-        push_pdf_block(&mut doc, mono_family, block);
+        layout.push_block(block);
+    }
+    let pages = layout.finish();
+    let page_count = pages.len() as i64;
+    if pages.is_empty() {
+        return Err(AppError::ArtifactGenerationFailed(
+            "PDF content produced no pages".to_string(),
+        ));
     }
 
-    doc.render_to_file(dest)
+    doc.with_pages(pages);
+    let bytes = doc.save(
+        &PdfSaveOptions {
+            subset_fonts: true,
+            ..Default::default()
+        },
+        &mut warnings,
+    );
+    std::fs::write(dest, bytes)
         .map_err(|error| AppError::ArtifactGenerationFailed(error.to_string()))?;
 
-    let page_count = count_pdf_pages(dest)?;
+    if !warnings.is_empty() {
+        tracing::debug!(
+            warning_count = warnings.len(),
+            "PDF generated with warnings"
+        );
+    }
     Ok(PdfMeta { page_count })
-}
-
-fn load_font(bytes: &[u8]) -> Result<genpdf::fonts::FontData, AppError> {
-    genpdf::fonts::FontData::new(bytes.to_vec(), None)
-        .map_err(|error| AppError::ArtifactGenerationFailed(error.to_string()))
-}
-
-fn push_pdf_block(
-    doc: &mut genpdf::Document,
-    mono_family: genpdf::fonts::FontFamily<genpdf::fonts::Font>,
-    block: Block,
-) {
-    match block {
-        Block::Heading { level, text } => {
-            let size = match level {
-                1 => 18,
-                2 => 16,
-                3 => 14,
-                4 => 13,
-                _ => 12,
-            };
-            doc.push(elements::Break::new(0.5));
-            doc.push(elements::Paragraph::new(style::StyledString::new(
-                text,
-                style::Style::new().bold().with_font_size(size),
-            )));
-            doc.push(elements::Break::new(0.5));
-        }
-        Block::Paragraph { text } => {
-            doc.push(elements::Paragraph::new(text));
-            doc.push(elements::Break::new(0.6));
-        }
-        Block::UnorderedList { items } => {
-            let mut list = elements::UnorderedList::new();
-            for item in items {
-                list.push(elements::Paragraph::new(item));
-            }
-            doc.push(list);
-            doc.push(elements::Break::new(0.6));
-        }
-        Block::OrderedList { start, items } => {
-            let mut list = elements::OrderedList::with_start(start.max(1) as usize);
-            for item in items {
-                list.push(elements::Paragraph::new(item));
-            }
-            doc.push(list);
-            doc.push(elements::Break::new(0.6));
-        }
-        Block::Code { code } => {
-            let mono_style = style::Style::new()
-                .with_font_family(mono_family)
-                .with_font_size(9);
-            let mut layout = elements::LinearLayout::vertical();
-            for line in code.lines() {
-                layout.push(elements::Text::new(style::StyledString::new(
-                    line.to_string(),
-                    mono_style,
-                )));
-            }
-            doc.push(layout.padded(3).framed());
-            doc.push(elements::Break::new(0.6));
-        }
-        Block::Table { headers, rows } => {
-            let column_count = headers.len();
-            if column_count == 0 {
-                return;
-            }
-            let mut table = elements::TableLayout::new(vec![1; column_count]);
-            table.set_cell_decorator(elements::FrameCellDecorator::new(true, true, false));
-
-            let mut header_row = table.row();
-            for header in &headers {
-                header_row = header_row.element(
-                    elements::Paragraph::new(style::StyledString::new(
-                        header.clone(),
-                        style::Style::new().bold(),
-                    ))
-                    .padded(1),
-                );
-            }
-            let _ = header_row.push();
-
-            for row in rows {
-                let mut table_row = table.row();
-                for index in 0..column_count {
-                    let cell_text = row.get(index).cloned().unwrap_or_default();
-                    table_row = table_row.element(elements::Paragraph::new(cell_text).padded(1));
-                }
-                let _ = table_row.push();
-            }
-            doc.push(table);
-            doc.push(elements::Break::new(0.6));
-        }
-        Block::Rule => {
-            doc.push(elements::Paragraph::new(style::StyledString::new(
-                "\u{2014}".repeat(40),
-                style::Style::new().with_color(style::Color::Greyscale(170)),
-            )));
-            doc.push(elements::Break::new(0.4));
-        }
-    }
-}
-
-fn count_pdf_pages(path: &Path) -> Result<i64, AppError> {
-    let document = lopdf::Document::load(path)
-        .map_err(|error| AppError::ArtifactGenerationFailed(error.to_string()))?;
-    Ok(document.get_pages().len() as i64)
 }
 
 pub fn generate_docx(markdown: &str, title: &str, dest: &Path) -> Result<(), AppError> {
@@ -514,6 +647,14 @@ mod tests {
     }
 
     #[test]
+    fn wraps_long_text_without_dropping_content() {
+        let input = "alpha beta gamma delta epsilon zeta eta theta";
+        let lines = wrap_text(input, 16);
+        assert!(lines.len() > 1);
+        assert_eq!(lines.join(" "), input);
+    }
+
+    #[test]
     fn generates_real_multi_section_pdf() {
         let temp = tempfile::tempdir().unwrap();
         let dest = temp.path().join("report.pdf");
@@ -521,6 +662,8 @@ mod tests {
         assert!(dest.exists());
         assert!(std::fs::metadata(&dest).unwrap().len() > 0);
         assert!(meta.page_count >= 1);
+        let bytes = std::fs::read(&dest).unwrap();
+        assert_eq!(&bytes[0..5], b"%PDF-");
     }
 
     #[test]
@@ -532,7 +675,6 @@ mod tests {
         let size = std::fs::metadata(&dest).unwrap().len();
         assert!(size > 0);
 
-        // A valid DOCX is a ZIP archive: verify the local-file-header signature.
         let bytes = std::fs::read(&dest).unwrap();
         assert_eq!(&bytes[0..4], b"PK\x03\x04");
     }

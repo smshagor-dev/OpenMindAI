@@ -44,6 +44,22 @@ pub struct ModelCatalogDownload {
     pub filename_pattern: String,
     pub destination_dir: String,
     pub format: String,
+    #[serde(default)]
+    pub dependencies: Vec<ModelCatalogDependency>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCatalogDependency {
+    pub role: String,
+    pub filename_pattern: String,
+    pub format: String,
+    #[serde(default = "default_required_dependency")]
+    pub required: bool,
+}
+
+fn default_required_dependency() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -137,7 +153,8 @@ fn installed_path_for(
     installed: &[ModelRecord],
     root: &PortableRootManager,
 ) -> Option<String> {
-    installed
+    let download = entry.download.as_ref();
+    let primary = installed
         .iter()
         .find(|model| {
             model.source_repository.as_deref() == Some(entry.repo.as_str())
@@ -145,12 +162,23 @@ fn installed_path_for(
                     && model.quantization.as_deref() == Some(entry.quantization.as_str()))
         })
         .map(|model| model.path.clone())
-        .or_else(|| {
-            entry
-                .download
-                .as_ref()
-                .and_then(|download| find_downloaded_file(root, download))
-        })
+        .or_else(|| download.and_then(|download| find_downloaded_file(root, download)))?;
+
+    if let Some(download) = download {
+        let package_dir = root.resolve_relative(&download.destination_dir).ok()?;
+        if download
+            .dependencies
+            .iter()
+            .filter(|dependency| dependency.required)
+            .any(|dependency| {
+                find_file_matching(&package_dir, &dependency.filename_pattern).is_none()
+            })
+        {
+            return None;
+        }
+    }
+
+    Some(primary)
 }
 
 fn find_downloaded_file(
@@ -162,6 +190,22 @@ fn find_downloaded_file(
         return None;
     }
     find_file_matching(&dir, &download.filename_pattern)
+        .and_then(|path| path.strip_prefix(root.root()).ok().map(Path::to_path_buf))
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+}
+
+pub fn dependency_path(
+    root: &PortableRootManager,
+    entry: &ModelCatalogEntry,
+    role: &str,
+) -> Option<String> {
+    let download = entry.download.as_ref()?;
+    let dependency = download
+        .dependencies
+        .iter()
+        .find(|dependency| dependency.role == role)?;
+    let dir = root.resolve_relative(&download.destination_dir).ok()?;
+    find_file_matching(&dir, &dependency.filename_pattern)
         .and_then(|path| path.strip_prefix(root.root()).ok().map(Path::to_path_buf))
         .map(|path| path.to_string_lossy().replace('\\', "/"))
 }
@@ -180,18 +224,32 @@ pub fn delete_catalog_model(root: &PortableRootManager, model_id: &str) -> Resul
     }
     ensure_under_root(root, &target_dir)?;
 
-    if let Some(file) = find_file_matching(&target_dir, &download.filename_pattern) {
-        ensure_under_root(root, &file)?;
-        std::fs::remove_file(file)?;
+    remove_matching_file(root, &target_dir, &download.filename_pattern)?;
+    for dependency in &download.dependencies {
+        remove_matching_file(root, &target_dir, &dependency.filename_pattern)?;
     }
 
-    let manifest = target_dir.join("model-manifest.json");
-    if manifest.exists() {
-        ensure_under_root(root, &manifest)?;
-        std::fs::remove_file(manifest)?;
+    for manifest_name in ["model-manifest.json", "package-manifest.json"] {
+        let manifest = target_dir.join(manifest_name);
+        if manifest.exists() {
+            ensure_under_root(root, &manifest)?;
+            std::fs::remove_file(manifest)?;
+        }
     }
 
     remove_empty_dirs_up_to(root.root(), target_dir)?;
+    Ok(())
+}
+
+fn remove_matching_file(
+    root: &PortableRootManager,
+    target_dir: &Path,
+    pattern: &str,
+) -> Result<(), AppError> {
+    if let Some(file) = find_file_matching(target_dir, pattern) {
+        ensure_under_root(root, &file)?;
+        std::fs::remove_file(file)?;
+    }
     Ok(())
 }
 
@@ -293,6 +351,18 @@ mod tests {
             .models
             .iter()
             .any(|entry| entry.kind == "speech-to-text"));
+        let lens = catalog
+            .models
+            .iter()
+            .find(|entry| entry.id == "qwen25-vl-3b-q4km")
+            .unwrap();
+        assert!(lens
+            .download
+            .as_ref()
+            .unwrap()
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.role == "mmproj" && dependency.required));
     }
 
     fn hardware_with(total_ram_bytes: u64, vram_bytes: Option<u64>) -> HardwareProfile {
@@ -393,6 +463,10 @@ mod tests {
         assert!(wildcard_match(
             "ggml-large-v3-turbo-q5_0.bin",
             "ggml-large-v3-turbo-q5_0.bin"
+        ));
+        assert!(wildcard_match(
+            "mmproj-*Q8_0*.gguf",
+            "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf"
         ));
         assert!(!wildcard_match("*quantized*.onnx", "model.onnx"));
     }

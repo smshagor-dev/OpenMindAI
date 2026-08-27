@@ -1,5 +1,5 @@
 {
-  "catalogVersion": 2,
+  "catalogVersion": 3,
   "models": [
     {
       "id": "qwen3-4b-q4km",
@@ -50,7 +50,7 @@
     {
       "id": "qwen25-vl-3b-q4km",
       "name": "OpenMindAI Lens",
-      "version": "1",
+      "version": "2",
       "family": "qwen-vl",
       "kind": "vision",
       "runtime": "llama.cpp",
@@ -58,7 +58,7 @@
       "quantization": "Q4_K_M",
       "required": false,
       "capabilities": ["vision", "ocr", "image-review"],
-      "sizeBytes": 3000000000,
+      "sizeBytes": 2775000000,
       "minRamBytes": 8589934592,
       "minVramBytes": 4294967296,
       "license": "apache-2.0",
@@ -67,7 +67,15 @@
         "strategy": "singleFile",
         "filenamePattern": "*Q4_K_M*.gguf",
         "destinationDir": "models/vision/qwen2.5-vl-3b",
-        "format": "gguf"
+        "format": "gguf",
+        "dependencies": [
+          {
+            "role": "mmproj",
+            "filenamePattern": "mmproj-*Q8_0*.gguf",
+            "format": "gguf",
+            "required": true
+          }
+        ]
       }
     },
     {
