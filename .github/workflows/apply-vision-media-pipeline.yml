@@ -20,7 +20,7 @@ jobs:
       - name: Checkout work branch
         uses: actions/checkout@v4
         with:
-          ref: production-readiness-completion
+          ref: ${{ github.sha }}
 
       - name: Apply vision media pipeline patch
         run: python scripts/apply_vision_media_pipeline.py
@@ -31,56 +31,16 @@ jobs:
       - name: Diagnose transformed tests
         run: |
           echo "HEAD=$(git rev-parse HEAD)"
-          grep -R -n -C 8 -E 'blank_content_produces_one_page|user_message_content_without_media_stays_plain_text' src-tauri/src || true
+          echo '--- named tests ---'
+          grep -R -n -C 12 -E 'blank_content_produces_one_page|user_message_content_without_media_stays_plain_text' src-tauri/src || true
+          echo '--- inference relevant symbols ---'
+          grep -n -C 8 -E 'attach_media_to_latest_user_message|latest_user_text|build_context' src-tauri/src/inference.rs || true
+          echo '--- PDF relevant symbols ---'
+          grep -n -C 8 -E 'generate_pdf_bytes|validate_pdf_output|pages.is_empty|PdfPage::new' src-tauri/src/document_generator.rs || true
           echo '--- inference diff ---'
           git diff -- src-tauri/src/inference.rs
           echo '--- document generator diff ---'
           git diff -- src-tauri/src/document_generator.rs
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Format frontend changes
-        run: npx prettier --write src/lib/chat.ts src/api.ts src/App.tsx
-
-      - name: Frontend lint
-        run: npm run lint
-
-      - name: Frontend build
-        run: npm run build
-
-      - name: Install Linux system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Format Rust changes
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml
-
-      - name: Rust clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
-
-      - name: Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --all-features
-
-      - name: Commit validated vision media pipeline
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/lib/chat.ts src/api.ts src/App.tsx src-tauri/src/inference.rs src-tauri/src/lib.rs src-tauri/src/document_generator.rs src-tauri/src/hardware.rs src-tauri/src/runtime.rs src-tauri/src/model_catalog.rs src-tauri/src/model_package.rs src-tauri/src/projects.rs
-          if git diff --cached --quiet; then
-            exit 0
-          fi
-          git commit -m "Add real local vision media pipeline"
-          git push origin HEAD:production-readiness-completion
+      - name: End diagnostic run
+        run: exit 1
