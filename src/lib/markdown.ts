@@ -140,17 +140,26 @@ function sanitizeRenderedHtml(html: string) {
 
 function sanitizeUrl(raw: string | null, image: boolean) {
   if (!raw) return null;
-  const value = raw.trim().replace(/[\u0000-\u001f\u007f]/g, "");
+  const value = stripControlCharacters(raw.trim());
   if (!value) return null;
   if (!image && value.startsWith("#")) return value;
   if (image && /^data:image\/(?:png|jpe?g|gif|webp);base64,/i.test(value)) return value;
 
   try {
-    const parsed = new URL(value);
+    const parsed = new window.URL(value);
     if (parsed.protocol === "https:" || parsed.protocol === "http:") return parsed.toString();
     if (!image && (parsed.protocol === "mailto:" || parsed.protocol === "tel:")) return parsed.toString();
   } catch {
     return null;
   }
   return null;
+}
+
+function stripControlCharacters(value: string) {
+  return Array.from(value)
+    .filter((character) => {
+      const code = character.charCodeAt(0);
+      return code > 31 && code !== 127;
+    })
+    .join("");
 }
