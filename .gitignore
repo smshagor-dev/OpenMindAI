@@ -29,13 +29,15 @@ docs/
 !README.md
 
 # Downloaded/built release artifacts and bootstrap scratch space -- never
-# commit a compiled installer or a bootstrap-cloned copy of the source.
+# commit compiled installers, signatures, checksums, or a bootstrap-cloned
+# copy of the source. Release artifacts belong on GitHub Releases.
 *.exe
-!OpenMindAI_*_x64-setup.exe
 *.msi
 *.dmg
 *.AppImage
-!SHA256SUMS.txt
+*.sig
+SHA256SUMS.txt
+/release-output/
 /release-download/
 
 # AI models
@@ -63,6 +65,8 @@ docs/
 .updater-dev-key.pem.pub
 *.key
 *.pem
+*.pfx
+*.p12
 
 # Runtime/download artifacts
 *.zip
