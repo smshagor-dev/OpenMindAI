@@ -1,7 +1,7 @@
 use std::{
     fs,
     io::{Read, Seek, SeekFrom},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -20,6 +20,9 @@ use crate::{
     model_catalog::{entry_by_id, wildcard_match, ModelCatalogDownload, ModelCatalogEntry},
     portable_root::PortableRootManager,
 };
+
+#[path = "model_package.rs"]
+mod model_package;
 
 const SAFE_SPACE_MARGIN: u64 = 768 * 1024 * 1024;
 
@@ -115,9 +118,6 @@ pub struct ModelDownloadManager {
     status: Arc<Mutex<DownloadStatus>>,
     cancel_token: Arc<Mutex<Option<CancellationToken>>>,
     client: Client,
-    // The catalog's required entry (repo/quantization) — the single source
-    // of truth this manager downloads against, instead of duplicating those
-    // strings as separate hardcoded constants (see `model_catalog.rs`).
     catalog_entry: ModelCatalogEntry,
 }
 
@@ -163,14 +163,16 @@ impl ModelDownloadManager {
     }
 
     pub async fn download_qwen_q4_k_m(&self) -> Result<DownloadStatus, AppError> {
-        self.download_catalog_model(&self.catalog_entry.id).await
+        let model_id = self.catalog_entry.id.clone();
+        self.download_catalog_model(&model_id).await
     }
 
     pub async fn download_catalog_model(&self, model_id: &str) -> Result<DownloadStatus, AppError> {
         let entry = entry_by_id(model_id)?;
-        tracing::info!(repo = %entry.repo, model_id = %entry.id, "installing AI model");
+        tracing::info!(repo = %entry.repo, model_id = %entry.id, "installing AI model package");
         self.update_status(|status| *status = DownloadStatus::queued(&entry))?;
         self.set_state(DownloadState::Resolving, None)?;
+
         let token = CancellationToken::new();
         *self
             .cancel_token
@@ -186,16 +188,19 @@ impl ModelDownloadManager {
 
         match result {
             Ok(status) => {
-                tracing::info!("AI model installed");
+                tracing::info!("AI model package installed");
                 Ok(status)
             }
             Err(error) => {
                 let message = error.to_string();
-                tracing::warn!(%message, "AI model install failed");
+                tracing::warn!(%message, "AI model package install failed");
                 if !matches!(error, AppError::InferenceCancelled(_)) {
                     let _ = self.set_state(DownloadState::Failed, Some(message.clone()));
                 }
-                Err(AppError::ModelDownloadFailed(message))
+                Err(match error {
+                    AppError::InferenceCancelled(_) => error,
+                    _ => AppError::ModelDownloadFailed(message),
+                })
             }
         }
     }
@@ -206,7 +211,6 @@ impl ModelDownloadManager {
         token: CancellationToken,
     ) -> Result<DownloadStatus, AppError> {
         let metadata = self.resolve_model_metadata(&entry).await?;
-        let filename = metadata.filename.clone();
         let download = entry.download.as_ref().ok_or_else(|| {
             AppError::ModelUnsupported(format!(
                 "{} has no downloadable file configured",
@@ -217,6 +221,48 @@ impl ModelDownloadManager {
         fs::create_dir_all(&model_dir)?;
         ensure_contained(self.root.root(), &model_dir)?;
 
+        let (final_path, verification) = self
+            .download_primary_file(&metadata, &model_dir, &token)
+            .await?;
+        self.write_manifest(&model_dir, &metadata, &final_path, verification)?;
+
+        if !download.dependencies.is_empty() {
+            self.update_status(|status| {
+                status.state = DownloadState::Resolving;
+                status.filename = Some("model package dependencies".to_string());
+                status.downloaded_bytes = 0;
+                status.total_bytes = None;
+                status.percentage = None;
+                status.speed_bytes_per_sec = None;
+                status.error = None;
+            })?;
+            model_package::ensure_dependencies(&self.root, &self.client, &entry, &token).await?;
+        }
+
+        if token.is_cancelled() {
+            return Err(AppError::InferenceCancelled("download stopped".to_string()));
+        }
+
+        self.update_status(|status| {
+            status.state = DownloadState::Completed;
+            status.filename = Some(metadata.filename.clone());
+            status.downloaded_bytes = metadata.size_bytes;
+            status.total_bytes = Some(metadata.size_bytes);
+            status.percentage = Some(100.0);
+            status.speed_bytes_per_sec = None;
+            status.destination = Some(final_path.display().to_string());
+            status.error = None;
+        })?;
+        self.status()
+    }
+
+    async fn download_primary_file(
+        &self,
+        metadata: &QwenModelManifest,
+        model_dir: &Path,
+        token: &CancellationToken,
+    ) -> Result<(PathBuf, VerificationState), AppError> {
+        let filename = metadata.filename.clone();
         let temp_dir = self.root.resolve_relative("temp/downloads")?;
         fs::create_dir_all(&temp_dir)?;
         ensure_contained(self.root.root(), &temp_dir)?;
@@ -227,37 +273,35 @@ impl ModelDownloadManager {
         ensure_contained(self.root.root(), &part_path)?;
 
         if final_path.exists() {
-            // A file already being present isn't enough on its own -- verify
-            // it before trusting it, so a corrupted-but-present model from a
-            // prior interrupted run or disk fault gets re-downloaded instead
-            // of silently "completing" with a bad file every launch.
             let verification =
                 verify_existing_file(&final_path, metadata.size_bytes, metadata.sha256.as_deref())?;
-
             if let Some(verification) = verification {
-                self.write_manifest(&model_dir, &metadata, &final_path, verification)?;
                 self.update_status(|status| {
-                    status.state = DownloadState::Completed;
+                    status.state = DownloadState::Verifying;
                     status.filename = Some(filename.clone());
                     status.downloaded_bytes = metadata.size_bytes;
                     status.total_bytes = Some(metadata.size_bytes);
                     status.percentage = Some(100.0);
+                    status.speed_bytes_per_sec = None;
                     status.destination = Some(final_path.display().to_string());
                     status.error = None;
                 })?;
-                return self.status();
+                return Ok((final_path, verification));
             }
 
             tracing::warn!(
                 path = %final_path.display(),
-                "existing model file failed verification, re-downloading",
+                "existing model file failed verification, re-downloading"
             );
             fs::remove_file(&final_path)?;
         }
 
-        validate_free_space(&model_dir, metadata.size_bytes + SAFE_SPACE_MARGIN)?;
+        validate_free_space(
+            model_dir,
+            metadata.size_bytes.saturating_add(SAFE_SPACE_MARGIN),
+        )?;
 
-        let existing = fs::metadata(&part_path).map(|meta| meta.len()).unwrap_or(0);
+        let mut existing = fs::metadata(&part_path).map(|meta| meta.len()).unwrap_or(0);
         let mut request = self.client.get(&metadata.source_url);
         if existing > 0 {
             request = request.header(header::RANGE, format!("bytes={existing}-"));
@@ -267,9 +311,12 @@ impl ModelDownloadManager {
             .send()
             .await
             .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?;
-        if existing > 0 && response.status() != StatusCode::PARTIAL_CONTENT {
+        let resumed = existing > 0 && response.status() == StatusCode::PARTIAL_CONTENT;
+        if existing > 0 && !resumed {
             async_fs::remove_file(&part_path).await.ok();
-        } else if !response.status().is_success() {
+            existing = 0;
+        }
+        if !response.status().is_success() {
             return Err(AppError::ModelDownloadFailed(format!(
                 "HTTP {} while downloading model",
                 response.status()
@@ -279,32 +326,27 @@ impl ModelDownloadManager {
         self.update_status(|status| {
             status.state = DownloadState::Downloading;
             status.filename = Some(filename.clone());
-            status.downloaded_bytes = if response.status() == StatusCode::PARTIAL_CONTENT {
-                existing
-            } else {
-                0
-            };
+            status.downloaded_bytes = existing;
             status.total_bytes = Some(metadata.size_bytes);
+            status.percentage = Some((existing as f64 / metadata.size_bytes as f64) * 100.0);
             status.destination = Some(final_path.display().to_string());
             status.error = None;
         })?;
 
         let mut file = async_fs::OpenOptions::new()
             .create(true)
-            .append(response.status() == StatusCode::PARTIAL_CONTENT)
+            .append(resumed)
             .write(true)
-            .truncate(response.status() != StatusCode::PARTIAL_CONTENT)
+            .truncate(!resumed)
             .open(&part_path)
             .await?;
         let started = Instant::now();
-        let mut downloaded = self.status()?.downloaded_bytes;
+        let mut downloaded = existing;
         let mut stream = response.bytes_stream();
 
         while let Some(chunk) = stream.next().await {
             if token.is_cancelled() {
                 file.flush().await?;
-                let state = self.status()?.state;
-                self.set_state(state, None)?;
                 return Err(AppError::InferenceCancelled("download stopped".to_string()));
             }
             let chunk = chunk.map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?;
@@ -314,7 +356,7 @@ impl ModelDownloadManager {
             self.update_status(|status| {
                 status.downloaded_bytes = downloaded;
                 status.percentage = Some((downloaded as f64 / metadata.size_bytes as f64) * 100.0);
-                status.speed_bytes_per_sec = Some(downloaded as f64 / elapsed);
+                status.speed_bytes_per_sec = Some(downloaded.saturating_sub(existing) as f64 / elapsed);
             })?;
         }
         file.flush().await?;
@@ -342,16 +384,7 @@ impl ModelDownloadManager {
         };
 
         fs::rename(&part_path, &final_path)?;
-        self.write_manifest(&model_dir, &metadata, &final_path, verification)?;
-        self.update_status(|status| {
-            status.state = DownloadState::Completed;
-            status.downloaded_bytes = metadata.size_bytes;
-            status.percentage = Some(100.0);
-            status.speed_bytes_per_sec = None;
-            status.destination = Some(final_path.display().to_string());
-            status.error = None;
-        })?;
-        self.status()
+        Ok((final_path, verification))
     }
 
     async fn resolve_model_metadata(
@@ -434,9 +467,8 @@ impl ModelDownloadManager {
         let mut manifest = metadata.clone();
         manifest.actual_sha256 = Some(sha256_file(model_path)?);
         manifest.verification = verification;
-        let manifest_path = model_dir.join("model-manifest.json");
         fs::write(
-            manifest_path,
+            model_dir.join("model-manifest.json"),
             serde_json::to_string_pretty(&manifest)
                 .map_err(|error| AppError::internal(error.to_string()))?,
         )?;
@@ -499,7 +531,7 @@ fn select_sibling<'a>(
 pub fn validate_gguf_header(path: &Path, root: &PortableRootManager) -> Result<(), AppError> {
     let canonical = fs::canonicalize(path)?;
     let canonical_root = fs::canonicalize(root.root())?;
-    if !canonical.starts_with(canonical_root) {
+    if !canonical.starts_with(&canonical_root) {
         return Err(AppError::ModelInvalid(
             "model path escapes OpenMindAI Root".to_string(),
         ));
@@ -522,10 +554,6 @@ pub fn validate_gguf_header(path: &Path, root: &PortableRootManager) -> Result<(
     Ok(())
 }
 
-/// Checks a previously-downloaded file against the expected size and (if the
-/// source provided one) checksum. `None` means "not trustworthy, re-download
-/// it"; `Some(state)` means it can be accepted as-is, either cryptographically
-/// `Verified` or `Unverified` because no checksum was available to compare.
 fn verify_existing_file(
     path: &Path,
     expected_size: u64,
@@ -726,23 +754,5 @@ mod tests {
         if let Some(expected) = metadata.sha256.as_deref() {
             assert_eq!(sha256_file(&final_path).unwrap(), expected);
         }
-
-        let report = serde_json::json!({
-            "repo": metadata.repo,
-            "filename": metadata.filename,
-            "quantization": metadata.quantization,
-            "sizeBytes": metadata.size_bytes,
-            "sha256": metadata.sha256,
-            "sourceUrl": metadata.source_url,
-            "finalPath": final_path.display().to_string(),
-            "partPath": part_path.display().to_string(),
-            "observedCancelledProgressBytes": observed_progress,
-            "completedBytes": final_status.downloaded_bytes,
-            "verification": "verified"
-        });
-        let report_path = root
-            .resolve_relative("logs/qwen-real-download-validation.json")
-            .unwrap();
-        fs::write(report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
     }
 }
