@@ -135,8 +135,9 @@ impl<'a> GithubRepository<'a> {
             .get("account")
             .cloned()
             .ok_or_else(|| AppError::internal("GitHub settings are missing account metadata"))?;
-        let account: GithubAccount = serde_json::from_value(account_value)
-            .map_err(|error| AppError::internal(format!("invalid GitHub account metadata: {error}")))?;
+        let account: GithubAccount = serde_json::from_value(account_value).map_err(|error| {
+            AppError::internal(format!("invalid GitHub account metadata: {error}"))
+        })?;
         let legacy_token = payload
             .get("token")
             .and_then(serde_json::Value::as_str)
