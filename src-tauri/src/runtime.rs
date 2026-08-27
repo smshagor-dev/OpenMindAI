@@ -550,10 +550,10 @@ fn run_probe(
     ))
 }
 
-fn hide_console_window(command: &mut Command) {
+fn hide_console_window(_command: &mut Command) {
     #[cfg(target_os = "windows")]
     {
-        command.creation_flags(CREATE_NO_WINDOW);
+        _command.creation_flags(CREATE_NO_WINDOW);
     }
 }
 

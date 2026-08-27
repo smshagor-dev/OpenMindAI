@@ -149,6 +149,7 @@ impl HardwareProfiler {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 pub fn classify_vendor(vendor_id: Option<u32>, is_software: bool) -> GpuVendor {
     if is_software {
         return GpuVendor::MicrosoftSoftware;
@@ -163,6 +164,7 @@ pub fn classify_vendor(vendor_id: Option<u32>, is_software: bool) -> GpuVendor {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
 pub fn classify_backends(vendor: &GpuVendor, vulkan_available: bool) -> Vec<BackendKind> {
     let mut backends = vec![BackendKind::Cpu];
     match vendor {
@@ -183,6 +185,7 @@ fn choose_recommended_gpu(gpus: &[GpuInfo]) -> Option<&GpuInfo> {
         .max_by_key(|gpu| gpu.dedicated_vram_bytes.unwrap_or(0))
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn recommended_backend(vendor: &GpuVendor, has_vulkan: bool) -> BackendKind {
     match vendor {
         GpuVendor::Nvidia => BackendKind::Cuda,
@@ -203,10 +206,10 @@ fn command_available(command: &str) -> bool {
     command.status().is_ok()
 }
 
-fn hide_console_window(command: &mut std::process::Command) {
+fn hide_console_window(_command: &mut std::process::Command) {
     #[cfg(target_os = "windows")]
     {
-        command.creation_flags(CREATE_NO_WINDOW);
+        _command.creation_flags(CREATE_NO_WINDOW);
     }
 }
 

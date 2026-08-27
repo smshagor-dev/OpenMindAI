@@ -326,10 +326,11 @@ fn wildcard_match(pattern: &str, value: &str) -> bool {
         cursor += found + part.len();
     }
 
-    pattern
-        .ends_with('*')
-        .then_some(true)
-        .unwrap_or_else(|| parts.last().is_none_or(|last| value.ends_with(last)))
+    if pattern.ends_with('*') {
+        true
+    } else {
+        parts.last().is_none_or(|last| value.ends_with(last))
+    }
 }
 
 #[cfg(test)]

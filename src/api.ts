@@ -55,7 +55,8 @@ export const api = {
     call<StorageLocationCheck>("check_storage_location", { path }),
   conversations: () => call<Conversation[]>("list_conversations"),
   createConversation: (title?: string) => call<Conversation>("create_conversation", { title }),
-  renameConversation: (id: string, title: string) => call<void>("rename_conversation", { id, title }),
+  renameConversation: (id: string, title: string) =>
+    call<void>("rename_conversation", { id, title }),
   pinConversation: (id: string, pinned: boolean) =>
     call<void>("set_conversation_pinned", { id, pinned }),
   setConversationModel: (id: string, modelId: string) =>
@@ -64,8 +65,7 @@ export const api = {
     call<LlamaRuntimeStatus>("activate_model", { conversationId, modelId }),
   archiveConversation: (id: string) => call<void>("archive_conversation", { id }),
   deleteConversation: (id: string) => call<void>("delete_conversation", { id }),
-  messages: (conversationId: string) =>
-    call<Message[]>("list_messages", { conversationId }),
+  messages: (conversationId: string) => call<Message[]>("list_messages", { conversationId }),
   addUserMessage: (conversationId: string, content: string) =>
     call<Message>("add_user_message", { conversationId, content }),
   createStreamingAssistantMessage: (conversationId: string) =>
@@ -94,13 +94,15 @@ export const api = {
     error: string | null,
   ) =>
     call<ProjectFile>("add_project_file", {
-      projectId,
-      name,
-      sizeBytes,
-      mimeType,
-      contentText,
-      status,
-      error,
+      input: {
+        projectId,
+        name,
+        sizeBytes,
+        mimeType,
+        contentText,
+        status,
+        error,
+      },
     }),
   deleteProjectFile: (projectId: string, fileId: string) =>
     call<void>("delete_project_file", { projectId, fileId }),
@@ -110,7 +112,8 @@ export const api = {
   qwenDownloadStatus: () => call<DownloadStatus>("get_qwen_download_status"),
   modelDownloadStatus: () => call<DownloadStatus>("get_model_download_status"),
   downloadQwenModel: () => call<DownloadStatus>("download_qwen_model"),
-  downloadCatalogModel: (modelId: string) => call<DownloadStatus>("download_catalog_model", { modelId }),
+  downloadCatalogModel: (modelId: string) =>
+    call<DownloadStatus>("download_catalog_model", { modelId }),
   cancelQwenDownload: () => call<DownloadStatus>("cancel_qwen_download"),
   cancelModelDownload: () => call<DownloadStatus>("cancel_model_download"),
   pauseModelDownload: () => call<DownloadStatus>("pause_model_download"),
@@ -138,8 +141,7 @@ export const api = {
     call<Message>("send_chat_message", { conversationId, content, mode }),
   regenerateMessage: (conversationId: string, assistantMessageId: string, mode: string) =>
     call<Message>("regenerate_message", { conversationId, assistantMessageId, mode }),
-  cancelGeneration: (conversationId: string) =>
-    call<void>("cancel_generation", { conversationId }),
+  cancelGeneration: (conversationId: string) => call<void>("cancel_generation", { conversationId }),
   preferences: () => call<AppPreferences>("get_app_preferences"),
   savePreferences: (preferences: AppPreferences) =>
     call<AppPreferences>("save_app_preferences", { preferences }),
@@ -161,7 +163,8 @@ export const api = {
     kind: ArtifactKind,
     filename: string | null,
     content: string,
-  ) => call<Artifact>("create_text_artifact", { conversationId, messageId, kind, filename, content }),
+  ) =>
+    call<Artifact>("create_text_artifact", { conversationId, messageId, kind, filename, content }),
   createDocumentArtifact: (
     conversationId: string,
     messageId: string | null,
@@ -276,19 +279,24 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
     return Promise.resolve(undefined as T);
   }
   if (command === "add_project_file") {
+    const input = (args?.input as Record<string, unknown> | undefined) ?? {};
     return Promise.resolve({
       id: crypto.randomUUID(),
-      projectId: (args?.projectId as string) || "",
-      name: (args?.name as string) || "file",
-      sizeBytes: (args?.sizeBytes as number) || 0,
-      mimeType: (args?.mimeType as string) || null,
-      contentText: (args?.contentText as string) || null,
-      status: (args?.status as ProjectFile["status"]) || "tracked",
-      error: (args?.error as string) || null,
+      projectId: (input.projectId as string) || "",
+      name: (input.name as string) || "file",
+      sizeBytes: (input.sizeBytes as number) || 0,
+      mimeType: (input.mimeType as string) || null,
+      contentText: (input.contentText as string) || null,
+      status: (input.status as ProjectFile["status"]) || "tracked",
+      error: (input.error as string) || null,
       addedAt: now,
     } as T);
   }
-  if (command === "create_text_artifact" || command === "create_document_artifact" || command === "create_generation_artifact") {
+  if (
+    command === "create_text_artifact" ||
+    command === "create_document_artifact" ||
+    command === "create_generation_artifact"
+  ) {
     const kind = (args?.kind as string) ?? "text";
     const content = (args?.content as string) ?? "";
     const prompt = (args?.prompt as string) ?? "";
@@ -312,7 +320,8 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
       updatedAt: now,
     } as T);
   }
-  if (command === "list_artifacts" || command === "list_library_entries") return Promise.resolve([] as T);
+  if (command === "list_artifacts" || command === "list_library_entries")
+    return Promise.resolve([] as T);
   if (command === "open_artifact" || command === "reveal_artifact_in_folder") {
     return Promise.resolve(undefined as T);
   }
@@ -346,7 +355,11 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
       os: navigator.platform,
       operatingSystem: navigator.platform,
       architecture: "browser-preview",
-      cpu: { name: "Unavailable outside Tauri", physicalCores: null, logicalThreads: navigator.hardwareConcurrency },
+      cpu: {
+        name: "Unavailable outside Tauri",
+        physicalCores: null,
+        logicalThreads: navigator.hardwareConcurrency,
+      },
       memory: { totalBytes: 0, availableBytes: 0 },
       gpus: [],
       primaryGpu: null,
@@ -406,7 +419,10 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
       totalBytes: null,
       percentage: null,
       speedBytesPerSec: null,
-      error: command === "install_recommended_runtime" ? "Runtime install requires the desktop app." : null,
+      error:
+        command === "install_recommended_runtime"
+          ? "Runtime install requires the desktop app."
+          : null,
     } as T);
   }
   if (command === "get_llama_runtime_status" || command === "start_llama_runtime") {
@@ -537,7 +553,8 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
     return Promise.reject(new Error("GitHub connections require the desktop app."));
   }
   if (command === "disconnect_github") return Promise.resolve(undefined as T);
-  if (command === "list_github_repos" || command === "list_github_issues") return Promise.resolve([] as T);
+  if (command === "list_github_repos" || command === "list_github_issues")
+    return Promise.resolve([] as T);
   if (command === "get_google_credentials") return Promise.resolve(null as T);
   if (command === "save_google_credentials") {
     return Promise.resolve({

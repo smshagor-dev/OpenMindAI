@@ -470,18 +470,21 @@ fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
 
 pub fn generate_pdf(markdown: &str, title: &str, dest: &Path) -> Result<PdfMeta, AppError> {
     let blocks = parse_markdown_blocks(markdown);
-    let mut warnings = Vec::new();
+    let mut font_warnings = Vec::new();
     let mut doc = PdfDocument::new(title);
 
-    let regular = ParsedFont::from_bytes(REGULAR_FONT, 0, &mut warnings).ok_or_else(|| {
+    let regular = ParsedFont::from_bytes(REGULAR_FONT, 0, &mut font_warnings).ok_or_else(|| {
         AppError::ArtifactGenerationFailed("could not parse bundled regular PDF font".to_string())
     })?;
-    let bold = ParsedFont::from_bytes(BOLD_FONT, 0, &mut warnings).ok_or_else(|| {
+    let bold = ParsedFont::from_bytes(BOLD_FONT, 0, &mut font_warnings).ok_or_else(|| {
         AppError::ArtifactGenerationFailed("could not parse bundled bold PDF font".to_string())
     })?;
-    let mono = ParsedFont::from_bytes(MONO_REGULAR_FONT, 0, &mut warnings).ok_or_else(|| {
-        AppError::ArtifactGenerationFailed("could not parse bundled monospace PDF font".to_string())
-    })?;
+    let mono =
+        ParsedFont::from_bytes(MONO_REGULAR_FONT, 0, &mut font_warnings).ok_or_else(|| {
+            AppError::ArtifactGenerationFailed(
+                "could not parse bundled monospace PDF font".to_string(),
+            )
+        })?;
 
     let fonts = PdfFonts {
         regular: doc.add_font(&regular),
@@ -502,19 +505,21 @@ pub fn generate_pdf(markdown: &str, title: &str, dest: &Path) -> Result<PdfMeta,
     }
 
     doc.with_pages(pages);
+    let mut save_warnings = Vec::new();
     let bytes = doc.save(
         &PdfSaveOptions {
             subset_fonts: true,
             ..Default::default()
         },
-        &mut warnings,
+        &mut save_warnings,
     );
     std::fs::write(dest, bytes)
         .map_err(|error| AppError::ArtifactGenerationFailed(error.to_string()))?;
 
-    if !warnings.is_empty() {
+    if !font_warnings.is_empty() || !save_warnings.is_empty() {
         tracing::debug!(
-            warning_count = warnings.len(),
+            font_warning_count = font_warnings.len(),
+            save_warning_count = save_warnings.len(),
             "PDF generated with warnings"
         );
     }
