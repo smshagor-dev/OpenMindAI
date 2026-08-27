@@ -4,7 +4,6 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -38,16 +37,54 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
-      - name: Validate updater signing secrets
+      - name: Validate release tag and signing secrets
         shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $expectedTag = "v$version"
+          if ($env:GITHUB_REF_NAME -ne $expectedTag) {
+            throw "Release tag $env:GITHUB_REF_NAME does not match package version $expectedTag."
+          }
           if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
             throw "TAURI_SIGNING_PRIVATE_KEY is required for production updater artifacts."
           }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE)) {
+            throw "WINDOWS_CERTIFICATE must contain the base64-encoded Authenticode PFX."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
+            throw "WINDOWS_CERTIFICATE_PASSWORD is required."
+          }
 
-      - name: Build and publish Tauri release
+      - name: Import Authenticode certificate
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP "openmindai-code-signing.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $certificate = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          if ($null -eq $certificate) {
+            throw "The Authenticode certificate could not be imported."
+          }
+          $config = @{
+            bundle = @{
+              windows = @{
+                certificateThumbprint = $certificate.Thumbprint
+                digestAlgorithm = "sha256"
+                timestampUrl = "http://timestamp.digicert.com"
+              }
+            }
+          } | ConvertTo-Json -Depth 10
+          Set-Content -Path "src-tauri/tauri.windows-ci.conf.json" -Value $config -Encoding utf8
+          Remove-Item -LiteralPath $pfxPath -Force
+
+      - name: Build and publish signed Tauri release
         uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -59,9 +96,42 @@ jobs:
           releaseBody: |
             Signed OpenMindAI desktop release.
 
-            Verify the published checksums before installation. The generated latest.json and updater signatures are used by the in-app updater.
+            The Windows installer is Authenticode-signed. The in-app updater uses separately signed updater artifacts and latest.json metadata.
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
           tauriScript: npm run tauri
+          args: --config src-tauri/tauri.windows-ci.conf.json
+
+      - name: Publish SHA-256 checksums
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $files = Get-ChildItem -Path "src-tauri/target/release/bundle" -Recurse -File | Where-Object {
+            $_.Extension -in ".exe", ".msi", ".sig"
+          }
+          if ($files.Count -eq 0) {
+            throw "No release bundle files were produced."
+          }
+          $checksumPath = Join-Path $env:RUNNER_TEMP "SHA256SUMS.txt"
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash -Path $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          Set-Content -Path $checksumPath -Value $lines -Encoding ascii
+          gh release upload $env:GITHUB_REF_NAME $checksumPath --clobber
+
+      - name: Remove imported certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path "src-tauri/tauri.windows-ci.conf.json") {
+            $config = Get-Content "src-tauri/tauri.windows-ci.conf.json" -Raw | ConvertFrom-Json
+            $thumbprint = $config.bundle.windows.certificateThumbprint
+            if (-not [string]::IsNullOrWhiteSpace($thumbprint)) {
+              Get-ChildItem Cert:\CurrentUser\My\$thumbprint -ErrorAction SilentlyContinue | Remove-Item -Force
+            }
+            Remove-Item "src-tauri/tauri.windows-ci.conf.json" -Force
+          }
