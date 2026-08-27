@@ -31,12 +31,14 @@ export async function extractPdfText(file: File): Promise<PdfExtractionResult> {
     useWorkerFetch: false,
   });
 
+  let document: Awaited<typeof task.promise> | null = null;
   try {
-    const document = await task.promise;
-    const pagesRead = Math.min(document.numPages, MAX_PDF_PAGES);
+    document = await task.promise;
+    const pageCount = document.numPages;
+    const pagesRead = Math.min(pageCount, MAX_PDF_PAGES);
     const chunks: string[] = [];
     let currentLength = 0;
-    let truncated = document.numPages > pagesRead;
+    let truncated = pageCount > pagesRead;
 
     for (let pageNumber = 1; pageNumber <= pagesRead; pageNumber += 1) {
       const page = await document.getPage(pageNumber);
@@ -74,7 +76,6 @@ export async function extractPdfText(file: File): Promise<PdfExtractionResult> {
       currentLength += pageChunk.length;
     }
 
-    await document.destroy();
     const text = chunks.join("").trim();
     if (!text) {
       throw new Error(
@@ -84,11 +85,15 @@ export async function extractPdfText(file: File): Promise<PdfExtractionResult> {
 
     return {
       text,
-      pageCount: document.numPages,
+      pageCount,
       pagesRead,
       truncated,
     };
   } finally {
-    await task.destroy().catch(() => undefined);
+    if (document) {
+      await document.destroy().catch(() => undefined);
+    } else {
+      await task.destroy().catch(() => undefined);
+    }
   }
 }
