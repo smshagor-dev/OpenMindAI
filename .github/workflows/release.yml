@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows-release:
+    name: Windows signed release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Validate updater signing secrets
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw "TAURI_SIGNING_PRIVATE_KEY is required for production updater artifacts."
+          }
+
+      - name: Build and publish Tauri release
+        uses: tauri-apps/tauri-action@v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: OpenMindAI v__VERSION__
+          releaseBody: |
+            Signed OpenMindAI desktop release.
+
+            Verify the published checksums before installation. The generated latest.json and updater signatures are used by the in-app updater.
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+          tauriScript: npm run tauri
