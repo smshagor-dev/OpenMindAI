@@ -2,8 +2,8 @@ use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-use crate::{app_error::AppError, database::Database};
 use crate::github::secret_store;
+use crate::{app_error::AppError, database::Database};
 
 const SETTINGS_KEY: &str = "app.google";
 const SECRET_SLOT: &str = "google-client-secret";
