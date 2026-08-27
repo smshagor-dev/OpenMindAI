@@ -396,14 +396,13 @@ impl PdfLayout {
                 if headers.is_empty() {
                     return;
                 }
+                self.push_wrapped(&headers.join("  |  "), PdfFontKind::Bold, 9.5, 0.8);
                 self.push_wrapped(
-                    &headers.join("  |  "),
-                    PdfFontKind::Bold,
-                    9.5,
-                    0.8,
-                );
-                self.push_wrapped(
-                    &headers.iter().map(|_| "--------").collect::<Vec<_>>().join("-+-"),
+                    &headers
+                        .iter()
+                        .map(|_| "--------")
+                        .collect::<Vec<_>>()
+                        .join("-+-"),
                     PdfFontKind::Mono,
                     8.0,
                     0.5,
@@ -412,22 +411,12 @@ impl PdfLayout {
                     let normalized = (0..headers.len())
                         .map(|index| row.get(index).cloned().unwrap_or_default())
                         .collect::<Vec<_>>();
-                    self.push_wrapped(
-                        &normalized.join("  |  "),
-                        PdfFontKind::Regular,
-                        9.5,
-                        0.7,
-                    );
+                    self.push_wrapped(&normalized.join("  |  "), PdfFontKind::Regular, 9.5, 0.7);
                 }
                 self.add_gap(1.4);
             }
             Block::Rule => {
-                self.push_wrapped(
-                    &"\u{2014}".repeat(45),
-                    PdfFontKind::Regular,
-                    9.0,
-                    1.5,
-                );
+                self.push_wrapped(&"\u{2014}".repeat(45), PdfFontKind::Regular, 9.0, 1.5);
             }
         }
     }
@@ -461,7 +450,8 @@ fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
                 continue;
             }
 
-            let proposed_len = current.chars().count() + usize::from(!current.is_empty()) + word.chars().count();
+            let proposed_len =
+                current.chars().count() + usize::from(!current.is_empty()) + word.chars().count();
             if proposed_len > max_chars && !current.is_empty() {
                 output.push(std::mem::take(&mut current));
             }
@@ -523,7 +513,10 @@ pub fn generate_pdf(markdown: &str, title: &str, dest: &Path) -> Result<PdfMeta,
         .map_err(|error| AppError::ArtifactGenerationFailed(error.to_string()))?;
 
     if !warnings.is_empty() {
-        tracing::debug!(warning_count = warnings.len(), "PDF generated with warnings");
+        tracing::debug!(
+            warning_count = warnings.len(),
+            "PDF generated with warnings"
+        );
     }
     Ok(PdfMeta { page_count })
 }
