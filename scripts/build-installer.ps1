@@ -14,8 +14,7 @@ try {
 }
 
 # Don't assume `src-tauri/target` -- a machine-local `.cargo/config.toml`
-# (or the CARGO_TARGET_DIR env var) can redirect Cargo's output elsewhere,
-# as it does on this dev machine (G: is exFAT, unreliable for build output).
+# (or the CARGO_TARGET_DIR env var) can redirect Cargo's output elsewhere.
 # Cargo's config discovery walks up from the current directory, not from
 # --manifest-path, so this must run from inside src-tauri to pick up its
 # .cargo/config.toml.
@@ -45,18 +44,22 @@ $lines = foreach ($artifact in $artifacts) {
   "$hash  $($artifact.Name)"
 }
 # ASCII, not UTF-8 -- Windows PowerShell 5.1's -Encoding utf8 writes a BOM,
-# which breaks standard `sha256sum -c` / CI tooling that expects a plain
-# checksum file. Hex hashes and these filenames are pure ASCII anyway.
+# which breaks standard `sha256sum -c` tooling.
 Set-Content -Path $checksumPath -Value $lines -Encoding ascii
 
-$rootArtifacts = @()
-foreach ($artifact in $artifacts) {
-  $destination = Join-Path $repoRoot $artifact.Name
-  Copy-Item -LiteralPath $artifact.FullName -Destination $destination -Force
-  $rootArtifacts += $destination
+# Keep compiled distribution artifacts out of the Git source root. The
+# release-output directory is gitignored and mirrors what CI uploads to a
+# GitHub Release.
+$releaseOutput = Join-Path $repoRoot "release-output"
+if (Test-Path $releaseOutput) {
+  Remove-Item -LiteralPath $releaseOutput -Recurse -Force
 }
-$rootChecksumPath = Join-Path $repoRoot "SHA256SUMS.txt"
-Copy-Item -LiteralPath $checksumPath -Destination $rootChecksumPath -Force
+New-Item -ItemType Directory -Path $releaseOutput -Force | Out-Null
+
+foreach ($artifact in $artifacts) {
+  Copy-Item -LiteralPath $artifact.FullName -Destination $releaseOutput -Force
+}
+Copy-Item -LiteralPath $checksumPath -Destination $releaseOutput -Force
 
 Write-Host ""
 Write-Host "Installer build complete:" -ForegroundColor Green
@@ -65,11 +68,7 @@ foreach ($artifact in $artifacts) {
 }
 Write-Host "  $checksumPath"
 Write-Host ""
-Write-Host "Copied release files to project root:" -ForegroundColor Green
-foreach ($artifact in $rootArtifacts) {
-  Write-Host "  $artifact"
-}
-Write-Host "  $rootChecksumPath"
+Write-Host "Release files staged in:" -ForegroundColor Green
+Write-Host "  $releaseOutput"
 Write-Host ""
-Write-Host "This build is unsigned (no Windows code-signing certificate configured yet)." -ForegroundColor Yellow
-Write-Host "Windows SmartScreen will warn on first run -- verify the checksum above instead."
+Write-Host "For public distribution, publish these files through the signed GitHub Release workflow." -ForegroundColor Yellow
