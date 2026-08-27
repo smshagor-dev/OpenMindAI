@@ -4,6 +4,7 @@ use futures_util::StreamExt;
 use reqwest::{header, Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use tokio::{fs as async_fs, io::AsyncWriteExt};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     app_error::AppError,
@@ -67,6 +68,7 @@ pub async fn ensure_dependencies(
     root: &PortableRootManager,
     client: &Client,
     entry: &ModelCatalogEntry,
+    cancellation: &CancellationToken,
 ) -> Result<(), AppError> {
     let Some(download) = entry.download.as_ref() else {
         return Ok(());
@@ -78,6 +80,10 @@ pub async fn ensure_dependencies(
     let model_dir = root.resolve_relative(&download.destination_dir)?;
     fs::create_dir_all(&model_dir)?;
     ensure_contained(root.root(), &model_dir)?;
+
+    if cancellation.is_cancelled() {
+        return Err(AppError::InferenceCancelled("download stopped".to_string()));
+    }
 
     let api_url = format!("https://huggingface.co/api/models/{}?blobs=true", entry.repo);
     let model: HuggingFaceModel = client
@@ -93,9 +99,13 @@ pub async fn ensure_dependencies(
 
     let mut files = Vec::new();
     for dependency in &download.dependencies {
+        if cancellation.is_cancelled() {
+            return Err(AppError::InferenceCancelled("download stopped".to_string()));
+        }
         match resolve_dependency(&entry.repo, &model, dependency) {
             Ok(resolved) => {
-                let installed = download_dependency(root, client, &model_dir, &resolved).await?;
+                let installed =
+                    download_dependency(root, client, &model_dir, &resolved, cancellation).await?;
                 files.push(installed);
             }
             Err(error) if !dependency.required => {
@@ -172,6 +182,7 @@ async fn download_dependency(
     client: &Client,
     model_dir: &Path,
     dependency: &ResolvedDependency,
+    cancellation: &CancellationToken,
 ) -> Result<PackageFileManifest, AppError> {
     let final_path = model_dir.join(&dependency.filename);
     let temp_dir = root.resolve_relative("temp/downloads")?;
@@ -204,7 +215,9 @@ async fn download_dependency(
         dependency.size_bytes.saturating_add(PACKAGE_SPACE_MARGIN),
     )?;
 
-    let existing = fs::metadata(&part_path).map(|metadata| metadata.len()).unwrap_or(0);
+    let existing = fs::metadata(&part_path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
     let mut request = client.get(&dependency.source_url);
     if existing > 0 {
         request = request.header(header::RANGE, format!("bytes={existing}-"));
@@ -233,6 +246,10 @@ async fn download_dependency(
         .await?;
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
+        if cancellation.is_cancelled() {
+            file.flush().await?;
+            return Err(AppError::InferenceCancelled("download stopped".to_string()));
+        }
         let chunk = chunk.map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?;
         file.write_all(&chunk).await?;
     }
