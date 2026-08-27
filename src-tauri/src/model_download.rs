@@ -356,7 +356,8 @@ impl ModelDownloadManager {
             self.update_status(|status| {
                 status.downloaded_bytes = downloaded;
                 status.percentage = Some((downloaded as f64 / metadata.size_bytes as f64) * 100.0);
-                status.speed_bytes_per_sec = Some(downloaded.saturating_sub(existing) as f64 / elapsed);
+                status.speed_bytes_per_sec =
+                    Some(downloaded.saturating_sub(existing) as f64 / elapsed);
             })?;
         }
         file.flush().await?;

@@ -287,6 +287,10 @@ impl LlamaRuntimeManager {
             "--parallel".to_string(),
             config.parallelism.to_string(),
         ];
+        if let Some(mmproj_path) = discover_mmproj_sibling(&model_path) {
+            args.push("--mmproj".to_string());
+            args.push(mmproj_path.display().to_string());
+        }
         if config.gpu_layers > 0 {
             args.push("--gpu-layers".to_string());
             args.push(config.gpu_layers.to_string());
@@ -482,6 +486,28 @@ fn resolve_model_path(root: &PortableRootManager, path: &str) -> Result<PathBuf,
     } else {
         root.resolve_relative(path)
     }
+}
+
+fn discover_mmproj_sibling(model_path: &Path) -> Option<PathBuf> {
+    let parent = model_path.parent()?;
+    let mut candidates = fs::read_dir(parent)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
+                && path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|name| name.to_ascii_lowercase().starts_with("mmproj-"))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.into_iter().next()
 }
 
 fn run_probe(

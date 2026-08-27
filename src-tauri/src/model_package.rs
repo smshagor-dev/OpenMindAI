@@ -85,7 +85,10 @@ pub async fn ensure_dependencies(
         return Err(AppError::InferenceCancelled("download stopped".to_string()));
     }
 
-    let api_url = format!("https://huggingface.co/api/models/{}?blobs=true", entry.repo);
+    let api_url = format!(
+        "https://huggingface.co/api/models/{}?blobs=true",
+        entry.repo
+    );
     let model: HuggingFaceModel = client
         .get(api_url)
         .send()
@@ -198,7 +201,9 @@ async fn download_dependency(
         if size_matches {
             let actual = sha256_file(&final_path)?;
             let verification = match dependency.sha256.as_deref() {
-                Some(expected) if actual.eq_ignore_ascii_case(expected) => VerificationState::Verified,
+                Some(expected) if actual.eq_ignore_ascii_case(expected) => {
+                    VerificationState::Verified
+                }
                 Some(_) => VerificationState::Failed,
                 None => VerificationState::Unverified,
             };
@@ -233,7 +238,8 @@ async fn download_dependency(
     if !response.status().is_success() {
         return Err(AppError::ModelDownloadFailed(format!(
             "HTTP {} while downloading {} dependency",
-            response.status(), dependency.role
+            response.status(),
+            dependency.role
         )));
     }
 
