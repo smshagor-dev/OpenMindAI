@@ -424,8 +424,19 @@ fn extract_snippet(region: &str, marker: &str) -> Option<String> {
     let marker_index = region.find(marker)?;
     let tag_start = region[..marker_index].rfind('<')?;
     let tag_end_relative = region[tag_start..].find('>')?;
-    let content_start = tag_start + tag_end_relative + 1;
-    let close_relative = region[content_start..].find("</")?;
+    let tag_end = tag_start + tag_end_relative;
+    let opening_tag = &region[tag_start + 1..tag_end];
+    let tag_name = opening_tag
+        .split_whitespace()
+        .next()?
+        .trim_start_matches('/');
+    if tag_name.is_empty() {
+        return None;
+    }
+
+    let content_start = tag_end + 1;
+    let closing_tag = format!("</{tag_name}>");
+    let close_relative = region[content_start..].find(&closing_tag)?;
     let content_end = content_start + close_relative;
     let snippet = clean_html_text(&region[content_start..content_end]);
     (!snippet.is_empty()).then_some(snippet)
