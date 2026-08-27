@@ -1,3 +1,5 @@
+pub(crate) mod secret_store;
+
 use chrono::Utc;
 use reqwest::{header, Client};
 use rusqlite::{params, OptionalExtension};
@@ -6,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::{app_error::AppError, database::Database};
 
 const SETTINGS_KEY: &str = "app.github";
+const SECRET_SLOT: &str = "github-token";
 const USER_AGENT: &str = "OpenMindAI-Desktop";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,8 +45,7 @@ pub struct GithubIssueSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct StoredGithub {
-    token: String,
+struct StoredGithubAccount {
     account: GithubAccount,
 }
 
@@ -87,14 +89,33 @@ impl<'a> GithubRepository<'a> {
     }
 
     pub fn get_account(&self) -> Result<Option<GithubAccount>, AppError> {
-        Ok(self.get_stored()?.map(|stored| stored.account))
+        let Some((account, legacy_token)) = self.get_stored()? else {
+            return Ok(None);
+        };
+
+        if let Some(token) = legacy_token {
+            self.migrate_legacy(&account, &token)?;
+        }
+        Ok(Some(account))
     }
 
     pub fn get_token(&self) -> Result<Option<String>, AppError> {
-        Ok(self.get_stored()?.map(|stored| stored.token))
+        if let Some(token) = secret_store::get_secret(SECRET_SLOT)? {
+            return Ok(Some(token));
+        }
+
+        let Some((account, legacy_token)) = self.get_stored()? else {
+            return Ok(None);
+        };
+        let Some(token) = legacy_token else {
+            return Ok(None);
+        };
+
+        self.migrate_legacy(&account, &token)?;
+        Ok(Some(token))
     }
 
-    fn get_stored(&self) -> Result<Option<StoredGithub>, AppError> {
+    fn get_stored(&self) -> Result<Option<(GithubAccount, Option<String>)>, AppError> {
         let value: Option<String> = self
             .database
             .connection()
@@ -104,16 +125,31 @@ impl<'a> GithubRepository<'a> {
                 |row| row.get(0),
             )
             .optional()?;
-        Ok(value.and_then(|value| serde_json::from_str(&value).ok()))
+
+        let Some(value) = value else {
+            return Ok(None);
+        };
+        let payload: serde_json::Value = serde_json::from_str(&value)
+            .map_err(|error| AppError::internal(format!("invalid GitHub settings: {error}")))?;
+        let account_value = payload
+            .get("account")
+            .cloned()
+            .ok_or_else(|| AppError::internal("GitHub settings are missing account metadata"))?;
+        let account: GithubAccount = serde_json::from_value(account_value)
+            .map_err(|error| AppError::internal(format!("invalid GitHub account metadata: {error}")))?;
+        let legacy_token = payload
+            .get("token")
+            .and_then(serde_json::Value::as_str)
+            .filter(|token| !token.is_empty())
+            .map(ToOwned::to_owned);
+        Ok(Some((account, legacy_token)))
     }
 
-    pub fn save(&self, token: &str, account: &GithubAccount) -> Result<(), AppError> {
-        let stored = StoredGithub {
-            token: token.to_string(),
+    fn persist_account(&self, account: &GithubAccount) -> Result<(), AppError> {
+        let payload = serde_json::to_string(&StoredGithubAccount {
             account: account.clone(),
-        };
-        let payload = serde_json::to_string(&stored)
-            .map_err(|error| AppError::internal(error.to_string()))?;
+        })
+        .map_err(|error| AppError::internal(error.to_string()))?;
         let now = Utc::now().to_rfc3339();
         self.database.connection().execute(
             "INSERT INTO app_settings (key, value_json, updated_at)
@@ -124,7 +160,25 @@ impl<'a> GithubRepository<'a> {
         Ok(())
     }
 
+    fn migrate_legacy(&self, account: &GithubAccount, token: &str) -> Result<(), AppError> {
+        secret_store::set_secret(SECRET_SLOT, token)?;
+        self.persist_account(account)?;
+        tracing::info!("migrated GitHub credential from SQLite to the OS credential store");
+        Ok(())
+    }
+
+    pub fn save(&self, token: &str, account: &GithubAccount) -> Result<(), AppError> {
+        if token.trim().is_empty() {
+            return Err(AppError::GithubApiError(
+                "GitHub token cannot be empty".to_string(),
+            ));
+        }
+        secret_store::set_secret(SECRET_SLOT, token)?;
+        self.persist_account(account)
+    }
+
     pub fn clear(&self) -> Result<(), AppError> {
+        secret_store::delete_secret(SECRET_SLOT)?;
         self.database.connection().execute(
             "DELETE FROM app_settings WHERE key = ?1",
             params![SETTINGS_KEY],
