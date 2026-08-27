@@ -49,6 +49,8 @@ pub enum AppError {
     ArtifactGenerationFailed(String),
     #[error("GITHUB_API_ERROR: {0}")]
     GithubApiError(String),
+    #[error("SECRET_STORE_FAILED: {0}")]
+    SecretStoreFailed(String),
     #[error("SETUP_REQUIRED: {0}")]
     SetupRequired(String),
     #[error("INTERNAL: {0}")]
