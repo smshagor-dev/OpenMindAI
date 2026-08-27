@@ -6,6 +6,7 @@ on:
       - production-readiness-completion
     paths:
       - scripts/apply_vision_media_pipeline.py
+      - scripts/apply_rust_validation_fixes.py
       - .github/workflows/apply-vision-media-pipeline.yml
       - src-tauri/Cargo.toml
 
@@ -23,6 +24,9 @@ jobs:
 
       - name: Apply vision media pipeline patch
         run: python scripts/apply_vision_media_pipeline.py
+
+      - name: Apply Rust validation fixes
+        run: python scripts/apply_rust_validation_fixes.py
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -65,7 +69,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/lib/chat.ts src/api.ts src/App.tsx src-tauri/src/inference.rs src-tauri/src/lib.rs
+          git add src/lib/chat.ts src/api.ts src/App.tsx src-tauri/src/inference.rs src-tauri/src/lib.rs src-tauri/src/document_generator.rs src-tauri/src/hardware.rs src-tauri/src/runtime.rs
           if git diff --cached --quiet; then
             exit 0
           fi
