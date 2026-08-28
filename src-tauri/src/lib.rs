@@ -33,7 +33,9 @@ use database::Database;
 use github::{GithubAccount, GithubIssueSummary, GithubRepoSummary, GithubRepository};
 use google::{GoogleCredentialsStatus, GoogleRepository};
 use hardware::{HardwareProfile, HardwareProfiler};
-use inference::{ActiveGenerations, InferenceMode, StreamRequest, StreamStartedEvent};
+use inference::{
+    ActiveGenerations, InferenceMedia, InferenceMode, StreamRequest, StreamStartedEvent,
+};
 use launch_planner::{LaunchPlan, ModelLaunchPlanner};
 use maintenance::{BackupInfo, DiagnosticReport, RepairSummary};
 use model_catalog::ModelCatalogReport;
@@ -1266,6 +1268,7 @@ async fn run_streaming_completion(
     model: &ModelRecord,
     assistant: &Message,
     mode: &str,
+    media: &[InferenceMedia],
 ) -> Result<(), app_error::AppError> {
     let hardware = HardwareProfiler::detect();
     let plan = ModelLaunchPlanner::plan(model, &hardware, allocate_local_port()?);
@@ -1294,6 +1297,7 @@ async fn run_streaming_completion(
         conversation_id,
         assistant,
         mode: inference_mode,
+        media,
     })
     .await;
 
@@ -1316,12 +1320,25 @@ async fn send_chat_message(
     conversation_id: String,
     content: String,
     mode: String,
+    media: Option<Vec<InferenceMedia>>,
     state: State<'_, AppState>,
 ) -> Result<Message, app_error::AppError> {
     let trimmed = content.trim();
     if trimmed.is_empty() {
         return Err(app_error::AppError::InferenceFailed(
             "message cannot be empty".to_string(),
+        ));
+    }
+
+    let media = media.unwrap_or_default();
+    if !media.is_empty() && !mode.eq_ignore_ascii_case("vision") {
+        return Err(app_error::AppError::InferenceFailed(
+            "image media can only be sent through vision mode".to_string(),
+        ));
+    }
+    if mode.eq_ignore_ascii_case("vision") && media.is_empty() {
+        return Err(app_error::AppError::InferenceFailed(
+            "vision mode requires an attached image".to_string(),
         ));
     }
 
@@ -1363,7 +1380,16 @@ async fn send_chat_message(
     )
     .map_err(|error| app_error::AppError::StreamFailed(error.to_string()))?;
 
-    run_streaming_completion(&app, &state, &conversation_id, &model, &assistant, &mode).await?;
+    run_streaming_completion(
+        &app,
+        &state,
+        &conversation_id,
+        &model,
+        &assistant,
+        &mode,
+        &media,
+    )
+    .await?;
     Ok(assistant)
 }
 
@@ -1394,6 +1420,12 @@ async fn regenerate_message(
             .ok_or_else(|| {
                 app_error::AppError::internal("no preceding user message to regenerate from")
             })?;
+        if user.content.contains("[Mode: Image/Vision Review]") {
+            return Err(app_error::AppError::InferenceFailed(
+                "Vision responses cannot be regenerated without the original ephemeral image. Reattach the image and send it again."
+                    .to_string(),
+            ));
+        }
 
         repo.delete_message(&assistant_message_id)?;
         user
@@ -1426,7 +1458,16 @@ async fn regenerate_message(
     )
     .map_err(|error| app_error::AppError::StreamFailed(error.to_string()))?;
 
-    run_streaming_completion(&app, &state, &conversation_id, &model, &assistant, &mode).await?;
+    run_streaming_completion(
+        &app,
+        &state,
+        &conversation_id,
+        &model,
+        &assistant,
+        &mode,
+        &[],
+    )
+    .await?;
     Ok(assistant)
 }
 

@@ -137,8 +137,17 @@ export const api = {
   cancelRuntimeInstall: () => call<RuntimeInstallStatus>("cancel_runtime_install"),
   startRuntime: () => call<LlamaRuntimeStatus>("start_llama_runtime"),
   stopRuntime: () => call<void>("stop_llama_runtime"),
-  sendChatMessage: (conversationId: string, content: string, mode: string) =>
-    call<Message>("send_chat_message", { conversationId, content, mode }),
+  sendChatMessage: (
+    conversationId: string,
+    content: string,
+    mode: string,
+    media: Array<{
+      kind: "image";
+      name: string;
+      mimeType: "image/png" | "image/jpeg";
+      dataUrl: string;
+    }> = [],
+  ) => call<Message>("send_chat_message", { conversationId, content, mode, media }),
   regenerateMessage: (conversationId: string, assistantMessageId: string, mode: string) =>
     call<Message>("regenerate_message", { conversationId, assistantMessageId, mode }),
   cancelGeneration: (conversationId: string) => call<void>("cancel_generation", { conversationId }),

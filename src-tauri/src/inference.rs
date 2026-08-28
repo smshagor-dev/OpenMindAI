@@ -19,6 +19,7 @@ const WEB_SEARCH_USER_AGENT: &str =
 const WEB_SEARCH_RESULTS: usize = 8;
 const WEB_SEARCH_TIMEOUT_SECS: u64 = 12;
 const MAX_VISION_DATA_URL_CHARS: usize = 6_000_000;
+const MAX_INFERENCE_MEDIA_ITEMS: usize = 4;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,6 +53,15 @@ pub struct InferenceMetrics {
     pub time_to_first_token_ms: Option<u128>,
     pub generated_chars: usize,
     pub elapsed_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InferenceMedia {
+    pub kind: String,
+    pub name: String,
+    pub mime_type: String,
+    pub data_url: String,
 }
 
 #[derive(Default)]
@@ -103,6 +113,7 @@ pub struct StreamRequest<'a> {
     pub conversation_id: &'a str,
     pub assistant: &'a Message,
     pub mode: InferenceMode,
+    pub media: &'a [InferenceMedia],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,6 +166,7 @@ pub async fn stream_chat_completion(
     let started = Instant::now();
     let mut messages = build_context(request.database, request.conversation_id)?;
     append_live_web_context(request.client, &mut messages, &cancellation).await;
+    attach_media_to_latest_user_message(&mut messages, request.media)?;
     let config = ChatGenerationConfig::default();
     let body = json!({
         "model": "qwen3-4b-q4_k_m",
@@ -250,6 +262,79 @@ pub async fn stream_chat_completion(
         generated_chars,
         elapsed_ms: started.elapsed().as_millis(),
     })
+}
+
+fn attach_media_to_latest_user_message(
+    messages: &mut [serde_json::Value],
+    media: &[InferenceMedia],
+) -> Result<(), AppError> {
+    if media.is_empty() {
+        return Ok(());
+    }
+    if media.len() > MAX_INFERENCE_MEDIA_ITEMS {
+        return Err(AppError::InferenceFailed(format!(
+            "at most {MAX_INFERENCE_MEDIA_ITEMS} image attachments can be analyzed at once"
+        )));
+    }
+
+    let message = messages
+        .iter_mut()
+        .rev()
+        .find(|message| message.get("role").and_then(|value| value.as_str()) == Some("user"))
+        .ok_or_else(|| {
+            AppError::InferenceFailed("vision request has no user message".to_string())
+        })?;
+
+    let mut content = match message.get("content") {
+        Some(serde_json::Value::String(text)) => vec![json!({
+            "type": "text",
+            "text": if text.trim().is_empty() { "Review the attached image." } else { text }
+        })],
+        Some(serde_json::Value::Array(parts)) => parts.clone(),
+        _ => {
+            return Err(AppError::InferenceFailed(
+                "vision request user message has unsupported content".to_string(),
+            ));
+        }
+    };
+
+    for item in media {
+        if item.kind != "image" {
+            return Err(AppError::InferenceFailed(
+                "unsupported inference media type".to_string(),
+            ));
+        }
+        if item.name.trim().is_empty() || item.name.chars().count() > 255 {
+            return Err(AppError::InferenceFailed(
+                "invalid image attachment name".to_string(),
+            ));
+        }
+        if !matches!(item.mime_type.as_str(), "image/png" | "image/jpeg") {
+            return Err(AppError::InferenceFailed(format!(
+                "unsupported image MIME type: {}",
+                item.mime_type
+            )));
+        }
+        if item.data_url.len() > MAX_VISION_DATA_URL_CHARS {
+            return Err(AppError::ContextOverflow(
+                "attached image exceeds the local vision payload limit".to_string(),
+            ));
+        }
+        let expected_prefix = format!("data:{};base64,", item.mime_type);
+        if !item.data_url.starts_with(&expected_prefix) {
+            return Err(AppError::InferenceFailed(
+                "image attachment data URL does not match its MIME type".to_string(),
+            ));
+        }
+        validate_inline_data_image_url(&item.data_url)?;
+        content.push(json!({
+            "type": "image_url",
+            "image_url": { "url": item.data_url }
+        }));
+    }
+
+    message["content"] = serde_json::Value::Array(content);
+    Ok(())
 }
 
 async fn append_live_web_context(
@@ -910,6 +995,27 @@ mod tests {
         assert_eq!(value["content"][1]["type"], "image_url");
         assert_eq!(
             value["content"][1]["image_url"]["url"],
+            "data:image/png;base64,QUJDRA=="
+        );
+    }
+
+    #[test]
+    fn attaches_ephemeral_media_without_persisted_markup() {
+        let mut messages = vec![json!({
+            "role": "user",
+            "content": "[Attachment: screen.png, image]\nPlease review this image."
+        })];
+        let media = vec![InferenceMedia {
+            kind: "image".to_string(),
+            name: "screen.png".to_string(),
+            mime_type: "image/png".to_string(),
+            data_url: "data:image/png;base64,QUJDRA==".to_string(),
+        }];
+        attach_media_to_latest_user_message(&mut messages, &media).unwrap();
+        assert_eq!(messages[0]["content"][0]["type"], "text");
+        assert_eq!(messages[0]["content"][1]["type"], "image_url");
+        assert_eq!(
+            messages[0]["content"][1]["image_url"]["url"],
             "data:image/png;base64,QUJDRA=="
         );
     }
