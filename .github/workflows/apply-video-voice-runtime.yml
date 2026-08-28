@@ -24,6 +24,9 @@ jobs:
         with:
           ref: end-to-end-video-voice-runtime
 
+      - name: Clear previous compiler diagnostic
+        run: rm -f clippy-summary.txt
+
       - name: Materialize production source
         run: python scripts/apply_video_voice_runtime.py
 
@@ -59,7 +62,33 @@ jobs:
         run: cargo fmt --manifest-path src-tauri/Cargo.toml
 
       - name: Strict Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+        id: clippy
+        shell: bash
+        run: |
+          set +e
+          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings 2>&1 | tee clippy.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            {
+              echo "Strict Clippy failed with exit code $status"
+              echo
+              tail -n 300 clippy.log
+            } > clippy-summary.txt
+          fi
+          exit "$status"
+
+      - name: Persist Clippy diagnostic
+        if: failure() && steps.clippy.outcome == 'failure'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add clippy-summary.txt
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Record video voice Clippy diagnostic"
+          git push origin HEAD:end-to-end-video-voice-runtime
 
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --all-features
