@@ -4,7 +4,9 @@ use crate::{
     app_error::AppError,
     hardware::{HardwareProfile, HardwareProfiler},
     model_catalog::{entry_by_id, installed_file_for_pattern, wildcard_match, ModelCatalogEntry},
-    model_download::{ensure_contained, validate_installed_dependencies, QwenModelManifest, VerificationState},
+    model_download::{
+        ensure_contained, validate_installed_dependencies, QwenModelManifest, VerificationState,
+    },
     portable_root::{available_bytes_for_path, PortableRootManager},
 };
 
@@ -87,7 +89,11 @@ fn preflight_with_environment(
     let mut checks = Vec::new();
 
     checks.push(match root.validate_root() {
-        Ok(()) => check(PreflightStatus::Ok, "Storage", "OpenMindAI Root is writable"),
+        Ok(()) => check(
+            PreflightStatus::Ok,
+            "Storage",
+            "OpenMindAI Root is writable",
+        ),
         Err(error) => check(
             PreflightStatus::Error,
             "Storage",
@@ -201,11 +207,9 @@ fn validate_model_package(
         return Ok(());
     };
     let model_dir = root.resolve_relative(&download.destination_dir)?;
-    let Some(primary_path) = installed_file_for_pattern(
-        root,
-        &download.destination_dir,
-        &download.filename_pattern,
-    ) else {
+    let Some(primary_path) =
+        installed_file_for_pattern(root, &download.destination_dir, &download.filename_pattern)
+    else {
         checks.push(check(
             PreflightStatus::Error,
             "Model package",
@@ -293,7 +297,10 @@ fn validate_primary_manifest(
         ));
         return Ok(());
     }
-    if !wildcard_match(&entry.download.as_ref().unwrap().filename_pattern, &manifest.filename) {
+    if !wildcard_match(
+        &entry.download.as_ref().unwrap().filename_pattern,
+        &manifest.filename,
+    ) {
         checks.push(check(
             PreflightStatus::Error,
             "Model package",
