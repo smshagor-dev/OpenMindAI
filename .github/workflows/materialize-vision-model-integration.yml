@@ -34,7 +34,40 @@ jobs:
           components: rustfmt, clippy
 
       - name: Apply source integration
-        run: python scripts/apply_vision_model_integration.py
+        run: |
+          python scripts/apply_vision_model_integration.py
+          python - <<'PY'
+          from pathlib import Path
+
+          chat = Path("src/lib/chat.ts")
+          text = chat.read_text(encoding="utf-8")
+          text = text.replace(
+              "const bitmap = await createImageBitmap(file);",
+              "const bitmap = await window.createImageBitmap(file);",
+          )
+          text = text.replace(
+              'const safeName = file.name.replace(/[\\]\\r\\n]/g, " ").replace(/\\]/g, " ");',
+              'const safeName = file.name.replaceAll("]", " ").replace(/[\\r\\n]/g, " ");',
+          )
+          chat.write_text(text, encoding="utf-8")
+
+          inference = Path("src-tauri/src/inference.rs")
+          text = inference.read_text(encoding="utf-8")
+          text = text.replace(
+              "struct InlineDataImage {\n    alt: String,\n    data_url: String,\n}",
+              "struct InlineDataImage {\n    data_url: String,\n}",
+          )
+          text = text.replace(
+              "        images.push(InlineDataImage {\n            alt,\n            data_url: url.to_string(),\n        });",
+              "        images.push(InlineDataImage {\n            data_url: url.to_string(),\n        });",
+          )
+          text = text.replace('        assert_eq!(images[0].alt, "screen.png");\n', "")
+          text = text.replace(
+              '            vec![InlineDataImage {\n                alt: "screen.png".to_string(),\n                data_url: "data:image/png;base64,QUJDRA==".to_string(),\n            }],',
+              '            vec![InlineDataImage {\n                data_url: "data:image/png;base64,QUJDRA==".to_string(),\n            }],',
+          )
+          inference.write_text(text, encoding="utf-8")
+          PY
 
       - name: Format changed sources
         run: |
