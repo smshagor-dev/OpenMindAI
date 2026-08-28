@@ -1,0 +1,73 @@
+name: Apply media memory tolerance
+
+on:
+  push:
+    branches:
+      - media-preflight-memory-tolerance
+    paths:
+      - scripts/apply_media_memory_tolerance.py
+      - .github/workflows/apply-media-memory-tolerance.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: media-memory-tolerance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  materialize:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: media-preflight-memory-tolerance
+          fetch-depth: 0
+
+      - name: Apply production preflight patch
+        run: python scripts/apply_media_memory_tolerance.py
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Format production Rust
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+
+      - name: Rust format check
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Strict Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --all-features
+
+      - name: Remove one-shot workflow
+        run: rm .github/workflows/apply-media-memory-tolerance.yml
+
+      - name: Diff hygiene
+        run: |
+          git diff --check
+          test ! -e scripts/apply_media_memory_tolerance.py
+          test ! -e .github/workflows/apply-media-memory-tolerance.yml
+
+      - name: Commit validated production changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Tolerate small reserved-memory gaps in media preflight"
+          git push origin HEAD:media-preflight-memory-tolerance
