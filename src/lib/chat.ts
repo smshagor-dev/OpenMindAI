@@ -21,6 +21,15 @@ export interface AttachmentDraft {
   type: string;
   kind: "text" | "image" | "pdf" | "binary";
   contentPreview: string | null;
+  mediaDataUrl: string | null;
+  mediaMimeType: "image/png" | "image/jpeg" | null;
+}
+
+export interface InferenceMediaDraft {
+  kind: "image";
+  name: string;
+  mimeType: "image/png" | "image/jpeg";
+  dataUrl: string;
 }
 
 const MAX_VISION_IMAGE_INPUT_BYTES = 16 * 1024 * 1024;
@@ -68,8 +77,10 @@ async function encodeVisionImage(file: File) {
     if (!context) throw new Error("Could not prepare the image for local vision.");
     context.drawImage(image, 0, 0, width, height);
 
+    let mediaMimeType: "image/png" | "image/jpeg" =
+      mimeType === "image/png" ? "image/png" : "image/jpeg";
     let dataUrl =
-      mimeType === "image/png"
+      mediaMimeType === "image/png"
         ? canvas.toDataURL("image/png")
         : canvas.toDataURL("image/jpeg", 0.88);
 
@@ -82,6 +93,7 @@ async function encodeVisionImage(file: File) {
       flattenedContext.fillStyle = "#ffffff";
       flattenedContext.fillRect(0, 0, width, height);
       flattenedContext.drawImage(canvas, 0, 0);
+      mediaMimeType = "image/jpeg";
       dataUrl = flattened.toDataURL("image/jpeg", 0.82);
     }
 
@@ -89,11 +101,7 @@ async function encodeVisionImage(file: File) {
       throw new Error("Image remains too large after local optimization. Resize it and try again.");
     }
 
-    const safeName = file.name
-      .split("]")
-      .join(" ")
-      .replace(/[\r\n]/g, " ");
-    return `![${safeName}](${dataUrl})`;
+    return { dataUrl, mimeType: mediaMimeType };
   } finally {
     window.URL.revokeObjectURL(objectUrl);
   }
@@ -124,10 +132,15 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
     /\.(md|txt|json|csv|ts|tsx|js|jsx|rs|py|html|css|sql|toml|yaml|yml)$/i.test(file.name);
 
   let contentPreview: string | null = null;
+  let mediaDataUrl: string | null = null;
+  let mediaMimeType: "image/png" | "image/jpeg" | null = null;
   if (isTextLike && file.size <= maxPreviewBytes) {
     contentPreview = await file.text();
   } else if (kind === "image") {
-    contentPreview = await encodeVisionImage(file);
+    const encoded = await encodeVisionImage(file);
+    mediaDataUrl = encoded.dataUrl;
+    mediaMimeType = encoded.mimeType;
+    contentPreview = `[Image attached: ${file.name}. Optimized image bytes are supplied only to the current local vision request and are not stored in chat history.]`;
   } else if (kind === "pdf") {
     try {
       const extracted = await extractPdfText(file);
@@ -152,7 +165,25 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
     type: file.type || "unknown",
     kind,
     contentPreview,
+    mediaDataUrl,
+    mediaMimeType,
   };
+}
+
+export function attachmentMedia(attachments: AttachmentDraft[]): InferenceMediaDraft[] {
+  return attachments.flatMap((attachment) => {
+    if (attachment.kind !== "image" || !attachment.mediaDataUrl || !attachment.mediaMimeType) {
+      return [];
+    }
+    return [
+      {
+        kind: "image" as const,
+        name: attachment.name,
+        mimeType: attachment.mediaMimeType,
+        dataUrl: attachment.mediaDataUrl,
+      },
+    ];
+  });
 }
 
 export function buildMessageContent(
@@ -260,13 +291,13 @@ export function modeInstruction(mode: ChatMode) {
         "If an attached PDF includes locally extracted text, answer from that text and use the supplied Page markers when page-specific attribution helps. Never claim to have read pages whose text was unavailable. If the request is to create/export a PDF instead, produce clean PDF-ready content with headings, concise paragraphs, and tables where useful.",
       ].join("\n");
     case "image":
-      return "[Mode: Image Creation]\nCreate a production-quality image generation prompt with subject, composition, style, lighting, camera/framing, colors, negative prompt, and recommended aspect ratio. Do not claim an image file was generated unless an image generator is connected.";
+      return "[Mode: Image Creation]\nCreate a concise production-quality prompt for the connected local image renderer, including subject, composition, style, lighting, camera/framing, colors, and useful negative constraints. Do not claim rendering succeeded until the artifact pipeline reports a ready image.";
     case "video":
       return "[Mode: Video Creation]\nCreate a production-quality video generation prompt with subject, scene progression, camera motion, timing, lighting, style, negative prompt, and recommended duration/aspect ratio. Do not claim a video file was generated unless a video generator is connected.";
     case "voice":
       return "[Mode: Voice Creation]\nCreate a production-quality voice generation prompt or script with voice style, pacing, emotion, pronunciation notes, format, and final narration copy. Do not claim audio was generated unless a voice generator is connected.";
     case "vision":
-      return "[Mode: Image/Vision Review]\nUse the local vision runtime when the attached image has been made available to it. Never invent visual details from file metadata. If the vision runtime is unavailable, say so clearly.";
+      return "[Mode: Image/Vision Review]\nAnalyze only the image bytes supplied to the current local Lens request. Never invent visual details from attachment metadata. If Lens rejects or cannot access the image, say so clearly.";
     default:
       return "";
   }

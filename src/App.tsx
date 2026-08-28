@@ -40,6 +40,7 @@ import { ToolsWorkspace } from "./components/ToolsWorkspace";
 import { ProjectsWorkspace } from "./components/ProjectsWorkspace";
 import { notifyUser } from "./lib/notify";
 import {
+  attachmentMedia,
   buildMessageContent,
   inferChatMode,
   isUntitledConversation,
@@ -392,6 +393,7 @@ export function App() {
     if ((!content && attachments.length === 0) || streamingId) return;
     const inferredMode = inferChatMode(content, attachments);
     const messageContent = buildMessageContent(content, attachments, inferredMode);
+    const inferenceMedia = attachmentMedia(attachments);
     setPrompt("");
     setAttachments([]);
     let conversationId = activeId;
@@ -452,7 +454,12 @@ export function App() {
           );
         }
       }
-      const assistant = await api.sendChatMessage(conversationId, messageContent, inferredMode);
+      const assistant = await api.sendChatMessage(
+        conversationId,
+        messageContent,
+        inferredMode,
+        inferenceMedia,
+      );
       const generationKind = generationKindForMode(inferredMode);
       if (generationKind) {
         const artifact = await api.createGenerationArtifact(
