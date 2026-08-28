@@ -5,43 +5,76 @@ on:
     branches:
       - main
       - production-readiness-completion
-      - fix/rustfmt-runtime-install
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  autofmt:
-    name: One-shot Rust formatting
-    if: github.ref == 'refs/heads/fix/rustfmt-runtime-install' && github.actor != 'github-actions[bot]'
+  frontend:
+    name: Frontend validation
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          fetch-depth: 2
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Version consistency
+        run: npm run check:version
+
+      - name: Lint
+        run: npm run lint
+
+      - name: TypeScript and Vite build
+        run: npm run build
+
+  rust:
+    name: Rust validation (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-22.04
+          - windows-latest
+          - macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
 
-      - name: Format runtime installer and restore CI workflow
-        shell: bash
-        run: |
-          cargo fmt --manifest-path src-tauri/Cargo.toml
-          git checkout HEAD^ -- .github/workflows/ci.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src-tauri/src/runtime_install.rs .github/workflows/ci.yml
-          if git diff --cached --quiet; then
-            echo "No formatting changes to commit"
-            exit 0
-          fi
-          git commit -m "chore: format runtime installer"
-          git push origin HEAD:fix/rustfmt-runtime-install
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Rust format check
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --all-features
