@@ -24,6 +24,26 @@ jobs:
         with:
           ref: runtime-hardening-video-voice
 
+      - name: Fix legacy manifest test fixture
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/apply_runtime_hardening.py")
+          text = path.read_text(encoding="utf-8")
+          replacements = {
+              '"source_url"': '"sourceUrl"',
+              '"archive_sha256"': '"archiveSha256"',
+              '"cli_path"': '"cliPath"',
+              '"installed_at"': '"installedAt"',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f"legacy fixture field not found: {old}")
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding="utf-8")
+          PY
+
       - name: Apply production hardening
         run: python scripts/apply_runtime_hardening.py
 
