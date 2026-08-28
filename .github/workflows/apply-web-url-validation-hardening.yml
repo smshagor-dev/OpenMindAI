@@ -52,6 +52,8 @@ jobs:
           text = Path('src-tauri/src/inference.rs').read_text(encoding='utf-8')
           required = [
               'reqwest::Url::parse(url)',
+              "trim_start_matches('[')",
+              "trim_end_matches(']')",
               'normalized_host.ends_with(".local")',
               'Ok(IpAddr::V4(address)) => is_public_ipv4(address)',
               'Ok(IpAddr::V6(address)) => is_public_ipv6(address)',
