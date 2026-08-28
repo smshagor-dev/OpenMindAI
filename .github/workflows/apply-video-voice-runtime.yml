@@ -26,7 +26,7 @@ jobs:
           ref: end-to-end-video-voice-runtime
 
       - name: Clear previous compiler diagnostic
-        run: rm -f clippy-summary.txt
+        run: rm -f clippy-summary.txt rust-test-summary.txt
 
       - name: Materialize production source
         run: python scripts/apply_video_voice_runtime.py
@@ -95,7 +95,33 @@ jobs:
           git push origin HEAD:end-to-end-video-voice-runtime
 
       - name: Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --all-features
+        id: rust_tests
+        shell: bash
+        run: |
+          set +e
+          cargo test --manifest-path src-tauri/Cargo.toml --all-features 2>&1 | tee rust-tests.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            {
+              echo "Rust tests failed with exit code $status"
+              echo
+              tail -n 500 rust-tests.log
+            } > rust-test-summary.txt
+          fi
+          exit "$status"
+
+      - name: Persist Rust test diagnostic
+        if: failure() && steps.rust_tests.outcome == 'failure'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add rust-test-summary.txt
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Record video voice Rust test diagnostic"
+          git push origin HEAD:end-to-end-video-voice-runtime
 
       - name: Diff hygiene
         run: git diff --check
