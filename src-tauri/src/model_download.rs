@@ -23,6 +23,7 @@ use crate::{
 
 #[path = "model_package.rs"]
 mod model_package;
+pub(crate) use model_package::validate_installed_dependencies;
 
 const SAFE_SPACE_MARGIN: u64 = 768 * 1024 * 1024;
 
