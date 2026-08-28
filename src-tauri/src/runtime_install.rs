@@ -20,7 +20,7 @@ use crate::{
     runtime::{preferred_backend_order, RuntimeBinaries, RuntimeManifest, RuntimeStatus},
 };
 
-const RELEASES_URL: &str = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest";
+const RELEASES_URL: &str = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=20";
 const SAFE_SPACE_MARGIN: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -78,24 +78,37 @@ struct GithubAsset {
     digest: Option<String>,
 }
 
-/// Maps `(target OS, backend)` to the official llama.cpp release asset name
-/// pattern, verified live against `ggml-org/llama.cpp`'s latest release.
-/// Returns `None` when upstream doesn't publish a build for that combination
-/// (notably: Linux has no CUDA or ROCm/HIP builds today) so callers can skip
-/// to the next hardware-preferred backend instead of failing outright.
-fn catalog_pattern(os: &str, backend: &BackendKind) -> Option<&'static str> {
-    match (os, backend) {
-        ("windows", BackendKind::Cpu) => Some("llama-*-bin-win-cpu-x64.zip"),
-        ("windows", BackendKind::Vulkan) => Some("llama-*-bin-win-vulkan-x64.zip"),
+/// Maps `(target OS, architecture, backend)` to official llama.cpp release
+/// asset patterns. The stable release can be metadata-only, so resolution is
+/// performed across recent releases instead of assuming `/releases/latest`
+/// contains platform binaries.
+fn catalog_pattern(os: &str, arch: &str, backend: &BackendKind) -> Option<&'static str> {
+    match (os, arch, backend) {
+        ("windows", "x86_64", BackendKind::Cpu) => Some("llama-*-bin-win-cpu-x64.zip"),
+        ("windows", "x86_64", BackendKind::Vulkan) => {
+            Some("llama-*-bin-win-vulkan-x64.zip")
+        }
         // Windows CUDA builds are published per CUDA version (12.4/13.3/13.4);
         // BackendKind only has one `Cuda` variant, so we standardize on 12.4
-        // for the broadest driver compatibility.
-        ("windows", BackendKind::Cuda) => Some("llama-*-bin-win-cuda-12.4-x64.zip"),
-        ("windows", BackendKind::Sycl) => Some("llama-*-bin-win-sycl-x64.zip"),
-        ("windows", BackendKind::Hip) => Some("llama-*-bin-win-rocm-*-x64.zip"),
-        ("linux", BackendKind::Cpu) => Some("llama-*-bin-ubuntu-x64.tar.gz"),
-        ("linux", BackendKind::Vulkan) => Some("llama-*-bin-ubuntu-vulkan-x64.tar.gz"),
-        ("linux", BackendKind::Sycl) => Some("llama-*-bin-ubuntu-sycl-fp32-x64.tar.gz"),
+        // for broad driver compatibility.
+        ("windows", "x86_64", BackendKind::Cuda) => {
+            Some("llama-*-bin-win-cuda-12.4-x64.zip")
+        }
+        ("windows", "x86_64", BackendKind::Sycl) => Some("llama-*-bin-win-sycl-x64.zip"),
+        ("windows", "x86_64", BackendKind::Hip) => Some("llama-*-bin-win-rocm-*-x64.zip"),
+        ("linux", "x86_64", BackendKind::Cpu) => Some("llama-*-bin-ubuntu-x64.tar.gz"),
+        ("linux", "x86_64", BackendKind::Vulkan) => {
+            Some("llama-*-bin-ubuntu-vulkan-x64.tar.gz")
+        }
+        ("linux", "x86_64", BackendKind::Sycl) => {
+            Some("llama-*-bin-ubuntu-sycl-fp32-x64.tar.gz")
+        }
+        ("macos", "aarch64", BackendKind::Cpu | BackendKind::Metal) => {
+            Some("llama-*-bin-macos-arm64.tar.gz")
+        }
+        ("macos", "x86_64", BackendKind::Cpu | BackendKind::Metal) => {
+            Some("llama-*-bin-macos-x64.tar.gz")
+        }
         _ => None,
     }
 }
@@ -112,8 +125,7 @@ fn backend_slug(backend: &BackendKind) -> &'static str {
 }
 
 /// Minimal single-`*`-or-more glob matcher for release asset names, e.g.
-/// `"llama-*-bin-win-rocm-*-x64.zip"` — mirrors the `-like` patterns
-/// `scripts/install-llama-runtime.ps1` already uses for the same asset list.
+/// `"llama-*-bin-win-rocm-*-x64.zip"`.
 fn glob_match(name: &str, pattern: &str) -> bool {
     let parts: Vec<&str> = pattern.split('*').collect();
     if parts.len() == 1 {
@@ -144,8 +156,47 @@ fn glob_match(name: &str, pattern: &str) -> bool {
     true
 }
 
+fn resolve_release_asset<'a>(
+    releases: &'a [GithubRelease],
+    pattern: &str,
+) -> Option<(&'a GithubRelease, &'a GithubAsset)> {
+    releases.iter().find_map(|release| {
+        release
+            .assets
+            .iter()
+            .find(|asset| glob_match(&asset.name, pattern))
+            .map(|asset| (release, asset))
+    })
+}
+
+fn required_sha256(asset: &GithubAsset) -> Result<&str, AppError> {
+    let digest = asset.digest.as_deref().ok_or_else(|| {
+        AppError::RuntimeInstallFailed(format!(
+            "runtime asset {} has no published digest",
+            asset.name
+        ))
+    })?;
+    let hash = digest.strip_prefix("sha256:").ok_or_else(|| {
+        AppError::RuntimeInstallFailed(format!(
+            "runtime asset {} uses an unsupported digest format",
+            asset.name
+        ))
+    })?;
+    if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(AppError::RuntimeInstallFailed(format!(
+            "runtime asset {} has an invalid SHA-256 digest",
+            asset.name
+        )));
+    }
+    Ok(hash)
+}
+
 fn target_os() -> &'static str {
     std::env::consts::OS
+}
+
+fn target_arch() -> &'static str {
+    std::env::consts::ARCH
 }
 
 pub struct RuntimeInstaller {
@@ -186,8 +237,8 @@ impl RuntimeInstaller {
 
     /// Tries each hardware-preferred backend in order (see
     /// `runtime::preferred_backend_order`), skipping any combination the
-    /// catalog has no official asset for on this OS, and installs the first
-    /// one that succeeds.
+    /// catalog has no official asset for on this OS/architecture, and installs
+    /// the first one that succeeds.
     pub async fn install_recommended(
         &self,
         hardware: &HardwareProfile,
@@ -200,9 +251,10 @@ impl RuntimeInstaller {
             Some(token.clone());
 
         let os = target_os();
+        let arch = target_arch();
         let mut last_error: Option<AppError> = None;
         for backend in preferred_backend_order(hardware) {
-            let Some(pattern) = catalog_pattern(os, &backend) else {
+            let Some(pattern) = catalog_pattern(os, arch, &backend) else {
                 continue;
             };
             tracing::info!(?backend, "installing AI runtime");
@@ -225,11 +277,9 @@ impl RuntimeInstaller {
             .cancel_token
             .lock()
             .map_err(|_| AppError::internal("runtime install cancel lock poisoned"))? = None;
-        let message = last_error
-            .map(|error| error.to_string())
-            .unwrap_or_else(|| {
-                format!("no official llama.cpp runtime build is available for {os}")
-            });
+        let message = last_error.map(|error| error.to_string()).unwrap_or_else(|| {
+            format!("no official llama.cpp runtime build is available for {os}/{arch}")
+        });
         self.set_state(RuntimeInstallState::Failed, Some(message.clone()))?;
         Err(AppError::RuntimeInstallFailed(message))
     }
@@ -251,17 +301,13 @@ impl RuntimeInstaller {
             status.error = None;
         })?;
 
-        let release = fetch_latest_release(&self.client).await?;
-        let asset = release
-            .assets
-            .iter()
-            .find(|asset| glob_match(&asset.name, pattern))
-            .ok_or_else(|| {
-                AppError::RuntimeInstallFailed(format!(
-                    "no asset matching {pattern} found in release {}",
-                    release.tag_name
-                ))
-            })?;
+        let releases = fetch_recent_releases(&self.client).await?;
+        let (release, asset) = resolve_release_asset(&releases, pattern).ok_or_else(|| {
+            AppError::RuntimeInstallFailed(format!(
+                "no recent llama.cpp release contains an asset matching {pattern}"
+            ))
+        })?;
+        let expected_sha256 = required_sha256(asset)?;
 
         let slug = backend_slug(backend);
         let install_dir = self
@@ -289,13 +335,14 @@ impl RuntimeInstaller {
             .send()
             .await
             .map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?;
-        let resumed = existing > 0 && response.status() == StatusCode::PARTIAL_CONTENT;
+        let response_status = response.status();
+        let resumed = existing > 0 && response_status == StatusCode::PARTIAL_CONTENT;
         if existing > 0 && !resumed {
             async_fs::remove_file(&part_path).await.ok();
-        } else if !response.status().is_success() {
+        }
+        if !response_status.is_success() {
             return Err(AppError::RuntimeInstallFailed(format!(
-                "HTTP {} while downloading runtime",
-                response.status()
+                "HTTP {response_status} while downloading runtime"
             )));
         }
 
@@ -346,17 +393,11 @@ impl RuntimeInstaller {
                 asset.size
             )));
         }
-        if let Some(expected) = asset
-            .digest
-            .as_deref()
-            .and_then(|d| d.strip_prefix("sha256:"))
-        {
-            let actual = sha256_file(&part_path)?;
-            if !actual.eq_ignore_ascii_case(expected) {
-                return Err(AppError::RuntimeInstallFailed(format!(
-                    "checksum mismatch: expected {expected}, got {actual}"
-                )));
-            }
+        let actual_sha256 = sha256_file(&part_path)?;
+        if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
+            return Err(AppError::RuntimeInstallFailed(format!(
+                "checksum mismatch: expected {expected_sha256}, got {actual_sha256}"
+            )));
         }
 
         fs::rename(&part_path, &archive_path)?;
@@ -388,12 +429,12 @@ impl RuntimeInstaller {
             runtime_name: format!("llama.cpp {slug}"),
             version: release.tag_name.clone(),
             platform: target_os().to_string(),
-            architecture: std::env::consts::ARCH.to_string(),
+            architecture: target_arch().to_string(),
             backend: backend.clone(),
             source: asset.browser_download_url.clone(),
             installed_at: Utc::now().to_rfc3339(),
             binaries,
-            checksum: asset.digest.clone(),
+            checksum: Some(format!("sha256:{expected_sha256}")),
             status: RuntimeStatus::Available,
         };
         let manifest_path = manifest_dir.join(format!("llama-{slug}-{}.json", release.tag_name));
@@ -432,7 +473,7 @@ impl RuntimeInstaller {
     }
 }
 
-async fn fetch_latest_release(client: &Client) -> Result<GithubRelease, AppError> {
+async fn fetch_recent_releases(client: &Client) -> Result<Vec<GithubRelease>, AppError> {
     client
         .get(RELEASES_URL)
         .header(header::USER_AGENT, "OpenMindAI")
@@ -441,7 +482,7 @@ async fn fetch_latest_release(client: &Client) -> Result<GithubRelease, AppError
         .map_err(|error| AppError::GithubApiError(error.to_string()))?
         .error_for_status()
         .map_err(|error| AppError::GithubApiError(error.to_string()))?
-        .json::<GithubRelease>()
+        .json::<Vec<GithubRelease>>()
         .await
         .map_err(|error| AppError::GithubApiError(error.to_string()))
 }
@@ -523,8 +564,17 @@ fn ensure_executable(_path: &Path) -> Result<(), AppError> {
 mod tests {
     use super::*;
 
+    fn test_asset(name: &str, digest: Option<&str>) -> GithubAsset {
+        GithubAsset {
+            name: name.to_string(),
+            browser_download_url: format!("https://example.invalid/{name}"),
+            size: 42,
+            digest: digest.map(ToString::to_string),
+        }
+    }
+
     #[test]
-    fn glob_matches_windows_and_linux_patterns() {
+    fn glob_matches_windows_linux_and_macos_patterns() {
         assert!(glob_match(
             "llama-b10441-bin-win-cpu-x64.zip",
             "llama-*-bin-win-cpu-x64.zip"
@@ -537,6 +587,10 @@ mod tests {
             "llama-b10441-bin-ubuntu-vulkan-x64.tar.gz",
             "llama-*-bin-ubuntu-vulkan-x64.tar.gz"
         ));
+        assert!(glob_match(
+            "llama-b10441-bin-macos-arm64.tar.gz",
+            "llama-*-bin-macos-arm64.tar.gz"
+        ));
         assert!(!glob_match(
             "llama-b10441-bin-ubuntu-x64.tar.gz",
             "llama-*-bin-ubuntu-vulkan-x64.tar.gz"
@@ -548,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_covers_windows_backends_and_skips_unpublished_linux_combos() {
+    fn catalog_is_architecture_aware_and_covers_macos() {
         for backend in [
             BackendKind::Cpu,
             BackendKind::Cuda,
@@ -557,16 +611,71 @@ mod tests {
             BackendKind::Hip,
         ] {
             assert!(
-                catalog_pattern("windows", &backend).is_some(),
+                catalog_pattern("windows", "x86_64", &backend).is_some(),
                 "expected a windows asset pattern for {backend:?}"
             );
         }
-        assert!(catalog_pattern("linux", &BackendKind::Cpu).is_some());
-        assert!(catalog_pattern("linux", &BackendKind::Vulkan).is_some());
-        assert!(catalog_pattern("linux", &BackendKind::Sycl).is_some());
-        assert!(catalog_pattern("linux", &BackendKind::Cuda).is_none());
-        assert!(catalog_pattern("linux", &BackendKind::Hip).is_none());
-        assert!(catalog_pattern("windows", &BackendKind::Metal).is_none());
+        assert!(catalog_pattern("linux", "x86_64", &BackendKind::Cpu).is_some());
+        assert!(catalog_pattern("linux", "x86_64", &BackendKind::Vulkan).is_some());
+        assert!(catalog_pattern("linux", "x86_64", &BackendKind::Sycl).is_some());
+        assert!(catalog_pattern("linux", "x86_64", &BackendKind::Cuda).is_none());
+        assert!(catalog_pattern("linux", "x86_64", &BackendKind::Hip).is_none());
+        assert_eq!(
+            catalog_pattern("macos", "aarch64", &BackendKind::Metal),
+            Some("llama-*-bin-macos-arm64.tar.gz")
+        );
+        assert_eq!(
+            catalog_pattern("macos", "x86_64", &BackendKind::Cpu),
+            Some("llama-*-bin-macos-x64.tar.gz")
+        );
+        assert!(catalog_pattern("windows", "aarch64", &BackendKind::Cpu).is_none());
+    }
+
+    #[test]
+    fn release_resolution_skips_metadata_only_release() {
+        let releases = vec![
+            GithubRelease {
+                tag_name: "v0.3.0".to_string(),
+                assets: vec![test_asset(
+                    "nightly-tag.txt",
+                    Some("sha256:46637e1a90db3d9912a7722806c7657cc73a3965e21c0016cc6b087b3be84205"),
+                )],
+            },
+            GithubRelease {
+                tag_name: "b10621".to_string(),
+                assets: vec![test_asset(
+                    "llama-b10621-bin-win-vulkan-x64.zip",
+                    Some("sha256:2672d85bf87c8280d94dee01eb6a86280046878f70a07d786a93637fa9081163"),
+                )],
+            },
+        ];
+        let (release, asset) = resolve_release_asset(
+            &releases,
+            "llama-*-bin-win-vulkan-x64.zip",
+        )
+        .expect("binary release should be selected");
+        assert_eq!(release.tag_name, "b10621");
+        assert_eq!(asset.name, "llama-b10621-bin-win-vulkan-x64.zip");
+    }
+
+    #[test]
+    fn runtime_digest_is_mandatory_and_must_be_valid_sha256() {
+        assert!(required_sha256(&test_asset("runtime.zip", None)).is_err());
+        assert!(required_sha256(&test_asset("runtime.zip", Some("sha512:abcd"))).is_err());
+        assert!(required_sha256(&test_asset("runtime.zip", Some("sha256:abcd"))).is_err());
+        assert!(required_sha256(&test_asset(
+            "runtime.zip",
+            Some("sha256:gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg")
+        ))
+        .is_err());
+        let valid = test_asset(
+            "runtime.zip",
+            Some("sha256:2672d85bf87c8280d94dee01eb6a86280046878f70a07d786a93637fa9081163"),
+        );
+        assert_eq!(
+            required_sha256(&valid).unwrap(),
+            "2672d85bf87c8280d94dee01eb6a86280046878f70a07d786a93637fa9081163"
+        );
     }
 
     #[test]
@@ -629,10 +738,6 @@ mod tests {
 
     #[test]
     fn manifest_shape_round_trips_through_runtime_registry_discovery() {
-        // Proves the exact bug this plan flagged doesn't recur: only real
-        // BackendKind values ("cuda", not "cuda12"/"cuda13") ever get
-        // written, so RuntimeRegistry::discover() can always deserialize
-        // what this installer produces.
         let root_temp = tempfile::tempdir().unwrap();
         let root = PortableRootManager::from_root(root_temp.path().to_path_buf());
         root.ensure_directories().unwrap();
@@ -650,7 +755,10 @@ mod tests {
                 cli: None,
                 bench: None,
             },
-            checksum: Some("sha256:deadbeef".to_string()),
+            checksum: Some(
+                "sha256:2672d85bf87c8280d94dee01eb6a86280046878f70a07d786a93637fa9081163"
+                    .to_string(),
+            ),
             status: RuntimeStatus::Available,
         };
         let manifest_dir = root.resolve_relative("runtimes/llama/manifests").unwrap();
