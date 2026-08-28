@@ -197,10 +197,6 @@ impl<'a> ArtifactManager<'a> {
         filename_hint: Option<&str>,
         fallback_title: &str,
     ) -> Result<(PathBuf, String, String), AppError> {
-        if let Some(report) = media_preflight::preflight(self.root, kind)? {
-            report.ensure_ready()?;
-        }
-
         let subdir = match kind {
             "pdf" | "docx" => "generated/exports",
             "image" => "generated/images",

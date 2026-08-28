@@ -2,7 +2,7 @@ use std::{fs, path::Path};
 
 use crate::{
     app_error::AppError,
-    hardware::{HardwareProfile, HardwareProfiler},
+    hardware::HardwareProfile,
     model_catalog::{entry_by_id, installed_file_for_pattern, wildcard_match, ModelCatalogEntry},
     model_download::{
         ensure_contained, validate_installed_dependencies, QwenModelManifest, VerificationState,
@@ -68,14 +68,6 @@ struct MediaSpec {
     model_id: &'static str,
     minimum_free_bytes: u64,
     diffusion_runtime: bool,
-}
-
-pub(crate) fn preflight(
-    root: &PortableRootManager,
-    artifact_kind: &str,
-) -> Result<Option<MediaPreflightReport>, AppError> {
-    let hardware = HardwareProfiler::detect();
-    preflight_for_hardware(root, artifact_kind, &hardware)
 }
 
 pub(crate) fn preflight_for_hardware(

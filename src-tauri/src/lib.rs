@@ -63,6 +63,10 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 struct AppState {
     root: PortableRootManager,
+    // CPU/GPU/RAM topology is treated as session-stable. Re-probing hardware
+    // on every generation can repeatedly hit GPU drivers and add avoidable
+    // latency, so production hot paths reuse this startup snapshot.
+    hardware: HardwareProfile,
     // The database file actually opened at startup -- may differ from
     // `root.database_path()`'s unparameterized default when a first-run
     // profile name was chosen (see `run()`).
@@ -603,6 +607,13 @@ async fn create_generation_artifact(
     } else {
         kind.as_str()
     };
+    if let Some(report) = artifacts::media_preflight::preflight_for_hardware(
+        &state.root,
+        artifact_kind,
+        &state.hardware,
+    )? {
+        report.ensure_ready()?;
+    }
     let (artifact, path) = {
         let db = state
             .database
@@ -679,7 +690,7 @@ async fn generate_local_media_artifact(
                 )
             })?;
             let model_path = state.root.resolve_relative(relative_model_path)?;
-            let hardware = HardwareProfiler::detect();
+            let hardware = state.hardware.clone();
             diffusion_runtime::generate_image(
                 &state.root,
                 &state.http,
@@ -743,7 +754,7 @@ async fn generate_local_media_artifact(
                 &text_dependency.filename_pattern,
             )
             .ok_or_else(|| app_error::AppError::ArtifactGenerationFailed("OpenMindAI Motion text encoder is missing; validate or re-download the model package".to_string()))?;
-            let hardware = HardwareProfiler::detect();
+            let hardware = state.hardware.clone();
             diffusion_runtime::generate_video(
                 &state.root,
                 &state.http,
@@ -812,7 +823,7 @@ fn installed_catalog_entry_by_id(
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
     let installed = ModelRegistry::new(&db, &state.root).discover_gguf_models()?;
     drop(db);
-    let hardware = HardwareProfiler::detect();
+    let hardware = state.hardware.clone();
     Ok(
         model_catalog::check_model_updates(&installed, &hardware, &state.root)?
             .entries
@@ -924,14 +935,13 @@ fn reveal_artifact_in_folder(
 }
 
 #[tauri::command]
-fn detect_hardware() -> HardwareProfile {
-    HardwareProfiler::detect()
+fn detect_hardware(state: State<AppState>) -> HardwareProfile {
+    state.hardware.clone()
 }
 
 #[tauri::command]
-fn get_performance_profile() -> PerformanceProfile {
-    let hardware = HardwareProfiler::detect();
-    PerformanceProfileManager::auto(&hardware)
+fn get_performance_profile(state: State<AppState>) -> PerformanceProfile {
+    PerformanceProfileManager::auto(&state.hardware)
 }
 
 #[tauri::command]
@@ -1031,7 +1041,7 @@ fn plan_model_launch(
     model_id: String,
     state: State<AppState>,
 ) -> Result<LaunchPlan, app_error::AppError> {
-    let hardware = HardwareProfiler::detect();
+    let hardware = state.hardware.clone();
     let db = state
         .database
         .lock()
@@ -1054,7 +1064,7 @@ async fn activate_model(
             .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
         ModelRegistry::new(&db, &state.root).validate_model(&model_id)?
     };
-    let hardware = HardwareProfiler::detect();
+    let hardware = state.hardware.clone();
     let plan = ModelLaunchPlanner::plan(&model, &hardware, allocate_local_port()?);
     let status = {
         let mut runtime = state
@@ -1086,7 +1096,7 @@ fn clear_cache(state: State<AppState>) -> Result<CacheClearResult, app_error::Ap
 
 #[tauri::command]
 fn run_diagnostics(state: State<AppState>) -> Result<DiagnosticReport, app_error::AppError> {
-    let hardware = HardwareProfiler::detect();
+    let hardware = state.hardware.clone();
     let db = state
         .database
         .lock()
@@ -1106,7 +1116,7 @@ fn run_diagnostics(state: State<AppState>) -> Result<DiagnosticReport, app_error
 async fn repair_installation(
     state: State<'_, AppState>,
 ) -> Result<RepairSummary, app_error::AppError> {
-    let hardware = HardwareProfiler::detect();
+    let hardware = state.hardware.clone();
     let mut actions = Vec::new();
 
     state.root.ensure_directories()?;
@@ -1179,7 +1189,7 @@ fn list_backups(state: State<AppState>) -> Result<Vec<BackupInfo>, app_error::Ap
 
 #[tauri::command]
 fn check_model_updates(state: State<AppState>) -> Result<ModelCatalogReport, app_error::AppError> {
-    let hardware = HardwareProfiler::detect();
+    let hardware = state.hardware.clone();
     let db = state
         .database
         .lock()
@@ -1221,7 +1231,7 @@ fn read_recent_logs(state: State<AppState>) -> Result<String, app_error::AppErro
 fn get_llama_runtime_status(
     state: State<AppState>,
 ) -> Result<LlamaRuntimeStatus, app_error::AppError> {
-    let hardware = HardwareProfiler::detect();
+    let hardware = state.hardware.clone();
     let runtime = state
         .runtime
         .lock()
@@ -1233,7 +1243,7 @@ fn get_llama_runtime_status(
 fn get_llama_runtime_inventory(
     state: State<AppState>,
 ) -> Result<RuntimeInventory, app_error::AppError> {
-    let hardware = HardwareProfiler::detect();
+    let hardware = state.hardware.clone();
     let runtime = state
         .runtime
         .lock()
@@ -1252,7 +1262,7 @@ fn get_runtime_install_status(
 async fn install_recommended_runtime(
     state: State<'_, AppState>,
 ) -> Result<RuntimeInstallStatus, app_error::AppError> {
-    let hardware = HardwareProfiler::detect();
+    let hardware = state.hardware.clone();
     state.runtime_installer.install_recommended(&hardware).await
 }
 
@@ -1265,7 +1275,7 @@ fn cancel_runtime_install(
 
 #[tauri::command]
 fn start_llama_runtime(state: State<AppState>) -> Result<LlamaRuntimeStatus, app_error::AppError> {
-    let hardware = HardwareProfiler::detect();
+    let hardware = state.hardware.clone();
     let mut runtime = state
         .runtime
         .lock()
@@ -1334,7 +1344,7 @@ async fn run_streaming_completion(
     mode: &str,
     media: &[InferenceMedia],
 ) -> Result<(), app_error::AppError> {
-    let hardware = HardwareProfiler::detect();
+    let hardware = state.hardware.clone();
     let plan = ModelLaunchPlanner::plan(model, &hardware, allocate_local_port()?);
     let endpoint = {
         let mut runtime = state
@@ -1848,6 +1858,7 @@ pub fn run() {
     let runtime = LlamaRuntimeManager::new(root.clone());
     let downloads = ModelDownloadManager::new(root.clone());
     let runtime_installer = RuntimeInstaller::new(root.clone());
+    let hardware = HardwareProfiler::detect();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1856,6 +1867,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState {
             root,
+            hardware,
             active_database_path: database_path,
             database: Mutex::new(database),
             runtime: Mutex::new(runtime),
