@@ -21,5 +21,6 @@ lib.write_text(text, encoding="utf-8")
 catalog = ROOT / "src-tauri/model-catalog.json"
 data = json.loads(catalog.read_text(encoding="utf-8"))
 canvas = next(model for model in data["models"] if model["id"] == "sdxl-base-1")
-canvas["filenamePattern"] = "sd_xl_base_1.0.safetensors"
+canvas["filenamePattern"] = "sd_xl_base_1.0_0.9vae.safetensors"
+canvas["description"] = "Balanced local SDXL generation package using the official base checkpoint with the stable 0.9 VAE, plus Vulkan, CUDA, Metal, or CPU execution."
 catalog.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
