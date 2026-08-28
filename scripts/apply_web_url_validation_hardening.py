@@ -46,7 +46,14 @@ new_fn = '''fn is_public_web_url(url: &str) -> bool {
     let Some(host) = parsed.host_str() else {
         return false;
     };
-    let normalized_host = host.trim_end_matches('.').to_ascii_lowercase();
+    // URL host strings may retain IPv6 brackets depending on the URL backend.
+    // Normalize those before IpAddr parsing so loopback/private IPv6 cannot be
+    // misclassified as a public domain name.
+    let normalized_host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
     if normalized_host == "localhost"
         || normalized_host.ends_with(".localhost")
         || normalized_host.ends_with(".local")
