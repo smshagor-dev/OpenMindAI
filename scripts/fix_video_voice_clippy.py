@@ -113,4 +113,12 @@ replace_once(
   );''',
 )
 
+replace_once(
+    "src/lib/chat.ts",
+    '''    case "video":
+      return "[Mode: Video Creation]\\nCreate a production-quality video generation prompt with subject, scene progression, camera motion, timing, lighting, style, negative prompt, and recommended duration/aspect ratio. Do not claim a video file was generated unless a video generator is connected.";''',
+    '''    case "video":
+      return "[Mode: Video Creation]\\nWrite only the final positive visual prompt for the local video renderer. Describe subject, environment, action, scene progression, camera motion, lighting, composition, and visual style in natural prose. Do not add headings, markdown, negative prompts, duration, aspect-ratio recommendations, explanations, or claims that rendering already succeeded; the local runtime controls those settings separately.";''',
+)
+
 Path("scripts/fix_video_voice_clippy.py").unlink(missing_ok=True)
