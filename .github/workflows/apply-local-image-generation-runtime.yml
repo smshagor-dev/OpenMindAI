@@ -76,7 +76,7 @@ jobs:
           ! grep -R "generation_family_label" -n src-tauri/src/lib.rs
           grep -q '"image" => "image/png"' src-tauri/src/artifacts.rs
           grep -q 'stable-diffusion.cpp' src-tauri/model-catalog.json
-          grep -q '"filenamePattern": "sd_xl_base_1.0.safetensors"' src-tauri/model-catalog.json
+          grep -q '"filenamePattern": "sd_xl_base_1.0_0.9vae.safetensors"' src-tauri/model-catalog.json
 
       - name: Commit validated source only
         run: |
