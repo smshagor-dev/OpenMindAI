@@ -1,9 +1,9 @@
-name: Apply vision input hardening
+name: Apply vision input hardening final
 
 on:
   push:
     branches:
-      - vision-input-hardening
+      - vision-input-hardening-final
 
 permissions:
   contents: write
@@ -15,7 +15,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: vision-input-hardening
+          ref: vision-input-hardening-final
           fetch-depth: 0
 
       - name: Apply focused hardening
@@ -55,8 +55,11 @@ jobs:
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --all-features
 
-      - name: Remove one-off helpers
+      - name: Restore generated schemas and remove helpers
         run: |
+          git fetch origin main
+          git restore --source=origin/main -- src-tauri/gen/schemas
+          git clean -f src-tauri/gen/schemas
           rm .github/workflows/apply-vision-input-hardening.yml
           rm scripts/apply_vision_input_hardening.py
 
@@ -67,4 +70,4 @@ jobs:
           git add -A
           git diff --cached --quiet && exit 0
           git commit -m "Harden local vision image input handling"
-          git push origin HEAD:vision-input-hardening
+          git push origin HEAD:vision-input-hardening-final
