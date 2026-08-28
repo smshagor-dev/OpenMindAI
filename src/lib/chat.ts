@@ -28,29 +28,45 @@ const MAX_VISION_IMAGE_DATA_URL_CHARS = 6_000_000;
 const MAX_VISION_IMAGE_DIMENSION = 2048;
 const SUPPORTED_VISION_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
+function visionMimeType(file: File) {
+  const declared = file.type.toLowerCase();
+  if (SUPPORTED_VISION_IMAGE_TYPES.has(declared)) return declared;
+  if (/\.png$/i.test(file.name)) return "image/png";
+  if (/\.jpe?g$/i.test(file.name)) return "image/jpeg";
+  if (/\.webp$/i.test(file.name)) return "image/webp";
+  return null;
+}
+
 async function encodeVisionImage(file: File) {
-  const mimeType = file.type.toLowerCase();
-  if (!SUPPORTED_VISION_IMAGE_TYPES.has(mimeType)) {
+  const mimeType = visionMimeType(file);
+  if (!mimeType) {
     throw new Error("OpenMindAI Lens currently accepts PNG, JPEG, and WebP images.");
   }
   if (file.size > MAX_VISION_IMAGE_INPUT_BYTES) {
     throw new Error("Image is too large for local vision. Use an image smaller than 16 MB.");
   }
 
-  const bitmap = await window.createImageBitmap(file);
+  const objectUrl = window.URL.createObjectURL(file);
   try {
+    const image = document.createElement("img");
+    await new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error("Could not decode the selected image."));
+      image.src = objectUrl;
+    });
+
     const scale = Math.min(
       1,
-      MAX_VISION_IMAGE_DIMENSION / Math.max(bitmap.width, bitmap.height, 1),
+      MAX_VISION_IMAGE_DIMENSION / Math.max(image.naturalWidth, image.naturalHeight, 1),
     );
-    const width = Math.max(1, Math.round(bitmap.width * scale));
-    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const width = Math.max(1, Math.round(image.naturalWidth * scale));
+    const height = Math.max(1, Math.round(image.naturalHeight * scale));
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
     const context = canvas.getContext("2d");
     if (!context) throw new Error("Could not prepare the image for local vision.");
-    context.drawImage(bitmap, 0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
 
     let dataUrl =
       mimeType === "image/png"
@@ -79,7 +95,7 @@ async function encodeVisionImage(file: File) {
       .replace(/[\r\n]/g, " ");
     return `![${safeName}](${dataUrl})`;
   } finally {
-    bitmap.close();
+    window.URL.revokeObjectURL(objectUrl);
   }
 }
 
@@ -211,7 +227,7 @@ export function titleFromPrompt(prompt: string) {
 }
 
 export function attachmentKind(file: File): AttachmentDraft["kind"] {
-  if (file.type.startsWith("image/")) return "image";
+  if (file.type.startsWith("image/") || /\.(png|jpe?g|webp)$/i.test(file.name)) return "image";
   if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) return "pdf";
   if (
     file.type.startsWith("text/") ||

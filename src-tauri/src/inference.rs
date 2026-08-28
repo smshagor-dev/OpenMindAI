@@ -654,7 +654,11 @@ fn build_context(
 
     let mut prepared = Vec::with_capacity(messages.len());
     for message in messages {
-        let (text, images) = extract_inline_data_images(&message.content)?;
+        let (text, images) = if message.role == "user" {
+            extract_inline_data_images(&message.content)?
+        } else {
+            (message.content.clone(), Vec::new())
+        };
         prepared.push((message, text, images));
     }
     let latest_image_turn = prepared
