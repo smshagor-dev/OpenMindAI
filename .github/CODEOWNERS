@@ -1,0 +1,8 @@
+# Default owner for repository changes
+* @smshagor-dev
+
+# Higher-risk areas
+/.github/workflows/ @smshagor-dev
+/src-tauri/ @smshagor-dev
+/scripts/ @smshagor-dev
+/bootstrap/ @smshagor-dev

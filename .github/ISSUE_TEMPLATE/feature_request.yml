@@ -1,0 +1,73 @@
+name: Feature request
+description: Propose a focused improvement to OpenMindAI
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the user problem first, then the proposed solution. Features that preserve OpenMindAI's local-first, portable, and explicit-control principles are easier to evaluate.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What is difficult, missing, or inefficient today?
+      placeholder: Explain the user need or workflow gap.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe how you expect the feature to work from the user's perspective.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing workarounds, simpler options, or related approaches.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Primary area
+      options:
+        - Chat / conversation experience
+        - Models / routing / inference
+        - Projects / files / local context
+        - Image / voice / media workflows
+        - Tools / maintenance / diagnostics
+        - Storage / portability
+        - Installer / updater / releases
+        - UI / accessibility
+        - Developer tooling / CI
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: local
+    attributes:
+      label: Local-first and offline considerations
+      description: If relevant, explain network requirements, local storage use, model/runtime needs, privacy impact, or fallback behavior.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Mockups, screenshots, examples, technical notes, or related issues.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and feature requests for the same idea.
+          required: true
+        - label: I have described the user problem, not only an implementation preference.
+          required: true

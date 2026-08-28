@@ -1,0 +1,98 @@
+name: Bug report
+description: Report a reproducible problem in OpenMindAI
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Please include enough detail for someone else to reproduce it. Do not post secrets, private data, or security vulnerabilities here; use the security policy for vulnerabilities.
+
+  - type: input
+    id: version
+    attributes:
+      label: OpenMindAI version
+      description: Release version or commit SHA.
+      placeholder: v2.0.0 or commit SHA
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux
+        - macOS Intel
+        - macOS Apple Silicon
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Relevant hardware
+      description: CPU, GPU, RAM, and storage type when relevant.
+      placeholder: Ryzen 7 / RTX 3060 / 32 GB RAM
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation method
+      options:
+        - Windows installer
+        - Windows bootstrap (.bat)
+        - Linux bootstrap (.sh)
+        - macOS bootstrap (.command)
+        - Built from source
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the problem and what you expected instead.
+      placeholder: Include the exact behavior, not only a summary such as "it does not work".
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. Run ...
+        4. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Paste only relevant output. Remove tokens, personal information, local secrets, and sensitive file contents.
+      render: shell
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Model/runtime used, storage-root details, recent update, regression information, or anything else that may matter.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues for the same problem.
+          required: true
+        - label: This report does not contain a security vulnerability or sensitive data.
+          required: true
