@@ -34,6 +34,20 @@ jobs:
       - name: Apply strict Clippy refactor
         run: python scripts/fix_video_voice_clippy.py
 
+      - name: Fix Candle model path conversion
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("src-tauri/src/voice_runtime.rs")
+          text = path.read_text(encoding="utf-8")
+          old = '        let config = TtsConfig::new(ModelType::Kokoro).with_model_path(&package_dir);'
+          new = '''        let config = TtsConfig::new(ModelType::Kokoro)
+              .with_model_path(package_dir.to_string_lossy().into_owned());'''
+          if old not in text:
+              raise SystemExit("Candle model path anchor not found")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
