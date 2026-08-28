@@ -11,7 +11,11 @@
       "repo": "Qwen/Qwen3-4B-GGUF",
       "quantization": "Q4_K_M",
       "required": true,
-      "capabilities": ["chat", "reasoning", "code"],
+      "capabilities": [
+        "chat",
+        "reasoning",
+        "code"
+      ],
       "sizeBytes": 2497280256,
       "minRamBytes": 8589934592,
       "minVramBytes": null,
@@ -34,7 +38,11 @@
       "repo": "Qwen/Qwen3-8B-GGUF",
       "quantization": "Q4_K_M",
       "required": false,
-      "capabilities": ["chat", "reasoning", "code"],
+      "capabilities": [
+        "chat",
+        "reasoning",
+        "code"
+      ],
       "sizeBytes": 5200000000,
       "minRamBytes": 17179869184,
       "minVramBytes": 8589934592,
@@ -57,7 +65,11 @@
       "repo": "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF",
       "quantization": "Q4_K_M",
       "required": false,
-      "capabilities": ["vision", "ocr", "image-review"],
+      "capabilities": [
+        "vision",
+        "ocr",
+        "image-review"
+      ],
       "sizeBytes": 2775000000,
       "minRamBytes": 8589934592,
       "minVramBytes": 4294967296,
@@ -88,7 +100,11 @@
       "repo": "ggerganov/whisper.cpp",
       "quantization": "Q5_0",
       "required": false,
-      "capabilities": ["transcription", "translation", "audio"],
+      "capabilities": [
+        "transcription",
+        "translation",
+        "audio"
+      ],
       "sizeBytes": 574000000,
       "minRamBytes": 4294967296,
       "minVramBytes": null,
@@ -111,7 +127,10 @@
       "repo": "onnx-community/Kokoro-82M-v1.0-ONNX",
       "quantization": "ONNX",
       "required": false,
-      "capabilities": ["tts", "voice"],
+      "capabilities": [
+        "tts",
+        "voice"
+      ],
       "sizeBytes": 360000000,
       "minRamBytes": 4294967296,
       "minVramBytes": null,
@@ -130,22 +149,26 @@
       "version": "1.0",
       "family": "stable-diffusion",
       "kind": "image",
-      "runtime": "ComfyUI",
+      "runtime": "stable-diffusion.cpp",
       "repo": "stabilityai/stable-diffusion-xl-base-1.0",
       "quantization": "FP16",
       "required": false,
-      "capabilities": ["text-to-image", "image"],
+      "capabilities": [
+        "text-to-image",
+        "image"
+      ],
       "sizeBytes": 6930000000,
       "minRamBytes": 17179869184,
       "minVramBytes": 8589934592,
       "license": "openrail++",
-      "description": "Balanced creative generation package for local studio work.",
+      "description": "Balanced local SDXL generation package using the official base checkpoint with the stable 0.9 VAE, plus Vulkan, CUDA, Metal, or CPU execution.",
       "download": {
         "strategy": "singleFile",
         "filenamePattern": "*.safetensors",
         "destinationDir": "models/image/sdxl",
         "format": "safetensors"
-      }
+      },
+      "filenamePattern": "sd_xl_base_1.0_0.9vae.safetensors"
     },
     {
       "id": "flux1-schnell",
@@ -157,7 +180,10 @@
       "repo": "black-forest-labs/FLUX.1-schnell",
       "quantization": "BF16",
       "required": false,
-      "capabilities": ["text-to-image", "image"],
+      "capabilities": [
+        "text-to-image",
+        "image"
+      ],
       "sizeBytes": 24000000000,
       "minRamBytes": 34359738368,
       "minVramBytes": 12884901888,
@@ -180,7 +206,11 @@
       "repo": "stabilityai/stable-audio-open-1.0",
       "quantization": "FP16",
       "required": false,
-      "capabilities": ["text-to-audio", "music", "sound"],
+      "capabilities": [
+        "text-to-audio",
+        "music",
+        "sound"
+      ],
       "sizeBytes": 4500000000,
       "minRamBytes": 17179869184,
       "minVramBytes": 8589934592,
@@ -203,7 +233,11 @@
       "repo": "Lightricks/LTX-Video",
       "quantization": "FP16",
       "required": false,
-      "capabilities": ["text-to-video", "image-to-video", "video"],
+      "capabilities": [
+        "text-to-video",
+        "image-to-video",
+        "video"
+      ],
       "sizeBytes": 10000000000,
       "minRamBytes": 34359738368,
       "minVramBytes": 12884901888,
@@ -226,7 +260,10 @@
       "repo": "Wan-AI/Wan2.1-T2V-1.3B",
       "quantization": "FP16",
       "required": false,
-      "capabilities": ["text-to-video", "video"],
+      "capabilities": [
+        "text-to-video",
+        "video"
+      ],
       "sizeBytes": 9000000000,
       "minRamBytes": 34359738368,
       "minVramBytes": 12884901888,
