@@ -51,7 +51,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output_dir = root.resolve_relative("generated/smoke")?;
     fs::create_dir_all(&output_dir)?;
     let hardware = HardwareProfiler::detect();
-    let client = Client::builder().user_agent("OpenMindAI-media-smoke/2").build()?;
+    let client = Client::builder()
+        .user_agent("OpenMindAI-media-smoke/2")
+        .build()?;
 
     println!("OpenMindAI media smoke root: {}", root.root().display());
     println!(
