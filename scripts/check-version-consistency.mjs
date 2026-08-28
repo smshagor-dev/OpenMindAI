@@ -10,15 +10,24 @@ function readJson(relativePath) {
 
 function readCargoPackageVersion() {
   const cargoToml = fs.readFileSync(path.join(root, "src-tauri", "Cargo.toml"), "utf8");
-  const packageSection = cargoToml.match(/^\[package\]\s*([\s\S]*?)(?=^\[|\Z)/m);
-  if (!packageSection) {
-    throw new Error("Unable to locate [package] in src-tauri/Cargo.toml");
+  let inPackageSection = false;
+
+  for (const rawLine of cargoToml.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (/^\[[^\]]+\]$/.test(line)) {
+      inPackageSection = line === "[package]";
+      continue;
+    }
+    if (!inPackageSection) {
+      continue;
+    }
+    const match = line.match(/^version\s*=\s*"([^"]+)"\s*$/);
+    if (match) {
+      return match[1];
+    }
   }
-  const versionMatch = packageSection[1].match(/^version\s*=\s*"([^"]+)"\s*$/m);
-  if (!versionMatch) {
-    throw new Error("Unable to locate package version in src-tauri/Cargo.toml");
-  }
-  return versionMatch[1];
+
+  throw new Error("Unable to locate package version in src-tauri/Cargo.toml");
 }
 
 function readRequestedTag() {
