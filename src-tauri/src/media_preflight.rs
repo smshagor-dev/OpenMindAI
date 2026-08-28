@@ -12,6 +12,7 @@ use crate::{
 
 const MIB: u64 = 1024 * 1024;
 const GIB: u64 = 1024 * MIB;
+const RAM_RESERVATION_TOLERANCE_PERCENT: u64 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PreflightStatus {
@@ -141,24 +142,7 @@ fn preflight_with_environment(
         ),
     });
 
-    checks.push(if hardware.memory.total_bytes < entry.min_ram_bytes {
-        check(
-            PreflightStatus::Error,
-            "System memory",
-            format!(
-                "{} requires at least {} RAM; detected {}",
-                entry.name,
-                human_bytes(entry.min_ram_bytes),
-                human_bytes(hardware.memory.total_bytes)
-            ),
-        )
-    } else {
-        check(
-            PreflightStatus::Ok,
-            "System memory",
-            format!("{} RAM detected", human_bytes(hardware.memory.total_bytes)),
-        )
-    });
+    checks.push(system_memory_check(&entry, hardware.memory.total_bytes));
 
     if let Some(required_vram) = entry.min_vram_bytes {
         let max_vram = hardware
@@ -378,6 +362,43 @@ fn validate_primary_manifest(
     Ok(())
 }
 
+fn system_memory_check(entry: &ModelCatalogEntry, detected_bytes: u64) -> PreflightCheck {
+    if detected_bytes >= entry.min_ram_bytes {
+        return check(
+            PreflightStatus::Ok,
+            "System memory",
+            format!("{} RAM detected", human_bytes(detected_bytes)),
+        );
+    }
+
+    let tolerated_floor = entry
+        .min_ram_bytes
+        .saturating_mul(100 - RAM_RESERVATION_TOLERANCE_PERCENT)
+        / 100;
+    if detected_bytes >= tolerated_floor {
+        return check(
+            PreflightStatus::Warning,
+            "System memory",
+            format!(
+                "{} RAM detected, slightly below the {} catalog threshold; generation is allowed because OS-reported physical memory can exclude small hardware-reserved regions",
+                human_bytes(detected_bytes),
+                human_bytes(entry.min_ram_bytes)
+            ),
+        );
+    }
+
+    check(
+        PreflightStatus::Error,
+        "System memory",
+        format!(
+            "{} requires at least {} RAM; detected {}",
+            entry.name,
+            human_bytes(entry.min_ram_bytes),
+            human_bytes(detected_bytes)
+        ),
+    )
+}
+
 fn spec_for(kind: &str) -> Option<MediaSpec> {
     match kind {
         "image" => Some(MediaSpec {
@@ -514,6 +535,24 @@ mod tests {
         .unwrap();
         let error = report.ensure_ready().unwrap_err().to_string();
         assert!(error.contains("System memory"));
+    }
+
+    #[test]
+    fn near_threshold_ram_shortfall_is_warning_not_blocker() {
+        let entry = entry_by_id("sdxl-base-1").unwrap();
+        let detected = entry.min_ram_bytes - 256 * MIB;
+        let memory_check = system_memory_check(&entry, detected);
+
+        assert_eq!(memory_check.status, PreflightStatus::Warning);
+        assert!(memory_check.detail.contains("hardware-reserved"));
+    }
+
+    #[test]
+    fn material_ram_shortfall_remains_blocking() {
+        let entry = entry_by_id("sdxl-base-1").unwrap();
+        let memory_check = system_memory_check(&entry, 8 * GIB);
+
+        assert_eq!(memory_check.status, PreflightStatus::Error);
     }
 
     #[test]
