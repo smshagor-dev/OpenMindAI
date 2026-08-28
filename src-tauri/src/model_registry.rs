@@ -96,6 +96,19 @@ impl<'a> ModelRegistry<'a> {
             })?
             .to_string_lossy()
             .replace('\\', "/");
+        let manifest = read_model_manifest(&canonical);
+        if !catalog_package_ready(&canonical, manifest.as_ref()) {
+            self.database.connection().execute(
+                "DELETE FROM model_registry WHERE path = ?1 OR path = ?2",
+                params![relative_path, canonical.display().to_string()],
+            )?;
+            tracing::warn!(
+                path = %canonical.display(),
+                "model package is incomplete; skipping registry activation"
+            );
+            return Ok(());
+        }
+
         let existing: Option<String> = self
             .database
             .connection()
@@ -107,21 +120,27 @@ impl<'a> ModelRegistry<'a> {
             .optional()?;
 
         if let Some(id) = existing {
-            let name = read_model_manifest(&canonical)
+            let name = manifest.as_ref().map(display_name_from_manifest);
+            let capabilities = manifest
                 .as_ref()
-                .map(display_name_from_manifest);
+                .and_then(catalog_capabilities_from_manifest);
             self.database.connection().execute(
                 "UPDATE model_registry
-                 SET path = ?1, name = COALESCE(?2, name), updated_at = ?3
-                 WHERE id = ?4",
-                params![relative_path, name, Utc::now().to_rfc3339(), id],
+                 SET path = ?1, name = COALESCE(?2, name), capabilities = COALESCE(?3, capabilities), updated_at = ?4
+                 WHERE id = ?5",
+                params![
+                    relative_path,
+                    name,
+                    capabilities,
+                    Utc::now().to_rfc3339(),
+                    id
+                ],
             )?;
             return Ok(());
         }
 
         validate_gguf_header(&canonical, self.root)?;
         let metadata = fs::metadata(&canonical)?;
-        let manifest = read_model_manifest(&canonical);
         let id = stable_model_id(&relative_path);
         let now = Utc::now().to_rfc3339();
         let name = manifest
@@ -155,14 +174,19 @@ impl<'a> ModelRegistry<'a> {
         let context_length = manifest
             .as_ref()
             .and_then(|manifest| manifest.context_length.map(|value| value as i64));
-        let capabilities = if manifest
+        let capabilities = manifest
             .as_ref()
-            .is_some_and(|manifest| manifest.chat_template_available)
-        {
-            "[\"chat\",\"thinking\"]"
-        } else {
-            "[\"chat\"]"
-        };
+            .and_then(catalog_capabilities_from_manifest)
+            .unwrap_or_else(|| {
+                if manifest
+                    .as_ref()
+                    .is_some_and(|manifest| manifest.chat_template_available)
+                {
+                    "[\"chat\",\"thinking\"]".to_string()
+                } else {
+                    "[\"chat\"]".to_string()
+                }
+            });
 
         self.database.connection().execute(
             "INSERT INTO model_registry
@@ -213,6 +237,59 @@ fn read_model_manifest(model_path: impl AsRef<Path>) -> Option<QwenModelManifest
     let manifest_path = model_path.as_ref().parent()?.join("model-manifest.json");
     let content = fs::read_to_string(manifest_path).ok()?;
     serde_json::from_str(&content).ok()
+}
+
+fn catalog_capabilities_from_manifest(manifest: &QwenModelManifest) -> Option<String> {
+    let entry = crate::model_catalog::load_catalog()
+        .ok()?
+        .models
+        .into_iter()
+        .find(|entry| entry.repo == manifest.repo)?;
+    serde_json::to_string(&entry.capabilities).ok()
+}
+
+fn catalog_package_ready(model_path: &Path, manifest: Option<&QwenModelManifest>) -> bool {
+    let Some(manifest) = manifest else {
+        return true;
+    };
+    let Ok(catalog) = crate::model_catalog::load_catalog() else {
+        return false;
+    };
+    let Some(entry) = catalog
+        .models
+        .into_iter()
+        .find(|entry| entry.repo == manifest.repo)
+    else {
+        return true;
+    };
+    let Some(download) = entry.download else {
+        return true;
+    };
+    let Some(parent) = model_path.parent() else {
+        return false;
+    };
+
+    download
+        .dependencies
+        .iter()
+        .filter(|dependency| dependency.required)
+        .all(|dependency| directory_contains_matching_file(parent, &dependency.filename_pattern))
+}
+
+fn directory_contains_matching_file(directory: &Path, pattern: &str) -> bool {
+    fs::read_dir(directory)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter_map(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string)
+        })
+        .any(|name| crate::model_catalog::wildcard_match(pattern, &name))
 }
 
 fn resolve_model_path(
@@ -365,6 +442,41 @@ mod tests {
         let registry = ModelRegistry::new(&database, &root);
         let err = registry.register_gguf(&path).unwrap_err();
         assert!(matches!(err, AppError::ModelInvalid(_)));
+    }
+
+    #[test]
+    fn lens_package_requires_mmproj_dependency() {
+        let temp = tempfile::tempdir().unwrap();
+        let model_dir = temp.path().join("lens");
+        fs::create_dir_all(&model_dir).unwrap();
+        let model_path = model_dir.join("Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf");
+        fs::write(&model_path, b"GGUF").unwrap();
+        let manifest = QwenModelManifest {
+            repo: "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF".to_string(),
+            repo_sha: None,
+            quantization: "Q4_K_M".to_string(),
+            filename: "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf".to_string(),
+            size_bytes: 4,
+            sha256: None,
+            actual_sha256: None,
+            verification: VerificationState::Unverified,
+            architecture: Some("qwen2vl".to_string()),
+            context_length: Some(8192),
+            chat_template_available: true,
+            source_url: "https://example.invalid/model.gguf".to_string(),
+            installed_at: "now".to_string(),
+        };
+
+        assert!(!catalog_package_ready(&model_path, Some(&manifest)));
+        fs::write(
+            model_dir.join("mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf"),
+            b"GGUF",
+        )
+        .unwrap();
+        assert!(catalog_package_ready(&model_path, Some(&manifest)));
+        let capabilities = catalog_capabilities_from_manifest(&manifest).unwrap();
+        assert!(capabilities.contains("vision"));
+        assert!(capabilities.contains("ocr"));
     }
 
     #[test]

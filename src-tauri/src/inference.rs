@@ -18,6 +18,7 @@ const WEB_SEARCH_USER_AGENT: &str =
     "OpenMindAI-Desktop/2.0 (+https://github.com/smshagor-dev/OpenMindAI)";
 const WEB_SEARCH_RESULTS: usize = 8;
 const WEB_SEARCH_TIMEOUT_SECS: u64 = 12;
+const MAX_VISION_DATA_URL_CHARS: usize = 6_000_000;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -140,6 +141,11 @@ struct WebSearchResult {
     title: String,
     url: String,
     snippet: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InlineDataImage {
+    data_url: String,
 }
 
 pub async fn stream_chat_completion(
@@ -313,7 +319,24 @@ fn latest_user_text(messages: &[serde_json::Value]) -> Option<String> {
         if message.get("role")?.as_str()? != "user" {
             return None;
         }
-        message.get("content")?.as_str().map(ToOwned::to_owned)
+        match message.get("content")? {
+            serde_json::Value::String(content) => Some(content.clone()),
+            serde_json::Value::Array(parts) => {
+                let text = parts
+                    .iter()
+                    .filter_map(|part| {
+                        if part.get("type")?.as_str()? == "text" {
+                            part.get("text")?.as_str()
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                (!text.trim().is_empty()).then_some(text)
+            }
+            _ => None,
+        }
     })
 }
 
@@ -628,16 +651,142 @@ fn build_context(
             .chain(messages.into_iter().skip(split_at))
             .collect();
     }
-    let estimated_chars: usize = messages.iter().map(|message| message.content.len()).sum();
+
+    let mut prepared = Vec::with_capacity(messages.len());
+    for message in messages {
+        let (text, images) = extract_inline_data_images(&message.content)?;
+        prepared.push((message, text, images));
+    }
+    let latest_image_turn = prepared
+        .iter()
+        .rposition(|(message, _, images)| message.role == "user" && !images.is_empty());
+    let estimated_chars: usize = prepared.iter().map(|(_, text, _)| text.len()).sum();
     if estimated_chars > 24_000 {
         return Err(AppError::ContextOverflow(
             "conversation context is too large for the initial 8K target".to_string(),
         ));
     }
-    Ok(messages
+
+    Ok(prepared
         .into_iter()
-        .map(|message| json!({ "role": message.role, "content": message.content }))
+        .enumerate()
+        .map(|(index, (message, text, images))| {
+            context_message_value(
+                &message.role,
+                text,
+                images,
+                Some(index) == latest_image_turn,
+            )
+        })
         .collect())
+}
+
+fn context_message_value(
+    role: &str,
+    text: String,
+    images: Vec<InlineDataImage>,
+    include_images: bool,
+) -> serde_json::Value {
+    if !include_images || images.is_empty() {
+        return json!({ "role": role, "content": text });
+    }
+
+    let mut content = Vec::with_capacity(images.len() + 1);
+    let trimmed = text.trim();
+    content.push(json!({
+        "type": "text",
+        "text": if trimmed.is_empty() { "Review the attached image." } else { trimmed }
+    }));
+    for image in images {
+        content.push(json!({
+            "type": "image_url",
+            "image_url": { "url": image.data_url }
+        }));
+    }
+    json!({ "role": role, "content": content })
+}
+
+fn extract_inline_data_images(content: &str) -> Result<(String, Vec<InlineDataImage>), AppError> {
+    let mut text = String::with_capacity(content.len().min(32_000));
+    let mut images = Vec::new();
+    let mut cursor = 0;
+
+    while let Some(relative_start) = content[cursor..].find("![") {
+        let start = cursor + relative_start;
+        let Some(alt_end_relative) = content[start + 2..].find("](") else {
+            break;
+        };
+        let alt_end = start + 2 + alt_end_relative;
+        let url_start = alt_end + 2;
+        let Some(close_relative) = content[url_start..].find(')') else {
+            break;
+        };
+        let close = url_start + close_relative;
+        let url = &content[url_start..close];
+        if !url.to_ascii_lowercase().starts_with("data:image/") {
+            text.push_str(&content[cursor..close + 1]);
+            cursor = close + 1;
+            continue;
+        }
+
+        validate_inline_data_image_url(url)?;
+        text.push_str(&content[cursor..start]);
+        let alt = content[start + 2..alt_end]
+            .chars()
+            .map(|character| {
+                if matches!(character, '\r' | '\n') {
+                    ' '
+                } else {
+                    character
+                }
+            })
+            .collect::<String>();
+        let alt = alt.trim().to_string();
+        if alt.is_empty() {
+            text.push_str("[Attached image]");
+        } else {
+            text.push_str(&format!("[Attached image: {alt}]"));
+        }
+        images.push(InlineDataImage {
+            data_url: url.to_string(),
+        });
+        cursor = close + 1;
+    }
+    text.push_str(&content[cursor..]);
+    Ok((text, images))
+}
+
+fn validate_inline_data_image_url(url: &str) -> Result<(), AppError> {
+    if url.len() > MAX_VISION_DATA_URL_CHARS {
+        return Err(AppError::ContextOverflow(
+            "attached image exceeds the local vision payload limit".to_string(),
+        ));
+    }
+    let (metadata, payload) = url.split_once(',').ok_or_else(|| {
+        AppError::InferenceFailed("attached image data URL is malformed".to_string())
+    })?;
+    let metadata = metadata.to_ascii_lowercase();
+    if !matches!(
+        metadata.as_str(),
+        "data:image/jpeg;base64"
+            | "data:image/jpg;base64"
+            | "data:image/png;base64"
+            | "data:image/webp;base64"
+    ) {
+        return Err(AppError::InferenceFailed(
+            "local vision accepts PNG, JPEG, and WebP image data only".to_string(),
+        ));
+    }
+    if payload.is_empty()
+        || !payload
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
+    {
+        return Err(AppError::InferenceFailed(
+            "attached image contains invalid base64 data".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn parse_openai_delta(data: &str) -> Result<Option<String>, AppError> {
@@ -722,5 +871,42 @@ mod tests {
         assert!(!is_public_web_url("http://127.0.0.1/admin"));
         assert!(!is_public_web_url("http://192.168.1.20/"));
         assert!(is_public_web_url("https://example.com/article"));
+    }
+
+    #[test]
+    fn extracts_safe_inline_vision_image() {
+        let (text, images) = extract_inline_data_images(
+            "review this\n![screen.png](data:image/png;base64,QUJDRA==)",
+        )
+        .unwrap();
+        assert!(text.contains("[Attached image: screen.png]"));
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].data_url, "data:image/png;base64,QUJDRA==");
+    }
+
+    #[test]
+    fn rejects_unsupported_inline_vision_image() {
+        let error =
+            extract_inline_data_images("![vector.svg](data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=)")
+                .unwrap_err();
+        assert!(matches!(error, AppError::InferenceFailed(_)));
+    }
+
+    #[test]
+    fn creates_openai_multimodal_content() {
+        let value = context_message_value(
+            "user",
+            "describe this".to_string(),
+            vec![InlineDataImage {
+                data_url: "data:image/png;base64,QUJDRA==".to_string(),
+            }],
+            true,
+        );
+        assert_eq!(value["content"][0]["type"], "text");
+        assert_eq!(value["content"][1]["type"], "image_url");
+        assert_eq!(
+            value["content"][1]["image_url"]["url"],
+            "data:image/png;base64,QUJDRA=="
+        );
     }
 }

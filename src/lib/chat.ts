@@ -23,6 +23,66 @@ export interface AttachmentDraft {
   contentPreview: string | null;
 }
 
+const MAX_VISION_IMAGE_INPUT_BYTES = 16 * 1024 * 1024;
+const MAX_VISION_IMAGE_DATA_URL_CHARS = 6_000_000;
+const MAX_VISION_IMAGE_DIMENSION = 2048;
+const SUPPORTED_VISION_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+async function encodeVisionImage(file: File) {
+  const mimeType = file.type.toLowerCase();
+  if (!SUPPORTED_VISION_IMAGE_TYPES.has(mimeType)) {
+    throw new Error("OpenMindAI Lens currently accepts PNG, JPEG, and WebP images.");
+  }
+  if (file.size > MAX_VISION_IMAGE_INPUT_BYTES) {
+    throw new Error("Image is too large for local vision. Use an image smaller than 16 MB.");
+  }
+
+  const bitmap = await window.createImageBitmap(file);
+  try {
+    const scale = Math.min(
+      1,
+      MAX_VISION_IMAGE_DIMENSION / Math.max(bitmap.width, bitmap.height, 1),
+    );
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Could not prepare the image for local vision.");
+    context.drawImage(bitmap, 0, 0, width, height);
+
+    let dataUrl =
+      mimeType === "image/png"
+        ? canvas.toDataURL("image/png")
+        : canvas.toDataURL("image/jpeg", 0.88);
+
+    if (dataUrl.length > MAX_VISION_IMAGE_DATA_URL_CHARS) {
+      const flattened = document.createElement("canvas");
+      flattened.width = width;
+      flattened.height = height;
+      const flattenedContext = flattened.getContext("2d");
+      if (!flattenedContext) throw new Error("Could not compress the image for local vision.");
+      flattenedContext.fillStyle = "#ffffff";
+      flattenedContext.fillRect(0, 0, width, height);
+      flattenedContext.drawImage(canvas, 0, 0);
+      dataUrl = flattened.toDataURL("image/jpeg", 0.82);
+    }
+
+    if (dataUrl.length > MAX_VISION_IMAGE_DATA_URL_CHARS) {
+      throw new Error("Image remains too large after local optimization. Resize it and try again.");
+    }
+
+    const safeName = file.name
+      .split("]")
+      .join(" ")
+      .replace(/[\r\n]/g, " ");
+    return `![${safeName}](${dataUrl})`;
+  } finally {
+    bitmap.close();
+  }
+}
+
 export function settledValue<T>(result: PromiseSettledResult<unknown>): T | null {
   return result.status === "fulfilled" ? (result.value as T) : null;
 }
@@ -51,7 +111,7 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
   if (isTextLike && file.size <= maxPreviewBytes) {
     contentPreview = await file.text();
   } else if (kind === "image") {
-    contentPreview = `[Image attached: ${file.name}. Exact visual analysis requires the local OpenMindAI Lens vision runtime. Do not infer unseen image content from metadata alone.]`;
+    contentPreview = await encodeVisionImage(file);
   } else if (kind === "pdf") {
     try {
       const extracted = await extractPdfText(file);
@@ -79,7 +139,11 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
   };
 }
 
-export function buildMessageContent(prompt: string, attachments: AttachmentDraft[], mode: ChatMode) {
+export function buildMessageContent(
+  prompt: string,
+  attachments: AttachmentDraft[],
+  mode: ChatMode,
+) {
   const modePrefix = modeInstruction(mode);
   if (attachments.length === 0) return [modePrefix, prompt].filter(Boolean).join("\n\n");
   const attachmentText = attachments
@@ -95,20 +159,43 @@ export function inferChatMode(prompt: string, attachments: AttachmentDraft[]): C
   const text = prompt.toLowerCase();
   if (attachments.some((attachment) => attachment.kind === "image")) return "vision";
   if (attachments.some((attachment) => attachment.kind === "pdf")) return "pdf";
-  if (/\b(web|search|google|latest|today|current|news|source|sources|verify)\b/.test(text)) return "search";
-  if (/\b(research|deep research|analyze deeply|investigate|market study|literature review)\b/.test(text)) return "research";
+  if (/\b(web|search|google|latest|today|current|news|source|sources|verify)\b/.test(text))
+    return "search";
+  if (
+    /\b(research|deep research|analyze deeply|investigate|market study|literature review)\b/.test(
+      text,
+    )
+  )
+    return "research";
   if (/\b(pdf|export pdf|make a pdf|pdf ready)\b/.test(text)) return "pdf";
-  if (/\b(document|write a doc|report|proposal|resume|cv|letter|contract|outline)\b/.test(text)) return "document";
-  if (/\b(create image|make image|generate image|draw|poster|logo|thumbnail|illustration)\b/.test(text)) return "image";
-  if (/\b(create video|make video|generate video|video clip|animation|animate)\b/.test(text)) return "video";
-  if (/\b(create voice|make voice|generate voice|voiceover|voice over|narration|text to speech|tts)\b/.test(text)) return "voice";
+  if (/\b(document|write a doc|report|proposal|resume|cv|letter|contract|outline)\b/.test(text))
+    return "document";
+  if (
+    /\b(create image|make image|generate image|draw|poster|logo|thumbnail|illustration)\b/.test(
+      text,
+    )
+  )
+    return "image";
+  if (/\b(create video|make video|generate video|video clip|animation|animate)\b/.test(text))
+    return "video";
+  if (
+    /\b(create voice|make voice|generate voice|voiceover|voice over|narration|text to speech|tts)\b/.test(
+      text,
+    )
+  )
+    return "voice";
   if (/\b(think|reason|solve|debug|step by step|carefully)\b/.test(text)) return "thinking";
   return "chat";
 }
 
 export function isUntitledConversation(title: string) {
   const normalized = title.trim().toLowerCase();
-  return !normalized || normalized === "new conversation" || normalized === "new chat" || normalized.startsWith("untitled");
+  return (
+    !normalized ||
+    normalized === "new conversation" ||
+    normalized === "new chat" ||
+    normalized.startsWith("untitled")
+  );
 }
 
 export function titleFromPrompt(prompt: string) {
