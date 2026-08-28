@@ -8,7 +8,9 @@ use sha2::{Digest, Sha256};
 use crate::{
     app_error::AppError,
     database::Database,
-    model_download::{validate_gguf_header, QwenModelManifest, VerificationState},
+    model_download::{
+        validate_gguf_header, validate_installed_dependencies, QwenModelManifest, VerificationState,
+    },
     portable_root::PortableRootManager,
 };
 
@@ -97,7 +99,7 @@ impl<'a> ModelRegistry<'a> {
             .to_string_lossy()
             .replace('\\', "/");
         let manifest = read_model_manifest(&canonical);
-        if !catalog_package_ready(&canonical, manifest.as_ref()) {
+        if !catalog_package_ready(self.root, &canonical, manifest.as_ref())? {
             self.database.connection().execute(
                 "DELETE FROM model_registry WHERE path = ?1 OR path = ?2",
                 params![relative_path, canonical.display().to_string()],
@@ -217,6 +219,20 @@ impl<'a> ModelRegistry<'a> {
             .ok_or_else(|| AppError::ModelNotFound(id.to_string()))?;
         let model_path = resolve_model_path(self.root, &model.path)?;
         validate_gguf_header(&model_path, self.root)?;
+        if let Some(manifest) = read_model_manifest(&model_path) {
+            if let Some(entry) = crate::model_catalog::load_catalog()?
+                .models
+                .into_iter()
+                .find(|entry| entry.repo == manifest.repo)
+            {
+                if !validate_installed_dependencies(self.root, &entry, true)? {
+                    return Err(AppError::ModelInvalid(format!(
+                        "{} package dependency integrity check failed",
+                        entry.name
+                    )));
+                }
+            }
+        }
         Ok(model)
     }
 
@@ -248,48 +264,23 @@ fn catalog_capabilities_from_manifest(manifest: &QwenModelManifest) -> Option<St
     serde_json::to_string(&entry.capabilities).ok()
 }
 
-fn catalog_package_ready(model_path: &Path, manifest: Option<&QwenModelManifest>) -> bool {
+fn catalog_package_ready(
+    root: &PortableRootManager,
+    _model_path: &Path,
+    manifest: Option<&QwenModelManifest>,
+) -> Result<bool, AppError> {
     let Some(manifest) = manifest else {
-        return true;
+        return Ok(true);
     };
-    let Ok(catalog) = crate::model_catalog::load_catalog() else {
-        return false;
-    };
+    let catalog = crate::model_catalog::load_catalog()?;
     let Some(entry) = catalog
         .models
         .into_iter()
         .find(|entry| entry.repo == manifest.repo)
     else {
-        return true;
+        return Ok(true);
     };
-    let Some(download) = entry.download else {
-        return true;
-    };
-    let Some(parent) = model_path.parent() else {
-        return false;
-    };
-
-    download
-        .dependencies
-        .iter()
-        .filter(|dependency| dependency.required)
-        .all(|dependency| directory_contains_matching_file(parent, &dependency.filename_pattern))
-}
-
-fn directory_contains_matching_file(directory: &Path, pattern: &str) -> bool {
-    fs::read_dir(directory)
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file())
-        .filter_map(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .map(str::to_string)
-        })
-        .any(|name| crate::model_catalog::wildcard_match(pattern, &name))
+    validate_installed_dependencies(root, &entry, false)
 }
 
 fn resolve_model_path(
@@ -445,9 +436,13 @@ mod tests {
     }
 
     #[test]
-    fn lens_package_requires_mmproj_dependency() {
+    fn lens_package_requires_verified_package_metadata() {
         let temp = tempfile::tempdir().unwrap();
-        let model_dir = temp.path().join("lens");
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let model_dir = root
+            .resolve_relative("models/vision/qwen2.5-vl-3b")
+            .unwrap();
         fs::create_dir_all(&model_dir).unwrap();
         let model_path = model_dir.join("Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf");
         fs::write(&model_path, b"GGUF").unwrap();
@@ -467,13 +462,34 @@ mod tests {
             installed_at: "now".to_string(),
         };
 
-        assert!(!catalog_package_ready(&model_path, Some(&manifest)));
+        assert!(!catalog_package_ready(&root, &model_path, Some(&manifest)).unwrap());
+        let dependency_name = "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf";
+        let dependency_path = model_dir.join(dependency_name);
+        fs::write(&dependency_path, b"GGUF").unwrap();
+        // Filename existence alone is intentionally insufficient now.
+        assert!(!catalog_package_ready(&root, &model_path, Some(&manifest)).unwrap());
+
+        let actual = crate::model_download::sha256_file(&dependency_path).unwrap();
+        let package_manifest = serde_json::json!({
+            "modelId": "qwen25-vl-3b-q4km",
+            "repo": "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF",
+            "files": [{
+                "role": "mmproj",
+                "filename": dependency_name,
+                "format": "gguf",
+                "sizeBytes": 4,
+                "sha256": null,
+                "actualSha256": actual,
+                "verification": "unverified",
+                "sourceUrl": "https://example.invalid/mmproj.gguf"
+            }]
+        });
         fs::write(
-            model_dir.join("mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf"),
-            b"GGUF",
+            model_dir.join("package-manifest.json"),
+            serde_json::to_string_pretty(&package_manifest).unwrap(),
         )
         .unwrap();
-        assert!(catalog_package_ready(&model_path, Some(&manifest)));
+        assert!(catalog_package_ready(&root, &model_path, Some(&manifest)).unwrap());
         let capabilities = catalog_capabilities_from_manifest(&manifest).unwrap();
         assert!(capabilities.contains("vision"));
         assert!(capabilities.contains("ocr"));

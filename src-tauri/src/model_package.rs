@@ -301,6 +301,86 @@ fn package_manifest_entry(
     }
 }
 
+pub(crate) fn validate_installed_dependencies(
+    root: &PortableRootManager,
+    entry: &ModelCatalogEntry,
+    verify_hashes: bool,
+) -> Result<bool, AppError> {
+    let Some(download) = entry.download.as_ref() else {
+        return Ok(true);
+    };
+    let required = download
+        .dependencies
+        .iter()
+        .filter(|dependency| dependency.required)
+        .collect::<Vec<_>>();
+    if required.is_empty() {
+        return Ok(true);
+    }
+
+    let model_dir = root.resolve_relative(&download.destination_dir)?;
+    let manifest_path = model_dir.join("package-manifest.json");
+    if !manifest_path.is_file() {
+        return Ok(false);
+    }
+    ensure_contained(root.root(), &manifest_path)?;
+    let manifest: ModelPackageManifest = match fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+    {
+        Some(manifest) => manifest,
+        None => return Ok(false),
+    };
+    if manifest.model_id != entry.id || manifest.repo != entry.repo {
+        return Ok(false);
+    }
+
+    for dependency in required {
+        let Some(record) = manifest.files.iter().find(|file| {
+            file.role == dependency.role
+                && file.format == dependency.format
+                && wildcard_match(&dependency.filename_pattern, &file.filename)
+        }) else {
+            return Ok(false);
+        };
+        if record.size_bytes == 0
+            || record.actual_sha256.trim().is_empty()
+            || record.verification == VerificationState::Failed
+        {
+            return Ok(false);
+        }
+        if record
+            .sha256
+            .as_deref()
+            .is_some_and(|expected| !expected.eq_ignore_ascii_case(&record.actual_sha256))
+        {
+            return Ok(false);
+        }
+
+        let file_path = model_dir.join(&record.filename);
+        if !file_path.is_file() {
+            return Ok(false);
+        }
+        ensure_contained(root.root(), &file_path)?;
+        if fs::metadata(&file_path)?.len() != record.size_bytes {
+            return Ok(false);
+        }
+        if verify_hashes {
+            let actual = sha256_file(&file_path)?;
+            if !actual.eq_ignore_ascii_case(&record.actual_sha256)
+                || record
+                    .sha256
+                    .as_deref()
+                    .is_some_and(|expected| !actual.eq_ignore_ascii_case(expected))
+            {
+                return Ok(false);
+            }
+        }
+    }
+
+    Ok(true)
+}
+
 fn wildcard_match(pattern: &str, value: &str) -> bool {
     if pattern == "*" {
         return true;
@@ -347,5 +427,49 @@ mod tests {
             "mmproj-*Q8_0*.gguf",
             "Qwen2.5-VL-3B-Instruct-Q8_0.gguf"
         ));
+    }
+
+    #[test]
+    fn validates_package_manifest_and_detects_same_size_hash_tampering() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let entry = crate::model_catalog::entry_by_id("qwen25-vl-3b-q4km").unwrap();
+        let download = entry.download.as_ref().unwrap();
+        let model_dir = root.resolve_relative(&download.destination_dir).unwrap();
+        fs::create_dir_all(&model_dir).unwrap();
+
+        let filename = "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf";
+        let file_path = model_dir.join(filename);
+        fs::write(&file_path, b"projector").unwrap();
+        let actual = sha256_file(&file_path).unwrap();
+        let manifest = ModelPackageManifest {
+            model_id: entry.id.clone(),
+            repo: entry.repo.clone(),
+            files: vec![PackageFileManifest {
+                role: "mmproj".to_string(),
+                filename: filename.to_string(),
+                format: "gguf".to_string(),
+                size_bytes: 9,
+                sha256: Some(actual.clone()),
+                actual_sha256: actual,
+                verification: VerificationState::Verified,
+                source_url: "https://example.invalid/mmproj.gguf".to_string(),
+            }],
+        };
+        fs::write(
+            model_dir.join("package-manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        assert!(validate_installed_dependencies(&root, &entry, false).unwrap());
+        assert!(validate_installed_dependencies(&root, &entry, true).unwrap());
+
+        // Same-size corruption is intentionally cheap to tolerate during discovery,
+        // but explicit validation must catch it by hashing the dependency.
+        fs::write(&file_path, b"corrupted").unwrap();
+        assert!(validate_installed_dependencies(&root, &entry, false).unwrap());
+        assert!(!validate_installed_dependencies(&root, &entry, true).unwrap());
     }
 }
