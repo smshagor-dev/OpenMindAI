@@ -145,7 +145,9 @@ export function App() {
     if (conversationList) {
       setConversations(conversationList);
       setActiveId((current) =>
-        current && conversationList.some((conversation) => conversation.id === current) ? current : null,
+        current && conversationList.some((conversation) => conversation.id === current)
+          ? current
+          : null,
       );
     }
     if (hardwareInfo) setHardware(hardwareInfo);
@@ -190,7 +192,10 @@ export function App() {
       .then(async (update) => {
         if (!update) return;
         try {
-          await notifyUser("OpenMindAI update available", `Version ${update.version} is ready to download.`);
+          await notifyUser(
+            "OpenMindAI update available",
+            `Version ${update.version} is ready to download.`,
+          );
           if (preferences.autoDownloadAppUpdates) {
             await update.downloadAndInstall();
             await notifyUser(
@@ -266,7 +271,11 @@ export function App() {
       setActivity((current) => ({ ...current, searching: false, detail: current.detail })),
     );
     socket.on("research:start", (detail?: string) =>
-      setActivity((current) => ({ ...current, researching: true, detail: detail ?? "Researching..." })),
+      setActivity((current) => ({
+        ...current,
+        researching: true,
+        detail: detail ?? "Researching...",
+      })),
     );
     socket.on("research:stop", () =>
       setActivity((current) => ({ ...current, researching: false, detail: current.detail })),
@@ -386,7 +395,8 @@ export function App() {
     setPrompt("");
     setAttachments([]);
     let conversationId = activeId;
-    let conversationForTitle = conversations.find((conversation) => conversation.id === conversationId) ?? null;
+    let conversationForTitle =
+      conversations.find((conversation) => conversation.id === conversationId) ?? null;
     if (!conversationId) {
       const conversation = await api.createConversation();
       conversationId = conversation.id;
@@ -399,7 +409,9 @@ export function App() {
         try {
           await api.activateModel(conversationId, pendingModelId);
           setConversations((items) =>
-            items.map((item) => (item.id === conversationId ? { ...item, activeModelId: pendingModelId } : item)),
+            items.map((item) =>
+              item.id === conversationId ? { ...item, activeModelId: pendingModelId } : item,
+            ),
           );
         } catch (caught) {
           setModelSwitchError(formatError(caught));
@@ -422,12 +434,20 @@ export function App() {
     setMessages((items) => [...items, optimisticUser]);
     try {
       if (preferences?.autoGenerateTitles ?? true) {
-        const generatedTitle = titleFromPrompt(content || attachments[0]?.name || "New conversation");
-        if (conversationForTitle && isUntitledConversation(conversationForTitle.title) && generatedTitle) {
+        const generatedTitle = titleFromPrompt(
+          content || attachments[0]?.name || "New conversation",
+        );
+        if (
+          conversationForTitle &&
+          isUntitledConversation(conversationForTitle.title) &&
+          generatedTitle
+        ) {
           await api.renameConversation(conversationId, generatedTitle);
           setConversations((items) =>
             items.map((conversation) =>
-              conversation.id === conversationId ? { ...conversation, title: generatedTitle } : conversation,
+              conversation.id === conversationId
+                ? { ...conversation, title: generatedTitle }
+                : conversation,
             ),
           );
         }
@@ -435,7 +455,12 @@ export function App() {
       const assistant = await api.sendChatMessage(conversationId, messageContent, inferredMode);
       const generationKind = generationKindForMode(inferredMode);
       if (generationKind) {
-        const artifact = await api.createGenerationArtifact(conversationId, assistant.id, generationKind, content);
+        const artifact = await api.createGenerationArtifact(
+          conversationId,
+          assistant.id,
+          generationKind,
+          content,
+        );
         setArtifacts((items) => upsertArtifactInList(items, artifact));
         if (preferences?.openArtifactsAfterGeneration && artifact.status === "ready") {
           void api.openArtifact(artifact.id).catch(showError);
@@ -458,7 +483,18 @@ export function App() {
       showError(caught);
       await refreshMessages(conversationId, setMessages, showError);
     }
-  }, [activeId, attachments, conversations, pendingModelId, preferences?.autoGenerateTitles, preferences?.openArtifactsAfterGeneration, prompt, refreshApp, showError, streamingId]);
+  }, [
+    activeId,
+    attachments,
+    conversations,
+    pendingModelId,
+    preferences?.autoGenerateTitles,
+    preferences?.openArtifactsAfterGeneration,
+    prompt,
+    refreshApp,
+    showError,
+    streamingId,
+  ]);
 
   const stopGeneration = useCallback(async () => {
     if (!streamingId || !activeId) return;
@@ -558,7 +594,9 @@ export function App() {
 
       if (!isTyping && event.key === "?") {
         event.preventDefault();
-        setError("Shortcuts: Ctrl+N new chat, Ctrl+K search chats, Ctrl+, settings, Ctrl+Enter send, Esc stop.");
+        setError(
+          "Shortcuts: Ctrl+N new chat, Ctrl+K search chats, Ctrl+, settings, Ctrl+Enter send, Esc stop.",
+        );
       }
     };
 
@@ -568,10 +606,14 @@ export function App() {
 
   async function addFiles(files: FileList | null) {
     if (!files) return;
-    const next = await Promise.all(Array.from(files).map(readAttachment));
-    setAttachments((items) => [...items, ...next]);
-    setView("chat");
-    composerRef.current?.focus();
+    try {
+      const next = await Promise.all(Array.from(files).map(readAttachment));
+      setAttachments((items) => [...items, ...next]);
+      setView("chat");
+      composerRef.current?.focus();
+    } catch (caught) {
+      showError(caught);
+    }
   }
 
   async function archiveConversation(id: string) {
@@ -615,7 +657,10 @@ export function App() {
       } else if (message.role === "assistant") {
         const assistant = await api.createStreamingAssistantMessage(created.id);
         if (message.content) await api.appendMessageChunk(assistant.id, message.content);
-        await api.completeMessage(assistant.id, message.status === "streaming" ? "completed" : message.status);
+        await api.completeMessage(
+          assistant.id,
+          message.status === "streaming" ? "completed" : message.status,
+        );
       }
     }
     await refreshApp();
@@ -646,7 +691,9 @@ export function App() {
     await api.renameConversation(activeConversation.id, nextTitle);
     setConversations((items) =>
       items.map((conversation) =>
-        conversation.id === activeConversation.id ? { ...conversation, title: nextTitle } : conversation,
+        conversation.id === activeConversation.id
+          ? { ...conversation, title: nextTitle }
+          : conversation,
       ),
     );
     setEditingTitle(false);
@@ -685,8 +732,21 @@ export function App() {
       try {
         const artifact =
           kind === "pdf" || kind === "docx"
-            ? await api.createDocumentArtifact(activeId, messageId, kind, filenameHint ?? null, content, null)
-            : await api.createTextArtifact(activeId, messageId, kind, filenameHint ?? null, content);
+            ? await api.createDocumentArtifact(
+                activeId,
+                messageId,
+                kind,
+                filenameHint ?? null,
+                content,
+                null,
+              )
+            : await api.createTextArtifact(
+                activeId,
+                messageId,
+                kind,
+                filenameHint ?? null,
+                content,
+              );
         setArtifacts((items) => upsertArtifactInList(items, artifact));
         if (preferences?.openArtifactsAfterGeneration && artifact.status === "ready") {
           void api.openArtifact(artifact.id).catch(showError);
@@ -803,7 +863,9 @@ export function App() {
       <section className="workspace">
         <header className="topbar" data-tauri-drag-region="">
           <div>
-            {view === "chat" && !activeConversation ? null : view === "chat" && activeConversation && editingTitle ? (
+            {view === "chat" && !activeConversation ? null : view === "chat" &&
+              activeConversation &&
+              editingTitle ? (
               <form
                 className="title-editor"
                 onSubmit={(event) => {
@@ -853,13 +915,19 @@ export function App() {
                 >
                   <Pencil size={17} />
                 </button>
-                <button title={activeConversation.pinned ? "Unpin" : "Pin"} onClick={() => togglePin(activeConversation)}>
+                <button
+                  title={activeConversation.pinned ? "Unpin" : "Pin"}
+                  onClick={() => togglePin(activeConversation)}
+                >
                   {activeConversation.pinned ? <PinOff size={17} /> : <Pin size={17} />}
                 </button>
                 <button title="Archive" onClick={() => archiveConversation(activeConversation.id)}>
                   <Archive size={17} />
                 </button>
-                <button title="Delete" onClick={() => requestDeleteConversation(activeConversation.id)}>
+                <button
+                  title="Delete"
+                  onClick={() => requestDeleteConversation(activeConversation.id)}
+                >
                   <Trash2 size={17} />
                 </button>
               </>
@@ -885,7 +953,9 @@ export function App() {
             activity={activity}
             enterToSend={preferences?.enterToSend ?? true}
             addFiles={addFiles}
-            removeAttachment={(id) => setAttachments((items) => items.filter((item) => item.id !== id))}
+            removeAttachment={(id) =>
+              setAttachments((items) => items.filter((item) => item.id !== id))
+            }
             sendMessage={sendMessage}
             stopGeneration={stopGeneration}
             regenerate={regenerate}
@@ -983,7 +1053,13 @@ export function App() {
             onClick={(event) => event.stopPropagation()}
           >
             <h2>Models</h2>
-            <ModelsManager hardware={hardware} models={models} runtime={runtime} root={root} refresh={refreshApp} />
+            <ModelsManager
+              hardware={hardware}
+              models={models}
+              runtime={runtime}
+              root={root}
+              refresh={refreshApp}
+            />
             <div className="modal-actions">
               <button type="button" className="ghost-button" onClick={() => setModelsOpen(false)}>
                 Close

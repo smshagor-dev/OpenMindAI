@@ -1233,10 +1233,12 @@ fn resolve_conversation_model(
         .and_then(|conversation| conversation.active_model_id);
     let selected = select_conversation_model(&models, active_model_id.as_deref(), mode, content)
         .ok_or_else(|| {
-            app_error::AppError::ModelNotFound(
+            let message = if mode.eq_ignore_ascii_case("vision") {
+                "OpenMindAI Lens is not installed or its vision package is incomplete. Download Lens from Settings > Models first."
+            } else {
                 "OpenMindAI Core is not installed. Download it from Settings > Models first."
-                    .to_string(),
-            )
+            };
+            app_error::AppError::ModelNotFound(message.to_string())
         })?;
     let reason = routing_reason(&selected, active_model_id.as_deref(), mode, content);
 
@@ -1434,10 +1436,8 @@ fn select_conversation_model(
     let normalized_mode = mode.to_ascii_lowercase();
     let normalized_content = content.to_ascii_lowercase();
 
-    if matches!(normalized_mode.as_str(), "vision") {
-        if let Some(model) = model_by_repo(models, "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF") {
-            return Some(model);
-        }
+    if normalized_mode == "vision" {
+        return model_by_repo(models, "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF");
     }
 
     if matches!(
@@ -1946,5 +1946,14 @@ mod milestone2_tests {
             select_conversation_model(&models, None, "vision", "look at this image").unwrap();
 
         assert_eq!(selected.id, lens.id);
+    }
+
+    #[test]
+    fn select_conversation_model_requires_lens_for_vision() {
+        let core = test_model("core", Some("Qwen/Qwen3-4B-GGUF"), true);
+        let titan = test_model("titan", Some("Qwen/Qwen3-8B-GGUF"), true);
+        let models = vec![core, titan];
+
+        assert!(select_conversation_model(&models, None, "vision", "look at this image").is_none());
     }
 }
