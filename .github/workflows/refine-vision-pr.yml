@@ -112,14 +112,32 @@ jobs:
           }
           '''
           text = replace_once(text, interface_end, image_support, "AttachmentDraft")
-          placeholder = '    contentPreview = `[Image attached: ${file.name}. Exact visual analysis requires the local OpenMindAI Lens vision runtime. Do not infer unseen image content from metadata alone.]`;'
-          text = replace_once(text, placeholder, '    contentPreview = await encodeVisionImage(file);', "image attachment")
-          text = replace_once(
-              text,
-              '  if (file.type.startsWith("image/")) return "image";',
-              '  if (file.type.startsWith("image/") || /\\.(png|jpe?g|webp)$/i.test(file.name)) return "image";',
-              "attachmentKind",
-          )
+
+          image_start_marker = '  } else if (kind === "image") {'
+          pdf_start_marker = '  } else if (kind === "pdf") {'
+          image_start = text.find(image_start_marker)
+          pdf_start = text.find(pdf_start_marker, image_start)
+          if image_start < 0 or pdf_start < 0:
+              raise SystemExit("image attachment block anchors not found")
+          replacement = '''  } else if (kind === "image") {
+            contentPreview = await encodeVisionImage(file);
+'''
+          text = text[:image_start] + replacement + text[pdf_start:]
+
+          kind_function = 'export function attachmentKind(file: File): AttachmentDraft["kind"] {'
+          kind_start = text.find(kind_function)
+          if kind_start < 0:
+              raise SystemExit("attachmentKind function not found")
+          image_line_start = text.find('if (file.type.startsWith("image/")) return "image";', kind_start)
+          if image_line_start < 0:
+              raise SystemExit("attachmentKind image line not found")
+          line_start = text.rfind("\n", kind_start, image_line_start) + 1
+          line_end = text.find("\n", image_line_start)
+          if line_end < 0:
+              line_end = len(text)
+          indent = text[line_start:image_line_start]
+          new_kind_line = indent + 'if (file.type.startsWith("image/") || /\\.(png|jpe?g|webp)$/i.test(file.name)) return "image";'
+          text = text[:line_start] + new_kind_line + text[line_end:]
           chat.write_text(text, encoding="utf-8")
 
           app = Path("src/App.tsx")
