@@ -1,0 +1,46 @@
+name: Format media preflight Rust sources
+
+on:
+  push:
+    branches:
+      - media-preflight-production-readiness
+    paths:
+      - .github/workflows/format-media-preflight.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: format-media-preflight-production-readiness
+  cancel-in-progress: true
+
+jobs:
+  format:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: media-preflight-production-readiness
+
+      - name: Install Rust formatter
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Format Rust
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+
+      - name: Remove one-shot workflow
+        run: rm -f .github/workflows/format-media-preflight.yml
+
+      - name: Verify diff hygiene
+        run: git diff --check
+
+      - name: Commit formatted production sources
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Format media preflight production sources"
+          git push origin HEAD:media-preflight-production-readiness
