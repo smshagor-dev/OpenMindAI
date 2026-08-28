@@ -6,6 +6,9 @@ use uuid::Uuid;
 
 use crate::{app_error::AppError, database::Database, portable_root::PortableRootManager};
 
+#[path = "media_preflight.rs"]
+pub(crate) mod media_preflight;
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Artifact {
@@ -194,6 +197,10 @@ impl<'a> ArtifactManager<'a> {
         filename_hint: Option<&str>,
         fallback_title: &str,
     ) -> Result<(PathBuf, String, String), AppError> {
+        if let Some(report) = media_preflight::preflight(self.root, kind)? {
+            report.ensure_ready()?;
+        }
+
         let subdir = match kind {
             "pdf" | "docx" => "generated/exports",
             "image" => "generated/images",
