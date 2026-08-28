@@ -1,0 +1,79 @@
+name: Apply video and voice runtime
+
+on:
+  push:
+    branches:
+      - end-to-end-video-voice-runtime
+    paths:
+      - scripts/apply_video_voice_runtime.py
+      - .github/workflows/apply-video-voice-runtime.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-video-voice-runtime
+  cancel-in-progress: true
+
+jobs:
+  materialize-and-validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout work branch
+        uses: actions/checkout@v4
+        with:
+          ref: end-to-end-video-voice-runtime
+
+      - name: Materialize production source
+        run: python scripts/apply_video_voice_runtime.py
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Frontend format
+        run: npx prettier --write src/App.tsx src/lib/chat.ts
+
+      - name: Frontend lint
+        run: npm run lint
+
+      - name: Frontend build
+        run: npm run build
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf cmake build-essential pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Format Rust
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+
+      - name: Strict Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --all-features
+
+      - name: Diff hygiene
+        run: git diff --check
+
+      - name: Commit validated production implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Implement end-to-end video and voice generation"
+          git push origin HEAD:end-to-end-video-voice-runtime
