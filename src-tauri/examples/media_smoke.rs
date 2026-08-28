@@ -1,6 +1,10 @@
 #![allow(dead_code)]
 
-use std::{env, fs, io, path::PathBuf};
+use std::{
+    env, fs,
+    io::{self, Read},
+    path::PathBuf,
+};
 
 #[path = "../src/app_error.rs"]
 mod app_error;
@@ -37,6 +41,13 @@ enum Target {
     Canvas,
     Motion,
     All,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputFormat {
+    Wav,
+    Png,
+    WebM,
 }
 
 #[tokio::main]
@@ -155,7 +166,7 @@ async fn smoke_speak(
         &output,
     )
     .await?;
-    report_output("Speak", &output, 44)?;
+    report_output("Speak", &output, 44, OutputFormat::Wav)?;
     Ok(())
 }
 
@@ -179,7 +190,7 @@ async fn smoke_canvas(
         &output,
     )
     .await?;
-    report_output("Canvas", &output, 8)?;
+    report_output("Canvas", &output, 8, OutputFormat::Png)?;
     Ok(())
 }
 
@@ -209,7 +220,7 @@ async fn smoke_motion(
         },
     )
     .await?;
-    report_output("Motion", &output, 4)?;
+    report_output("Motion", &output, 4, OutputFormat::WebM)?;
     Ok(())
 }
 
@@ -272,6 +283,7 @@ fn report_output(
     label: &str,
     path: &std::path::Path,
     minimum_bytes: u64,
+    format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let size = fs::metadata(path)?.len();
     if size <= minimum_bytes {
@@ -281,6 +293,81 @@ fn report_output(
         )
         .into());
     }
+    validate_output_signature(path, format)?;
     println!("[{label}] PASS: {} ({size} bytes)", path.display());
     Ok(())
+}
+
+fn validate_output_signature(
+    path: &std::path::Path,
+    format: OutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut file = fs::File::open(path)?;
+    let mut header = [0_u8; 4096];
+    let read = file.read(&mut header)?;
+    let bytes = &header[..read];
+
+    let valid = match format {
+        OutputFormat::Wav => {
+            bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WAVE"
+        }
+        OutputFormat::Png => bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]),
+        OutputFormat::WebM => {
+            bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3])
+                && bytes
+                    .windows(4)
+                    .any(|window| window.eq_ignore_ascii_case(b"webm"))
+        }
+    };
+
+    if !valid {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("output signature does not match expected {format:?} container"),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_signature(format: OutputFormat, data: &[u8], expected: bool) {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        fs::write(temp.path(), data).unwrap();
+        assert_eq!(
+            validate_output_signature(temp.path(), format).is_ok(),
+            expected
+        );
+    }
+
+    #[test]
+    fn validates_wav_signature() {
+        assert_signature(OutputFormat::Wav, b"RIFF\x24\x00\x00\x00WAVEfmt ", true);
+        assert_signature(OutputFormat::Wav, b"NOT-A-WAV-FILE", false);
+    }
+
+    #[test]
+    fn validates_png_signature() {
+        assert_signature(
+            OutputFormat::Png,
+            &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0],
+            true,
+        );
+        assert_signature(OutputFormat::Png, b"not a png", false);
+    }
+
+    #[test]
+    fn validates_webm_signature_and_doctype() {
+        let mut webm = vec![0x1a, 0x45, 0xdf, 0xa3, 0x00, 0x00];
+        webm.extend_from_slice(b"webm");
+        assert_signature(OutputFormat::WebM, &webm, true);
+        assert_signature(
+            OutputFormat::WebM,
+            &[0x1a, 0x45, 0xdf, 0xa3, 0, 0, 0, 0],
+            false,
+        );
+    }
 }
