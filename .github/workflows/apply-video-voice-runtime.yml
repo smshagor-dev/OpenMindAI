@@ -6,6 +6,7 @@ on:
       - end-to-end-video-voice-runtime
     paths:
       - scripts/apply_video_voice_runtime.py
+      - scripts/fix_video_voice_clippy.py
       - .github/workflows/apply-video-voice-runtime.yml
 
 permissions:
@@ -29,6 +30,9 @@ jobs:
 
       - name: Materialize production source
         run: python scripts/apply_video_voice_runtime.py
+
+      - name: Apply strict Clippy refactor
+        run: python scripts/fix_video_voice_clippy.py
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
