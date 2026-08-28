@@ -1,5 +1,5 @@
 {
-  "catalogVersion": 3,
+  "catalogVersion": 4,
   "models": [
     {
       "id": "qwen3-4b-q4km",
@@ -123,24 +123,38 @@
       "version": "1.0",
       "family": "kokoro",
       "kind": "text-to-speech",
-      "runtime": "onnx",
-      "repo": "onnx-community/Kokoro-82M-v1.0-ONNX",
-      "quantization": "ONNX",
+      "runtime": "any-tts-candle",
+      "repo": "hexgrad/Kokoro-82M",
+      "quantization": "FP32",
       "required": false,
       "capabilities": [
         "tts",
         "voice"
       ],
-      "sizeBytes": 360000000,
+      "sizeBytes": 328000000,
       "minRamBytes": 4294967296,
       "minVramBytes": null,
       "license": "apache-2.0",
-      "description": "Fast local spoken replies with a small footprint.",
+      "description": "Native local Kokoro speech synthesis through Rust/Candle with in-process phonemization and verified voice weights.",
       "download": {
         "strategy": "singleFile",
-        "filenamePattern": "*quantized*.onnx",
+        "filenamePattern": "*kokoro-v1_0.pth",
         "destinationDir": "models/audio/kokoro",
-        "format": "onnx"
+        "format": "pth",
+        "dependencies": [
+          {
+            "role": "config",
+            "filenamePattern": "*config.json",
+            "format": "json",
+            "required": true
+          },
+          {
+            "role": "voice",
+            "filenamePattern": "*af_heart.pt",
+            "format": "pt",
+            "required": true
+          }
+        ]
       }
     },
     {
@@ -224,56 +238,44 @@
       }
     },
     {
-      "id": "ltx-video",
-      "name": "OpenMindAI Motion",
-      "version": "1",
-      "family": "ltx-video",
-      "kind": "video",
-      "runtime": "ComfyUI",
-      "repo": "Lightricks/LTX-Video",
-      "quantization": "FP16",
-      "required": false,
-      "capabilities": [
-        "text-to-video",
-        "image-to-video",
-        "video"
-      ],
-      "sizeBytes": 10000000000,
-      "minRamBytes": 34359738368,
-      "minVramBytes": 12884901888,
-      "license": "openrail-m",
-      "description": "Efficient local motion generation package.",
-      "download": {
-        "strategy": "singleFile",
-        "filenamePattern": "*.safetensors",
-        "destinationDir": "models/video/ltx-video",
-        "format": "safetensors"
-      }
-    },
-    {
       "id": "wan21-t2v-13b",
-      "name": "OpenMindAI Motion Pro",
+      "name": "OpenMindAI Motion",
       "version": "2.1",
       "family": "wan",
       "kind": "video",
-      "runtime": "ComfyUI",
-      "repo": "Wan-AI/Wan2.1-T2V-1.3B",
-      "quantization": "FP16",
+      "runtime": "stable-diffusion.cpp",
+      "repo": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+      "quantization": "FP16+Q5_K_M",
       "required": false,
       "capabilities": [
         "text-to-video",
         "video"
       ],
-      "sizeBytes": 9000000000,
-      "minRamBytes": 34359738368,
-      "minVramBytes": 12884901888,
+      "sizeBytes": 7250000000,
+      "minRamBytes": 17179869184,
+      "minVramBytes": 6442450944,
       "license": "apache-2.0",
-      "description": "Higher quality motion generation package for NVIDIA/CUDA systems.",
+      "description": "Local Wan2.1 1.3B text-to-video generation through stable-diffusion.cpp with WebM output and memory-aware offload.",
       "download": {
         "strategy": "singleFile",
-        "filenamePattern": "*.safetensors",
-        "destinationDir": "models/video/wan2.1",
-        "format": "safetensors"
+        "filenamePattern": "*wan2.1_t2v_1.3B_fp16.safetensors",
+        "destinationDir": "models/video/wan2.1-t2v-1.3b",
+        "format": "safetensors",
+        "dependencies": [
+          {
+            "role": "vae",
+            "filenamePattern": "*wan_2.1_vae.safetensors",
+            "format": "safetensors",
+            "required": true
+          },
+          {
+            "role": "text-encoder",
+            "repo": "city96/umt5-xxl-encoder-gguf",
+            "filenamePattern": "*umt5-xxl-encoder-Q5_K_M.gguf",
+            "format": "gguf",
+            "required": true
+          }
+        ]
       }
     }
   ]

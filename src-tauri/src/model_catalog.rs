@@ -52,6 +52,8 @@ pub struct ModelCatalogDownload {
 #[serde(rename_all = "camelCase")]
 pub struct ModelCatalogDependency {
     pub role: String,
+    #[serde(default)]
+    pub repo: Option<String>,
     pub filename_pattern: String,
     pub format: String,
     #[serde(default = "default_required_dependency")]
@@ -192,6 +194,18 @@ fn find_downloaded_file(
     find_file_matching(&dir, &download.filename_pattern)
         .and_then(|path| path.strip_prefix(root.root()).ok().map(Path::to_path_buf))
         .map(|path| path.to_string_lossy().replace('\\', "/"))
+}
+
+pub(crate) fn installed_file_for_pattern(
+    root: &PortableRootManager,
+    destination_dir: &str,
+    pattern: &str,
+) -> Option<PathBuf> {
+    let dir = root.resolve_relative(destination_dir).ok()?;
+    if !dir.exists() {
+        return None;
+    }
+    find_file_matching(&dir, pattern)
 }
 
 pub fn delete_catalog_model(root: &PortableRootManager, model_id: &str) -> Result<(), AppError> {
@@ -348,6 +362,35 @@ mod tests {
             .dependencies
             .iter()
             .any(|dependency| dependency.role == "mmproj" && dependency.required));
+
+        let speak = catalog
+            .models
+            .iter()
+            .find(|entry| entry.id == "kokoro-82m-onnx")
+            .unwrap();
+        assert_eq!(speak.runtime, "any-tts-candle");
+        assert!(speak
+            .download
+            .as_ref()
+            .unwrap()
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.role == "voice" && dependency.required));
+
+        let motion = catalog
+            .models
+            .iter()
+            .find(|entry| entry.id == "wan21-t2v-13b")
+            .unwrap();
+        assert_eq!(motion.runtime, "stable-diffusion.cpp");
+        assert!(motion
+            .download
+            .as_ref()
+            .unwrap()
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.role == "text-encoder"
+                && dependency.repo.as_deref() == Some("city96/umt5-xxl-encoder-gguf")));
     }
 
     fn hardware_with(total_ram_bytes: u64, vram_bytes: Option<u64>) -> HardwareProfile {

@@ -9,7 +9,9 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     app_error::AppError,
     model_catalog::{ModelCatalogDependency, ModelCatalogEntry},
-    model_download::{ensure_contained, sha256_file, validate_free_space, VerificationState},
+    model_download::{
+        ensure_contained, safe_part_filename, sha256_file, validate_free_space, VerificationState,
+    },
     portable_root::PortableRootManager,
 };
 
@@ -85,27 +87,21 @@ pub async fn ensure_dependencies(
         return Err(AppError::InferenceCancelled("download stopped".to_string()));
     }
 
-    let api_url = format!(
-        "https://huggingface.co/api/models/{}?blobs=true",
-        entry.repo
-    );
-    let model: HuggingFaceModel = client
-        .get(api_url)
-        .send()
-        .await
-        .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?
-        .error_for_status()
-        .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?
-        .json()
-        .await
-        .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?;
-
     let mut files = Vec::new();
     for dependency in &download.dependencies {
         if cancellation.is_cancelled() {
             return Err(AppError::InferenceCancelled("download stopped".to_string()));
         }
-        match resolve_dependency(&entry.repo, &model, dependency) {
+        let repo = dependency.repo.as_deref().unwrap_or(&entry.repo);
+        let model = match fetch_model_metadata(client, repo).await {
+            Ok(model) => model,
+            Err(error) if !dependency.required => {
+                tracing::warn!(role = %dependency.role, %repo, %error, "optional model package repository unavailable");
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        match resolve_dependency(repo, &model, dependency) {
             Ok(resolved) => {
                 let installed =
                     download_dependency(root, client, &model_dir, &resolved, cancellation).await?;
@@ -129,6 +125,20 @@ pub async fn ensure_dependencies(
             .map_err(|error| AppError::internal(error.to_string()))?,
     )?;
     Ok(())
+}
+
+async fn fetch_model_metadata(client: &Client, repo: &str) -> Result<HuggingFaceModel, AppError> {
+    let api_url = format!("https://huggingface.co/api/models/{repo}?blobs=true");
+    client
+        .get(api_url)
+        .send()
+        .await
+        .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?
+        .error_for_status()
+        .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?
+        .json()
+        .await
+        .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))
 }
 
 fn resolve_dependency(
@@ -188,9 +198,13 @@ async fn download_dependency(
     cancellation: &CancellationToken,
 ) -> Result<PackageFileManifest, AppError> {
     let final_path = model_dir.join(&dependency.filename);
+    if let Some(parent) = final_path.parent() {
+        fs::create_dir_all(parent)?;
+        ensure_contained(root.root(), parent)?;
+    }
     let temp_dir = root.resolve_relative("temp/downloads")?;
     fs::create_dir_all(&temp_dir)?;
-    let part_path = temp_dir.join(format!("{}.part", dependency.filename));
+    let part_path = temp_dir.join(safe_part_filename(&dependency.filename));
     ensure_contained(root.root(), &final_path)?;
     ensure_contained(root.root(), &part_path)?;
 

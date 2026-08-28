@@ -21,6 +21,7 @@ mod runtime;
 mod runtime_install;
 mod settings;
 mod storage;
+mod voice_runtime;
 
 use std::{path::PathBuf, sync::Mutex};
 
@@ -690,30 +691,112 @@ async fn generate_local_media_artifact(
             .await
         }
         "video" => {
-            let installed = installed_catalog_entry_for_kind(state, "video")?;
-            let Some(model) = installed else {
-                return Err(app_error::AppError::ArtifactGenerationFailed(
-                    "OpenMindAI Motion model download required. Open Settings > Models and download the recommended model first."
+            let model = installed_catalog_entry_by_id(state, "wan21-t2v-13b")?.ok_or_else(|| {
+                app_error::AppError::ArtifactGenerationFailed(
+                    "OpenMindAI Motion model package is required. Open Settings > Models and download OpenMindAI Motion first."
                         .to_string(),
-                ));
-            };
-            Err(app_error::AppError::ArtifactGenerationFailed(format!(
-                "{} is downloaded, but the local video runner is not connected yet. Install the OpenMindAI Motion runtime connector to render MP4 output.",
-                model.entry.name
-            )))
+                )
+            })?;
+            let relative_model_path = model.installed_path.as_deref().ok_or_else(|| {
+                app_error::AppError::ArtifactGenerationFailed(
+                    "OpenMindAI Motion model path is unavailable".to_string(),
+                )
+            })?;
+            let model_path = state.root.resolve_relative(relative_model_path)?;
+            let download = model.entry.download.as_ref().ok_or_else(|| {
+                app_error::AppError::ArtifactGenerationFailed(
+                    "OpenMindAI Motion package metadata is unavailable".to_string(),
+                )
+            })?;
+            let vae_dependency = download
+                .dependencies
+                .iter()
+                .find(|dependency| dependency.role == "vae")
+                .ok_or_else(|| {
+                    app_error::AppError::ArtifactGenerationFailed(
+                        "OpenMindAI Motion VAE metadata is missing".to_string(),
+                    )
+                })?;
+            let text_dependency = download
+                .dependencies
+                .iter()
+                .find(|dependency| dependency.role == "text-encoder")
+                .ok_or_else(|| {
+                    app_error::AppError::ArtifactGenerationFailed(
+                        "OpenMindAI Motion text encoder metadata is missing".to_string(),
+                    )
+                })?;
+            let vae_path = model_catalog::installed_file_for_pattern(
+                &state.root,
+                &download.destination_dir,
+                &vae_dependency.filename_pattern,
+            )
+            .ok_or_else(|| {
+                app_error::AppError::ArtifactGenerationFailed(
+                    "OpenMindAI Motion VAE is missing; validate or re-download the model package"
+                        .to_string(),
+                )
+            })?;
+            let text_encoder_path = model_catalog::installed_file_for_pattern(
+                &state.root,
+                &download.destination_dir,
+                &text_dependency.filename_pattern,
+            )
+            .ok_or_else(|| app_error::AppError::ArtifactGenerationFailed("OpenMindAI Motion text encoder is missing; validate or re-download the model package".to_string()))?;
+            let hardware = HardwareProfiler::detect();
+            diffusion_runtime::generate_video(
+                &state.root,
+                &state.http,
+                &hardware,
+                diffusion_runtime::VideoGenerationRequest {
+                    diffusion_model_path: &model_path,
+                    vae_path: &vae_path,
+                    text_encoder_path: &text_encoder_path,
+                    prompt,
+                    output_path: path,
+                },
+            )
+            .await
         }
         "voice" => {
-            let installed = installed_catalog_entry_for_kind(state, "text-to-speech")?;
-            let Some(model) = installed else {
-                return Err(app_error::AppError::ArtifactGenerationFailed(
-                    "OpenMindAI Speak model download required. Open Settings > Models and download the recommended model first."
+            let model = installed_catalog_entry_by_id(state, "kokoro-82m-onnx")?.ok_or_else(|| {
+                app_error::AppError::ArtifactGenerationFailed(
+                    "OpenMindAI Speak model package is required. Open Settings > Models and download OpenMindAI Speak first."
                         .to_string(),
-                ));
-            };
-            Err(app_error::AppError::ArtifactGenerationFailed(format!(
-                "{} is downloaded, but the local voice runner is not connected yet. Install the OpenMindAI Speak runtime connector to render WAV output.",
-                model.entry.name
-            )))
+                )
+            })?;
+            let relative_model_path = model.installed_path.as_deref().ok_or_else(|| {
+                app_error::AppError::ArtifactGenerationFailed(
+                    "OpenMindAI Speak model path is unavailable".to_string(),
+                )
+            })?;
+            let model_path = state.root.resolve_relative(relative_model_path)?;
+            let download = model.entry.download.as_ref().ok_or_else(|| {
+                app_error::AppError::ArtifactGenerationFailed(
+                    "OpenMindAI Speak package metadata is unavailable".to_string(),
+                )
+            })?;
+            let voice_dependency = download
+                .dependencies
+                .iter()
+                .find(|dependency| dependency.role == "voice")
+                .ok_or_else(|| {
+                    app_error::AppError::ArtifactGenerationFailed(
+                        "OpenMindAI Speak voice metadata is missing".to_string(),
+                    )
+                })?;
+            let voice_path = model_catalog::installed_file_for_pattern(
+                &state.root,
+                &download.destination_dir,
+                &voice_dependency.filename_pattern,
+            )
+            .ok_or_else(|| app_error::AppError::ArtifactGenerationFailed("OpenMindAI Speak voice weights are missing; validate or re-download the model package".to_string()))?;
+            let voices_dir = voice_path.parent().ok_or_else(|| {
+                app_error::AppError::ArtifactGenerationFailed(
+                    "OpenMindAI Speak voice directory is unavailable".to_string(),
+                )
+            })?;
+            voice_runtime::generate_voice(&state.root, &model_path, voices_dir, prompt, path).await
         }
         _ => unreachable!(),
     }
@@ -735,25 +818,6 @@ fn installed_catalog_entry_by_id(
             .entries
             .into_iter()
             .find(|item| item.entry.id == model_id && item.installed),
-    )
-}
-
-fn installed_catalog_entry_for_kind(
-    state: &AppState,
-    kind: &str,
-) -> Result<Option<model_catalog::ModelCatalogStatus>, app_error::AppError> {
-    let db = state
-        .database
-        .lock()
-        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-    let installed = ModelRegistry::new(&db, &state.root).discover_gguf_models()?;
-    drop(db);
-    let hardware = HardwareProfiler::detect();
-    Ok(
-        model_catalog::check_model_updates(&installed, &hardware, &state.root)?
-            .entries
-            .into_iter()
-            .find(|item| item.entry.kind == kind && item.installed),
     )
 }
 
@@ -1390,7 +1454,16 @@ async fn send_chat_message(
         &media,
     )
     .await?;
-    Ok(assistant)
+
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    ChatRepository::new(&db)
+        .list_messages(&conversation_id)?
+        .into_iter()
+        .find(|message| message.id == assistant.id)
+        .ok_or_else(|| app_error::AppError::internal("completed assistant message disappeared"))
 }
 
 #[tauri::command]
