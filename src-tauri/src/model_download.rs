@@ -269,7 +269,11 @@ impl ModelDownloadManager {
         ensure_contained(self.root.root(), &temp_dir)?;
 
         let final_path = model_dir.join(&filename);
-        let part_path = temp_dir.join(format!("{filename}.part"));
+        if let Some(parent) = final_path.parent() {
+            fs::create_dir_all(parent)?;
+            ensure_contained(self.root.root(), parent)?;
+        }
+        let part_path = temp_dir.join(safe_part_filename(&filename));
         ensure_contained(self.root.root(), &final_path)?;
         ensure_contained(self.root.root(), &part_path)?;
 
@@ -513,6 +517,20 @@ impl DownloadStatus {
     }
 }
 
+pub(crate) fn safe_part_filename(filename: &str) -> String {
+    let flattened = filename
+        .chars()
+        .map(|character| {
+            if matches!(character, '/' | '\\') {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    format!("{flattened}.part")
+}
+
 fn select_sibling<'a>(
     siblings: &'a [HuggingFaceSibling],
     download: &ModelCatalogDownload,
@@ -657,6 +675,18 @@ mod tests {
             .unwrap();
         fs::create_dir_all(destination.parent().unwrap()).unwrap();
         assert!(ensure_contained(root.root(), &destination).is_ok());
+    }
+
+    #[test]
+    fn nested_hugging_face_paths_get_safe_partial_names() {
+        assert_eq!(
+            safe_part_filename("split_files/diffusion_models/model.safetensors"),
+            "split_files_diffusion_models_model.safetensors.part"
+        );
+        assert_eq!(
+            safe_part_filename("onnx\\model.onnx"),
+            "onnx_model.onnx.part"
+        );
     }
 
     #[test]

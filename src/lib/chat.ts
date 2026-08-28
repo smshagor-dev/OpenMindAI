@@ -293,9 +293,9 @@ export function modeInstruction(mode: ChatMode) {
     case "image":
       return "[Mode: Image Creation]\nCreate a concise production-quality prompt for the connected local image renderer, including subject, composition, style, lighting, camera/framing, colors, and useful negative constraints. Do not claim rendering succeeded until the artifact pipeline reports a ready image.";
     case "video":
-      return "[Mode: Video Creation]\nCreate a production-quality video generation prompt with subject, scene progression, camera motion, timing, lighting, style, negative prompt, and recommended duration/aspect ratio. Do not claim a video file was generated unless a video generator is connected.";
+      return "[Mode: Video Creation]\nWrite only the final positive visual prompt for the local video renderer. Describe subject, environment, action, scene progression, camera motion, lighting, composition, and visual style in natural prose. Do not add headings, markdown, negative prompts, duration, aspect-ratio recommendations, explanations, or claims that rendering already succeeded; the local runtime controls those settings separately.";
     case "voice":
-      return "[Mode: Voice Creation]\nCreate a production-quality voice generation prompt or script with voice style, pacing, emotion, pronunciation notes, format, and final narration copy. Do not claim audio was generated unless a voice generator is connected.";
+      return "[Mode: Voice Creation]\nWrite only the final words that should be spoken aloud. Do not include headings, voice-style metadata, stage directions, markdown, or explanations. Keep punctuation natural for text-to-speech. The local voice runtime will synthesize this exact response after generation completes.";
     case "vision":
       return "[Mode: Image/Vision Review]\nAnalyze only the image bytes supplied to the current local Lens request. Never invent visual details from attachment metadata. If Lens rejects or cannot access the image, say so clearly.";
     default:

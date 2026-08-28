@@ -236,7 +236,7 @@ pub fn mime_type_for(kind: &str) -> &'static str {
         "markdown" => "text/markdown",
         "image" => "image/png",
         "audio" => "audio/wav",
-        "video" => "video/mp4",
+        "video" => "video/webm",
         _ => "text/plain",
     }
 }
@@ -249,7 +249,7 @@ fn default_extension(kind: &str) -> &'static str {
         "docx" => "docx",
         "image" => "png",
         "audio" => "wav",
-        "video" => "mp4",
+        "video" => "webm",
         _ => "txt",
     }
 }

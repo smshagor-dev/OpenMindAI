@@ -462,11 +462,12 @@ export function App() {
       );
       const generationKind = generationKindForMode(inferredMode);
       if (generationKind) {
+        const generationPrompt = assistant.content.trim() || content;
         const artifact = await api.createGenerationArtifact(
           conversationId,
           assistant.id,
           generationKind,
-          content,
+          generationPrompt,
         );
         setArtifacts((items) => upsertArtifactInList(items, artifact));
         if (preferences?.openArtifactsAfterGeneration && artifact.status === "ready") {
@@ -768,13 +769,26 @@ export function App() {
   const retryArtifact = useCallback(
     (artifact: Artifact) => {
       const source = messages.find((message) => message.id === artifact.messageId);
-      if (!source || !artifact.messageId) {
+      if (!source || !artifact.messageId || !activeId) {
         showError("The original message for this file is no longer available.");
+        return;
+      }
+      if (artifact.kind === "image" || artifact.kind === "video" || artifact.kind === "audio") {
+        const generationKind = artifact.kind === "audio" ? "voice" : artifact.kind;
+        void api
+          .createGenerationArtifact(activeId, artifact.messageId, generationKind, source.content)
+          .then((next) => {
+            setArtifacts((items) => upsertArtifactInList(items, next));
+            if (preferences?.openArtifactsAfterGeneration && next.status === "ready") {
+              void api.openArtifact(next.id).catch(showError);
+            }
+          })
+          .catch(showError);
         return;
       }
       void createArtifact(artifact.messageId, artifact.kind, source.content, artifact.name);
     },
-    [createArtifact, messages, showError],
+    [activeId, createArtifact, messages, preferences?.openArtifactsAfterGeneration, showError],
   );
 
   const openArtifactHandler = useCallback(
