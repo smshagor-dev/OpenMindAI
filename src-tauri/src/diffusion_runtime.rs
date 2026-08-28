@@ -1,11 +1,4 @@
-from __future__ import annotations
-
-import json
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-
-DIFFUSION_RUNTIME = r'''use std::{
+use std::{
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -34,7 +27,8 @@ use crate::{
     portable_root::PortableRootManager,
 };
 
-const RELEASES_URL: &str = "https://api.github.com/repos/leejet/stable-diffusion.cpp/releases/latest";
+const RELEASES_URL: &str =
+    "https://api.github.com/repos/leejet/stable-diffusion.cpp/releases/latest";
 const RUNTIME_ROOT: &str = "runtimes/diffusion/stable-diffusion.cpp";
 const MANIFEST_PATH: &str = "runtimes/diffusion/stable-diffusion.cpp/manifest.json";
 const SAFE_SPACE_MARGIN: u64 = 256 * 1024 * 1024;
@@ -196,7 +190,8 @@ async fn ensure_runtime(
     client: &Client,
     hardware: &HardwareProfile,
 ) -> Result<DiffusionRuntimeManifest, AppError> {
-    let candidates = runtime_asset_candidates(std::env::consts::OS, std::env::consts::ARCH, hardware);
+    let candidates =
+        runtime_asset_candidates(std::env::consts::OS, std::env::consts::ARCH, hardware);
     let preferred_backend = candidates.first().map(|(backend, _)| backend);
 
     if let Some(manifest) = load_manifest(root)? {
@@ -267,10 +262,7 @@ async fn install_runtime_asset(
     let temp_dir = root.resolve_relative("temp/downloads")?;
     fs::create_dir_all(&temp_dir)?;
     ensure_contained(root.root(), &temp_dir)?;
-    validate_free_space(
-        &temp_dir,
-        asset.size.saturating_add(SAFE_SPACE_MARGIN),
-    )?;
+    validate_free_space(&temp_dir, asset.size.saturating_add(SAFE_SPACE_MARGIN))?;
 
     let archive_path = temp_dir.join(format!("{}.part", asset.name));
     ensure_contained(root.root(), &archive_path)?;
@@ -294,7 +286,9 @@ async fn install_runtime_asset(
 
     let relative_cli = cli_path
         .strip_prefix(root.root())
-        .map_err(|_| AppError::RuntimeInstallFailed("runtime CLI escaped OpenMindAI Root".to_string()))?
+        .map_err(|_| {
+            AppError::RuntimeInstallFailed("runtime CLI escaped OpenMindAI Root".to_string())
+        })?
         .to_string_lossy()
         .replace('\\', "/");
     let manifest = DiffusionRuntimeManifest {
@@ -319,7 +313,9 @@ async fn download_asset(
     asset: &GithubAsset,
     destination: &Path,
 ) -> Result<(), AppError> {
-    let mut existing = fs::metadata(destination).map(|meta| meta.len()).unwrap_or(0);
+    let mut existing = fs::metadata(destination)
+        .map(|meta| meta.len())
+        .unwrap_or(0);
     if existing > asset.size {
         fs::remove_file(destination)?;
         existing = 0;
@@ -542,16 +538,10 @@ fn runtime_asset_candidates(
                     "sd-*-bin-Linux-Ubuntu-*-x86_64-vulkan.zip",
                 ));
             }
-            result.push((
-                BackendKind::Cpu,
-                "sd-*-bin-Linux-Ubuntu-*-x86_64.zip",
-            ));
+            result.push((BackendKind::Cpu, "sd-*-bin-Linux-Ubuntu-*-x86_64.zip"));
             result
         }
-        ("macos", "aarch64") => vec![(
-            BackendKind::Metal,
-            "sd-*-bin-Darwin-macOS-*-arm64.zip",
-        )],
+        ("macos", "aarch64") => vec![(BackendKind::Metal, "sd-*-bin-Darwin-macOS-*-arm64.zip")],
         _ => Vec::new(),
     }
 }
@@ -681,10 +671,10 @@ fn safe_component(value: &str) -> String {
         .collect()
 }
 
-fn hide_console_window(command: &mut Command) {
+fn hide_console_window(_command: &mut Command) {
     #[cfg(target_os = "windows")]
     {
-        command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
+        _command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
     }
 }
 
@@ -769,7 +759,10 @@ mod tests {
             &hardware(Some(GpuVendor::Amd), Some(8 * 1024_u64.pow(3))),
             &BackendKind::Vulkan,
         );
-        assert_eq!((profile.width, profile.height, profile.steps), (768, 768, 20));
+        assert_eq!(
+            (profile.width, profile.height, profile.steps),
+            (768, 768, 20)
+        );
         assert!(profile.clip_on_cpu);
         assert!(profile.vae_on_cpu);
         assert!(!profile.offload_to_cpu);
@@ -778,7 +771,10 @@ mod tests {
     #[test]
     fn cpu_profile_uses_bounded_resolution() {
         let profile = render_profile(&hardware(None, None), &BackendKind::Cpu);
-        assert_eq!((profile.width, profile.height, profile.steps), (512, 512, 12));
+        assert_eq!(
+            (profile.width, profile.height, profile.steps),
+            (512, 512, 12)
+        );
     }
 
     #[test]
@@ -800,180 +796,3 @@ mod tests {
         assert_eq!(safe_component("master/829:abc"), "master-829-abc");
     }
 }
-'''
-
-
-def replace_once(text: str, old: str, new: str, label: str) -> str:
-    count = text.count(old)
-    if count != 1:
-        raise RuntimeError(f"{label}: expected one match, found {count}")
-    return text.replace(old, new, 1)
-
-
-def patch_lib() -> None:
-    path = ROOT / "src-tauri/src/lib.rs"
-    text = path.read_text(encoding="utf-8")
-    text = replace_once(text, "mod database;\n", "mod database;\nmod diffusion_runtime;\n", "module insertion")
-    text = replace_once(
-        text,
-        "    let generation_result = generate_local_media_artifact(&state, &kind, &prompt, &path);",
-        "    let generation_result = generate_local_media_artifact(&state, &kind, &prompt, &path).await;",
-        "await generation",
-    )
-
-    start = text.index("fn generate_local_media_artifact(")
-    end = text.index("\nfn installed_catalog_entry_for_kind(", start)
-    replacement = r'''async fn generate_local_media_artifact(
-    state: &AppState,
-    kind: &str,
-    prompt: &str,
-    path: &std::path::Path,
-) -> Result<(), app_error::AppError> {
-    match kind {
-        "image" => {
-            let model = installed_catalog_entry_by_id(state, "sdxl-base-1")?.ok_or_else(|| {
-                app_error::AppError::ArtifactGenerationFailed(
-                    "OpenMindAI Canvas model download required. Open Settings > Models and download OpenMindAI Canvas first."
-                        .to_string(),
-                )
-            })?;
-            let relative_model_path = model.installed_path.as_deref().ok_or_else(|| {
-                app_error::AppError::ArtifactGenerationFailed(
-                    "OpenMindAI Canvas model path is unavailable".to_string(),
-                )
-            })?;
-            let model_path = state.root.resolve_relative(relative_model_path)?;
-            let hardware = HardwareProfiler::detect();
-            diffusion_runtime::generate_image(
-                &state.root,
-                &state.http,
-                &hardware,
-                &model_path,
-                prompt,
-                path,
-            )
-            .await
-        }
-        "video" => {
-            let installed = installed_catalog_entry_for_kind(state, "video")?;
-            let Some(model) = installed else {
-                return Err(app_error::AppError::ArtifactGenerationFailed(
-                    "OpenMindAI Motion model download required. Open Settings > Models and download the recommended model first."
-                        .to_string(),
-                ));
-            };
-            Err(app_error::AppError::ArtifactGenerationFailed(format!(
-                "{} is downloaded, but the local video runner is not connected yet. Install the OpenMindAI Motion runtime connector to render MP4 output.",
-                model.entry.name
-            )))
-        }
-        "voice" => {
-            let installed = installed_catalog_entry_for_kind(state, "text-to-speech")?;
-            let Some(model) = installed else {
-                return Err(app_error::AppError::ArtifactGenerationFailed(
-                    "OpenMindAI Speak model download required. Open Settings > Models and download the recommended model first."
-                        .to_string(),
-                ));
-            };
-            Err(app_error::AppError::ArtifactGenerationFailed(format!(
-                "{} is downloaded, but the local voice runner is not connected yet. Install the OpenMindAI Speak runtime connector to render WAV output.",
-                model.entry.name
-            )))
-        }
-        _ => unreachable!(),
-    }
-}
-
-fn installed_catalog_entry_by_id(
-    state: &AppState,
-    model_id: &str,
-) -> Result<Option<model_catalog::ModelCatalogStatus>, app_error::AppError> {
-    let db = state
-        .database
-        .lock()
-        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-    let installed = ModelRegistry::new(&db, &state.root).discover_gguf_models()?;
-    drop(db);
-    let hardware = HardwareProfiler::detect();
-    Ok(
-        model_catalog::check_model_updates(&installed, &hardware, &state.root)?
-            .entries
-            .into_iter()
-            .find(|item| item.entry.id == model_id && item.installed),
-    )
-}
-'''
-    text = text[:start] + replacement + text[end:]
-
-    preview_start = text.index("fn generation_preview_svg(")
-    preview_end = text.index("\n#[tauri::command]\nfn list_artifacts(", preview_start)
-    text = text[:preview_start] + text[preview_end + 1 :]
-    path.write_text(text, encoding="utf-8")
-
-
-def patch_artifacts() -> None:
-    path = ROOT / "src-tauri/src/artifacts.rs"
-    text = path.read_text(encoding="utf-8")
-    text = replace_once(text, '        "image" => "image/svg+xml",', '        "image" => "image/png",', "image mime")
-    text = replace_once(text, '        "image" => "svg",', '        "image" => "png",', "image extension")
-    path.write_text(text, encoding="utf-8")
-
-
-def patch_catalog() -> None:
-    path = ROOT / "src-tauri/model-catalog.json"
-    data = json.loads(path.read_text(encoding="utf-8"))
-    canvas = next(model for model in data["models"] if model["id"] == "sdxl-base-1")
-    canvas["runtime"] = "stable-diffusion.cpp"
-    canvas["description"] = "Balanced local SDXL generation package with Vulkan, CUDA, Metal, or CPU execution."
-    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-
-
-def patch_cargo() -> None:
-    path = ROOT / "src-tauri/Cargo.toml"
-    text = path.read_text(encoding="utf-8")
-    text = replace_once(
-        text,
-        'tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync"] }',
-        'tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "time"] }',
-        "tokio time feature",
-    )
-    path.write_text(text, encoding="utf-8")
-
-
-def patch_root_dirs() -> None:
-    path = ROOT / "src-tauri/src/portable_root.rs"
-    text = path.read_text(encoding="utf-8")
-    text = replace_once(
-        text,
-        '    "runtimes/diffusion",\n',
-        '    "runtimes/diffusion",\n    "runtimes/diffusion/stable-diffusion.cpp",\n',
-        "diffusion runtime directory",
-    )
-    path.write_text(text, encoding="utf-8")
-
-
-def patch_notices() -> None:
-    path = ROOT / "THIRD_PARTY_NOTICES.txt"
-    text = path.read_text(encoding="utf-8")
-    anchor = "  llama.cpp  https://github.com/ggml-org/llama.cpp\n             (the local inference engine OpenMindAI downloads and runs)\n"
-    replacement = anchor + "  stable-diffusion.cpp  https://github.com/leejet/stable-diffusion.cpp\n             (MIT-licensed local image inference runtime downloaded on demand)\n"
-    text = replace_once(text, anchor, replacement, "stable diffusion credit")
-    text = text.replace(
-        "llama.cpp and Qwen model weights are downloaded separately at first run, not\nbundled in this repository or the installer - see their own projects for\ntheir license terms.\n",
-        "llama.cpp, stable-diffusion.cpp, and model weights are downloaded separately at runtime, not\nbundled in this repository or the installer - see their own projects and model cards for\ntheir license terms.\n",
-    )
-    path.write_text(text, encoding="utf-8")
-
-
-def main() -> None:
-    (ROOT / "src-tauri/src/diffusion_runtime.rs").write_text(DIFFUSION_RUNTIME, encoding="utf-8")
-    patch_lib()
-    patch_artifacts()
-    patch_catalog()
-    patch_cargo()
-    patch_root_dirs()
-    patch_notices()
-
-
-if __name__ == "__main__":
-    main()

@@ -2,6 +2,7 @@ mod app_error;
 mod artifacts;
 mod chat;
 mod database;
+mod diffusion_runtime;
 mod document_generator;
 mod github;
 mod google;
@@ -627,7 +628,7 @@ async fn create_generation_artifact(
     app.emit("artifact:started", &artifact)
         .map_err(|error| app_error::AppError::internal(error.to_string()))?;
 
-    let generation_result = generate_local_media_artifact(&state, &kind, &prompt, &path);
+    let generation_result = generate_local_media_artifact(&state, &kind, &prompt, &path).await;
 
     let db = state
         .database
@@ -655,42 +656,84 @@ async fn create_generation_artifact(
     Ok(updated)
 }
 
-fn generate_local_media_artifact(
+async fn generate_local_media_artifact(
     state: &AppState,
     kind: &str,
     prompt: &str,
     path: &std::path::Path,
 ) -> Result<(), app_error::AppError> {
-    let required_kind = match kind {
-        "image" => "image",
-        "video" => "video",
-        "voice" => "text-to-speech",
-        _ => unreachable!(),
-    };
-    let installed = installed_catalog_entry_for_kind(state, required_kind)?;
-    let Some(model) = installed else {
-        return Err(app_error::AppError::ArtifactGenerationFailed(format!(
-            "{} model download required. Open Settings > Models and download the recommended model first.",
-            generation_family_label(kind)
-        )));
-    };
-
     match kind {
         "image" => {
-            let svg = generation_preview_svg(prompt, &model.entry.name);
-            std::fs::write(path, svg.as_bytes())?;
-            Ok(())
+            let model = installed_catalog_entry_by_id(state, "sdxl-base-1")?.ok_or_else(|| {
+                app_error::AppError::ArtifactGenerationFailed(
+                    "OpenMindAI Canvas model download required. Open Settings > Models and download OpenMindAI Canvas first."
+                        .to_string(),
+                )
+            })?;
+            let relative_model_path = model.installed_path.as_deref().ok_or_else(|| {
+                app_error::AppError::ArtifactGenerationFailed(
+                    "OpenMindAI Canvas model path is unavailable".to_string(),
+                )
+            })?;
+            let model_path = state.root.resolve_relative(relative_model_path)?;
+            let hardware = HardwareProfiler::detect();
+            diffusion_runtime::generate_image(
+                &state.root,
+                &state.http,
+                &hardware,
+                &model_path,
+                prompt,
+                path,
+            )
+            .await
         }
-        "video" => Err(app_error::AppError::ArtifactGenerationFailed(format!(
-            "{} is downloaded, but the local video runner is not connected yet. Install the OpenMindAI Motion runtime connector to render MP4 output.",
-            model.entry.name
-        ))),
-        "voice" => Err(app_error::AppError::ArtifactGenerationFailed(format!(
-            "{} is downloaded, but the local voice runner is not connected yet. Install the OpenMindAI Speak runtime connector to render WAV output.",
-            model.entry.name
-        ))),
+        "video" => {
+            let installed = installed_catalog_entry_for_kind(state, "video")?;
+            let Some(model) = installed else {
+                return Err(app_error::AppError::ArtifactGenerationFailed(
+                    "OpenMindAI Motion model download required. Open Settings > Models and download the recommended model first."
+                        .to_string(),
+                ));
+            };
+            Err(app_error::AppError::ArtifactGenerationFailed(format!(
+                "{} is downloaded, but the local video runner is not connected yet. Install the OpenMindAI Motion runtime connector to render MP4 output.",
+                model.entry.name
+            )))
+        }
+        "voice" => {
+            let installed = installed_catalog_entry_for_kind(state, "text-to-speech")?;
+            let Some(model) = installed else {
+                return Err(app_error::AppError::ArtifactGenerationFailed(
+                    "OpenMindAI Speak model download required. Open Settings > Models and download the recommended model first."
+                        .to_string(),
+                ));
+            };
+            Err(app_error::AppError::ArtifactGenerationFailed(format!(
+                "{} is downloaded, but the local voice runner is not connected yet. Install the OpenMindAI Speak runtime connector to render WAV output.",
+                model.entry.name
+            )))
+        }
         _ => unreachable!(),
     }
+}
+
+fn installed_catalog_entry_by_id(
+    state: &AppState,
+    model_id: &str,
+) -> Result<Option<model_catalog::ModelCatalogStatus>, app_error::AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    let installed = ModelRegistry::new(&db, &state.root).discover_gguf_models()?;
+    drop(db);
+    let hardware = HardwareProfiler::detect();
+    Ok(
+        model_catalog::check_model_updates(&installed, &hardware, &state.root)?
+            .entries
+            .into_iter()
+            .find(|item| item.entry.id == model_id && item.installed),
+    )
 }
 
 fn installed_catalog_entry_for_kind(
@@ -710,46 +753,6 @@ fn installed_catalog_entry_for_kind(
             .into_iter()
             .find(|item| item.entry.kind == kind && item.installed),
     )
-}
-
-fn generation_family_label(kind: &str) -> &'static str {
-    match kind {
-        "image" => "OpenMindAI Canvas",
-        "video" => "OpenMindAI Motion",
-        "voice" => "OpenMindAI Speak",
-        _ => "OpenMindAI generation",
-    }
-}
-
-fn generation_preview_svg(prompt: &str, model_name: &str) -> String {
-    let escaped_prompt = escape_xml(prompt.trim());
-    let escaped_model = escape_xml(model_name);
-    format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
-  <rect width="1280" height="720" fill="#111318"/>
-  <rect x="56" y="56" width="1168" height="608" rx="28" fill="#1f232b" stroke="#343a46"/>
-  <text x="96" y="132" fill="#f5f7fb" font-family="Segoe UI, Arial, sans-serif" font-size="44" font-weight="700">OpenMindAI Canvas</text>
-  <text x="96" y="182" fill="#9aa4b2" font-family="Segoe UI, Arial, sans-serif" font-size="22">Generated local preview with {escaped_model}</text>
-  <foreignObject x="96" y="238" width="1088" height="310">
-    <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: Segoe UI, Arial, sans-serif; color: #f5f7fb; font-size: 34px; line-height: 1.35; font-weight: 650; overflow-wrap: anywhere;">{escaped_prompt}</div>
-  </foreignObject>
-  <text x="96" y="610" fill="#7c8796" font-family="Segoe UI, Arial, sans-serif" font-size="18">Full diffusion rendering requires the local image runtime connector.</text>
-</svg>"##
-    )
-}
-
-fn escape_xml(input: &str) -> String {
-    input
-        .chars()
-        .flat_map(|character| match character {
-            '&' => "&amp;".chars().collect::<Vec<_>>(),
-            '<' => "&lt;".chars().collect::<Vec<_>>(),
-            '>' => "&gt;".chars().collect::<Vec<_>>(),
-            '"' => "&quot;".chars().collect::<Vec<_>>(),
-            '\'' => "&apos;".chars().collect::<Vec<_>>(),
-            other => vec![other],
-        })
-        .collect()
 }
 
 #[tauri::command]

@@ -141,9 +141,11 @@ projects in particular:
   SQLite     https://www.sqlite.org/
   llama.cpp  https://github.com/ggml-org/llama.cpp
              (the local inference engine OpenMindAI downloads and runs)
+  stable-diffusion.cpp  https://github.com/leejet/stable-diffusion.cpp
+             (MIT-licensed local image inference runtime downloaded on demand)
   Qwen       https://github.com/QwenLM/Qwen3
              (the model OpenMindAI downloads by default)
 
-llama.cpp and Qwen model weights are downloaded separately at first run, not
-bundled in this repository or the installer - see their own projects for
+llama.cpp, stable-diffusion.cpp, and model weights are downloaded separately at runtime, not
+bundled in this repository or the installer - see their own projects and model cards for
 their license terms.
