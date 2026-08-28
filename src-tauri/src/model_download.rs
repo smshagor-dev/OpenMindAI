@@ -306,7 +306,22 @@ impl ModelDownloadManager {
             metadata.size_bytes.saturating_add(SAFE_SPACE_MARGIN),
         )?;
 
-        let mut existing = fs::metadata(&part_path).map(|meta| meta.len()).unwrap_or(0);
+        let mut existing = match prepare_partial_download(
+            &part_path,
+            metadata.size_bytes,
+            metadata.sha256.as_deref(),
+        )? {
+            PartialDownloadState::Complete { verification, .. } => {
+                fs::rename(&part_path, &final_path)?;
+                tracing::info!(
+                    path = %final_path.display(),
+                    "recovered complete verified model partial without re-downloading"
+                );
+                return Ok((final_path, verification));
+            }
+            PartialDownloadState::Resume(bytes) => bytes,
+            PartialDownloadState::Fresh => 0,
+        };
         let mut request = self.client.get(&metadata.source_url);
         if existing > 0 {
             request = request.header(header::RANGE, format!("bytes={existing}-"));
@@ -370,6 +385,7 @@ impl ModelDownloadManager {
         self.set_state(DownloadState::Verifying, None)?;
         let part_size = fs::metadata(&part_path)?.len();
         if part_size != metadata.size_bytes {
+            let _ = fs::remove_file(&part_path);
             return Err(AppError::ModelDownloadFailed(format!(
                 "downloaded size {part_size} did not match expected {}",
                 metadata.size_bytes
@@ -381,6 +397,7 @@ impl ModelDownloadManager {
             if actual.eq_ignore_ascii_case(expected) {
                 VerificationState::Verified
             } else {
+                let _ = fs::remove_file(&part_path);
                 return Err(AppError::ModelChecksumFailed(format!(
                     "expected {expected}, got {actual}"
                 )));
@@ -529,6 +546,67 @@ pub(crate) fn safe_part_filename(filename: &str) -> String {
         })
         .collect::<String>();
     format!("{flattened}.part")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PartialDownloadState {
+    Fresh,
+    Resume(u64),
+    Complete {
+        verification: VerificationState,
+        actual_sha256: String,
+    },
+}
+
+pub(crate) fn prepare_partial_download(
+    path: &Path,
+    expected_size: u64,
+    expected_sha256: Option<&str>,
+) -> Result<PartialDownloadState, AppError> {
+    let size = match fs::metadata(path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(PartialDownloadState::Fresh)
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    if size < expected_size {
+        return Ok(PartialDownloadState::Resume(size));
+    }
+    if size > expected_size {
+        tracing::warn!(
+            path = %path.display(),
+            size,
+            expected_size,
+            "discarding oversized stale partial download"
+        );
+        fs::remove_file(path)?;
+        return Ok(PartialDownloadState::Fresh);
+    }
+
+    let actual_sha256 = sha256_file(path)?;
+    let verification = match expected_sha256 {
+        Some(expected) if actual_sha256.eq_ignore_ascii_case(expected) => {
+            VerificationState::Verified
+        }
+        Some(expected) => {
+            tracing::warn!(
+                path = %path.display(),
+                expected,
+                actual = %actual_sha256,
+                "discarding complete partial download with checksum mismatch"
+            );
+            fs::remove_file(path)?;
+            return Ok(PartialDownloadState::Fresh);
+        }
+        None => VerificationState::Unverified,
+    };
+
+    Ok(PartialDownloadState::Complete {
+        verification,
+        actual_sha256,
+    })
 }
 
 fn select_sibling<'a>(
@@ -728,6 +806,75 @@ mod tests {
 
         let result = verify_existing_file(&path, 11, None).unwrap();
         assert_eq!(result, Some(VerificationState::Unverified));
+    }
+
+    #[test]
+    fn partial_download_resumes_when_smaller_than_expected() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("model.part");
+        fs::write(&path, b"partial").unwrap();
+
+        let state = prepare_partial_download(&path, 100, Some("unused")).unwrap();
+        assert_eq!(state, PartialDownloadState::Resume(7));
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn partial_download_recovers_complete_matching_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("model.part");
+        fs::write(&path, b"complete payload").unwrap();
+        let expected = sha256_file(&path).unwrap();
+
+        let state = prepare_partial_download(&path, 16, Some(&expected)).unwrap();
+        assert_eq!(
+            state,
+            PartialDownloadState::Complete {
+                verification: VerificationState::Verified,
+                actual_sha256: expected,
+            }
+        );
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn partial_download_discards_complete_checksum_mismatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("model.part");
+        fs::write(&path, b"complete payload").unwrap();
+
+        let state = prepare_partial_download(&path, 16, Some("wrong-checksum")).unwrap();
+        assert_eq!(state, PartialDownloadState::Fresh);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn partial_download_discards_oversized_stale_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("model.part");
+        fs::write(&path, b"too-large").unwrap();
+
+        let state = prepare_partial_download(&path, 4, None).unwrap();
+        assert_eq!(state, PartialDownloadState::Fresh);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn partial_download_accepts_complete_unhashed_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("model.part");
+        fs::write(&path, b"payload").unwrap();
+        let actual = sha256_file(&path).unwrap();
+
+        let state = prepare_partial_download(&path, 7, None).unwrap();
+        assert_eq!(
+            state,
+            PartialDownloadState::Complete {
+                verification: VerificationState::Unverified,
+                actual_sha256: actual,
+            }
+        );
+        assert!(path.exists());
     }
 
     #[test]

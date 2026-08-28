@@ -10,7 +10,8 @@ use crate::{
     app_error::AppError,
     model_catalog::{ModelCatalogDependency, ModelCatalogEntry},
     model_download::{
-        ensure_contained, safe_part_filename, sha256_file, validate_free_space, VerificationState,
+        ensure_contained, prepare_partial_download, safe_part_filename, sha256_file,
+        validate_free_space, PartialDownloadState, VerificationState,
     },
     portable_root::PortableRootManager,
 };
@@ -234,9 +235,30 @@ async fn download_dependency(
         dependency.size_bytes.saturating_add(PACKAGE_SPACE_MARGIN),
     )?;
 
-    let existing = fs::metadata(&part_path)
-        .map(|metadata| metadata.len())
-        .unwrap_or(0);
+    let existing = match prepare_partial_download(
+        &part_path,
+        dependency.size_bytes,
+        dependency.sha256.as_deref(),
+    )? {
+        PartialDownloadState::Complete {
+            verification,
+            actual_sha256,
+        } => {
+            fs::rename(&part_path, &final_path)?;
+            tracing::info!(
+                path = %final_path.display(),
+                role = %dependency.role,
+                "recovered complete verified dependency partial without re-downloading"
+            );
+            return Ok(package_manifest_entry(
+                dependency,
+                actual_sha256,
+                verification,
+            ));
+        }
+        PartialDownloadState::Resume(bytes) => bytes,
+        PartialDownloadState::Fresh => 0,
+    };
     let mut request = client.get(&dependency.source_url);
     if existing > 0 {
         request = request.header(header::RANGE, format!("bytes={existing}-"));
@@ -277,6 +299,7 @@ async fn download_dependency(
 
     let actual_size = fs::metadata(&part_path)?.len();
     if actual_size != dependency.size_bytes {
+        let _ = fs::remove_file(&part_path);
         return Err(AppError::ModelDownloadFailed(format!(
             "downloaded {} dependency size {actual_size} did not match expected {}",
             dependency.role, dependency.size_bytes
@@ -287,10 +310,11 @@ async fn download_dependency(
     let verification = match dependency.sha256.as_deref() {
         Some(expected) if actual.eq_ignore_ascii_case(expected) => VerificationState::Verified,
         Some(expected) => {
+            let _ = fs::remove_file(&part_path);
             return Err(AppError::ModelChecksumFailed(format!(
                 "{} dependency expected {expected}, got {actual}",
                 dependency.role
-            )))
+            )));
         }
         None => VerificationState::Unverified,
     };
