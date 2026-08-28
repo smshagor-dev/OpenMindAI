@@ -391,6 +391,7 @@ const REQUIRED_DIRECTORIES: &[&str] = &[
     "runtimes/llama/hip",
     "runtimes/llama/active",
     "runtimes/diffusion",
+    "runtimes/diffusion/stable-diffusion.cpp",
     "runtimes/python",
     "runtimes/node",
     "runtimes/git",
