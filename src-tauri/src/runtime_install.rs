@@ -85,24 +85,16 @@ struct GithubAsset {
 fn catalog_pattern(os: &str, arch: &str, backend: &BackendKind) -> Option<&'static str> {
     match (os, arch, backend) {
         ("windows", "x86_64", BackendKind::Cpu) => Some("llama-*-bin-win-cpu-x64.zip"),
-        ("windows", "x86_64", BackendKind::Vulkan) => {
-            Some("llama-*-bin-win-vulkan-x64.zip")
-        }
+        ("windows", "x86_64", BackendKind::Vulkan) => Some("llama-*-bin-win-vulkan-x64.zip"),
         // Windows CUDA builds are published per CUDA version (12.4/13.3/13.4);
         // BackendKind only has one `Cuda` variant, so we standardize on 12.4
         // for broad driver compatibility.
-        ("windows", "x86_64", BackendKind::Cuda) => {
-            Some("llama-*-bin-win-cuda-12.4-x64.zip")
-        }
+        ("windows", "x86_64", BackendKind::Cuda) => Some("llama-*-bin-win-cuda-12.4-x64.zip"),
         ("windows", "x86_64", BackendKind::Sycl) => Some("llama-*-bin-win-sycl-x64.zip"),
         ("windows", "x86_64", BackendKind::Hip) => Some("llama-*-bin-win-rocm-*-x64.zip"),
         ("linux", "x86_64", BackendKind::Cpu) => Some("llama-*-bin-ubuntu-x64.tar.gz"),
-        ("linux", "x86_64", BackendKind::Vulkan) => {
-            Some("llama-*-bin-ubuntu-vulkan-x64.tar.gz")
-        }
-        ("linux", "x86_64", BackendKind::Sycl) => {
-            Some("llama-*-bin-ubuntu-sycl-fp32-x64.tar.gz")
-        }
+        ("linux", "x86_64", BackendKind::Vulkan) => Some("llama-*-bin-ubuntu-vulkan-x64.tar.gz"),
+        ("linux", "x86_64", BackendKind::Sycl) => Some("llama-*-bin-ubuntu-sycl-fp32-x64.tar.gz"),
         ("macos", "aarch64", BackendKind::Cpu | BackendKind::Metal) => {
             Some("llama-*-bin-macos-arm64.tar.gz")
         }
@@ -277,9 +269,11 @@ impl RuntimeInstaller {
             .cancel_token
             .lock()
             .map_err(|_| AppError::internal("runtime install cancel lock poisoned"))? = None;
-        let message = last_error.map(|error| error.to_string()).unwrap_or_else(|| {
-            format!("no official llama.cpp runtime build is available for {os}/{arch}")
-        });
+        let message = last_error
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| {
+                format!("no official llama.cpp runtime build is available for {os}/{arch}")
+            });
         self.set_state(RuntimeInstallState::Failed, Some(message.clone()))?;
         Err(AppError::RuntimeInstallFailed(message))
     }
@@ -649,11 +643,8 @@ mod tests {
                 )],
             },
         ];
-        let (release, asset) = resolve_release_asset(
-            &releases,
-            "llama-*-bin-win-vulkan-x64.zip",
-        )
-        .expect("binary release should be selected");
+        let (release, asset) = resolve_release_asset(&releases, "llama-*-bin-win-vulkan-x64.zip")
+            .expect("binary release should be selected");
         assert_eq!(release.tag_name, "b10621");
         assert_eq!(asset.name, "llama-b10621-bin-win-vulkan-x64.zip");
     }
