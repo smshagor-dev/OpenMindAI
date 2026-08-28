@@ -314,7 +314,9 @@ fn validate_output_signature(
         OutputFormat::Png => bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]),
         OutputFormat::WebM => {
             bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3])
-                && bytes.windows(4).any(|window| window.eq_ignore_ascii_case(b"webm"))
+                && bytes
+                    .windows(4)
+                    .any(|window| window.eq_ignore_ascii_case(b"webm"))
         }
     };
 
@@ -335,7 +337,10 @@ mod tests {
     fn assert_signature(format: OutputFormat, data: &[u8], expected: bool) {
         let temp = tempfile::NamedTempFile::new().unwrap();
         fs::write(temp.path(), data).unwrap();
-        assert_eq!(validate_output_signature(temp.path(), format).is_ok(), expected);
+        assert_eq!(
+            validate_output_signature(temp.path(), format).is_ok(),
+            expected
+        );
     }
 
     #[test]
@@ -359,6 +364,10 @@ mod tests {
         let mut webm = vec![0x1a, 0x45, 0xdf, 0xa3, 0x00, 0x00];
         webm.extend_from_slice(b"webm");
         assert_signature(OutputFormat::WebM, &webm, true);
-        assert_signature(OutputFormat::WebM, &[0x1a, 0x45, 0xdf, 0xa3, 0, 0, 0, 0], false);
+        assert_signature(
+            OutputFormat::WebM,
+            &[0x1a, 0x45, 0xdf, 0xa3, 0, 0, 0, 0],
+            false,
+        );
     }
 }
