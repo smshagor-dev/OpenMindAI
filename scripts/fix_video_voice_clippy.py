@@ -74,4 +74,43 @@ replace_once(
             .await''',
 )
 
+replace_once(
+    "src/App.tsx",
+    '''  const retryArtifact = useCallback(
+    (artifact: Artifact) => {
+      const source = messages.find((message) => message.id === artifact.messageId);
+      if (!source || !artifact.messageId) {
+        showError("The original message for this file is no longer available.");
+        return;
+      }
+      void createArtifact(artifact.messageId, artifact.kind, source.content, artifact.name);
+    },
+    [createArtifact, messages, showError],
+  );''',
+    '''  const retryArtifact = useCallback(
+    (artifact: Artifact) => {
+      const source = messages.find((message) => message.id === artifact.messageId);
+      if (!source || !artifact.messageId || !activeId) {
+        showError("The original message for this file is no longer available.");
+        return;
+      }
+      if (artifact.kind === "image" || artifact.kind === "video" || artifact.kind === "audio") {
+        const generationKind = artifact.kind === "audio" ? "voice" : artifact.kind;
+        void api
+          .createGenerationArtifact(activeId, artifact.messageId, generationKind, source.content)
+          .then((next) => {
+            setArtifacts((items) => upsertArtifactInList(items, next));
+            if (preferences?.openArtifactsAfterGeneration && next.status === "ready") {
+              void api.openArtifact(next.id).catch(showError);
+            }
+          })
+          .catch(showError);
+        return;
+      }
+      void createArtifact(artifact.messageId, artifact.kind, source.content, artifact.name);
+    },
+    [activeId, createArtifact, messages, preferences?.openArtifactsAfterGeneration, showError],
+  );''',
+)
+
 Path("scripts/fix_video_voice_clippy.py").unlink(missing_ok=True)
