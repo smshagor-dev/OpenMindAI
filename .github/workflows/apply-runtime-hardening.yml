@@ -24,13 +24,14 @@ jobs:
         with:
           ref: runtime-hardening-video-voice
 
-      - name: Fix legacy manifest test fixture
+      - name: Prepare hardening materializer
         run: |
           python - <<'PY'
           from pathlib import Path
 
           path = Path("scripts/apply_runtime_hardening.py")
           text = path.read_text(encoding="utf-8")
+
           replacements = {
               '"source_url"': '"sourceUrl"',
               '"archive_sha256"': '"archiveSha256"',
@@ -41,6 +42,35 @@ jobs:
               if old not in text:
                   raise SystemExit(f"legacy fixture field not found: {old}")
               text = text.replace(old, new, 1)
+
+          guard_old = '''    let cli = root.resolve_relative(&manifest.cli_path)?;
+              if !cli.is_file() {'''
+          guard_new = '''    let cli = match root.resolve_relative(&manifest.cli_path) {
+              Ok(cli) => cli,
+              Err(error) => {
+                  tracing::warn!(%error, cli_path = %manifest.cli_path, "invalid diffusion runtime CLI path in manifest");
+                  return Ok(false);
+              }
+          };
+              if !cli.is_file() {'''
+          if guard_old not in text:
+              raise SystemExit("runtime manifest CLI guard anchor not found")
+          text = text.replace(guard_old, guard_new, 1)
+
+          test_old = '''        manifest.version = PINNED_RUNTIME_TAG.to_string();
+
+                  fs::write(&cli, b"tampered-runtime!!").unwrap();'''
+          test_new = '''        manifest.version = PINNED_RUNTIME_TAG.to_string();
+
+                  manifest.cli_path = "../outside/sd-cli".to_string();
+                  assert!(!runtime_manifest_is_reusable(&root, &manifest, Some(&BackendKind::Cpu)).unwrap());
+                  manifest.cli_path = cli_relative.to_string();
+
+                  fs::write(&cli, b"tampered-runtime!!").unwrap();'''
+          if test_old not in text:
+              raise SystemExit("runtime traversal regression-test anchor not found")
+          text = text.replace(test_old, test_new, 1)
+
           path.write_text(text, encoding="utf-8")
           PY
 
