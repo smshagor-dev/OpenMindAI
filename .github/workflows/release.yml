@@ -29,6 +29,10 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Validate synchronized release version
+        shell: pwsh
+        run: npm run check:version -- --tag $env:GITHUB_REF_NAME
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -37,18 +41,13 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
-      - name: Validate release tag and signing secrets
+      - name: Validate signing secrets
         shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
-          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $expectedTag = "v$version"
-          if ($env:GITHUB_REF_NAME -ne $expectedTag) {
-            throw "Release tag $env:GITHUB_REF_NAME does not match package version $expectedTag."
-          }
           if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
             throw "TAURI_SIGNING_PRIVATE_KEY is required for production updater artifacts."
           }

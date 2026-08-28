@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "lint": "eslint .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "check:version": "node scripts/check-version-consistency.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
