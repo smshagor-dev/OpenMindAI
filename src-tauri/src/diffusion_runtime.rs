@@ -27,8 +27,9 @@ use crate::{
     portable_root::PortableRootManager,
 };
 
-const RELEASES_URL: &str =
-    "https://api.github.com/repos/leejet/stable-diffusion.cpp/releases/latest";
+const PINNED_RUNTIME_TAG: &str = "master-829-0a565f2";
+const RELEASE_URL: &str =
+    "https://api.github.com/repos/leejet/stable-diffusion.cpp/releases/tags/master-829-0a565f2";
 const RUNTIME_ROOT: &str = "runtimes/diffusion/stable-diffusion.cpp";
 const MANIFEST_PATH: &str = "runtimes/diffusion/stable-diffusion.cpp/manifest.json";
 const SAFE_SPACE_MARGIN: u64 = 256 * 1024 * 1024;
@@ -49,6 +50,10 @@ struct DiffusionRuntimeManifest {
     source_url: String,
     archive_sha256: String,
     cli_path: String,
+    #[serde(default)]
+    cli_sha256: String,
+    #[serde(default)]
+    cli_size: u64,
     installed_at: String,
 }
 
@@ -347,10 +352,14 @@ async fn ensure_runtime(
     let preferred_backend = candidates.first().map(|(backend, _)| backend);
 
     if let Some(manifest) = load_manifest(root)? {
-        let cli = root.resolve_relative(&manifest.cli_path)?;
-        if cli.is_file() && preferred_backend.is_none_or(|backend| *backend == manifest.backend) {
+        if runtime_manifest_is_reusable(root, &manifest, preferred_backend)? {
             return Ok(manifest);
         }
+        tracing::warn!(
+            version = %manifest.version,
+            backend = ?manifest.backend,
+            "installed diffusion runtime is stale or failed integrity validation; reinstalling pinned runtime"
+        );
     }
 
     if candidates.is_empty() {
@@ -362,7 +371,7 @@ async fn ensure_runtime(
     }
 
     let release = client
-        .get(RELEASES_URL)
+        .get(RELEASE_URL)
         .header(header::USER_AGENT, "OpenMindAI/2")
         .timeout(Duration::from_secs(60))
         .send()
@@ -373,6 +382,12 @@ async fn ensure_runtime(
         .json::<GithubRelease>()
         .await
         .map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?;
+    if release.tag_name != PINNED_RUNTIME_TAG {
+        return Err(AppError::RuntimeInstallFailed(format!(
+            "pinned stable-diffusion.cpp release endpoint returned unexpected tag {}; expected {PINNED_RUNTIME_TAG}",
+            release.tag_name
+        )));
+    }
 
     let (backend, asset) = candidates
         .iter()
@@ -385,7 +400,7 @@ async fn ensure_runtime(
         })
         .ok_or_else(|| {
             AppError::RuntimeInstallFailed(format!(
-                "latest stable-diffusion.cpp release {} has no compatible runtime asset",
+                "pinned stable-diffusion.cpp release {} has no compatible runtime asset",
                 release.tag_name
             ))
         })?;
@@ -443,12 +458,21 @@ async fn install_runtime_asset(
         })?
         .to_string_lossy()
         .replace('\\', "/");
+    let cli_size = fs::metadata(&cli_path)?.len();
+    if cli_size == 0 {
+        return Err(AppError::RuntimeInstallFailed(
+            "stable-diffusion.cpp runtime CLI is empty after extraction".to_string(),
+        ));
+    }
+    let cli_sha256 = sha256_file(&cli_path)?;
     let manifest = DiffusionRuntimeManifest {
         version: version.to_string(),
         backend,
         source_url: asset.browser_download_url.clone(),
         archive_sha256: actual_sha256,
         cli_path: relative_cli,
+        cli_sha256,
+        cli_size,
         installed_at: Utc::now().to_rfc3339(),
     };
     write_manifest(root, &manifest)?;
@@ -616,6 +640,51 @@ fn find_cli_binary(root: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn runtime_manifest_is_reusable(
+    root: &PortableRootManager,
+    manifest: &DiffusionRuntimeManifest,
+    preferred_backend: Option<&BackendKind>,
+) -> Result<bool, AppError> {
+    if manifest.version != PINNED_RUNTIME_TAG {
+        return Ok(false);
+    }
+    if preferred_backend.is_some_and(|backend| *backend != manifest.backend) {
+        return Ok(false);
+    }
+    if manifest.cli_size == 0 || manifest.cli_sha256.len() != 64 {
+        return Ok(false);
+    }
+
+    let cli = match root.resolve_relative(&manifest.cli_path) {
+        Ok(cli) => cli,
+        Err(error) => {
+            tracing::warn!(%error, cli_path = %manifest.cli_path, "invalid diffusion runtime CLI path in manifest");
+            return Ok(false);
+        }
+    };
+    if !cli.is_file() {
+        return Ok(false);
+    }
+    let metadata = match fs::metadata(&cli) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            tracing::warn!(%error, path = %cli.display(), "could not stat installed diffusion runtime CLI");
+            return Ok(false);
+        }
+    };
+    if metadata.len() != manifest.cli_size {
+        return Ok(false);
+    }
+    let actual_sha256 = match sha256_file(&cli) {
+        Ok(digest) => digest,
+        Err(error) => {
+            tracing::warn!(%error, path = %cli.display(), "could not verify installed diffusion runtime CLI");
+            return Ok(false);
+        }
+    };
+    Ok(actual_sha256.eq_ignore_ascii_case(&manifest.cli_sha256))
 }
 
 fn load_manifest(root: &PortableRootManager) -> Result<Option<DiffusionRuntimeManifest>, AppError> {
@@ -1020,6 +1089,61 @@ mod tests {
     #[test]
     fn safe_component_removes_path_syntax() {
         assert_eq!(safe_component("master/829:abc"), "master-829-abc");
+    }
+
+    #[test]
+    fn runtime_manifest_reuse_requires_pinned_version_backend_and_cli_integrity() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let cli_relative = if cfg!(target_os = "windows") {
+            "runtimes/diffusion/stable-diffusion.cpp/cpu/master-829-0a565f2/sd-cli.exe"
+        } else {
+            "runtimes/diffusion/stable-diffusion.cpp/cpu/master-829-0a565f2/sd-cli"
+        };
+        let cli = root.resolve_relative(cli_relative).unwrap();
+        fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        fs::write(&cli, b"known-good-runtime").unwrap();
+        let cli_sha256 = sha256_file(&cli).unwrap();
+        let cli_size = fs::metadata(&cli).unwrap().len();
+        let mut manifest = DiffusionRuntimeManifest {
+            version: PINNED_RUNTIME_TAG.to_string(),
+            backend: BackendKind::Cpu,
+            source_url: "https://example.invalid/runtime.zip".to_string(),
+            archive_sha256: "a".repeat(64),
+            cli_path: cli_relative.to_string(),
+            cli_sha256,
+            cli_size,
+            installed_at: "2026-08-28T00:00:00Z".to_string(),
+        };
+
+        assert!(runtime_manifest_is_reusable(&root, &manifest, Some(&BackendKind::Cpu)).unwrap());
+        assert!(
+            !runtime_manifest_is_reusable(&root, &manifest, Some(&BackendKind::Vulkan)).unwrap()
+        );
+
+        manifest.version = "master-828-old".to_string();
+        assert!(!runtime_manifest_is_reusable(&root, &manifest, Some(&BackendKind::Cpu)).unwrap());
+        manifest.version = PINNED_RUNTIME_TAG.to_string();
+
+        manifest.cli_path = "../outside/sd-cli".to_string();
+        assert!(!runtime_manifest_is_reusable(&root, &manifest, Some(&BackendKind::Cpu)).unwrap());
+        manifest.cli_path = cli_relative.to_string();
+
+        fs::write(&cli, b"tampered-runtime!!").unwrap();
+        assert_eq!(fs::metadata(&cli).unwrap().len(), cli_size);
+        assert!(!runtime_manifest_is_reusable(&root, &manifest, Some(&BackendKind::Cpu)).unwrap());
+    }
+
+    #[test]
+    fn legacy_manifest_without_cli_integrity_is_invalidated_for_reinstall() {
+        let legacy = format!(
+            r#"{{"version":"{PINNED_RUNTIME_TAG}","backend":"cpu","sourceUrl":"https://example.invalid/runtime.zip","archiveSha256":"{}","cliPath":"runtimes/diffusion/sd-cli","installedAt":"2026-08-28T00:00:00Z"}}"#,
+            "b".repeat(64)
+        );
+        let manifest: DiffusionRuntimeManifest = serde_json::from_str(&legacy).unwrap();
+        assert!(manifest.cli_sha256.is_empty());
+        assert_eq!(manifest.cli_size, 0);
     }
 }
 
