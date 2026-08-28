@@ -124,14 +124,26 @@ jobs:
 
           app = Path("src/App.tsx")
           text = app.read_text(encoding="utf-8")
-          old_add = '''  async function addFiles(files: FileList | null) {
-            if (!files) return;
-            const next = await Promise.all(Array.from(files).map(readAttachment));
-            setAttachments((items) => [...items, ...next]);
-            setView("chat");
-            composerRef.current?.focus();
-          }
-          '''
+          start_marker = "  async function addFiles(files: FileList | null) {"
+          start = text.find(start_marker)
+          if start < 0:
+              raise SystemExit("addFiles start not found")
+          brace_start = text.find("{", start)
+          if brace_start < 0:
+              raise SystemExit("addFiles opening brace not found")
+          depth = 0
+          end = None
+          for index in range(brace_start, len(text)):
+              character = text[index]
+              if character == "{":
+                  depth += 1
+              elif character == "}":
+                  depth -= 1
+                  if depth == 0:
+                      end = index + 1
+                      break
+          if end is None:
+              raise SystemExit("addFiles closing brace not found")
           new_add = '''  async function addFiles(files: FileList | null) {
             if (!files) return;
             try {
@@ -142,9 +154,8 @@ jobs:
             } catch (caught) {
               showError(caught);
             }
-          }
-          '''
-          text = replace_once(text, old_add, new_add, "addFiles")
+          }'''
+          text = text[:start] + new_add + text[end:]
           app.write_text(text, encoding="utf-8")
 
           inference = Path("src-tauri/src/inference.rs")
