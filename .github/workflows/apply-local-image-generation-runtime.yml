@@ -23,7 +23,9 @@ jobs:
           fetch-depth: 0
 
       - name: Apply production image runtime patch
-        run: python scripts/apply_local_image_generation_runtime.py
+        run: |
+          python scripts/apply_local_image_generation_runtime.py
+          python scripts/apply_local_image_generation_runtime_fixes.py
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -68,10 +70,13 @@ jobs:
           git checkout origin/main -- src-tauri/gen/schemas src-tauri/capabilities/default.json
           rm .github/workflows/apply-local-image-generation-runtime.yml
           rm scripts/apply_local_image_generation_runtime.py
+          rm scripts/apply_local_image_generation_runtime_fixes.py
           test -f src-tauri/src/diffusion_runtime.rs
           ! grep -R "generation_preview_svg" -n src-tauri/src/lib.rs
+          ! grep -R "generation_family_label" -n src-tauri/src/lib.rs
           grep -q '"image" => "image/png"' src-tauri/src/artifacts.rs
           grep -q 'stable-diffusion.cpp' src-tauri/model-catalog.json
+          grep -q '"filenamePattern": "sd_xl_base_1.0.safetensors"' src-tauri/model-catalog.json
 
       - name: Commit validated source only
         run: |
