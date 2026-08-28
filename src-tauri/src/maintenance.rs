@@ -6,6 +6,7 @@ use serde::Serialize;
 
 use crate::{
     app_error::AppError,
+    artifacts::media_preflight,
     database::Database,
     hardware::HardwareProfile,
     model_registry::{ModelLifecycleState, ModelRegistry},
@@ -114,6 +115,24 @@ pub fn run_diagnostics(
             Some("No verified AI model installed yet".to_string()),
         )
     });
+
+    for (id, label, kind) in [
+        ("mediaCanvas", "OpenMindAI Canvas", "image"),
+        ("mediaMotion", "OpenMindAI Motion", "video"),
+        ("mediaSpeak", "OpenMindAI Speak", "audio"),
+    ] {
+        let report =
+            media_preflight::preflight_for_hardware(root, kind, hardware)?.ok_or_else(|| {
+                AppError::internal(format!("no media preflight configured for {kind}"))
+            })?;
+        let detail = report.issue_summary();
+        let status = if detail.is_some() {
+            CheckStatus::Warning
+        } else {
+            CheckStatus::Ok
+        };
+        checks.push(DiagnosticCheck::new(id, label, status, detail));
+    }
 
     checks.push(match available_bytes_for_path(root.root()) {
         Some(available) if available < LOW_DISK_SPACE_BYTES => DiagnosticCheck::new(
@@ -274,6 +293,9 @@ mod tests {
         // expected warnings, not errors (repair, not a broken install).
         assert_eq!(by_id("runtime").status, CheckStatus::Warning);
         assert_eq!(by_id("model").status, CheckStatus::Warning);
+        assert_eq!(by_id("mediaCanvas").status, CheckStatus::Warning);
+        assert_eq!(by_id("mediaMotion").status, CheckStatus::Warning);
+        assert_eq!(by_id("mediaSpeak").status, CheckStatus::Warning);
     }
 
     #[test]

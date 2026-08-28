@@ -50,6 +50,16 @@ impl MediaPreflightReport {
             blockers.join("; ")
         )))
     }
+
+    pub(crate) fn issue_summary(&self) -> Option<String> {
+        let issues = self
+            .checks
+            .iter()
+            .filter(|check| check.status != PreflightStatus::Ok)
+            .map(|check| format!("{}: {}", check.label, check.detail))
+            .collect::<Vec<_>>();
+        (!issues.is_empty()).then(|| issues.join("; "))
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -64,10 +74,18 @@ pub(crate) fn preflight(
     artifact_kind: &str,
 ) -> Result<Option<MediaPreflightReport>, AppError> {
     let hardware = HardwareProfiler::detect();
+    preflight_for_hardware(root, artifact_kind, &hardware)
+}
+
+pub(crate) fn preflight_for_hardware(
+    root: &PortableRootManager,
+    artifact_kind: &str,
+    hardware: &HardwareProfile,
+) -> Result<Option<MediaPreflightReport>, AppError> {
     preflight_with_environment(
         root,
         artifact_kind,
-        &hardware,
+        hardware,
         available_bytes_for_path(root.root()),
         std::env::consts::OS,
         std::env::consts::ARCH,
