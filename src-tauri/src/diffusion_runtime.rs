@@ -34,7 +34,9 @@ const MANIFEST_PATH: &str = "runtimes/diffusion/stable-diffusion.cpp/manifest.js
 const SAFE_SPACE_MARGIN: u64 = 256 * 1024 * 1024;
 const MAX_PROMPT_CHARS: usize = 4_000;
 const GENERATION_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+const VIDEO_GENERATION_TIMEOUT: Duration = Duration::from_secs(90 * 60);
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+const WEBM_SIGNATURE: &[u8; 4] = b"\x1a\x45\xdf\xa3";
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -73,6 +75,17 @@ struct RenderProfile {
     clip_on_cpu: bool,
     vae_on_cpu: bool,
     offload_to_cpu: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VideoRenderProfile {
+    width: u32,
+    height: u32,
+    frames: u32,
+    fps: u32,
+    offload_to_cpu: bool,
+    clip_on_cpu: bool,
+    vae_on_cpu: bool,
 }
 
 pub async fn generate_image(
@@ -182,6 +195,145 @@ pub async fn generate_image(
 
     validate_png(output_path)?;
     tracing::info!(path = %output_path.display(), "local diffusion image generated");
+    Ok(())
+}
+
+pub(crate) struct VideoGenerationRequest<'a> {
+    pub diffusion_model_path: &'a Path,
+    pub vae_path: &'a Path,
+    pub text_encoder_path: &'a Path,
+    pub prompt: &'a str,
+    pub output_path: &'a Path,
+}
+
+pub async fn generate_video(
+    root: &PortableRootManager,
+    client: &Client,
+    hardware: &HardwareProfile,
+    request: VideoGenerationRequest<'_>,
+) -> Result<(), AppError> {
+    let VideoGenerationRequest {
+        diffusion_model_path,
+        vae_path,
+        text_encoder_path,
+        prompt,
+        output_path,
+    } = request;
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return Err(AppError::ArtifactGenerationFailed(
+            "video prompt cannot be empty".to_string(),
+        ));
+    }
+    if prompt.chars().count() > MAX_PROMPT_CHARS {
+        return Err(AppError::ArtifactGenerationFailed(format!(
+            "video prompt is too long; maximum is {MAX_PROMPT_CHARS} characters"
+        )));
+    }
+
+    let diffusion_model_path =
+        canonical_file_under_root(root, diffusion_model_path, "video diffusion model")?;
+    let vae_path = canonical_file_under_root(root, vae_path, "video VAE")?;
+    let text_encoder_path =
+        canonical_file_under_root(root, text_encoder_path, "video text encoder")?;
+    let output_parent = output_path.parent().ok_or_else(|| {
+        AppError::ArtifactGenerationFailed("video output path has no parent".to_string())
+    })?;
+    fs::create_dir_all(output_parent)?;
+    ensure_contained(root.root(), output_path).map_err(|error| {
+        AppError::ArtifactGenerationFailed(format!("video output path rejected: {error}"))
+    })?;
+
+    let runtime = ensure_runtime(root, client, hardware).await?;
+    let cli_path = root.resolve_relative(&runtime.cli_path)?;
+    let profile = video_render_profile(hardware, &runtime.backend);
+    if output_path.exists() {
+        fs::remove_file(output_path)?;
+    }
+
+    let mut command = Command::new(&cli_path);
+    command
+        .arg("-M")
+        .arg("vid_gen")
+        .arg("--diffusion-model")
+        .arg(&diffusion_model_path)
+        .arg("--vae")
+        .arg(&vae_path)
+        .arg("--t5xxl")
+        .arg(&text_encoder_path)
+        .arg("-p")
+        .arg(prompt)
+        .arg("-n")
+        .arg("worst quality, low quality, blurry, distorted, artifacts, text, watermark, flicker, jitter, temporal inconsistency")
+        .arg("-o")
+        .arg(output_path)
+        .arg("--cfg-scale")
+        .arg("6.0")
+        .arg("--sampling-method")
+        .arg("euler")
+        .arg("-W")
+        .arg(profile.width.to_string())
+        .arg("-H")
+        .arg(profile.height.to_string())
+        .arg("--video-frames")
+        .arg(profile.frames.to_string())
+        .arg("--fps")
+        .arg(profile.fps.to_string())
+        .arg("--flow-shift")
+        .arg("3.0")
+        .arg("--diffusion-fa")
+        .arg("--mmap")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    if profile.offload_to_cpu {
+        command.arg("--offload-to-cpu");
+    }
+    if profile.clip_on_cpu {
+        command.arg("--clip-on-cpu");
+    }
+    if profile.vae_on_cpu {
+        command.arg("--vae-on-cpu");
+    }
+    if let Some(parent) = cli_path.parent() {
+        command.current_dir(parent);
+    }
+    hide_console_window(&mut command);
+
+    tracing::info!(
+        backend = ?runtime.backend,
+        width = profile.width,
+        height = profile.height,
+        frames = profile.frames,
+        fps = profile.fps,
+        model = %diffusion_model_path.display(),
+        "starting local Wan video generation"
+    );
+
+    let output = timeout(VIDEO_GENERATION_TIMEOUT, command.output())
+        .await
+        .map_err(|_| {
+            AppError::ArtifactGenerationFailed(
+                "local video generation timed out after 90 minutes".to_string(),
+            )
+        })?
+        .map_err(|error| {
+            AppError::ArtifactGenerationFailed(format!(
+                "could not start stable-diffusion.cpp video runtime: {error}"
+            ))
+        })?;
+
+    if !output.status.success() {
+        let detail = process_error_detail(&output.stdout, &output.stderr);
+        return Err(AppError::ArtifactGenerationFailed(format!(
+            "stable-diffusion.cpp video generation exited with {}: {detail}",
+            output.status
+        )));
+    }
+
+    validate_webm(output_path)?;
+    tracing::info!(path = %output_path.display(), "local Wan WebM video generated");
     Ok(())
 }
 
@@ -546,6 +698,60 @@ fn runtime_asset_candidates(
     }
 }
 
+fn video_render_profile(hardware: &HardwareProfile, backend: &BackendKind) -> VideoRenderProfile {
+    if *backend == BackendKind::Cpu {
+        return VideoRenderProfile {
+            width: 384,
+            height: 224,
+            frames: 17,
+            fps: 8,
+            offload_to_cpu: false,
+            clip_on_cpu: true,
+            vae_on_cpu: true,
+        };
+    }
+
+    let max_vram = hardware
+        .gpus
+        .iter()
+        .filter(|gpu| !gpu.is_software)
+        .filter_map(|gpu| gpu.dedicated_vram_bytes)
+        .max()
+        .unwrap_or(0);
+    let gib = 1024_u64.pow(3);
+    if max_vram <= 8 * gib {
+        VideoRenderProfile {
+            width: 512,
+            height: 288,
+            frames: 17,
+            fps: 8,
+            offload_to_cpu: true,
+            clip_on_cpu: true,
+            vae_on_cpu: true,
+        }
+    } else if max_vram <= 12 * gib {
+        VideoRenderProfile {
+            width: 640,
+            height: 368,
+            frames: 25,
+            fps: 12,
+            offload_to_cpu: true,
+            clip_on_cpu: true,
+            vae_on_cpu: true,
+        }
+    } else {
+        VideoRenderProfile {
+            width: 832,
+            height: 480,
+            frames: 33,
+            fps: 16,
+            offload_to_cpu: false,
+            clip_on_cpu: false,
+            vae_on_cpu: false,
+        }
+    }
+}
+
 fn render_profile(hardware: &HardwareProfile, backend: &BackendKind) -> RenderProfile {
     if *backend == BackendKind::Cpu {
         return RenderProfile {
@@ -595,6 +801,26 @@ fn render_profile(hardware: &HardwareProfile, backend: &BackendKind) -> RenderPr
             offload_to_cpu: false,
         },
     }
+}
+
+fn validate_webm(path: &Path) -> Result<(), AppError> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        AppError::ArtifactGenerationFailed(format!("video output was not created: {error}"))
+    })?;
+    if metadata.len() < 4096 {
+        return Err(AppError::ArtifactGenerationFailed(
+            "video output is implausibly small".to_string(),
+        ));
+    }
+    let mut file = fs::File::open(path)?;
+    let mut signature = [0_u8; 4];
+    file.read_exact(&mut signature)?;
+    if &signature != WEBM_SIGNATURE {
+        return Err(AppError::ArtifactGenerationFailed(
+            "video runtime did not produce a valid WebM/EBML container".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_png(path: &Path) -> Result<(), AppError> {
@@ -794,5 +1020,28 @@ mod tests {
     #[test]
     fn safe_component_removes_path_syntax() {
         assert_eq!(safe_component("master/829:abc"), "master-829-abc");
+    }
+}
+
+#[cfg(test)]
+mod video_runtime_tests {
+    use super::*;
+
+    #[test]
+    fn webm_validator_accepts_ebml_container_signature() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("clip.webm");
+        let mut bytes = WEBM_SIGNATURE.to_vec();
+        bytes.resize(8192, 0);
+        fs::write(&path, bytes).unwrap();
+        validate_webm(&path).unwrap();
+    }
+
+    #[test]
+    fn webm_validator_rejects_wrong_container() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("clip.webm");
+        fs::write(&path, vec![0_u8; 8192]).unwrap();
+        assert!(validate_webm(&path).is_err());
     }
 }
