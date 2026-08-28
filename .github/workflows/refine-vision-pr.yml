@@ -27,18 +27,17 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              if old not in text:
+                  raise SystemExit(f"{label} anchor not found")
+              return text.replace(old, new, 1)
+
           chat = Path("src/lib/chat.ts")
           text = chat.read_text(encoding="utf-8")
-          interface_anchor = '''export interface AttachmentDraft {
-            id: string;
-            name: string;
-            size: number;
-            type: string;
-            kind: "text" | "image" | "pdf" | "binary";
-            contentPreview: string | null;
+          interface_end = '''  contentPreview: string | null;
           }
           '''
-          image_support = interface_anchor + '''
+          image_support = interface_end + '''
           const MAX_VISION_IMAGE_INPUT_BYTES = 16 * 1024 * 1024;
           const MAX_VISION_IMAGE_DATA_URL_CHARS = 6_000_000;
           const MAX_VISION_IMAGE_DIMENSION = 2048;
@@ -112,37 +111,25 @@ jobs:
             }
           }
           '''
-          if interface_anchor not in text:
-            raise SystemExit("AttachmentDraft anchor not found")
-          text = text.replace(interface_anchor, image_support, 1)
-          old_image = '''  } else if (kind === "image") {
-            contentPreview = `[Image attached: ${file.name}. Exact visual analysis requires the local OpenMindAI Lens vision runtime. Do not infer unseen image content from metadata alone.]`;
-          } else if (kind === "pdf") {'''
-          new_image = '''  } else if (kind === "image") {
-            contentPreview = await encodeVisionImage(file);
-          } else if (kind === "pdf") {'''
-          if old_image not in text:
-            raise SystemExit("image attachment anchor not found")
-          text = text.replace(old_image, new_image, 1)
-          old_kind = '''export function attachmentKind(file: File): AttachmentDraft["kind"] {
-            if (file.type.startsWith("image/")) return "image";'''
-          new_kind = '''export function attachmentKind(file: File): AttachmentDraft["kind"] {
-            if (file.type.startsWith("image/") || /\\.(png|jpe?g|webp)$/i.test(file.name)) return "image";'''
-          if old_kind not in text:
-            raise SystemExit("attachmentKind anchor not found")
-          text = text.replace(old_kind, new_kind, 1)
+          text = replace_once(text, interface_end, image_support, "AttachmentDraft")
+          placeholder = '    contentPreview = `[Image attached: ${file.name}. Exact visual analysis requires the local OpenMindAI Lens vision runtime. Do not infer unseen image content from metadata alone.]`;'
+          text = replace_once(text, placeholder, '    contentPreview = await encodeVisionImage(file);', "image attachment")
+          text = replace_once(
+              text,
+              '  if (file.type.startsWith("image/")) return "image";',
+              '  if (file.type.startsWith("image/") || /\\.(png|jpe?g|webp)$/i.test(file.name)) return "image";',
+              "attachmentKind",
+          )
           chat.write_text(text, encoding="utf-8")
 
           app = Path("src/App.tsx")
           text = app.read_text(encoding="utf-8")
-          old_add = '''  async function addFiles(files: FileList | null) {
-            if (!files) return;
-            const next = await Promise.all(Array.from(files).map(readAttachment));
-            setAttachments((items) => [...items, ...next]);
-            setView("chat");
-            composerRef.current?.focus();
-          }
-          '''
+          start_marker = "  async function addFiles(files: FileList | null) {\n"
+          end_marker = "\n  function removeAttachment("
+          start = text.find(start_marker)
+          end = text.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise SystemExit("addFiles function anchors not found")
           new_add = '''  async function addFiles(files: FileList | null) {
             if (!files) return;
             try {
@@ -155,31 +142,19 @@ jobs:
             }
           }
           '''
-          if old_add not in text:
-            raise SystemExit("addFiles anchor not found")
-          app.write_text(text.replace(old_add, new_add, 1), encoding="utf-8")
+          text = text[:start] + new_add + text[end:]
+          app.write_text(text, encoding="utf-8")
 
           inference = Path("src-tauri/src/inference.rs")
           text = inference.read_text(encoding="utf-8")
-          old_prepare = '''    let mut prepared = Vec::with_capacity(messages.len());
-              for message in messages {
-                  let (text, images) = extract_inline_data_images(&message.content)?;
-                  prepared.push((message, text, images));
-              }
-          '''
-          new_prepare = '''    let mut prepared = Vec::with_capacity(messages.len());
-              for message in messages {
-                  let (text, images) = if message.role == "user" {
+          old_parse = '        let (text, images) = extract_inline_data_images(&message.content)?;'
+          new_parse = '''        let (text, images) = if message.role == "user" {
                       extract_inline_data_images(&message.content)?
                   } else {
                       (message.content.clone(), Vec::new())
-                  };
-                  prepared.push((message, text, images));
-              }
-          '''
-          if old_prepare not in text:
-            raise SystemExit("build_context image parsing anchor not found")
-          inference.write_text(text.replace(old_prepare, new_prepare, 1), encoding="utf-8")
+                  };'''
+          text = replace_once(text, old_parse, new_parse, "build_context image parsing")
+          inference.write_text(text, encoding="utf-8")
           PY
 
       - name: Install Linux system dependencies
