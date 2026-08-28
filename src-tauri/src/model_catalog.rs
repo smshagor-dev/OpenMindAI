@@ -194,22 +194,6 @@ fn find_downloaded_file(
         .map(|path| path.to_string_lossy().replace('\\', "/"))
 }
 
-pub fn dependency_path(
-    root: &PortableRootManager,
-    entry: &ModelCatalogEntry,
-    role: &str,
-) -> Option<String> {
-    let download = entry.download.as_ref()?;
-    let dependency = download
-        .dependencies
-        .iter()
-        .find(|dependency| dependency.role == role)?;
-    let dir = root.resolve_relative(&download.destination_dir).ok()?;
-    find_file_matching(&dir, &dependency.filename_pattern)
-        .and_then(|path| path.strip_prefix(root.root()).ok().map(Path::to_path_buf))
-        .map(|path| path.to_string_lossy().replace('\\', "/"))
-}
-
 pub fn delete_catalog_model(root: &PortableRootManager, model_id: &str) -> Result<(), AppError> {
     let entry = entry_by_id(model_id)?;
     let download = entry.download.as_ref().ok_or_else(|| {
@@ -329,10 +313,11 @@ pub(crate) fn wildcard_match(pattern: &str, value: &str) -> bool {
         cursor += found + part.len();
     }
 
-    pattern
-        .ends_with('*')
-        .then_some(true)
-        .unwrap_or_else(|| parts.last().is_none_or(|last| value.ends_with(last)))
+    if pattern.ends_with('*') {
+        true
+    } else {
+        parts.last().is_none_or(|last| value.ends_with(last))
+    }
 }
 
 #[cfg(test)]

@@ -44,7 +44,9 @@ use portable_root::{
     save_installation, InstallConfig, InstallationStatus, PortableRootInfo, PortableRootManager,
     SetupState, RECOMMENDED_INITIAL_STORAGE_BYTES,
 };
-use projects::{project_context_message, Project, ProjectFile, ProjectRepository};
+use projects::{
+    project_context_message, Project, ProjectFile, ProjectFileInput, ProjectRepository,
+};
 use reqwest::Client;
 use runtime::{allocate_local_port, LlamaRuntimeManager, LlamaRuntimeStatus, RuntimeInventory};
 use runtime_install::{RuntimeInstallStatus, RuntimeInstaller};
@@ -428,28 +430,14 @@ fn unlink_project_conversation(
 
 #[tauri::command]
 fn add_project_file(
-    project_id: String,
-    name: String,
-    size_bytes: i64,
-    mime_type: Option<String>,
-    content_text: Option<String>,
-    status: String,
-    error: Option<String>,
+    input: ProjectFileInput,
     state: State<AppState>,
 ) -> Result<ProjectFile, app_error::AppError> {
     let db = state
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-    ProjectRepository::new(&db).add_file(
-        &project_id,
-        &name,
-        size_bytes,
-        mime_type.as_deref(),
-        content_text.as_deref(),
-        &status,
-        error.as_deref(),
-    )
+    ProjectRepository::new(&db).add_file(&input)
 }
 
 #[tauri::command]
@@ -804,10 +792,10 @@ fn open_artifact(artifact_id: String, state: State<AppState>) -> Result<(), app_
     Ok(())
 }
 
-fn hide_console_window(command: &mut std::process::Command) {
+fn hide_console_window(_command: &mut std::process::Command) {
     #[cfg(target_os = "windows")]
     {
-        command.creation_flags(CREATE_NO_WINDOW);
+        _command.creation_flags(CREATE_NO_WINDOW);
     }
 }
 

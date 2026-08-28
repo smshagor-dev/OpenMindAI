@@ -1,6 +1,6 @@
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{app_error::AppError, chat::Conversation, database::Database};
@@ -29,6 +29,18 @@ pub struct ProjectFile {
     pub status: String,
     pub error: Option<String>,
     pub added_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFileInput {
+    pub project_id: String,
+    pub name: String,
+    pub size_bytes: i64,
+    pub mime_type: Option<String>,
+    pub content_text: Option<String>,
+    pub status: String,
+    pub error: Option<String>,
 }
 
 pub struct ProjectRepository<'a> {
@@ -132,16 +144,7 @@ impl<'a> ProjectRepository<'a> {
         Ok(())
     }
 
-    pub fn add_file(
-        &self,
-        project_id: &str,
-        name: &str,
-        size_bytes: i64,
-        mime_type: Option<&str>,
-        content_text: Option<&str>,
-        status: &str,
-        error: Option<&str>,
-    ) -> Result<ProjectFile, AppError> {
+    pub fn add_file(&self, input: &ProjectFileInput) -> Result<ProjectFile, AppError> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         self.database.connection().execute(
@@ -149,17 +152,17 @@ impl<'a> ProjectRepository<'a> {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 id,
-                project_id,
-                name.trim(),
-                size_bytes,
-                mime_type,
-                content_text,
-                sanitize_file_status(status),
-                error,
+                input.project_id,
+                input.name.trim(),
+                input.size_bytes,
+                input.mime_type.as_deref(),
+                input.content_text.as_deref(),
+                sanitize_file_status(&input.status),
+                input.error.as_deref(),
                 now
             ],
         )?;
-        self.touch_project(project_id)?;
+        self.touch_project(&input.project_id)?;
         self.find_file(&id)
     }
 
@@ -372,15 +375,15 @@ mod tests {
             )
             .unwrap();
         repo.link_conversation(&project.id, "c1").unwrap();
-        repo.add_file(
-            &project.id,
-            "brief.md",
-            42,
-            Some("text/markdown"),
-            Some("# Brief\nShip the polished version."),
-            "ready",
-            None,
-        )
+        repo.add_file(&ProjectFileInput {
+            project_id: project.id.clone(),
+            name: "brief.md".to_string(),
+            size_bytes: 42,
+            mime_type: Some("text/markdown".to_string()),
+            content_text: Some("# Brief\nShip the polished version.".to_string()),
+            status: "ready".to_string(),
+            error: None,
+        })
         .unwrap();
         let listed = repo.list_projects().unwrap();
         assert_eq!(listed[0].conversation_ids, vec!["c1"]);
