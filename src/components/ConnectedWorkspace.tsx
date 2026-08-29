@@ -6,15 +6,43 @@ import {
   CONNECTED_ACTIONS,
   type ConnectedProvider,
   type GoogleWorkspaceStatus,
+  type IntegrationStatus,
 } from "../lib/connectedActions";
 import { formatError } from "../lib/format";
+
+type EcosystemProvider = Exclude<ConnectedProvider, "google" | "github">;
+
+const providers: ConnectedProvider[] = [
+  "google",
+  "github",
+  "microsoft",
+  "slack",
+  "notion",
+  "dropbox",
+  "mcp",
+];
+
+const labels: Record<ConnectedProvider, string> = {
+  google: "Google Workspace",
+  github: "GitHub",
+  microsoft: "Microsoft 365",
+  slack: "Slack",
+  notion: "Notion",
+  dropbox: "Dropbox",
+  mcp: "MCP",
+};
+
+function isEcosystemProvider(provider: ConnectedProvider): provider is EcosystemProvider {
+  return provider !== "google" && provider !== "github";
+}
 
 export function ConnectedWorkspace({ onClose }: { onClose: () => void }) {
   const [provider, setProvider] = useState<ConnectedProvider>("google");
   const [google, setGoogle] = useState<GoogleWorkspaceStatus | null>(null);
   const [github, setGithub] = useState<GithubAccount | null>(null);
+  const [integrations, setIntegrations] = useState<Partial<Record<EcosystemProvider, IntegrationStatus | null>>>({});
   const [loadingConnections, setLoadingConnections] = useState(true);
-  const [connectingGoogle, setConnectingGoogle] = useState(false);
+  const [connecting, setConnecting] = useState(false);
   const [filter, setFilter] = useState("");
   const providerActions = useMemo(
     () =>
@@ -43,12 +71,20 @@ export function ConnectedWorkspace({ onClose }: { onClose: () => void }) {
 
   const refreshConnections = async () => {
     setLoadingConnections(true);
-    const [googleResult, githubResult] = await Promise.allSettled([
+    const ecosystemProviders: EcosystemProvider[] = ["microsoft", "slack", "notion", "dropbox", "mcp"];
+    const [googleResult, githubResult, ...ecosystemResults] = await Promise.allSettled([
       api.googleWorkspaceStatus(),
       api.githubAccount(),
+      ...ecosystemProviders.map((item) => api.integrationStatus(item)),
     ]);
     setGoogle(googleResult.status === "fulfilled" ? googleResult.value : null);
     setGithub(githubResult.status === "fulfilled" ? githubResult.value : null);
+    const next: Partial<Record<EcosystemProvider, IntegrationStatus | null>> = {};
+    ecosystemProviders.forEach((item, index) => {
+      const outcome = ecosystemResults[index];
+      next[item] = outcome?.status === "fulfilled" ? outcome.value : null;
+    });
+    setIntegrations(next);
     setLoadingConnections(false);
   };
 
@@ -74,22 +110,31 @@ export function ConnectedWorkspace({ onClose }: { onClose: () => void }) {
     setError(null);
   }, [definition?.action]);
 
-  const connectGoogle = async () => {
-    setConnectingGoogle(true);
+  const connectCurrent = async () => {
+    setConnecting(true);
     setError(null);
     try {
-      setGoogle(await api.connectGoogleWorkspace());
+      if (provider === "google") {
+        setGoogle(await api.connectGoogleWorkspace());
+      } else if (isEcosystemProvider(provider)) {
+        const status = await api.connectIntegration(provider);
+        setIntegrations((current) => ({ ...current, [provider]: status }));
+      }
     } catch (caught) {
       setError(formatError(caught));
     } finally {
-      setConnectingGoogle(false);
+      setConnecting(false);
     }
   };
 
-  const disconnectGoogle = async () => {
+  const disconnectCurrent = async () => {
     setError(null);
     try {
-      await api.disconnectGoogleWorkspace();
+      if (provider === "google") {
+        await api.disconnectGoogleWorkspace();
+      } else if (isEcosystemProvider(provider)) {
+        await api.disconnectIntegration(provider);
+      }
       await refreshConnections();
     } catch (caught) {
       setError(formatError(caught));
@@ -117,10 +162,14 @@ export function ConnectedWorkspace({ onClose }: { onClose: () => void }) {
     }
     setRunning(true);
     try {
-      const output =
-        provider === "google"
-          ? await api.executeGoogleWorkspaceAction(definition.action, params, approved)
-          : await api.executeGithubWorkspaceAction(definition.action, params, approved);
+      let output: unknown;
+      if (provider === "google") {
+        output = await api.executeGoogleWorkspaceAction(definition.action, params, approved);
+      } else if (provider === "github") {
+        output = await api.executeGithubWorkspaceAction(definition.action, params, approved);
+      } else {
+        output = await api.executeIntegrationAction(provider, definition.action, params, approved);
+      }
       const serialized = JSON.stringify(output, null, 2);
       setResult(
         serialized.length > 150_000
@@ -134,7 +183,60 @@ export function ConnectedWorkspace({ onClose }: { onClose: () => void }) {
     }
   };
 
-  const connectionReady = provider === "google" ? Boolean(google?.connected) : Boolean(github);
+  const connectionReady =
+    provider === "google"
+      ? Boolean(google?.connected)
+      : provider === "github"
+        ? Boolean(github)
+        : Boolean(integrations[provider]?.connected);
+
+  const providerStatus = () => {
+    if (provider === "google") {
+      return {
+        title: google?.connected
+          ? "Google connected"
+          : google?.configured
+            ? "Google OAuth configured"
+            : "Google OAuth not configured",
+        detail: google?.connected
+          ? google.email ?? "Connected Google account"
+          : google?.configured
+            ? "Sign in to grant Gmail, Drive, Calendar and Contacts access."
+            : "First save a Google Desktop OAuth Client ID and Client Secret in Settings → Connections.",
+        configured: Boolean(google?.configured),
+        connected: Boolean(google?.connected),
+      };
+    }
+    if (provider === "github") {
+      return {
+        title: github ? `GitHub connected as ${github.login}` : "GitHub not connected",
+        detail: github
+          ? "Available actions depend on the repository permissions granted to the saved token."
+          : "Connect a GitHub token in Settings → Connections. Give only the repository permissions you need.",
+        configured: Boolean(github),
+        connected: Boolean(github),
+      };
+    }
+    const status = integrations[provider];
+    return {
+      title: status?.connected
+        ? `${labels[provider]} connected`
+        : status?.configured
+          ? `${labels[provider]} configured`
+          : `${labels[provider]} not configured`,
+      detail: status?.connected
+        ? status.accountLabel ?? `Connected ${labels[provider]}`
+        : status?.configured
+          ? provider === "mcp"
+            ? "Test the MCP endpoint, or configure an optional bearer token in Settings → Connections."
+            : "Complete OAuth here, or connect a direct token from Settings → Connections."
+          : `Configure ${labels[provider]} in Settings → Connections first.`,
+      configured: Boolean(status?.configured),
+      connected: Boolean(status?.connected),
+    };
+  };
+
+  const status = providerStatus();
 
   return (
     <div className="modal-overlay" role="presentation" onClick={onClose}>
@@ -144,13 +246,13 @@ export function ConnectedWorkspace({ onClose }: { onClose: () => void }) {
         aria-modal="true"
         aria-label="Connected Work"
         onClick={(event) => event.stopPropagation()}
-        style={{ width: "min(1100px, 94vw)", maxWidth: 1100, height: "min(820px, 90vh)", overflow: "auto" }}
+        style={{ width: "min(1180px, 96vw)", maxWidth: 1180, height: "min(860px, 92vh)", overflow: "auto" }}
       >
         <div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "center" }}>
           <div>
             <h2 style={{ marginBottom: 4 }}>Connected Work</h2>
             <p className="muted" style={{ margin: 0 }}>
-              Google Workspace and GitHub actions run from OpenMindAI. Local chat remains independent when offline.
+              Run approved actions across connected apps. Local chat and local AI remain independent when offline.
             </p>
           </div>
           <button type="button" className="ghost-button" onClick={onClose} title="Close Connected Work">
@@ -158,61 +260,43 @@ export function ConnectedWorkspace({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
-          <button
-            type="button"
-            className={provider === "google" ? "primary-button" : "ghost-button"}
-            onClick={() => setProvider("google")}
-          >
-            Google Workspace
-          </button>
-          <button
-            type="button"
-            className={provider === "github" ? "primary-button" : "ghost-button"}
-            onClick={() => setProvider("github")}
-          >
-            <Github size={15} /> GitHub
-          </button>
+        <div style={{ display: "flex", gap: 8, marginTop: 18, flexWrap: "wrap" }}>
+          {providers.map((item) => (
+            <button
+              type="button"
+              key={item}
+              className={provider === item ? "primary-button" : "ghost-button"}
+              onClick={() => setProvider(item)}
+            >
+              {item === "github" ? <Github size={15} /> : null}
+              {labels[item]}
+            </button>
+          ))}
         </div>
 
         <div className="connector-card" style={{ marginTop: 16 }}>
           {loadingConnections ? (
             <p className="muted"><Loader2 size={14} className="spin" /> Checking connections...</p>
-          ) : provider === "google" ? (
+          ) : (
             <div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "center" }}>
               <div>
-                <strong>{google?.connected ? "Google connected" : google?.configured ? "Google OAuth configured" : "Google OAuth not configured"}</strong>
-                <p className="muted" style={{ margin: "4px 0 0" }}>
-                  {google?.connected
-                    ? google.email ?? "Connected Google account"
-                    : google?.configured
-                      ? "Sign in to grant Gmail, Drive, Calendar and Contacts access."
-                      : "First save a Google Desktop OAuth Client ID and Client Secret in Settings → Connections."}
-                </p>
+                <strong>{status.title}</strong>
+                <p className="muted" style={{ margin: "4px 0 0" }}>{status.detail}</p>
               </div>
-              {google?.connected ? (
-                <button type="button" className="ghost-button" onClick={() => void disconnectGoogle()}>
+              {provider !== "github" && status.connected ? (
+                <button type="button" className="ghost-button" onClick={() => void disconnectCurrent()}>
                   <Unplug size={14} /> Disconnect
                 </button>
-              ) : (
+              ) : provider !== "github" && status.configured ? (
                 <button
                   type="button"
                   className="primary-button"
-                  onClick={() => void connectGoogle()}
-                  disabled={!google?.configured || connectingGoogle}
+                  onClick={() => void connectCurrent()}
+                  disabled={connecting}
                 >
-                  {connectingGoogle ? <Loader2 size={14} className="spin" /> : "Connect Google"}
+                  {connecting ? <Loader2 size={14} className="spin" /> : provider === "mcp" ? "Test MCP" : "Connect"}
                 </button>
-              )}
-            </div>
-          ) : (
-            <div>
-              <strong>{github ? `GitHub connected as ${github.login}` : "GitHub not connected"}</strong>
-              <p className="muted" style={{ margin: "4px 0 0" }}>
-                {github
-                  ? "Available actions depend on the repository permissions granted to the saved token."
-                  : "Connect a GitHub token in Settings → Connections. Give only the repository permissions you need."}
-              </p>
+              ) : null}
             </div>
           )}
         </div>
@@ -223,7 +307,7 @@ export function ConnectedWorkspace({ onClose }: { onClose: () => void }) {
               <span className="muted">Find action</span>
               <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search actions..." />
             </label>
-            <div style={{ display: "grid", gap: 6, maxHeight: 480, overflow: "auto", marginTop: 10 }}>
+            <div style={{ display: "grid", gap: 6, maxHeight: 520, overflow: "auto", marginTop: 10 }}>
               {providerActions.map((item) => (
                 <button
                   type="button"
@@ -268,7 +352,7 @@ export function ConnectedWorkspace({ onClose }: { onClose: () => void }) {
                   <label style={{ display: "flex", gap: 9, alignItems: "flex-start", marginTop: 12 }}>
                     <input type="checkbox" checked={approved} onChange={(event) => setApproved(event.target.checked)} />
                     <span>
-                      I approve this remote change. OpenMindAI will send this operation to {provider === "google" ? "Google" : "GitHub"}.
+                      I approve this remote change. OpenMindAI will send this operation to {labels[provider]}.
                     </span>
                   </label>
                 ) : null}
@@ -289,7 +373,7 @@ export function ConnectedWorkspace({ onClose }: { onClose: () => void }) {
                     style={{
                       marginTop: 14,
                       padding: 14,
-                      maxHeight: 290,
+                      maxHeight: 310,
                       overflow: "auto",
                       whiteSpace: "pre-wrap",
                       wordBreak: "break-word",
