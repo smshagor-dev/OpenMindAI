@@ -237,13 +237,16 @@ async fn run_agent_message(
             "; terminal commands stay disabled until Full PC + Terminal access is enabled"
         }
     );
-    emit_agent_chunk(
+    if let Err(error) = emit_agent_chunk(
         app,
         state,
         conversation_id,
         &assistant.id,
         &format!("{intro}\n\n"),
-    )?;
+    ) {
+        state.active_generations.finish(conversation_id);
+        return Err(error);
+    }
 
     let loop_result = async {
         for step in 0..MAX_AGENT_STEPS {
@@ -359,8 +362,9 @@ async fn run_agent_message(
         let _ = emit_agent_chunk(app, state, conversation_id, &assistant.id, &message);
     }
 
-    finish_agent_message(app, state, conversation_id, &assistant.id, status)?;
+    let finish_result = finish_agent_message(app, state, conversation_id, &assistant.id, status);
     state.active_generations.finish(conversation_id);
+    finish_result?;
     latest_message(state, conversation_id, &assistant.id)
 }
 
@@ -491,14 +495,24 @@ Attached roots:\n{root_summary}"
         "chat_template_kwargs": {"enable_thinking": false}
     });
 
-    let response = client
-        .post(endpoint)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|error| {
-            AppError::InferenceFailed(format!("agent model request failed: {error}"))
-        })?;
+    let url = format!("{}/v1/chat/completions", endpoint.trim_end_matches('/'));
+    let mut retry = 0u8;
+    let response = loop {
+        let response = client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| {
+                AppError::InferenceFailed(format!("agent model request failed: {error}"))
+            })?;
+        if response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE && retry < 5 {
+            retry += 1;
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            continue;
+        }
+        break response;
+    };
     let status = response.status();
     let payload: Value = response.json().await.map_err(|error| {
         AppError::InferenceFailed(format!("invalid agent model response: {error}"))
