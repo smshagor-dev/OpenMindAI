@@ -32,10 +32,7 @@ fn validate_google_params(action: &str, params: &Value) -> Result<(), AppError> 
     if !matches!(action, "drive.create" | "drive.update") {
         return Ok(());
     }
-    let has_content = params
-        .get("content")
-        .and_then(Value::as_str)
-        .is_some()
+    let has_content = params.get("content").and_then(Value::as_str).is_some()
         || params
             .get("contentBase64")
             .and_then(Value::as_str)
