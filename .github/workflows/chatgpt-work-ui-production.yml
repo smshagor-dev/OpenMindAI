@@ -112,6 +112,57 @@ jobs:
           path.write_text(text, encoding='utf-8')
           PY
 
+      - name: Replace legacy Work modal with navigation
+        shell: bash
+        run: |
+          cat > src/components/ChatModeSwitcher.tsx <<'EOF'
+          export function ChatModeSwitcher(props: {
+            active: "chat" | "work";
+            onChat: () => void;
+            onWork: () => void;
+          }) {
+            return (
+              <div className="chat-mode-switcher" role="tablist" aria-label="Workspace mode">
+                <button
+                  type="button"
+                  className={`chat-mode-tab${props.active === "chat" ? " active" : ""}`}
+                  role="tab"
+                  aria-selected={props.active === "chat"}
+                  onClick={props.onChat}
+                >
+                  Chat
+                </button>
+                <button
+                  type="button"
+                  className={`chat-mode-tab${props.active === "work" ? " active" : ""}`}
+                  role="tab"
+                  aria-selected={props.active === "work"}
+                  title="Open project work"
+                  onClick={props.onWork}
+                >
+                  Work
+                </button>
+              </div>
+            );
+          }
+          EOF
+
+          python - <<'PY'
+          from pathlib import Path
+          app = Path('src/App.tsx')
+          text = app.read_text(encoding='utf-8')
+          old = '            <ChatModeSwitcher />'
+          new = '''            <ChatModeSwitcher
+              active={view === "projects" ? "work" : "chat"}
+              onChat={() => setView("chat")}
+              onWork={() => setView("projects")}
+            />'''
+          if old not in text:
+              raise SystemExit('ChatModeSwitcher render not found')
+          text = text.replace(old, new, 1)
+          app.write_text(text, encoding='utf-8')
+          PY
+
       - name: Validate frontend
         run: |
           npm run lint
@@ -121,8 +172,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ! grep -R "Connected Work" -n src docs
-          ! grep -R "Work → GitHub\|Work → Google Workspace" -n src docs
+          ! grep -R "Connected Work" -n src
+          ! grep -R "Work → GitHub\|Work → Google Workspace" -n src
           ! grep -R "Parameters (JSON)\|Run action" -n src/components
           test ! -e src/components/ConnectedWorkspace.tsx
           test ! -e src/components/Connectors.tsx
@@ -130,6 +181,7 @@ jobs:
           grep -q 'label: "Apps"' src/components/SettingsDialog.tsx
           grep -q 'What should I work on?' src/components/ProjectsWorkspace.tsx
           grep -q 'Connected apps stay internal' src/components/ProjectsWorkspace.tsx
+          grep -q 'onWork={() => setView("projects")}' src/App.tsx
 
       - name: Commit production changes only
         shell: bash
