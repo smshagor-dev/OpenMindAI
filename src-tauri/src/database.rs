@@ -59,6 +59,7 @@ impl Database {
         connection.pragma_update(None, "foreign_keys", "ON")?;
         let mut database = Self { connection };
         database.migrate()?;
+        database.recover_interrupted_chat_messages()?;
         database.ensure_local_profile()?;
         Ok(database)
     }
@@ -125,6 +126,22 @@ impl Database {
 
         self.record_schema_version()?;
         Ok(())
+    }
+
+    /// A process exit can interrupt inference after the assistant row has
+    /// already been persisted as `pending` or `streaming`. There is no live
+    /// generation left after a fresh process start, so those states must not
+    /// survive indefinitely and block retry/regenerate UX.
+    fn recover_interrupted_chat_messages(&self) -> Result<usize, AppError> {
+        let now = Utc::now().to_rfc3339();
+        self.connection
+            .execute(
+                "UPDATE messages
+                 SET status = 'failed', updated_at = ?1
+                 WHERE status IN ('pending', 'streaming')",
+                params![now],
+            )
+            .map_err(AppError::from)
     }
 
     /// Records the schema version this build understands. Kept independent
@@ -232,6 +249,47 @@ mod tests {
             })
             .unwrap();
         assert_eq!(applied, MIGRATIONS.len() as i64);
+    }
+
+    #[test]
+    fn interrupted_chat_messages_are_failed_on_reopen() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("openmind_ai.db");
+        let conversation_id = Uuid::new_v4().to_string();
+        let message_id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+
+        {
+            let database = Database::open(path.clone()).unwrap();
+            database
+                .connection
+                .execute(
+                    "INSERT INTO conversations (id, title, created_at, updated_at, pinned)
+                     VALUES (?1, 'Interrupted', ?2, ?2, 0)",
+                    params![conversation_id, now],
+                )
+                .unwrap();
+            database
+                .connection
+                .execute(
+                    "INSERT INTO messages
+                     (id, conversation_id, role, content, status, created_at, updated_at)
+                     VALUES (?1, ?2, 'assistant', 'partial', 'streaming', ?3, ?3)",
+                    params![message_id, conversation_id, now],
+                )
+                .unwrap();
+        }
+
+        let database = Database::open(path).unwrap();
+        let status: String = database
+            .connection
+            .query_row(
+                "SELECT status FROM messages WHERE id = ?1",
+                params![message_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "failed");
     }
 
     #[test]

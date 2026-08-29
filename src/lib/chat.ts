@@ -32,10 +32,28 @@ export interface InferenceMediaDraft {
   dataUrl: string;
 }
 
+export interface UserMessageDisplay {
+  prompt: string;
+  attachmentNames: string[];
+  displayText: string;
+}
+
+const MAX_TEXT_ATTACHMENT_BYTES = 1024 * 1024;
 const MAX_VISION_IMAGE_INPUT_BYTES = 16 * 1024 * 1024;
 const MAX_VISION_IMAGE_DATA_URL_CHARS = 6_000_000;
 const MAX_VISION_IMAGE_DIMENSION = 2048;
 const SUPPORTED_VISION_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const CHAT_MODES: ChatMode[] = [
+  "search",
+  "research",
+  "thinking",
+  "document",
+  "pdf",
+  "image",
+  "video",
+  "voice",
+  "vision",
+];
 
 function visionMimeType(file: File) {
   const declared = file.type.toLowerCase();
@@ -125,16 +143,24 @@ export function mergeStreamingSnapshot(current: Message[], snapshot: Message[]) 
 }
 
 export async function readAttachment(file: File): Promise<AttachmentDraft> {
-  const maxPreviewBytes = 1024 * 1024;
   const kind = attachmentKind(file);
   const isTextLike =
     file.type.startsWith("text/") ||
     /\.(md|txt|json|csv|ts|tsx|js|jsx|rs|py|html|css|sql|toml|yaml|yml)$/i.test(file.name);
 
+  if (kind === "binary") {
+    throw new Error(
+      "This file type cannot be read by local chat. Attach text/code, PDF, PNG, JPEG, or WebP files.",
+    );
+  }
+  if (isTextLike && file.size > MAX_TEXT_ATTACHMENT_BYTES) {
+    throw new Error("Text and code attachments must be 1 MB or smaller for local chat context.");
+  }
+
   let contentPreview: string | null = null;
   let mediaDataUrl: string | null = null;
   let mediaMimeType: "image/png" | "image/jpeg" | null = null;
-  if (isTextLike && file.size <= maxPreviewBytes) {
+  if (isTextLike) {
     contentPreview = await file.text();
   } else if (kind === "image") {
     const encoded = await encodeVisionImage(file);
@@ -200,6 +226,53 @@ export function buildMessageContent(
     })
     .join("\n\n");
   return [modePrefix, prompt, attachmentText].filter(Boolean).join("\n\n");
+}
+
+/**
+ * Converts the persisted inference payload back into what the user actually
+ * typed. Mode instructions and extracted attachment text are implementation
+ * context for the local model; they must never be exposed by chat bubbles,
+ * copy actions, or edit/resend.
+ */
+export function userMessageDisplay(content: string): UserMessageDisplay {
+  let visible = content.trim();
+
+  for (const mode of CHAT_MODES) {
+    const instruction = modeInstruction(mode);
+    if (!instruction) continue;
+    if (visible === instruction) {
+      visible = "";
+      break;
+    }
+    const prefix = `${instruction}\n\n`;
+    if (visible.startsWith(prefix)) {
+      visible = visible.slice(prefix.length).trimStart();
+      break;
+    }
+  }
+
+  const attachmentStart = visible.startsWith("[Attachment:")
+    ? 0
+    : visible.indexOf("\n\n[Attachment:");
+  const attachmentPayload = attachmentStart >= 0 ? visible.slice(attachmentStart).trim() : "";
+  const prompt = (attachmentStart >= 0 ? visible.slice(0, attachmentStart) : visible).trim();
+  const attachmentNames = Array.from(
+    attachmentPayload.matchAll(
+      /^\[Attachment:\s*(.+?),\s*(?:text|image|pdf|binary),\s*[^,\]]+,\s*[^\]]+\]$/gm,
+    ),
+    (match) => match[1].trim(),
+  );
+  const attachmentSummary = attachmentNames.length
+    ? `Attached: ${attachmentNames.join(", ")}`
+    : attachmentPayload
+      ? "Attached file"
+      : "";
+
+  return {
+    prompt,
+    attachmentNames,
+    displayText: [prompt, attachmentSummary].filter(Boolean).join("\n\n"),
+  };
 }
 
 export function inferChatMode(prompt: string, attachments: AttachmentDraft[]): ChatMode {

@@ -46,9 +46,10 @@ export function ChatView(props: {
   stopGeneration: () => void;
   regenerate: (assistantMessageId: string) => void;
   retry: (assistantMessageId: string) => void;
-  editUserMessage: (content: string) => void;
+  editUserMessage: (messageId: string, content: string) => void;
   composerRef: RefObject<HTMLTextAreaElement>;
   streaming: boolean;
+  submitting: boolean;
   models: ModelRecord[];
   activeModelId: string | null;
   runtime: RuntimeInventory | null;
@@ -71,7 +72,14 @@ export function ChatView(props: {
     if (stickToBottom.current) {
       latestMessageRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
     }
-  }, [props.messages, props.streaming, props.activity.typing, props.activity.searching, props.activity.researching]);
+  }, [
+    props.messages,
+    props.streaming,
+    props.submitting,
+    props.activity.typing,
+    props.activity.searching,
+    props.activity.researching,
+  ]);
 
   const composer = (
     <Composer
@@ -80,6 +88,7 @@ export function ChatView(props: {
       attachments={props.attachments}
       enterToSend={props.enterToSend}
       streaming={props.streaming}
+      submitting={props.submitting}
       addFiles={props.addFiles}
       removeAttachment={props.removeAttachment}
       sendMessage={props.sendMessage}
@@ -144,7 +153,7 @@ export function ChatView(props: {
               message={message}
               markdown={props.preferences?.markdownRendering ?? true}
               codeCopyButtons={props.preferences?.codeCopyButtons ?? true}
-              canRegenerate={!props.streaming}
+              canRegenerate={!props.streaming && !props.submitting}
               onRegenerate={() => props.regenerate(message.id)}
               onRetry={() => props.retry(message.id)}
               artifacts={props.artifactsByMessage.get(message.id) ?? []}
@@ -155,12 +164,20 @@ export function ChatView(props: {
               onRevealArtifact={props.onRevealArtifact}
               onRetryArtifact={props.onRetryArtifact}
               onPreview={props.onPreview}
-              onEditUser={message.role === "user" ? () => props.editUserMessage(message.content) : undefined}
+              onEditUser={
+                message.role === "user"
+                  ? (content) => props.editUserMessage(message.id, content)
+                  : undefined
+              }
             />
           ))
         )}
         {!isEmpty &&
-        (props.streaming || props.activity.typing || props.activity.searching || props.activity.researching) &&
+        (props.submitting ||
+          props.streaming ||
+          props.activity.typing ||
+          props.activity.searching ||
+          props.activity.researching) &&
         props.preferences?.typingIndicatorEnabled ? (
           <div className="activity-row">
             <span className="pulse-dot" />
@@ -169,9 +186,9 @@ export function ChatView(props: {
                 ? "Deep research running"
                 : props.activity.searching
                   ? "Searching sources"
-                  : props.activity.typing || props.streaming
+                  : props.streaming || props.activity.typing
                     ? "Assistant is typing"
-                    : "Working"}
+                    : "Preparing request"}
             </span>
             {props.activity.detail ? <small>{props.activity.detail}</small> : null}
           </div>
