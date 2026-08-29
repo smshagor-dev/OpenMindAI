@@ -757,12 +757,6 @@ export function App() {
     const title = `${project.name}: New chat`;
     const conversation = await api.createConversation(title);
     setConversations((items) => [conversation, ...items]);
-    setActiveId(conversation.id);
-    setEditingMessageId(null);
-    setView("chat");
-    setMessages([]);
-    await refreshApp();
-    window.setTimeout(() => composerRef.current?.focus(), 0);
     return conversation;
   }
 
