@@ -4,7 +4,6 @@ import {
   FileType,
   Hash,
   Image,
-  Mic,
   Paperclip,
   Plus,
   Send,
@@ -42,6 +41,7 @@ export function Composer(props: {
 }) {
   const textareaRef = props.composerRef;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const canSend = props.prompt.trim().length > 0 || props.attachments.length > 0;
 
   useEffect(() => {
     const node = textareaRef.current;
@@ -49,8 +49,6 @@ export function Composer(props: {
     node.style.height = "auto";
     node.style.height = `${Math.min(node.scrollHeight, 180)}px`;
   }, [props.prompt, textareaRef]);
-
-  const [micNote, setMicNote] = useState(false);
 
   const insertTemplate = (template: string) => {
     props.setPrompt(template);
@@ -67,6 +65,7 @@ export function Composer(props: {
       className="composer"
       onSubmit={(event) => {
         event.preventDefault();
+        if (!canSend || props.streaming) return;
         void props.sendMessage();
       }}
     >
@@ -106,6 +105,7 @@ export function Composer(props: {
             ref={fileInputRef}
             multiple
             type="file"
+            accept="text/*,.md,.txt,.json,.csv,.ts,.tsx,.js,.jsx,.rs,.py,.html,.css,.sql,.toml,.yaml,.yml,application/pdf,image/png,image/jpeg,image/webp"
             className="hidden-file-input"
             onChange={(event) => {
               void props.addFiles(event.target.files);
@@ -117,7 +117,13 @@ export function Composer(props: {
             value={props.prompt}
             onChange={(event) => props.setPrompt(event.target.value)}
             onKeyDown={(event) => {
-              if (props.enterToSend && event.key === "Enter" && !event.shiftKey) {
+              if (
+                props.enterToSend &&
+                event.key === "Enter" &&
+                !event.shiftKey &&
+                !props.streaming &&
+                canSend
+              ) {
                 event.preventDefault();
                 void props.sendMessage();
               }
@@ -134,29 +140,18 @@ export function Composer(props: {
               switchError={props.modelSwitchError}
               onSelect={props.onSelectModel}
             />
-            <button
-              type="button"
-              title="Voice input"
-              className="icon-button"
-              onClick={() => setMicNote((value) => !value)}
-            >
-              <Mic size={18} />
-            </button>
             {props.streaming ? (
               <button type="button" title="Stop" onClick={props.stopGeneration}>
                 <Square size={18} />
               </button>
             ) : (
-              <button type="submit" title="Send" className="composer-send">
+              <button type="submit" title="Send" className="composer-send" disabled={!canSend}>
                 <Send size={18} />
               </button>
             )}
           </div>
         </div>
       </div>
-      {micNote ? (
-        <p className="composer-note">Voice input is not available yet. It needs a local speech-to-text runtime.</p>
-      ) : null}
       {props.note ? <p className="composer-note">{props.note}</p> : null}
     </form>
   );
