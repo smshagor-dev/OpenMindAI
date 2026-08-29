@@ -51,6 +51,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "005_artifact_cleanup_and_media_kinds",
         sql: include_str!("../migrations/005_artifact_cleanup_and_media_kinds.sql"),
     },
+    Migration {
+        number: 6,
+        name: "006_single_project_per_conversation",
+        sql: include_str!("../migrations/006_single_project_per_conversation.sql"),
+    },
 ];
 
 pub struct Database {

@@ -398,7 +398,9 @@ fn update_project(
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-    ProjectRepository::new(&db).update_project(&project_id, &name, &instructions)
+    let project = ProjectRepository::new(&db).update_project(&project_id, &name, &instructions)?;
+    sync_project_context_for_project(&db, &project)?;
+    Ok(project)
 }
 
 #[tauri::command]
@@ -407,7 +409,14 @@ fn delete_project(project_id: String, state: State<AppState>) -> Result<(), app_
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-    ProjectRepository::new(&db).delete_project(&project_id)
+    let repo = ProjectRepository::new(&db);
+    let project = repo.find_project(&project_id)?;
+    repo.delete_project(&project_id)?;
+    let chats = ChatRepository::new(&db);
+    for conversation_id in project.conversation_ids {
+        chats.upsert_profile_context(&conversation_id, None)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -420,7 +429,8 @@ fn link_project_conversation(
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-    ProjectRepository::new(&db).link_conversation(&project_id, &conversation_id)
+    ProjectRepository::new(&db).link_conversation(&project_id, &conversation_id)?;
+    sync_project_context_in_database(&db, &conversation_id)
 }
 
 #[tauri::command]
@@ -433,7 +443,8 @@ fn unlink_project_conversation(
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-    ProjectRepository::new(&db).unlink_conversation(&project_id, &conversation_id)
+    ProjectRepository::new(&db).unlink_conversation(&project_id, &conversation_id)?;
+    ChatRepository::new(&db).upsert_profile_context(&conversation_id, None)
 }
 
 #[tauri::command]
@@ -445,7 +456,11 @@ fn add_project_file(
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-    ProjectRepository::new(&db).add_file(&input)
+    let repo = ProjectRepository::new(&db);
+    let file = repo.add_file(&input)?;
+    let project = repo.find_project(&input.project_id)?;
+    sync_project_context_for_project(&db, &project)?;
+    Ok(file)
 }
 
 #[tauri::command]
@@ -458,7 +473,10 @@ fn delete_project_file(
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-    ProjectRepository::new(&db).delete_file(&project_id, &file_id)
+    let repo = ProjectRepository::new(&db);
+    repo.delete_file(&project_id, &file_id)?;
+    let project = repo.find_project(&project_id)?;
+    sync_project_context_for_project(&db, &project)
 }
 
 #[tauri::command]
@@ -1418,6 +1436,7 @@ async fn send_chat_message(
 
     let routing = resolve_conversation_model(&state, &conversation_id, &mode, trimmed)?;
     let model = routing.model;
+    sync_project_context(&state, &conversation_id)?;
 
     let (user, assistant) = {
         let db = state
@@ -1441,7 +1460,6 @@ async fn send_chat_message(
         )?;
         (user, assistant)
     };
-    sync_project_context(&state, &conversation_id)?;
     app.emit(
         "inference:started",
         StreamStartedEvent {
@@ -1647,6 +1665,27 @@ fn routing_reason(
     }
 }
 
+fn sync_project_context_in_database(
+    db: &Database,
+    conversation_id: &str,
+) -> Result<(), app_error::AppError> {
+    let project = ProjectRepository::new(db).project_for_conversation(conversation_id)?;
+    let content = project.as_ref().and_then(project_context_message);
+    ChatRepository::new(db).upsert_profile_context(conversation_id, content.as_deref())
+}
+
+fn sync_project_context_for_project(
+    db: &Database,
+    project: &Project,
+) -> Result<(), app_error::AppError> {
+    let content = project_context_message(project);
+    let chats = ChatRepository::new(db);
+    for conversation_id in &project.conversation_ids {
+        chats.upsert_profile_context(conversation_id, content.as_deref())?;
+    }
+    Ok(())
+}
+
 fn sync_project_context(
     state: &State<'_, AppState>,
     conversation_id: &str,
@@ -1655,9 +1694,7 @@ fn sync_project_context(
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-    let project = ProjectRepository::new(&db).project_for_conversation(conversation_id)?;
-    let content = project.as_ref().and_then(project_context_message);
-    ChatRepository::new(&db).upsert_profile_context(conversation_id, content.as_deref())
+    sync_project_context_in_database(&db, conversation_id)
 }
 
 #[tauri::command]
