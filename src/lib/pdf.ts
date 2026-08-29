@@ -7,7 +7,12 @@ GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 const MAX_PDF_BYTES = 32 * 1024 * 1024;
 const MAX_PDF_PAGES = 250;
-const MAX_EXTRACTED_CHARS = 180_000;
+// The local chat backend currently enforces an initial ~24k-character text
+// context budget. Keep one PDF well below that ceiling so the prompt, recent
+// history, profile/project instructions, and other attachments still have
+// room instead of accepting a huge extraction that is guaranteed to fail at
+// inference time.
+const MAX_EXTRACTED_CHARS = 10_000;
 
 export interface PdfExtractionResult {
   text: string;
