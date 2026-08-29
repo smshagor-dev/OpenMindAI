@@ -469,8 +469,13 @@ mod tests {
         let report = check_model_updates(&installed, &hardware, &root).unwrap();
 
         assert!(report.entries.len() > 1);
-        assert!(report.entries[0].installed);
-        assert!(!report.entries[0].update_available);
+        let core = report
+            .entries
+            .iter()
+            .find(|entry| entry.entry.id == "qwen3-4b-q4km")
+            .expect("OpenMindAI Core should exist in the catalog");
+        assert!(core.installed);
+        assert!(!core.update_available);
     }
 
     #[test]
