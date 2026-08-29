@@ -153,13 +153,8 @@ async fn run_connected_message(
 
     let routing = crate::resolve_conversation_model(state, conversation_id, "thinking", content)?;
     let model = routing.model.clone();
-    let (user, assistant) = create_agent_messages(
-        state,
-        conversation_id,
-        content,
-        &model.id,
-        existing_user,
-    )?;
+    let (user, assistant) =
+        create_agent_messages(state, conversation_id, content, &model.id, existing_user)?;
     let cancellation = match state.active_generations.start(conversation_id) {
         Ok(token) => token,
         Err(error) => {
@@ -420,9 +415,10 @@ fn ensure_model_endpoint(
         .lock()
         .map_err(|_| AppError::internal("runtime lock poisoned"))?;
     runtime.ensure_model_server(&hardware, &plan.config)?;
-    runtime.status(&hardware)?.endpoint.ok_or_else(|| {
-        AppError::InferenceServerUnavailable("runtime endpoint missing".to_string())
-    })
+    runtime
+        .status(&hardware)?
+        .endpoint
+        .ok_or_else(|| AppError::InferenceServerUnavailable("runtime endpoint missing".to_string()))
 }
 
 fn validate_catalog(action_catalog: &[ConnectedActionDefinition]) -> Result<(), AppError> {
@@ -605,10 +601,12 @@ async fn execute_connected_action(
     let state = (*state).clone();
     match provider {
         "google" => {
-            crate::execute_google_workspace_action(action.to_string(), params, approved, state).await
+            crate::execute_google_workspace_action(action.to_string(), params, approved, state)
+                .await
         }
         "github" => {
-            crate::execute_github_workspace_action(action.to_string(), params, approved, state).await
+            crate::execute_github_workspace_action(action.to_string(), params, approved, state)
+                .await
         }
         "microsoft" | "slack" | "notion" | "dropbox" | "mcp" => {
             crate::execute_integration_action(
@@ -739,8 +737,9 @@ fn load_pending(
         )
         .optional()?;
     raw.map(|value| {
-        serde_json::from_str(&value)
-            .map_err(|error| AppError::internal(format!("invalid pending connected action: {error}")))
+        serde_json::from_str(&value).map_err(|error| {
+            AppError::internal(format!("invalid pending connected action: {error}"))
+        })
     })
     .transpose()
 }
@@ -751,8 +750,9 @@ fn save_pending(
     pending: &PendingConnectedAction,
 ) -> Result<(), AppError> {
     let key = pending_key(conversation_id);
-    let raw = serde_json::to_string(pending)
-        .map_err(|error| AppError::internal(format!("could not store connected action: {error}")))?;
+    let raw = serde_json::to_string(pending).map_err(|error| {
+        AppError::internal(format!("could not store connected action: {error}"))
+    })?;
     let db = state
         .database
         .lock()
@@ -864,7 +864,8 @@ fn project_context(state: &State<'_, AppState>, conversation_id: &str) -> Result
         .database
         .lock()
         .map_err(|_| AppError::internal("database lock poisoned"))?;
-    let Some(project) = ProjectRepository::new(&db).project_for_conversation(conversation_id)? else {
+    let Some(project) = ProjectRepository::new(&db).project_for_conversation(conversation_id)?
+    else {
         return Ok(String::new());
     };
     let mut parts = vec![format!("Project: {}", project.name)];
@@ -1092,10 +1093,9 @@ mod tests {
 
     #[test]
     fn extracts_json_after_model_noise() {
-        let value = extract_first_json_object(
-            "note\n{\"type\":\"final\",\"message\":\"ok\"}\nextra",
-        )
-        .unwrap();
+        let value =
+            extract_first_json_object("note\n{\"type\":\"final\",\"message\":\"ok\"}\nextra")
+                .unwrap();
         assert_eq!(value, "{\"type\":\"final\",\"message\":\"ok\"}");
     }
 }
