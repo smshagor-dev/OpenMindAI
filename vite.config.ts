@@ -12,4 +12,28 @@ export default defineConfig({
     },
   },
   envPrefix: ["VITE_", "TAURI_"],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (id.includes("pdfjs-dist")) return "pdf";
+          if (
+            id.includes("socket.io-client") ||
+            id.includes("engine.io-client") ||
+            id.includes("@socket.io")
+          ) {
+            return "realtime";
+          }
+          if (id.includes("highlight.js") || id.includes("marked")) return "markdown";
+          if (id.includes("react-dom") || id.includes("/react/") || id.includes("scheduler")) {
+            return "react";
+          }
+          if (id.includes("@tauri-apps")) return "tauri";
+          if (id.includes("lucide-react")) return "icons";
+          return "vendor";
+        },
+      },
+    },
+  },
 });
