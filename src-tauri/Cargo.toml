@@ -28,7 +28,7 @@ futures-util = "0.3"
 hound = "3.5"
 printpdf = "0.12.6"
 pulldown-cmark = "0.13.4"
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
 rusqlite = { version = "0.32", features = ["bundled", "chrono", "functions"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -41,11 +41,12 @@ tauri-plugin-notification = "2"
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "time", "net", "io-util"] }
 tokio-util = "0.7"
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 whisper-rs = "0.16.0"
 zip = "2"

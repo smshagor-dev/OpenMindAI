@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Artifact, Message } from "./types";
+import type { GoogleWorkspaceStatus } from "./lib/connectedActions";
 import { createSoundscapeArtifact } from "./lib/media";
 import { api as legacyApi } from "./api_legacy";
 
@@ -11,6 +12,13 @@ type VisualMedia = {
   mimeType: "image/png" | "image/jpeg";
   dataUrl: string;
 };
+
+function connectedInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (!isTauri) {
+    return Promise.reject(new Error("Connected Google/GitHub actions require the desktop app."));
+  }
+  return invoke<T>(command, args);
+}
 
 async function messageUsesSoundscape(conversationId: string, messageId: string | null) {
   if (!messageId) return false;
@@ -110,4 +118,30 @@ export const api = {
     }
     return legacyApi.createGenerationArtifact(conversationId, messageId, kind, prompt);
   },
+  googleWorkspaceStatus: () =>
+    connectedInvoke<GoogleWorkspaceStatus>("google_workspace_status"),
+  connectGoogleWorkspace: () =>
+    connectedInvoke<GoogleWorkspaceStatus>("connect_google_workspace"),
+  disconnectGoogleWorkspace: () =>
+    connectedInvoke<void>("disconnect_google_workspace"),
+  executeGoogleWorkspaceAction: (
+    action: string,
+    params: Record<string, unknown>,
+    approved = false,
+  ) =>
+    connectedInvoke<unknown>("execute_google_workspace_action", {
+      action,
+      params,
+      approved,
+    }),
+  executeGithubWorkspaceAction: (
+    action: string,
+    params: Record<string, unknown>,
+    approved = false,
+  ) =>
+    connectedInvoke<unknown>("execute_github_workspace_action", {
+      action,
+      params,
+      approved,
+    }),
 };
