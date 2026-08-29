@@ -1,0 +1,38 @@
+name: Refresh connector Cargo lock
+
+on:
+  push:
+    branches:
+      - connected-agent-e2e-stabilization
+
+permissions:
+  contents: write
+
+jobs:
+  refresh-lock:
+    if: ${{ !contains(github.event.head_commit.message, '[connector-lock]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v7
+        with:
+          ref: connected-agent-e2e-stabilization
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Refresh lock against current manifest
+        run: cargo check --manifest-path src-tauri/Cargo.toml --all-features
+
+      - name: Commit lock delta
+        shell: bash
+        run: |
+          if git diff --quiet -- src-tauri/Cargo.lock; then
+            echo "Cargo.lock already synchronized."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src-tauri/Cargo.lock
+          git commit -m "chore(connectors): refresh Cargo lock [connector-lock]"
+          git push origin HEAD:connected-agent-e2e-stabilization
