@@ -72,7 +72,7 @@ export function MessageItem(props: {
             <span />
           </span>
         </div>
-      ) : (
+      ) : renderedContent.trim() ? (
         <MessageContent
           content={renderedContent}
           role={message.role}
@@ -81,7 +81,14 @@ export function MessageItem(props: {
           onSaveCode={props.onCreateArtifact}
           onPreview={props.onPreview}
         />
-      )}
+      ) : null}
+
+      {isAssistant && message.status === "cancelled" ? (
+        <div className="muted">Generation stopped.</div>
+      ) : null}
+      {isAssistant && message.status === "failed" ? (
+        <div className="muted">Generation failed. You can retry this response.</div>
+      ) : null}
 
       {message.role === "user" ? (
         <div className="message-actions-row message-actions-user">
