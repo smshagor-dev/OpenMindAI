@@ -110,6 +110,7 @@ pub struct LlamaRuntimeManager {
     endpoint: Option<String>,
     state: ServerState,
     loaded_model_path: Option<String>,
+    active_runtime: Option<RuntimeValidation>,
 }
 
 impl LlamaRuntimeManager {
@@ -120,6 +121,20 @@ impl LlamaRuntimeManager {
             endpoint: None,
             state: ServerState::Stopped,
             loaded_model_path: None,
+            active_runtime: None,
+        }
+    }
+
+    fn active_status(&self) -> LlamaRuntimeStatus {
+        LlamaRuntimeStatus {
+            available: self.active_runtime.is_some(),
+            backend: self
+                .active_runtime
+                .as_ref()
+                .map(|runtime| runtime.manifest.backend.clone()),
+            endpoint: self.endpoint.clone(),
+            state: self.state.clone(),
+            selected_runtime: self.active_runtime.clone(),
         }
     }
 
@@ -242,7 +257,10 @@ impl LlamaRuntimeManager {
             .is_some_and(|child| child.try_wait().ok().flatten().is_none())
             && self.loaded_model_path.as_deref() == Some(model_path_string.as_str())
         {
-            return self.status(hardware);
+            // Hot chat path: the same model is already loaded and the child is
+            // alive. Re-running status() here used to rediscover runtimes and
+            // spawn --version / --list-devices probes before every message.
+            return Ok(self.active_status());
         }
 
         self.stop()?;
@@ -318,10 +336,11 @@ impl LlamaRuntimeManager {
         self.child = Some(child);
         self.endpoint = Some(format!("http://{}:{}", config.host, config.port));
         self.loaded_model_path = Some(model_path_string);
+        self.active_runtime = Some(selected);
 
         if wait_for_model_health(&config.host, config.port, Duration::from_secs(120)) {
             self.state = ServerState::Ready;
-            self.status(hardware)
+            Ok(self.active_status())
         } else {
             self.state = ServerState::Failed;
             Err(AppError::ModelLoadFailed(
@@ -340,6 +359,7 @@ impl LlamaRuntimeManager {
         }
         self.endpoint = None;
         self.loaded_model_path = None;
+        self.active_runtime = None;
         self.state = ServerState::Stopped;
         Ok(())
     }
