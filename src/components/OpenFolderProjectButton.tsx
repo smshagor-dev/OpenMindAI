@@ -43,6 +43,7 @@ export function OpenFolderProjectButton(props: {
 
       conversation = await props.onCreateProjectChat(project);
       await api.linkProjectConversation(project.id, conversation.id);
+      // From this point the durable Project ↔ chat relationship is complete; UI refresh failures must not roll it back.
       committed = true;
       await props.onCreated(project, conversation);
     } catch (caught) {
