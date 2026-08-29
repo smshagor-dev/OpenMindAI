@@ -75,9 +75,9 @@ fn validate_repo(repo: &str) -> Result<(), AppError> {
             part.is_empty()
                 || part == &"."
                 || part == &".."
-                || !part
-                    .chars()
-                    .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_'))
+                || !part.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
+                })
         })
     {
         return Err(connector_error("repository must be in owner/name form"));
@@ -137,7 +137,10 @@ fn token(state: &State<'_, AppState>) -> Result<String, AppError> {
         .ok_or_else(|| connector_error("GitHub is not connected"))
 }
 
-async fn read_bounded(response: Response, max_bytes: usize) -> Result<(header::HeaderMap, Vec<u8>), AppError> {
+async fn read_bounded(
+    response: Response,
+    max_bytes: usize,
+) -> Result<(header::HeaderMap, Vec<u8>), AppError> {
     let status = response.status();
     let headers = response.headers().clone();
     let mut stream = response.bytes_stream();
@@ -212,7 +215,14 @@ pub async fn execute_github_workspace_action(
         "account.capabilities" => account_capabilities(&state.http, &auth_token).await,
         "repo.get" => {
             let repo = required_str(&params, "repo")?;
-            github_request(&state.http, &auth_token, Method::GET, &repo_endpoint(repo, "")?, None).await
+            github_request(
+                &state.http,
+                &auth_token,
+                Method::GET,
+                &repo_endpoint(repo, "")?,
+                None,
+            )
+            .await
         }
         "branches.list" => {
             let repo = required_str(&params, "repo")?;
@@ -225,7 +235,11 @@ pub async fn execute_github_workspace_action(
             let repo = required_str(&params, "repo")?;
             let path = required_str(&params, "path")?;
             validate_repo_path(path)?;
-            let encoded = path.split('/').map(encode_component).collect::<Vec<_>>().join("/");
+            let encoded = path
+                .split('/')
+                .map(encode_component)
+                .collect::<Vec<_>>()
+                .join("/");
             let mut url = Url::parse(&repo_endpoint(repo, &format!("/contents/{encoded}"))?)
                 .map_err(|error| connector_error(error.to_string()))?;
             if let Some(reference) = optional_str(&params, "ref") {
@@ -261,11 +275,21 @@ pub async fn execute_github_workspace_action(
                 "labels": params.get("labels").cloned().unwrap_or_else(|| json!([])),
                 "assignees": params.get("assignees").cloned().unwrap_or_else(|| json!([]))
             });
-            github_request(&state.http, &auth_token, Method::POST, &repo_endpoint(repo, "/issues")?, Some(body)).await
+            github_request(
+                &state.http,
+                &auth_token,
+                Method::POST,
+                &repo_endpoint(repo, "/issues")?,
+                Some(body),
+            )
+            .await
         }
         "issue.comment" => {
             let repo = required_str(&params, "repo")?;
-            let number = params.get("number").and_then(Value::as_u64).ok_or_else(|| connector_error("missing required numeric parameter 'number'"))?;
+            let number = params
+                .get("number")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| connector_error("missing required numeric parameter 'number'"))?;
             let body_text = required_str(&params, "body")?;
             github_request(
                 &state.http,
@@ -288,7 +312,14 @@ pub async fn execute_github_workspace_action(
         "pr.get" => {
             let repo = required_str(&params, "repo")?;
             let number = required_u64(&params, "number")?;
-            github_request(&state.http, &auth_token, Method::GET, &repo_endpoint(repo, &format!("/pulls/{number}"))?, None).await
+            github_request(
+                &state.http,
+                &auth_token,
+                Method::GET,
+                &repo_endpoint(repo, &format!("/pulls/{number}"))?,
+                None,
+            )
+            .await
         }
         "pr.create" => {
             let repo = required_str(&params, "repo")?;
@@ -300,7 +331,14 @@ pub async fn execute_github_workspace_action(
                 "draft": params.get("draft").and_then(Value::as_bool).unwrap_or(false),
                 "maintainer_can_modify": params.get("maintainerCanModify").and_then(Value::as_bool).unwrap_or(true)
             });
-            github_request(&state.http, &auth_token, Method::POST, &repo_endpoint(repo, "/pulls")?, Some(body)).await
+            github_request(
+                &state.http,
+                &auth_token,
+                Method::POST,
+                &repo_endpoint(repo, "/pulls")?,
+                Some(body),
+            )
+            .await
         }
         "pr.update" => {
             let repo = required_str(&params, "repo")?;
@@ -339,21 +377,45 @@ pub async fn execute_github_workspace_action(
         }
         "actions.workflows" => {
             let repo = required_str(&params, "repo")?;
-            github_request(&state.http, &auth_token, Method::GET, &repo_endpoint(repo, "/actions/workflows?per_page=100")?, None).await
+            github_request(
+                &state.http,
+                &auth_token,
+                Method::GET,
+                &repo_endpoint(repo, "/actions/workflows?per_page=100")?,
+                None,
+            )
+            .await
         }
         "actions.runs" => {
             let repo = required_str(&params, "repo")?;
             let suffix = if let Some(workflow) = optional_str(&params, "workflowId") {
-                format!("/actions/workflows/{}/runs?per_page=100", encode_component(workflow))
+                format!(
+                    "/actions/workflows/{}/runs?per_page=100",
+                    encode_component(workflow)
+                )
             } else {
                 "/actions/runs?per_page=100".to_string()
             };
-            github_request(&state.http, &auth_token, Method::GET, &repo_endpoint(repo, &suffix)?, None).await
+            github_request(
+                &state.http,
+                &auth_token,
+                Method::GET,
+                &repo_endpoint(repo, &suffix)?,
+                None,
+            )
+            .await
         }
         "actions.jobs" => {
             let repo = required_str(&params, "repo")?;
             let run_id = required_u64(&params, "runId")?;
-            github_request(&state.http, &auth_token, Method::GET, &repo_endpoint(repo, &format!("/actions/runs/{run_id}/jobs?per_page=100"))?, None).await
+            github_request(
+                &state.http,
+                &auth_token,
+                Method::GET,
+                &repo_endpoint(repo, &format!("/actions/runs/{run_id}/jobs?per_page=100"))?,
+                None,
+            )
+            .await
         }
         "actions.job_logs" => job_logs(&state.http, &auth_token, &params).await,
         "actions.dispatch" => {
@@ -367,7 +429,13 @@ pub async fn execute_github_workspace_action(
                 &state.http,
                 &auth_token,
                 Method::POST,
-                &repo_endpoint(repo, &format!("/actions/workflows/{}/dispatches", encode_component(workflow)))?,
+                &repo_endpoint(
+                    repo,
+                    &format!(
+                        "/actions/workflows/{}/dispatches",
+                        encode_component(workflow)
+                    ),
+                )?,
                 Some(body),
             )
             .await
@@ -388,40 +456,88 @@ pub async fn execute_github_workspace_action(
         "actions.workflow.enable" | "actions.workflow.disable" => {
             let repo = required_str(&params, "repo")?;
             let workflow = required_str(&params, "workflowId")?;
-            let op = if action.ends_with("enable") { "enable" } else { "disable" };
+            let op = if action.ends_with("enable") {
+                "enable"
+            } else {
+                "disable"
+            };
             github_request(
                 &state.http,
                 &auth_token,
                 Method::PUT,
-                &repo_endpoint(repo, &format!("/actions/workflows/{}/{op}", encode_component(workflow)))?,
+                &repo_endpoint(
+                    repo,
+                    &format!("/actions/workflows/{}/{op}", encode_component(workflow)),
+                )?,
                 Some(json!({})),
             )
             .await
         }
         "release.list" => {
             let repo = required_str(&params, "repo")?;
-            github_request(&state.http, &auth_token, Method::GET, &repo_endpoint(repo, "/releases?per_page=100")?, None).await
+            github_request(
+                &state.http,
+                &auth_token,
+                Method::GET,
+                &repo_endpoint(repo, "/releases?per_page=100")?,
+                None,
+            )
+            .await
         }
         "release.get" => {
             let repo = required_str(&params, "repo")?;
             let release_id = required_u64(&params, "releaseId")?;
-            github_request(&state.http, &auth_token, Method::GET, &repo_endpoint(repo, &format!("/releases/{release_id}"))?, None).await
+            github_request(
+                &state.http,
+                &auth_token,
+                Method::GET,
+                &repo_endpoint(repo, &format!("/releases/{release_id}"))?,
+                None,
+            )
+            .await
         }
         "release.create" => {
             let repo = required_str(&params, "repo")?;
-            let release = params.get("release").cloned().ok_or_else(|| connector_error("missing required parameter 'release'"))?;
-            github_request(&state.http, &auth_token, Method::POST, &repo_endpoint(repo, "/releases")?, Some(release)).await
+            let release = params
+                .get("release")
+                .cloned()
+                .ok_or_else(|| connector_error("missing required parameter 'release'"))?;
+            github_request(
+                &state.http,
+                &auth_token,
+                Method::POST,
+                &repo_endpoint(repo, "/releases")?,
+                Some(release),
+            )
+            .await
         }
         "release.update" => {
             let repo = required_str(&params, "repo")?;
             let release_id = required_u64(&params, "releaseId")?;
-            let release = params.get("release").cloned().ok_or_else(|| connector_error("missing required parameter 'release'"))?;
-            github_request(&state.http, &auth_token, Method::PATCH, &repo_endpoint(repo, &format!("/releases/{release_id}"))?, Some(release)).await
+            let release = params
+                .get("release")
+                .cloned()
+                .ok_or_else(|| connector_error("missing required parameter 'release'"))?;
+            github_request(
+                &state.http,
+                &auth_token,
+                Method::PATCH,
+                &repo_endpoint(repo, &format!("/releases/{release_id}"))?,
+                Some(release),
+            )
+            .await
         }
         "release.delete" => {
             let repo = required_str(&params, "repo")?;
             let release_id = required_u64(&params, "releaseId")?;
-            github_request(&state.http, &auth_token, Method::DELETE, &repo_endpoint(repo, &format!("/releases/{release_id}"))?, None).await
+            github_request(
+                &state.http,
+                &auth_token,
+                Method::DELETE,
+                &repo_endpoint(repo, &format!("/releases/{release_id}"))?,
+                None,
+            )
+            .await
         }
         "tag.create" => create_tag(&state.http, &auth_token, &params).await,
         _ => Err(connector_error(format!("unsupported action '{action}'"))),
@@ -468,9 +584,15 @@ async fn put_file(client: &Client, token: &str, params: &Value) -> Result<Value,
         required_str(params, "content")?.as_bytes().to_vec()
     };
     if content.len() > 8 * 1024 * 1024 {
-        return Err(connector_error("interactive GitHub file writes are limited to 8 MB"));
+        return Err(connector_error(
+            "interactive GitHub file writes are limited to 8 MB",
+        ));
     }
-    let encoded_path = path.split('/').map(encode_component).collect::<Vec<_>>().join("/");
+    let encoded_path = path
+        .split('/')
+        .map(encode_component)
+        .collect::<Vec<_>>()
+        .join("/");
     let mut body = json!({
         "message": required_str(params, "message")?,
         "content": STANDARD.encode(content),
@@ -493,7 +615,11 @@ async fn delete_file(client: &Client, token: &str, params: &Value) -> Result<Val
     let repo = required_str(params, "repo")?;
     let path = required_str(params, "path")?;
     validate_repo_path(path)?;
-    let encoded_path = path.split('/').map(encode_component).collect::<Vec<_>>().join("/");
+    let encoded_path = path
+        .split('/')
+        .map(encode_component)
+        .collect::<Vec<_>>()
+        .join("/");
     let body = json!({
         "message": required_str(params, "message")?,
         "sha": required_str(params, "sha")?,
@@ -509,8 +635,16 @@ async fn delete_file(client: &Client, token: &str, params: &Value) -> Result<Val
     .await
 }
 
-async fn resolve_branch_head(client: &Client, token: &str, repo: &str, branch: &str) -> Result<String, AppError> {
-    let url = repo_endpoint(repo, &format!("/git/ref/heads/{}", encode_component(branch)))?;
+async fn resolve_branch_head(
+    client: &Client,
+    token: &str,
+    repo: &str,
+    branch: &str,
+) -> Result<String, AppError> {
+    let url = repo_endpoint(
+        repo,
+        &format!("/git/ref/heads/{}", encode_component(branch)),
+    )?;
     let value = github_request(client, token, Method::GET, &url, None).await?;
     value
         .pointer("/object/sha")
@@ -549,7 +683,11 @@ async fn create_branch(client: &Client, token: &str, params: &Value) -> Result<V
     .await
 }
 
-async fn multi_file_commit(client: &Client, token: &str, params: &Value) -> Result<Value, AppError> {
+async fn multi_file_commit(
+    client: &Client,
+    token: &str,
+    params: &Value,
+) -> Result<Value, AppError> {
     let repo = required_str(params, "repo")?;
     let branch = required_str(params, "branch")?;
     let message = required_str(params, "message")?;
@@ -558,7 +696,9 @@ async fn multi_file_commit(client: &Client, token: &str, params: &Value) -> Resu
         .and_then(Value::as_array)
         .ok_or_else(|| connector_error("missing required array parameter 'files'"))?;
     if files.is_empty() || files.len() > 100 {
-        return Err(connector_error("multi-file commit requires between 1 and 100 file changes"));
+        return Err(connector_error(
+            "multi-file commit requires between 1 and 100 file changes",
+        ));
     }
     let parent_sha = resolve_branch_head(client, token, repo, branch).await?;
     if let Some(expected) = optional_str(params, "expectedHeadSha") {
@@ -585,7 +725,8 @@ async fn multi_file_commit(client: &Client, token: &str, params: &Value) -> Resu
         let path = required_str(file, "path")?;
         validate_repo_path(path)?;
         if file.get("delete").and_then(Value::as_bool).unwrap_or(false) {
-            tree_entries.push(json!({"path": path, "mode": "100644", "type": "blob", "sha": Value::Null}));
+            tree_entries
+                .push(json!({"path": path, "mode": "100644", "type": "blob", "sha": Value::Null}));
             continue;
         }
         let (content, encoding) = if let Some(encoded) = optional_str(file, "contentBase64") {
@@ -635,7 +776,10 @@ async fn multi_file_commit(client: &Client, token: &str, params: &Value) -> Resu
         client,
         token,
         Method::PATCH,
-        &repo_endpoint(repo, &format!("/git/refs/heads/{}", encode_component(branch)))?,
+        &repo_endpoint(
+            repo,
+            &format!("/git/refs/heads/{}", encode_component(branch)),
+        )?,
         Some(json!({"sha": commit_sha, "force": false})),
     )
     .await?;
@@ -646,7 +790,10 @@ async fn job_logs(client: &Client, token: &str, params: &Value) -> Result<Value,
     let repo = required_str(params, "repo")?;
     let job_id = required_u64(params, "jobId")?;
     let response = client
-        .get(repo_endpoint(repo, &format!("/actions/jobs/{job_id}/logs"))?)
+        .get(repo_endpoint(
+            repo,
+            &format!("/actions/jobs/{job_id}/logs"),
+        )?)
         .headers(auth_headers(token)?)
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .send()
