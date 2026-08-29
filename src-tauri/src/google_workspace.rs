@@ -358,7 +358,6 @@ async fn receive_oauth_callback(
     timeout(Duration::from_secs(OAUTH_TIMEOUT_SECS), work)
         .await
         .map_err(|_| connector_error("Google authorization timed out"))?
-        .map_err(AppError::from)
 }
 
 #[tauri::command]
