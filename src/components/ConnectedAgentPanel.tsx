@@ -46,7 +46,7 @@ function decodeBase64Text(value: string, urlSafe = false) {
     const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
     const binary = window.atob(padded);
     const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-    return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+    return new window.TextDecoder("utf-8", { fatal: false }).decode(bytes);
   } catch {
     return null;
   }
