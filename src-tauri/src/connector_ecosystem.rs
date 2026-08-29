@@ -57,7 +57,11 @@ pub struct IntegrationStatus {
 }
 
 fn connector_error(provider: &str, message: impl Into<String>) -> AppError {
-    AppError::internal(format!("{} connector: {}", provider_label(provider), message.into()))
+    AppError::internal(format!(
+        "{} connector: {}",
+        provider_label(provider),
+        message.into()
+    ))
 }
 
 fn provider_label(provider: &str) -> &'static str {
@@ -101,7 +105,10 @@ fn slack_user_slot() -> &'static str {
     "integration-slack-user-access"
 }
 
-fn load_record(state: &State<'_, AppState>, provider: &str) -> Result<Option<IntegrationRecord>, AppError> {
+fn load_record(
+    state: &State<'_, AppState>,
+    provider: &str,
+) -> Result<Option<IntegrationRecord>, AppError> {
     let db = state
         .database
         .lock()
@@ -116,7 +123,10 @@ fn load_record(state: &State<'_, AppState>, provider: &str) -> Result<Option<Int
         .optional()?;
     raw.map(|value| {
         serde_json::from_str(&value).map_err(|error| {
-            connector_error(provider, format!("stored connector settings are invalid: {error}"))
+            connector_error(
+                provider,
+                format!("stored connector settings are invalid: {error}"),
+            )
         })
     })
     .transpose()
@@ -127,8 +137,9 @@ fn save_record(
     provider: &str,
     record: &IntegrationRecord,
 ) -> Result<(), AppError> {
-    let raw = serde_json::to_string(record)
-        .map_err(|error| connector_error(provider, format!("could not serialize settings: {error}")))?;
+    let raw = serde_json::to_string(record).map_err(|error| {
+        connector_error(provider, format!("could not serialize settings: {error}"))
+    })?;
     let db = state
         .database
         .lock()
@@ -163,8 +174,9 @@ fn config_str<'a>(config: &'a Value, key: &str) -> Option<&'a str> {
 }
 
 fn required_config<'a>(provider: &str, config: &'a Value, key: &str) -> Result<&'a str, AppError> {
-    config_str(config, key)
-        .ok_or_else(|| connector_error(provider, format!("configuration field '{key}' is required")))
+    config_str(config, key).ok_or_else(|| {
+        connector_error(provider, format!("configuration field '{key}' is required"))
+    })
 }
 
 fn required_str<'a>(provider: &str, params: &'a Value, key: &str) -> Result<&'a str, AppError> {
@@ -186,13 +198,19 @@ fn optional_str<'a>(params: &'a Value, key: &str) -> Option<&'a str> {
 
 fn safe_header(provider: &str, value: &str, label: &str) -> Result<header::HeaderValue, AppError> {
     if value.contains('\r') || value.contains('\n') {
-        return Err(connector_error(provider, format!("{label} contains an invalid newline")));
+        return Err(connector_error(
+            provider,
+            format!("{label} contains an invalid newline"),
+        ));
     }
     header::HeaderValue::from_str(value.trim())
         .map_err(|error| connector_error(provider, format!("invalid {label}: {error}")))
 }
 
-fn configured(provider: &str, record: Option<&IntegrationRecord>) -> Result<(bool, bool), AppError> {
+fn configured(
+    provider: &str,
+    record: Option<&IntegrationRecord>,
+) -> Result<(bool, bool), AppError> {
     let Some(record) = record else {
         return Ok((false, false));
     };
@@ -202,15 +220,19 @@ fn configured(provider: &str, record: Option<&IntegrationRecord>) -> Result<(boo
         _ => false,
     };
     let ready = match provider {
-        "microsoft" => config_str(&record.config, "clientId").is_some()
-            && config_str(&record.config, "redirectUri").is_some(),
+        "microsoft" => {
+            config_str(&record.config, "clientId").is_some()
+                && config_str(&record.config, "redirectUri").is_some()
+        }
         "slack" | "notion" => {
             config_str(&record.config, "clientId").is_some()
                 && config_str(&record.config, "redirectUri").is_some()
                 && has_secret
         }
-        "dropbox" => config_str(&record.config, "appKey").is_some()
-            && config_str(&record.config, "redirectUri").is_some(),
+        "dropbox" => {
+            config_str(&record.config, "appKey").is_some()
+                && config_str(&record.config, "redirectUri").is_some()
+        }
         "mcp" => config_str(&record.config, "endpoint").is_some(),
         _ => false,
     };
@@ -293,7 +315,11 @@ fn require_approval(provider: &str, action: &str, approved: bool) -> Result<(), 
     }
 }
 
-async fn read_bounded(provider: &str, response: Response, max_bytes: usize) -> Result<Vec<u8>, AppError> {
+async fn read_bounded(
+    provider: &str,
+    response: Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, AppError> {
     let status = response.status();
     let mut stream = response.bytes_stream();
     let mut body = Vec::new();
@@ -335,21 +361,21 @@ fn open_browser(provider: &str, url: &str) -> Result<(), AppError> {
         Command::new("rundll32")
             .args(["url.dll,FileProtocolHandler", url])
             .spawn()
-            .map_err(|error| connector_error(provider, format!("could not open browser: {error}")))?;
+            .map_err(|error| {
+                connector_error(provider, format!("could not open browser: {error}"))
+            })?;
     }
     #[cfg(target_os = "macos")]
     {
-        Command::new("open")
-            .arg(url)
-            .spawn()
-            .map_err(|error| connector_error(provider, format!("could not open browser: {error}")))?;
+        Command::new("open").arg(url).spawn().map_err(|error| {
+            connector_error(provider, format!("could not open browser: {error}"))
+        })?;
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        Command::new("xdg-open")
-            .arg(url)
-            .spawn()
-            .map_err(|error| connector_error(provider, format!("could not open browser: {error}")))?;
+        Command::new("xdg-open").arg(url).spawn().map_err(|error| {
+            connector_error(provider, format!("could not open browser: {error}"))
+        })?;
     }
     Ok(())
 }
@@ -368,12 +394,22 @@ fn pkce_challenge(verifier: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
-async fn oauth_listener(provider: &str, redirect_uri: &str) -> Result<(TcpListener, Url), AppError> {
+async fn oauth_listener(
+    provider: &str,
+    redirect_uri: &str,
+) -> Result<(TcpListener, Url), AppError> {
     let redirect = validate_redirect(provider, redirect_uri)?;
-    let port = redirect.port().ok_or_else(|| connector_error(provider, "redirect URI has no port"))?;
+    let port = redirect
+        .port()
+        .ok_or_else(|| connector_error(provider, "redirect URI has no port"))?;
     let listener = TcpListener::bind(("127.0.0.1", port))
         .await
-        .map_err(|error| connector_error(provider, format!("could not bind OAuth callback port {port}: {error}")))?;
+        .map_err(|error| {
+            connector_error(
+                provider,
+                format!("could not bind OAuth callback port {port}: {error}"),
+            )
+        })?;
     Ok((listener, redirect))
 }
 
@@ -393,10 +429,14 @@ async fn receive_oauth_callback(
             .next()
             .and_then(|line| line.split_whitespace().nth(1))
             .ok_or_else(|| connector_error(provider, "OAuth callback request was invalid"))?;
-        let callback = Url::parse(&format!("http://127.0.0.1{target}"))
-            .map_err(|error| connector_error(provider, format!("invalid OAuth callback: {error}")))?;
+        let callback = Url::parse(&format!("http://127.0.0.1{target}")).map_err(|error| {
+            connector_error(provider, format!("invalid OAuth callback: {error}"))
+        })?;
         if callback.path() != redirect.path() {
-            return Err(connector_error(provider, "OAuth callback path did not match configured redirect URI"));
+            return Err(connector_error(
+                provider,
+                "OAuth callback path did not match configured redirect URI",
+            ));
         }
         let mut code = None;
         let mut state = None;
@@ -409,11 +449,18 @@ async fn receive_oauth_callback(
                 _ => {}
             }
         }
-        let success = oauth_error.is_none() && state.as_deref() == Some(expected_state) && code.is_some();
+        let success =
+            oauth_error.is_none() && state.as_deref() == Some(expected_state) && code.is_some();
         let message = if success {
-            format!("{} connected. You can return to OpenMindAI.", provider_label(provider))
+            format!(
+                "{} connected. You can return to OpenMindAI.",
+                provider_label(provider)
+            )
         } else {
-            format!("{} connection failed. Return to OpenMindAI for details.", provider_label(provider))
+            format!(
+                "{} connection failed. Return to OpenMindAI for details.",
+                provider_label(provider)
+            )
         };
         let html = format!(
             "<!doctype html><html><body style=\"font-family:sans-serif;padding:40px\"><h2>{message}</h2><p>You may close this tab.</p></body></html>"
@@ -424,12 +471,20 @@ async fn receive_oauth_callback(
         );
         socket.write_all(response.as_bytes()).await?;
         if let Some(error) = oauth_error {
-            return Err(connector_error(provider, format!("authorization returned '{error}'")));
+            return Err(connector_error(
+                provider,
+                format!("authorization returned '{error}'"),
+            ));
         }
         if state.as_deref() != Some(expected_state) {
             return Err(connector_error(provider, "OAuth state validation failed"));
         }
-        code.ok_or_else(|| connector_error(provider, "OAuth callback did not contain an authorization code"))
+        code.ok_or_else(|| {
+            connector_error(
+                provider,
+                "OAuth callback did not contain an authorization code",
+            )
+        })
     };
     timeout(Duration::from_secs(OAUTH_TIMEOUT_SECS), work)
         .await
@@ -470,7 +525,9 @@ async fn microsoft_connect(state: &State<'_, AppState>) -> Result<(), AppError> 
     let record = load_record(state, "microsoft")?
         .ok_or_else(|| connector_error("microsoft", "connector is not configured"))?;
     let client_id = required_config("microsoft", &record.config, "clientId")?.to_string();
-    let tenant = config_str(&record.config, "tenant").unwrap_or("common").to_string();
+    let tenant = config_str(&record.config, "tenant")
+        .unwrap_or("common")
+        .to_string();
     let redirect_uri = required_config("microsoft", &record.config, "redirectUri")?.to_string();
     let (listener, redirect) = oauth_listener("microsoft", &redirect_uri).await?;
     let verifier = pkce_verifier();
@@ -510,7 +567,10 @@ async fn microsoft_connect(state: &State<'_, AppState>) -> Result<(), AppError> 
         .map_err(|error| connector_error("microsoft", format!("token exchange failed: {error}")))?;
     let token = json_response("microsoft", response).await?;
     let access = token_field("microsoft", &token, "access_token")?.to_string();
-    let refresh = token.get("refresh_token").and_then(Value::as_str).map(ToOwned::to_owned);
+    let refresh = token
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
     let expires = token.get("expires_in").and_then(Value::as_i64);
     let scopes = token
         .get("scope")
@@ -520,7 +580,15 @@ async fn microsoft_connect(state: &State<'_, AppState>) -> Result<(), AppError> 
         .map(ToOwned::to_owned)
         .collect();
     let label = microsoft_account_label(&state.http, &access).await?;
-    save_tokens(state, "microsoft", &access, refresh.as_deref(), expires, scopes, Some(label))
+    save_tokens(
+        state,
+        "microsoft",
+        &access,
+        refresh.as_deref(),
+        expires,
+        scopes,
+        Some(label),
+    )
 }
 
 async fn slack_connect(state: &State<'_, AppState>) -> Result<(), AppError> {
@@ -542,7 +610,8 @@ async fn slack_connect(state: &State<'_, AppState>) -> Result<(), AppError> {
         .append_pair("redirect_uri", &redirect_uri)
         .append_pair("state", &oauth_state);
     if !user_scopes.is_empty() {
-        auth.query_pairs_mut().append_pair("user_scope", user_scopes);
+        auth.query_pairs_mut()
+            .append_pair("user_scope", user_scopes);
     }
     open_browser("slack", auth.as_str())?;
     let code = receive_oauth_callback("slack", listener, &redirect, &oauth_state).await?;
@@ -551,7 +620,10 @@ async fn slack_connect(state: &State<'_, AppState>) -> Result<(), AppError> {
         .post("https://slack.com/api/oauth.v2.access")
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .basic_auth(&client_id, Some(&client_secret))
-        .form(&[("code", code.as_str()), ("redirect_uri", redirect_uri.as_str())])
+        .form(&[
+            ("code", code.as_str()),
+            ("redirect_uri", redirect_uri.as_str()),
+        ])
         .send()
         .await
         .map_err(|error| connector_error("slack", format!("token exchange failed: {error}")))?;
@@ -559,11 +631,20 @@ async fn slack_connect(state: &State<'_, AppState>) -> Result<(), AppError> {
     if token.get("ok").and_then(Value::as_bool) != Some(true) {
         return Err(connector_error(
             "slack",
-            format!("OAuth failed: {}", token.get("error").and_then(Value::as_str).unwrap_or("unknown error")),
+            format!(
+                "OAuth failed: {}",
+                token
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown error")
+            ),
         ));
     }
     let access = token_field("slack", &token, "access_token")?.to_string();
-    let refresh = token.get("refresh_token").and_then(Value::as_str).map(ToOwned::to_owned);
+    let refresh = token
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
     let expires = token.get("expires_in").and_then(Value::as_i64);
     if let Some(user_token) = token
         .get("authed_user")
@@ -581,7 +662,15 @@ async fn slack_connect(state: &State<'_, AppState>) -> Result<(), AppError> {
         .map(ToOwned::to_owned)
         .collect();
     let label = slack_account_label(&state.http, &access).await?;
-    save_tokens(state, "slack", &access, refresh.as_deref(), expires, scopes, Some(label))
+    save_tokens(
+        state,
+        "slack",
+        &access,
+        refresh.as_deref(),
+        expires,
+        scopes,
+        Some(label),
+    )
 }
 
 async fn notion_connect(state: &State<'_, AppState>) -> Result<(), AppError> {
@@ -619,14 +708,25 @@ async fn notion_connect(state: &State<'_, AppState>) -> Result<(), AppError> {
         .map_err(|error| connector_error("notion", format!("token exchange failed: {error}")))?;
     let token = json_response("notion", response).await?;
     let access = token_field("notion", &token, "access_token")?.to_string();
-    let refresh = token.get("refresh_token").and_then(Value::as_str).map(ToOwned::to_owned);
+    let refresh = token
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
     let expires = token.get("expires_in").and_then(Value::as_i64);
     let label = token
         .get("workspace_name")
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| "Notion workspace".to_string());
-    save_tokens(state, "notion", &access, refresh.as_deref(), expires, Vec::new(), Some(label))
+    save_tokens(
+        state,
+        "notion",
+        &access,
+        refresh.as_deref(),
+        expires,
+        Vec::new(),
+        Some(label),
+    )
 }
 
 async fn dropbox_connect(state: &State<'_, AppState>) -> Result<(), AppError> {
@@ -666,7 +766,10 @@ async fn dropbox_connect(state: &State<'_, AppState>) -> Result<(), AppError> {
         .map_err(|error| connector_error("dropbox", format!("token exchange failed: {error}")))?;
     let token = json_response("dropbox", response).await?;
     let access = token_field("dropbox", &token, "access_token")?.to_string();
-    let refresh = token.get("refresh_token").and_then(Value::as_str).map(ToOwned::to_owned);
+    let refresh = token
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
     let expires = token.get("expires_in").and_then(Value::as_i64);
     let scopes = token
         .get("scope")
@@ -676,12 +779,27 @@ async fn dropbox_connect(state: &State<'_, AppState>) -> Result<(), AppError> {
         .map(ToOwned::to_owned)
         .collect();
     let label = dropbox_account_label(&state.http, &access).await?;
-    save_tokens(state, "dropbox", &access, refresh.as_deref(), expires, scopes, Some(label))
+    save_tokens(
+        state,
+        "dropbox",
+        &access,
+        refresh.as_deref(),
+        expires,
+        scopes,
+        Some(label),
+    )
 }
 
-async fn refresh_access_token(state: &State<'_, AppState>, provider: &str) -> Result<String, AppError> {
-    let refresh = secret_store::get_secret(&refresh_slot(provider))?
-        .ok_or_else(|| connector_error(provider, "access token expired and no refresh token is available"))?;
+async fn refresh_access_token(
+    state: &State<'_, AppState>,
+    provider: &str,
+) -> Result<String, AppError> {
+    let refresh = secret_store::get_secret(&refresh_slot(provider))?.ok_or_else(|| {
+        connector_error(
+            provider,
+            "access token expired and no refresh token is available",
+        )
+    })?;
     let record = load_record(state, provider)?
         .ok_or_else(|| connector_error(provider, "connector settings are missing"))?;
     let response = match provider {
@@ -690,7 +808,9 @@ async fn refresh_access_token(state: &State<'_, AppState>, provider: &str) -> Re
             let tenant = config_str(&record.config, "tenant").unwrap_or("common");
             state
                 .http
-                .post(format!("https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"))
+                .post(format!(
+                    "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+                ))
                 .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
                 .form(&[
                     ("client_id", client_id),
@@ -710,7 +830,10 @@ async fn refresh_access_token(state: &State<'_, AppState>, provider: &str) -> Re
                 .post("https://slack.com/api/oauth.v2.access")
                 .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
                 .basic_auth(client_id, Some(secret))
-                .form(&[("grant_type", "refresh_token"), ("refresh_token", refresh.as_str())])
+                .form(&[
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", refresh.as_str()),
+                ])
                 .send()
                 .await
         }
@@ -749,7 +872,10 @@ async fn refresh_access_token(state: &State<'_, AppState>, provider: &str) -> Re
     if provider == "slack" && value.get("ok").and_then(Value::as_bool) == Some(false) {
         return Err(connector_error(
             provider,
-            value.get("error").and_then(Value::as_str).unwrap_or("token refresh failed"),
+            value
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("token refresh failed"),
         ));
     }
     let access = token_field(provider, &value, "access_token")?.to_string();
@@ -764,7 +890,11 @@ async fn refresh_access_token(state: &State<'_, AppState>, provider: &str) -> Re
         .map(|seconds| Utc::now().timestamp() + seconds);
     if let Some(scope) = value.get("scope").and_then(Value::as_str) {
         updated.scopes = if provider == "slack" {
-            scope.split(',').filter(|item| !item.is_empty()).map(ToOwned::to_owned).collect()
+            scope
+                .split(',')
+                .filter(|item| !item.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
         } else {
             scope.split_whitespace().map(ToOwned::to_owned).collect()
         };
@@ -778,7 +908,10 @@ async fn access_token(state: &State<'_, AppState>, provider: &str) -> Result<Str
         .ok_or_else(|| connector_error(provider, "connector is not configured"))?;
     let token = secret_store::get_secret(&access_slot(provider))?
         .ok_or_else(|| connector_error(provider, "account is not connected"))?;
-    if record.expires_at.is_some_and(|expires| expires <= Utc::now().timestamp() + 60) {
+    if record
+        .expires_at
+        .is_some_and(|expires| expires <= Utc::now().timestamp() + 60)
+    {
         refresh_access_token(state, provider).await
     } else {
         Ok(token)
@@ -815,12 +948,25 @@ async fn slack_account_label(client: &Client, token: &str) -> Result<String, App
     if value.get("ok").and_then(Value::as_bool) != Some(true) {
         return Err(connector_error(
             "slack",
-            value.get("error").and_then(Value::as_str).unwrap_or("token validation failed"),
+            value
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("token validation failed"),
         ));
     }
-    let team = value.get("team").and_then(Value::as_str).unwrap_or("Slack workspace");
-    let user = value.get("user").and_then(Value::as_str).unwrap_or_default();
-    Ok(if user.is_empty() { team.to_string() } else { format!("{team} · {user}") })
+    let team = value
+        .get("team")
+        .and_then(Value::as_str)
+        .unwrap_or("Slack workspace");
+    let user = value
+        .get("user")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    Ok(if user.is_empty() {
+        team.to_string()
+    } else {
+        format!("{team} · {user}")
+    })
 }
 
 async fn notion_account_label(client: &Client, token: &str) -> Result<String, AppError> {
@@ -871,13 +1017,22 @@ async fn connect_with_token(
         "notion" => notion_account_label(&state.http, token).await?,
         "dropbox" => dropbox_account_label(&state.http, token).await?,
         "mcp" => {
-            secret_store::set_secret(&access_slot(provider), token)?;
-            mcp_rpc(state, "tools/list", json!({}), None).await?;
+            let slot = access_slot(provider);
+            secret_store::set_secret(&slot, token)?;
+            if let Err(error) = mcp_rpc(state, "tools/list", json!({}), None).await {
+                let _ = secret_store::delete_secret(&slot);
+                return Err(error);
+            }
             load_record(state, provider)?
                 .and_then(|record| config_str(&record.config, "name").map(ToOwned::to_owned))
                 .unwrap_or_else(|| "MCP server".to_string())
         }
-        _ => return Err(connector_error(provider, "token connection is not supported")),
+        _ => {
+            return Err(connector_error(
+                provider,
+                "token connection is not supported",
+            ))
+        }
     };
     secret_store::set_secret(&access_slot(provider), token)?;
     secret_store::delete_secret(&refresh_slot(provider))?;
@@ -944,11 +1099,24 @@ async fn microsoft_binary(
     }))
 }
 
+fn encode_graph_segment(segment: &str) -> String {
+    let mut encoded = String::with_capacity(segment.len());
+    for byte in segment.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(*byte as char);
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
 fn encode_graph_path(path: &str) -> String {
     path.trim_matches('/')
         .split('/')
         .filter(|segment| !segment.is_empty())
-        .map(|segment| url::form_urlencoded::byte_serialize(segment.as_bytes()).collect::<String>())
+        .map(encode_graph_segment)
         .collect::<Vec<_>>()
         .join("/")
 }
@@ -978,7 +1146,10 @@ async fn slack_request(
     if value.get("ok").and_then(Value::as_bool) == Some(false) {
         return Err(connector_error(
             "slack",
-            value.get("error").and_then(Value::as_str).unwrap_or("Slack API request failed"),
+            value
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("Slack API request failed"),
         ));
     }
     Ok(value)
@@ -1025,6 +1196,19 @@ async fn dropbox_rpc(
     json_response("dropbox", response).await
 }
 
+async fn dropbox_current_account(state: &State<'_, AppState>) -> Result<Value, AppError> {
+    let token = access_token(state, "dropbox").await?;
+    let response = state
+        .http
+        .post("https://api.dropboxapi.com/2/users/get_current_account")
+        .bearer_auth(token)
+        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .send()
+        .await
+        .map_err(|error| connector_error("dropbox", error.to_string()))?;
+    json_response("dropbox", response).await
+}
+
 async fn dropbox_download(state: &State<'_, AppState>, path: &str) -> Result<Value, AppError> {
     let token = access_token(state, "dropbox").await?;
     let api_arg = serde_json::to_string(&json!({"path": path}))
@@ -1033,7 +1217,10 @@ async fn dropbox_download(state: &State<'_, AppState>, path: &str) -> Result<Val
         .http
         .post("https://content.dropboxapi.com/2/files/download")
         .bearer_auth(token)
-        .header("Dropbox-API-Arg", safe_header("dropbox", &api_arg, "Dropbox-API-Arg")?)
+        .header(
+            "Dropbox-API-Arg",
+            safe_header("dropbox", &api_arg, "Dropbox-API-Arg")?,
+        )
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .send()
         .await
@@ -1052,14 +1239,20 @@ async fn dropbox_upload(state: &State<'_, AppState>, params: &Value) -> Result<V
     let token = access_token(state, "dropbox").await?;
     let path = required_str("dropbox", params, "path")?;
     let bytes = if let Some(encoded) = optional_str(params, "contentBase64") {
-        STANDARD
-            .decode(encoded)
-            .map_err(|error| connector_error("dropbox", format!("invalid contentBase64: {error}")))?
+        STANDARD.decode(encoded).map_err(|error| {
+            connector_error("dropbox", format!("invalid contentBase64: {error}"))
+        })?
     } else {
-        optional_str(params, "content").unwrap_or_default().as_bytes().to_vec()
+        optional_str(params, "content")
+            .unwrap_or_default()
+            .as_bytes()
+            .to_vec()
     };
     if bytes.len() > MAX_BINARY_BYTES {
-        return Err(connector_error("dropbox", "interactive upload exceeds the 8 MB safety limit"));
+        return Err(connector_error(
+            "dropbox",
+            "interactive upload exceeds the 8 MB safety limit",
+        ));
     }
     let api_arg = serde_json::to_string(&json!({
         "path": path,
@@ -1073,7 +1266,10 @@ async fn dropbox_upload(state: &State<'_, AppState>, params: &Value) -> Result<V
         .post("https://content.dropboxapi.com/2/files/upload")
         .bearer_auth(token)
         .header(header::CONTENT_TYPE, "application/octet-stream")
-        .header("Dropbox-API-Arg", safe_header("dropbox", &api_arg, "Dropbox-API-Arg")?)
+        .header(
+            "Dropbox-API-Arg",
+            safe_header("dropbox", &api_arg, "Dropbox-API-Arg")?,
+        )
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .body(bytes)
         .send()
@@ -1101,7 +1297,10 @@ async fn mcp_rpc(
         .header(header::CONTENT_TYPE, "application/json")
         .header("MCP-Protocol-Version", MCP_PROTOCOL_VERSION)
         .header("Mcp-Method", safe_header("mcp", method, "Mcp-Method")?)
-        .header("Mcp-Name", safe_header("mcp", name.unwrap_or(method), "Mcp-Name")?)
+        .header(
+            "Mcp-Name",
+            safe_header("mcp", name.unwrap_or(method), "Mcp-Name")?,
+        )
         .json(&json!({
             "jsonrpc": "2.0",
             "id": Uuid::new_v4().to_string(),
@@ -1131,11 +1330,13 @@ async fn mcp_rpc(
             .filter(|line| !line.is_empty())
             .last()
             .ok_or_else(|| connector_error("mcp", "SSE response did not contain JSON data"))?;
-        serde_json::from_str(data)
-            .map_err(|error| connector_error("mcp", format!("invalid SSE JSON response: {error}")))?
+        serde_json::from_str(data).map_err(|error| {
+            connector_error("mcp", format!("invalid SSE JSON response: {error}"))
+        })?
     } else {
-        serde_json::from_slice(&body)
-            .map_err(|error| connector_error("mcp", format!("invalid JSON-RPC response: {error}")))?
+        serde_json::from_slice(&body).map_err(|error| {
+            connector_error("mcp", format!("invalid JSON-RPC response: {error}"))
+        })?
     };
     if let Some(error) = value.get("error") {
         return Err(connector_error("mcp", format!("JSON-RPC error: {error}")));
@@ -1153,6 +1354,10 @@ pub fn integration_status(
     let (is_configured, has_secret) = configured(&provider, record.as_ref())?;
     let connected = if provider == "mcp" {
         is_configured
+            && record
+                .as_ref()
+                .and_then(|item| item.account_label.as_ref())
+                .is_some()
     } else {
         secret_store::get_secret(&access_slot(&provider))?.is_some()
     };
@@ -1178,20 +1383,32 @@ pub fn save_integration_config(
 ) -> Result<IntegrationStatus, AppError> {
     ensure_provider(&provider)?;
     if !config.is_object() {
-        return Err(connector_error(&provider, "configuration must be a JSON object"));
+        return Err(connector_error(
+            &provider,
+            "configuration must be a JSON object",
+        ));
     }
     match provider.as_str() {
         "microsoft" => {
             required_config(&provider, &config, "clientId")?;
-            validate_redirect(&provider, required_config(&provider, &config, "redirectUri")?)?;
+            validate_redirect(
+                &provider,
+                required_config(&provider, &config, "redirectUri")?,
+            )?;
         }
         "slack" | "notion" => {
             required_config(&provider, &config, "clientId")?;
-            validate_redirect(&provider, required_config(&provider, &config, "redirectUri")?)?;
+            validate_redirect(
+                &provider,
+                required_config(&provider, &config, "redirectUri")?,
+            )?;
         }
         "dropbox" => {
             required_config(&provider, &config, "appKey")?;
-            validate_redirect(&provider, required_config(&provider, &config, "redirectUri")?)?;
+            validate_redirect(
+                &provider,
+                required_config(&provider, &config, "redirectUri")?,
+            )?;
         }
         "mcp" => {
             validate_mcp_endpoint(required_config(&provider, &config, "endpoint")?)?;
@@ -1338,15 +1555,21 @@ async fn execute_microsoft(
     params: &Value,
 ) -> Result<Value, AppError> {
     match action {
-        "account.get" => microsoft_request(
-            state,
-            Method::GET,
-            "/me?$select=id,displayName,mail,userPrincipalName",
-            None,
-        )
-        .await,
+        "account.get" => {
+            microsoft_request(
+                state,
+                Method::GET,
+                "/me?$select=id,displayName,mail,userPrincipalName",
+                None,
+            )
+            .await
+        }
         "mail.list" => {
-            let top = params.get("top").and_then(Value::as_u64).unwrap_or(25).clamp(1, 100);
+            let top = params
+                .get("top")
+                .and_then(Value::as_u64)
+                .unwrap_or(25)
+                .clamp(1, 100);
             let path = format!("/me/messages?$top={top}&$select=id,subject,from,toRecipients,receivedDateTime,isRead,bodyPreview,conversationId&$orderby=receivedDateTime%20desc");
             microsoft_request(state, Method::GET, &path, None).await
         }
@@ -1399,7 +1622,8 @@ async fn execute_microsoft(
                 )
                 .await
             } else {
-                microsoft_request(state, Method::GET, "/me/drive/root/children?$top=100", None).await
+                microsoft_request(state, Method::GET, "/me/drive/root/children?$top=100", None)
+                    .await
             }
         }
         "drive.get" => {
@@ -1408,24 +1632,38 @@ async fn execute_microsoft(
         }
         "drive.download" => {
             let id = required_str("microsoft", params, "itemId")?;
-            microsoft_binary(state, Method::GET, &format!("/me/drive/items/{id}/content"), None).await
+            microsoft_binary(
+                state,
+                Method::GET,
+                &format!("/me/drive/items/{id}/content"),
+                None,
+            )
+            .await
         }
         "drive.upload" => {
             let path = encode_graph_path(required_str("microsoft", params, "path")?);
             let bytes = if let Some(encoded) = optional_str(params, "contentBase64") {
-                STANDARD
-                    .decode(encoded)
-                    .map_err(|error| connector_error("microsoft", format!("invalid contentBase64: {error}")))?
+                STANDARD.decode(encoded).map_err(|error| {
+                    connector_error("microsoft", format!("invalid contentBase64: {error}"))
+                })?
             } else {
-                optional_str(params, "content").unwrap_or_default().as_bytes().to_vec()
+                optional_str(params, "content")
+                    .unwrap_or_default()
+                    .as_bytes()
+                    .to_vec()
             };
             if bytes.len() > MAX_BINARY_BYTES {
-                return Err(connector_error("microsoft", "interactive upload exceeds the 8 MB safety limit"));
+                return Err(connector_error(
+                    "microsoft",
+                    "interactive upload exceeds the 8 MB safety limit",
+                ));
             }
             let token = access_token(state, "microsoft").await?;
             let response = state
                 .http
-                .put(format!("https://graph.microsoft.com/v1.0/me/drive/root:/{path}:/content"))
+                .put(format!(
+                    "https://graph.microsoft.com/v1.0/me/drive/root:/{path}:/content"
+                ))
                 .bearer_auth(token)
                 .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
                 .body(bytes)
@@ -1436,7 +1674,13 @@ async fn execute_microsoft(
         }
         "drive.delete" => {
             let id = required_str("microsoft", params, "itemId")?;
-            microsoft_request(state, Method::DELETE, &format!("/me/drive/items/{id}"), None).await
+            microsoft_request(
+                state,
+                Method::DELETE,
+                &format!("/me/drive/items/{id}"),
+                None,
+            )
+            .await
         }
         "calendar.events" => {
             let start = required_str("microsoft", params, "startDateTime")?;
@@ -1459,20 +1703,34 @@ async fn execute_microsoft(
             json_response("microsoft", response).await
         }
         "calendar.create" => {
-            let event = params.get("event").cloned().ok_or_else(|| connector_error("microsoft", "missing required parameter 'event'"))?;
+            let event = params.get("event").cloned().ok_or_else(|| {
+                connector_error("microsoft", "missing required parameter 'event'")
+            })?;
             microsoft_request(state, Method::POST, "/me/events", Some(event)).await
         }
         "calendar.update" => {
             let id = required_str("microsoft", params, "eventId")?;
-            let event = params.get("event").cloned().ok_or_else(|| connector_error("microsoft", "missing required parameter 'event'"))?;
-            microsoft_request(state, Method::PATCH, &format!("/me/events/{id}"), Some(event)).await
+            let event = params.get("event").cloned().ok_or_else(|| {
+                connector_error("microsoft", "missing required parameter 'event'")
+            })?;
+            microsoft_request(
+                state,
+                Method::PATCH,
+                &format!("/me/events/{id}"),
+                Some(event),
+            )
+            .await
         }
         "calendar.delete" => {
             let id = required_str("microsoft", params, "eventId")?;
             microsoft_request(state, Method::DELETE, &format!("/me/events/{id}"), None).await
         }
         "contacts.list" | "contacts.search" => {
-            let top = params.get("top").and_then(Value::as_u64).unwrap_or(100).clamp(1, 200);
+            let top = params
+                .get("top")
+                .and_then(Value::as_u64)
+                .unwrap_or(100)
+                .clamp(1, 200);
             let mut value = microsoft_request(
                 state,
                 Method::GET,
@@ -1488,7 +1746,10 @@ async fn execute_microsoft(
             }
             Ok(value)
         }
-        _ => Err(connector_error("microsoft", format!("unsupported action '{action}'"))),
+        _ => Err(connector_error(
+            "microsoft",
+            format!("unsupported action '{action}'"),
+        )),
     }
 }
 
@@ -1541,17 +1802,16 @@ async fn execute_slack(
         )
         .await,
         "users.list" => slack_request(state, "users.list", json!({"limit": 200}), false).await,
-        "chat.send" => slack_request(
-            state,
-            "chat.postMessage",
-            json!({
-                "channel": required_str("slack", params, "channel")?,
-                "text": required_str("slack", params, "text")?,
-                "thread_ts": optional_str(params, "threadTs")
-            }),
-            false,
-        )
-        .await,
+        "chat.send" => {
+    let mut payload = json!({
+        "channel": required_str("slack", params, "channel")?,
+        "text": required_str("slack", params, "text")?
+    });
+    if let Some(thread_ts) = optional_str(params, "threadTs") {
+        payload["thread_ts"] = Value::String(thread_ts.to_string());
+    }
+    slack_request(state, "chat.postMessage", payload, false).await
+}
         "chat.update" => slack_request(
             state,
             "chat.update",
@@ -1681,7 +1941,7 @@ async fn execute_dropbox(
     params: &Value,
 ) -> Result<Value, AppError> {
     match action {
-        "account.get" => dropbox_rpc(state, "users/get_current_account", json!(null)).await,
+        "account.get" => dropbox_current_account(state).await,
         "files.list" => dropbox_rpc(
             state,
             "files/list_folder",
@@ -1703,23 +1963,30 @@ async fn execute_dropbox(
         .await,
         "files.download" => dropbox_download(state, required_str("dropbox", params, "path")?).await,
         "files.upload" => dropbox_upload(state, params).await,
-        "files.move" => dropbox_rpc(
-            state,
-            "files/move_v2",
-            json!({
-                "from_path": required_str("dropbox", params, "fromPath")?,
-                "to_path": required_str("dropbox", params, "toPath")?,
-                "autorename": false
-            }),
-        )
-        .await,
-        "files.delete" => dropbox_rpc(
-            state,
-            "files/delete_v2",
-            json!({"path": required_str("dropbox", params, "path")?}),
-        )
-        .await,
-        _ => Err(connector_error("dropbox", format!("unsupported action '{action}'"))),
+        "files.move" => {
+            dropbox_rpc(
+                state,
+                "files/move_v2",
+                json!({
+                    "from_path": required_str("dropbox", params, "fromPath")?,
+                    "to_path": required_str("dropbox", params, "toPath")?,
+                    "autorename": false
+                }),
+            )
+            .await
+        }
+        "files.delete" => {
+            dropbox_rpc(
+                state,
+                "files/delete_v2",
+                json!({"path": required_str("dropbox", params, "path")?}),
+            )
+            .await
+        }
+        _ => Err(connector_error(
+            "dropbox",
+            format!("unsupported action '{action}'"),
+        )),
     }
 }
 
@@ -1732,7 +1999,10 @@ async fn execute_mcp(
         "tools.list" => mcp_rpc(state, "tools/list", json!({}), None).await,
         "tools.call" => {
             let name = required_str("mcp", params, "name")?;
-            let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            let arguments = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
             mcp_rpc(
                 state,
                 "tools/call",
@@ -1757,7 +2027,10 @@ async fn execute_mcp(
             )
             .await
         }
-        _ => Err(connector_error("mcp", format!("unsupported action '{action}'"))),
+        _ => Err(connector_error(
+            "mcp",
+            format!("unsupported action '{action}'"),
+        )),
     }
 }
 
@@ -1793,6 +2066,6 @@ mod tests {
 
     #[test]
     fn graph_paths_encode_segments() {
-        assert_eq!(encode_graph_path("Docs/My File.txt"), "Docs/My+File.txt");
+        assert_eq!(encode_graph_path("Docs/My File.txt"), "Docs/My%20File.txt");
     }
 }
