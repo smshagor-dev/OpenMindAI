@@ -20,68 +20,57 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: Preserve nested new paths and format
+      - name: Preserve nested new paths
         shell: python
         run: |
           from pathlib import Path
           path = Path("src-tauri/src/local_workspace.rs")
           text = path.read_text()
-          old = '''fn resolve_new_path(path: &Path) -> Result<PathBuf, AppError> {
-    if path.exists() {
-        return fs::canonicalize(path).map_err(AppError::from);
-    }
-    let parent = path
-        .parent()
-        .ok_or_else(|| AppError::internal("path has no parent directory"))?;
-    let canonical_parent = canonical_existing_parent(parent)?;
-    let name = path
-        .file_name()
-        .ok_or_else(|| AppError::internal("path requires a file or folder name"))?;
-    Ok(canonical_parent.join(name))
-}'''
-          new = '''fn resolve_new_path(path: &Path) -> Result<PathBuf, AppError> {
-    if path.exists() {
-        return fs::canonicalize(path).map_err(AppError::from);
-    }
-
-    let mut probe = path.to_path_buf();
-    let mut missing = Vec::new();
-    while !probe.exists() {
-        let name = probe
-            .file_name()
-            .ok_or_else(|| AppError::internal("path requires a file or folder name"))?
-            .to_os_string();
-        missing.push(name);
-        if !probe.pop() {
-            return Err(AppError::internal("no existing parent directory found for path"));
-        }
-    }
-
-    let mut resolved = fs::canonicalize(probe)?;
-    for component in missing.into_iter().rev() {
-        resolved.push(component);
-    }
-    Ok(resolved)
-}'''
-          if old not in text:
-              raise SystemExit("resolve_new_path anchor missing")
-          text = text.replace(old, new, 1)
-          test_anchor = '''    #[test]
-    fn scoped_new_path_cannot_escape_through_parent_segments() {'''
-          test = '''    #[test]
-    fn nested_new_path_preserves_missing_directories() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("workspace");
-        fs::create_dir_all(&root).unwrap();
-        let resolved = resolve_new_path(&root.join("new/sub/file.txt")).unwrap();
-        assert_eq!(resolved, root.canonicalize().unwrap().join("new/sub/file.txt"));
-    }
-
-'''
-          if test not in text:
-              if test_anchor not in text:
+          start = text.index("fn resolve_new_path(path: &Path) -> Result<PathBuf, AppError> {")
+          end = text.index("\n\nfn canonical_existing_parent", start)
+          replacement = "\n".join([
+              "fn resolve_new_path(path: &Path) -> Result<PathBuf, AppError> {",
+              "    if path.exists() {",
+              "        return fs::canonicalize(path).map_err(AppError::from);",
+              "    }",
+              "",
+              "    let mut probe = path.to_path_buf();",
+              "    let mut missing = Vec::new();",
+              "    while !probe.exists() {",
+              "        let name = probe",
+              "            .file_name()",
+              "            .ok_or_else(|| AppError::internal(\"path requires a file or folder name\"))?",
+              "            .to_os_string();",
+              "        missing.push(name);",
+              "        if !probe.pop() {",
+              "            return Err(AppError::internal(\"no existing parent directory found for path\"));",
+              "        }",
+              "    }",
+              "",
+              "    let mut resolved = fs::canonicalize(probe)?;",
+              "    for component in missing.into_iter().rev() {",
+              "        resolved.push(component);",
+              "    }",
+              "    Ok(resolved)",
+              "}",
+          ])
+          text = text[:start] + replacement + text[end:]
+          marker = "    #[test]\n    fn scoped_new_path_cannot_escape_through_parent_segments() {"
+          if "fn nested_new_path_preserves_missing_directories()" not in text:
+              test = "\n".join([
+                  "    #[test]",
+                  "    fn nested_new_path_preserves_missing_directories() {",
+                  "        let temp = tempfile::tempdir().unwrap();",
+                  "        let root = temp.path().join(\"workspace\");",
+                  "        fs::create_dir_all(&root).unwrap();",
+                  "        let resolved = resolve_new_path(&root.join(\"new/sub/file.txt\")).unwrap();",
+                  "        assert_eq!(resolved, root.canonicalize().unwrap().join(\"new/sub/file.txt\"));",
+                  "    }",
+                  "",
+              ])
+              if marker not in text:
                   raise SystemExit("workspace test anchor missing")
-              text = text.replace(test_anchor, test + test_anchor, 1)
+              text = text.replace(marker, test + marker, 1)
           path.write_text(text)
           Path(".github/workflows/project-workspace-rust-fix.yml").unlink()
       - name: Format Rust
