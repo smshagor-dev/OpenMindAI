@@ -412,6 +412,7 @@ fn delete_project(project_id: String, state: State<AppState>) -> Result<(), app_
     let repo = ProjectRepository::new(&db);
     let project = repo.find_project(&project_id)?;
     repo.delete_project(&project_id)?;
+    local_workspace::clear_project_workspace_config(&db, &project_id)?;
     let chats = ChatRepository::new(&db);
     for conversation_id in project.conversation_ids {
         chats.upsert_profile_context(&conversation_id, None)?;
@@ -1670,7 +1671,19 @@ fn sync_project_context_in_database(
     conversation_id: &str,
 ) -> Result<(), app_error::AppError> {
     let project = ProjectRepository::new(db).project_for_conversation(conversation_id)?;
-    let content = project.as_ref().and_then(project_context_message);
+    let content = match project.as_ref() {
+        Some(project) => {
+            let mut parts = Vec::new();
+            if let Some(base) = project_context_message(project) {
+                parts.push(base);
+            }
+            if let Some(workspace) = local_workspace::workspace_context_for_project(db, &project.id)? {
+                parts.push(workspace);
+            }
+            (!parts.is_empty()).then(|| parts.join("\n\n"))
+        }
+        None => None,
+    };
     ChatRepository::new(db).upsert_profile_context(conversation_id, content.as_deref())
 }
 
@@ -1678,7 +1691,14 @@ fn sync_project_context_for_project(
     db: &Database,
     project: &Project,
 ) -> Result<(), app_error::AppError> {
-    let content = project_context_message(project);
+    let mut parts = Vec::new();
+    if let Some(base) = project_context_message(project) {
+        parts.push(base);
+    }
+    if let Some(workspace) = local_workspace::workspace_context_for_project(db, &project.id)? {
+        parts.push(workspace);
+    }
+    let content = (!parts.is_empty()).then(|| parts.join("\n\n"));
     let chats = ChatRepository::new(db);
     for conversation_id in &project.conversation_ids {
         chats.upsert_profile_context(conversation_id, content.as_deref())?;

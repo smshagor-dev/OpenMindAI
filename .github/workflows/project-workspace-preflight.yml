@@ -1,0 +1,58 @@
+# Final validation after local-workspace context budgeting and project access-state cleanup.
+name: Project Workspace Preflight
+
+on:
+  push:
+    branches:
+      - project-local-workspace-access
+    paths:
+      - .github/workflows/project-workspace-preflight.yml
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Frontend lint
+        run: npm run lint
+      - name: Frontend build
+        run: npm run build
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Rust format
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - name: Rust Clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+      - name: Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --all-features
+
+  windows-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install frontend dependencies
+        run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build Windows Tauri application
+        run: npm run tauri -- build --no-bundle
+      - name: Verify application binary
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "src-tauri/target/release/open-mind-ai.exe")) {
+            throw "OpenMindAI Windows binary was not produced"
+          }
