@@ -19,6 +19,15 @@ type VisualMedia = {
 
 type EcosystemProvider = Exclude<ConnectedProvider, "google" | "github">;
 
+type ProjectAgentStatus = {
+  available: boolean;
+  projectId: string | null;
+  projectName: string | null;
+  fullPcAccess: boolean;
+  terminalEnabled: boolean;
+  attachedRoots: number;
+};
+
 function connectedInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri) {
     return Promise.reject(new Error("Connected app actions require the OpenMindAI desktop app."));
@@ -42,23 +51,48 @@ async function messageUsesSoundscape(conversationId: string, messageId: string |
   return source?.content.startsWith("[Mode: Music/SFX Creation]") ?? false;
 }
 
+async function projectAgentStatus(conversationId: string): Promise<ProjectAgentStatus | null> {
+  if (!isTauri) return null;
+  try {
+    return await invoke<ProjectAgentStatus>("project_agent_status_for_conversation", {
+      conversationId,
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function shouldUseProjectAgent(conversationId: string, mode: string) {
+  if (!isTauri || (mode !== "chat" && mode !== "thinking")) return false;
+  const status = await projectAgentStatus(conversationId);
+  return status?.available ?? false;
+}
+
 export const api = {
   ...legacyApi,
+  projectAgentStatus,
   sendChatMessage: async (
     conversationId: string,
     content: string,
     mode: string,
     media: VisualMedia[] = [],
   ) => {
-    const assistant =
-      mode === "vision" && media.length > 0 && isTauri
-        ? await invoke<Message>("send_multimodal_chat_message", {
-            conversationId,
-            content,
-            mode,
-            media,
-          })
-        : await legacyApi.sendChatMessage(conversationId, content, mode, media);
+    let assistant: Message;
+    if (await shouldUseProjectAgent(conversationId, mode)) {
+      assistant = await invoke<Message>("send_project_agent_message", {
+        conversationId,
+        content,
+      });
+    } else if (mode === "vision" && media.length > 0 && isTauri) {
+      assistant = await invoke<Message>("send_multimodal_chat_message", {
+        conversationId,
+        content,
+        mode,
+        media,
+      });
+    } else {
+      assistant = await legacyApi.sendChatMessage(conversationId, content, mode, media);
+    }
 
     if (mode === "sound" && isTauri) {
       await createSoundscapeArtifact(
@@ -92,17 +126,28 @@ export const api = {
     );
     if (isVisualTurn) resolvedMode = "vision";
 
-    const assistant =
-      isVisualTurn && isTauri
-        ? await invoke<Message>("regenerate_multimodal_message", {
-            conversationId,
-            assistantMessageId,
-          })
-        : await legacyApi.regenerateMessage(
-            conversationId,
-            assistantMessageId,
-            resolvedMode,
-          );
+    let assistant: Message;
+    if (
+      !isVisualTurn &&
+      (resolvedMode === "chat" || resolvedMode === "thinking") &&
+      (await shouldUseProjectAgent(conversationId, resolvedMode))
+    ) {
+      assistant = await invoke<Message>("regenerate_project_agent_message", {
+        conversationId,
+        assistantMessageId,
+      });
+    } else if (isVisualTurn && isTauri) {
+      assistant = await invoke<Message>("regenerate_multimodal_message", {
+        conversationId,
+        assistantMessageId,
+      });
+    } else {
+      assistant = await legacyApi.regenerateMessage(
+        conversationId,
+        assistantMessageId,
+        resolvedMode,
+      );
+    }
 
     if (resolvedMode === "sound" && isTauri) {
       await createSoundscapeArtifact(

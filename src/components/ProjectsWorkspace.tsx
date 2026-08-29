@@ -22,6 +22,7 @@ import type { Conversation, Project, ProjectFile } from "../types";
 import { formatBytes, formatError, formatTime } from "../lib/format";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ProjectLocalWorkspace } from "./ProjectLocalWorkspace";
+import { OpenFolderProjectButton } from "./OpenFolderProjectButton";
 
 const MAX_PROJECT_INSTRUCTIONS_CHARS = 20_000;
 
@@ -294,6 +295,16 @@ export function ProjectsWorkspace(props: {
             {busyAction === "create-project" ? <LoaderCircle className="spin" size={16} /> : <Plus size={16} />}
           </button>
         </div>
+
+        <OpenFolderProjectButton
+          disabled={busy}
+          onCreateProjectChat={props.onCreateProjectChat}
+          onCreated={async (project, conversation) => {
+            await refreshProjects(project.id);
+            props.onOpenConversation(conversation.id);
+          }}
+          onError={setError}
+        />
 
         <div className="projects-list">
           {loading ? (
