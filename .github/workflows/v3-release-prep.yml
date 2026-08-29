@@ -35,6 +35,13 @@ jobs:
           bash -n bootstrap/macos/bootstrap.sh
           git diff --check
 
+      - name: Stage release workflow for authorized connector update
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .github/workflows/release.yml scripts/generated-v3-release-workflow.yml
+          git checkout -- .github/workflows/release.yml
+
       - name: Commit v3 release preparation
         shell: bash
         run: |
