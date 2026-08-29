@@ -36,8 +36,8 @@ function readCargoLockVersion() {
   const cargoLock = readText(path.join("src-tauri", "Cargo.lock"));
   const block = cargoLock
     .split("[[package]]")
-    .find((candidate) => /(?:^|\n)name = "open-mind-ai"(?:\n|$)/.test(candidate));
-  const match = block?.match(/(?:^|\n)version = "([^"]+)"(?:\n|$)/);
+    .find((candidate) => /(?:^|\r?\n)name = "open-mind-ai"(?:\r?\n|$)/.test(candidate));
+  const match = block?.match(/(?:^|\r?\n)version = "([^"]+)"(?:\r?\n|$)/);
   if (!match) fail("unable to locate open-mind-ai version in src-tauri/Cargo.lock");
   return match[1];
 }

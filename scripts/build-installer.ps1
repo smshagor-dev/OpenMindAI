@@ -5,11 +5,25 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Join-Path $PSScriptRoot ".."
 Push-Location $repoRoot
 try {
-  npm run build:release
+  $localUnsignedConfig = Join-Path $repoRoot "src-tauri\tauri.local-unsigned.conf.json"
+  if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+    $config = @{
+      bundle = @{
+        createUpdaterArtifacts = $false
+      }
+    } | ConvertTo-Json -Depth 10
+    Set-Content -Path $localUnsignedConfig -Value $config -Encoding utf8
+    npm run tauri -- build --config $localUnsignedConfig
+  } else {
+    npm run build:release
+  }
   if ($LASTEXITCODE -ne 0) {
-    throw "npm run build:release failed with exit code $LASTEXITCODE"
+    throw "Tauri installer build failed with exit code $LASTEXITCODE"
   }
 } finally {
+  if (Test-Path $localUnsignedConfig) {
+    Remove-Item -LiteralPath $localUnsignedConfig -Force
+  }
   Pop-Location
 }
 
