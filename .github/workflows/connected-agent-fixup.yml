@@ -1,0 +1,50 @@
+name: Connected Agent Fixup
+
+on:
+  push:
+    branches:
+      - connected-agent-compile-fix
+
+permissions:
+  contents: write
+
+jobs:
+  fixup:
+    if: github.event.head_commit.message == 'ci: run connected agent fixup'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: connected-agent-compile-fix
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Apply frontend lint fixes
+        shell: python
+        run: |
+          from pathlib import Path
+
+          agent = Path('src/components/ConnectedAgentPanel.tsx')
+          text = agent.read_text(encoding='utf-8')
+          text = text.replace('new TextDecoder("utf-8", { fatal: false })', 'new window.TextDecoder("utf-8", { fatal: false })')
+          agent.write_text(text, encoding='utf-8')
+
+          console = Path('src/components/ConnectedWorkspace.tsx')
+          text = console.read_text(encoding='utf-8')
+          text = text.replace('}, [definition?.action]);', '}, [definition]);')
+          console.write_text(text, encoding='utf-8')
+      - name: Apply canonical Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+      - name: Commit fixup
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "No changes required"
+            exit 0
+          fi
+          git add src/components/ConnectedAgentPanel.tsx src/components/ConnectedWorkspace.tsx src-tauri/src
+          git commit -m "style(connectors): apply lint and rustfmt fixes"
+          git push origin HEAD:connected-agent-compile-fix
