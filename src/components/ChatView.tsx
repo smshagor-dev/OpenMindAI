@@ -155,7 +155,7 @@ export function ChatView(props: {
               onRevealArtifact={props.onRevealArtifact}
               onRetryArtifact={props.onRetryArtifact}
               onPreview={props.onPreview}
-              onEditUser={message.role === "user" ? () => props.editUserMessage(message.content) : undefined}
+              onEditUser={message.role === "user" ? props.editUserMessage : undefined}
             />
           ))
         )}
