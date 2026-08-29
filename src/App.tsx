@@ -64,6 +64,7 @@ interface RealtimeActivity {
 }
 
 export function App() {
+  const copyrightYear = new Date().getFullYear();
   const [view, setView] = useState<View>("chat");
   const [root, setRoot] = useState<PortableRootInfo | null>(null);
   const [installationStatus, setInstallationStatus] = useState<InstallationStatus | null>(null);
@@ -1244,9 +1245,34 @@ export function App() {
             initialSection={settingsSection}
           />
         )}
-        {view !== "work" ? (
-          <StatusBar models={models} activeModelId={activeModelId} runtime={runtime} root={root} />
-        ) : null}
+        <footer className="workspace-footer">
+          <p className="workspace-copyright">
+            &copy; {copyrightYear}{" "}
+            <a
+              href="https://openmindai.org"
+              onClick={(event) => {
+                event.preventDefault();
+                void api.openExternalUrl("https://openmindai.org");
+              }}
+            >
+              OpenMindAI
+            </a>
+            . Designed and developed by{" "}
+            <a
+              href="https://smshagor.com"
+              onClick={(event) => {
+                event.preventDefault();
+                void api.openExternalUrl("https://smshagor.com");
+              }}
+            >
+              Md Shahanur Islam Shagor
+            </a>
+            . All rights reserved.
+          </p>
+          {view !== "work" ? (
+            <StatusBar models={models} activeModelId={activeModelId} runtime={runtime} root={root} />
+          ) : null}
+        </footer>
       </section>
 
       <PreviewPanel target={previewTarget} onClose={() => setPreviewTarget(null)} />

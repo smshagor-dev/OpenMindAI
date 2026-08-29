@@ -12,7 +12,6 @@ import {
   Wrench,
 } from "lucide-react";
 import type { Conversation, UserProfile } from "../types";
-import { api } from "../api";
 import { ChatHistoryList } from "./ChatHistoryList";
 import packageJson from "../../package.json";
 
@@ -237,23 +236,6 @@ export function Sidebar(props: {
             >
               About
             </button>
-          </div>
-        ) : null}
-        {!props.collapsed ? (
-          <div className="sidebar-copyright">
-            <p>
-              Copyright 2026{" "}
-              <a
-                href="https://smshagor.com"
-                onClick={(event) => {
-                  event.preventDefault();
-                  void api.openExternalUrl("https://smshagor.com");
-                }}
-              >
-                Md Shahanur Islam Shagor
-              </a>
-              . All rights reserved.
-            </p>
           </div>
         ) : null}
       </div>

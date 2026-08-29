@@ -9,18 +9,6 @@ const BACKEND_LABELS: Record<string, string> = {
   metal: "Metal",
 };
 
-const STATE_LABELS: Record<ModelRecord["state"], string> = {
-  notInstalled: "not installed",
-  downloading: "downloading",
-  installed: "installed",
-  validating: "validating",
-  ready: "ready",
-  loading: "loading",
-  loaded: "loaded",
-  unloading: "unloading",
-  failed: "failed",
-};
-
 export function StatusBar(props: {
   models: ModelRecord[];
   activeModelId: string | null;
@@ -39,7 +27,7 @@ export function StatusBar(props: {
     <div className="status-bar">
       <span className="status-segment">
         <span className={modelReady ? "status-dot status-dot-ready" : "status-dot"} />
-        {model ? `${model.name} ${STATE_LABELS[model.state]}` : "No model installed"}
+        {model ? "OpenMindAI" : "No model installed"}
       </span>
       {backendLabel ? (
         <span className="status-segment">

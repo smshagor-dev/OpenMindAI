@@ -504,28 +504,6 @@ button {
   font-size: 11px;
 }
 
-.sidebar-copyright {
-  margin-top: 8px;
-  padding: 0 8px;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.35;
-}
-
-.sidebar-copyright p {
-  margin: 0;
-}
-
-.sidebar-copyright a {
-  color: var(--muted);
-  text-decoration: none;
-}
-
-.sidebar-copyright a:hover {
-  color: var(--text);
-  text-decoration: underline;
-}
-
 .profile-menu-trigger {
   display: grid;
   place-items: center;
@@ -582,13 +560,43 @@ button {
   height: 100vh;
 }
 
-.status-bar {
+.workspace-footer {
   position: absolute;
+  left: 16px;
   right: 16px;
   bottom: 10px;
   z-index: 5;
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  color: var(--muted);
+  font-size: 11px;
+  pointer-events: none;
+}
+
+.workspace-copyright {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-copyright a {
+  color: var(--muted);
+  text-decoration: none;
+  pointer-events: auto;
+}
+
+.workspace-copyright a:hover {
+  color: var(--text);
+}
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
   gap: 14px;
   color: var(--muted);
   font-size: 11px;

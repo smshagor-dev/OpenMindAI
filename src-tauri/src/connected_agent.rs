@@ -406,7 +406,7 @@ async fn run_connected_message(
 
 fn ensure_model_endpoint(
     state: &State<'_, AppState>,
-    model: &crate::models::ModelRecord,
+    model: &crate::model_registry::ModelRecord,
 ) -> Result<String, AppError> {
     let hardware = state.hardware.clone();
     let plan = ModelLaunchPlanner::plan(model, &hardware, allocate_local_port()?);
