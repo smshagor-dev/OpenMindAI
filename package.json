@@ -12,7 +12,8 @@
     "tauri": "tauri",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "check:version": "node scripts/check-version-consistency.mjs"
+    "check:version": "node scripts/check-version-consistency.mjs",
+    "check:release": "node scripts/check-release-readiness.mjs"
   },
   "allowScripts": {
     "esbuild@0.25.12": true
