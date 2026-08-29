@@ -1,0 +1,39 @@
+name: MCP SSE rfind Fix
+
+on:
+  push:
+    branches:
+      - fix-mcp-sse-clippy
+    paths:
+      - .github/workflows/mcp-sse-rfind-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix-mcp-sse-clippy
+      - name: Apply rfind fix and remove helper
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src-tauri/src/connector_ecosystem.rs')
+          text = path.read_text()
+          old = '.filter_map(|line| line.strip_prefix("data:"))\n            .map(str::trim)\n            .filter(|line| !line.is_empty())\n            .next_back()'
+          new = '.filter_map(|line| line.strip_prefix("data:"))\n            .map(str::trim)\n            .rfind(|line| !line.is_empty())'
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one MCP SSE iterator pattern, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          cargo fmt --manifest-path src-tauri/Cargo.toml
+          rm .github/workflows/mcp-sse-rfind-fix.yml
+          git config user.name openmindai-ci
+          git config user.email actions@users.noreply.github.com
+          git add -A
+          git commit -m "fix(connectors): use rfind for MCP SSE data"
+          git push origin HEAD:fix-mcp-sse-clippy
