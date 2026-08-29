@@ -30,6 +30,8 @@ export default [
         document: "readonly",
         console: "readonly",
         HTMLElement: "readonly",
+        HTMLCanvasElement: "readonly",
+        OffscreenCanvas: "readonly",
         HTMLTextAreaElement: "readonly",
         HTMLDivElement: "readonly",
         HTMLInputElement: "readonly",
