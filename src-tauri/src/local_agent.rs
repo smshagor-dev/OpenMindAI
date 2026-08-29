@@ -79,6 +79,7 @@ struct AgentContext {
     project: Project,
     workspace: AgentWorkspaceConfig,
     workspace_context: String,
+    conversation_context: String,
 }
 
 #[tauri::command]
@@ -262,15 +263,21 @@ async fn run_agent_message(
                 return Ok::<(), AppError>(());
             }
 
-            let decision = request_agent_decision(
+            let decision = tokio::select! {
+                result = request_agent_decision(
                 &state.http,
                 &endpoint,
                 content,
                 &agent_context,
                 &transcript,
                 step,
-            )
-            .await?;
+            ).await => result?,
+                _ = cancellation.cancelled() => {
+                    status = "cancelled";
+                    emit_agent_chunk(app, state, conversation_id, &assistant.id, "Agent run cancelled.")?;
+                    return Ok::<(), AppError>(());
+                }
+            };
 
             let decision_type = decision
                 .get("type")
@@ -302,7 +309,14 @@ async fn run_agent_message(
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| AppError::InferenceFailed("agent returned no tool name".to_string()))?;
 
-            let result = execute_tool(tool, &decision, &agent_context.workspace).await;
+            let result = tokio::select! {
+                result = execute_tool(tool, &decision, &agent_context.workspace) => result,
+                _ = cancellation.cancelled() => {
+                    status = "cancelled";
+                    emit_agent_chunk(app, state, conversation_id, &assistant.id, "Agent run cancelled.")?;
+                    return Ok::<(), AppError>(());
+                }
+            };
             match result {
                 Ok(outcome) => {
                     emit_agent_chunk(
@@ -382,11 +396,39 @@ fn load_agent_context(
     let workspace = load_workspace_config(&db, &project.id)?;
     let workspace_context = local_workspace::workspace_context_for_project(&db, &project.id)?
         .unwrap_or_else(|| "No workspace snapshot is available yet.".to_string());
+    let conversation_context = recent_conversation_context(&db, conversation_id)?;
     Ok(AgentContext {
         project,
         workspace,
         workspace_context,
+        conversation_context,
     })
+}
+
+fn recent_conversation_context(
+    database: &Database,
+    conversation_id: &str,
+) -> Result<String, AppError> {
+    let messages = ChatRepository::new(database).list_messages(conversation_id)?;
+    let mut recent = messages
+        .into_iter()
+        .filter(|message| message.role == "user" || message.role == "assistant")
+        .rev()
+        .take(8)
+        .collect::<Vec<_>>();
+    recent.reverse();
+    Ok(recent
+        .into_iter()
+        .map(|message| {
+            let role = if message.role == "user" {
+                "User"
+            } else {
+                "Assistant"
+            };
+            format!("{role}: {}", bounded(message.content.trim(), 1_000))
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n"))
 }
 
 fn create_agent_messages(
@@ -470,13 +512,14 @@ Attached roots:\n{root_summary}"
         MAX_TRANSCRIPT_CHARS,
     );
     let user = format!(
-        "Project: {}\nStep: {}/{}\nProject instructions:\n{}\n\nWorkspace snapshot:\n{}\n\nUser goal:\n{}\n\nRecent tool history:\n{}\n\nReturn the next single JSON action.",
+        "Project: {}\nStep: {}/{}\nProject instructions:\n{}\n\nWorkspace snapshot:\n{}\n\nRecent project chat:\n{}\n\nUser goal:\n{}\n\nRecent tool history:\n{}\n\nReturn the next single JSON action.",
         context.project.name,
         step + 1,
         MAX_AGENT_STEPS,
         if instructions.is_empty() { "(none)" } else { &instructions },
         workspace,
-        bounded(goal, 8_000),
+        bounded(&context.conversation_context, 7_000),
+        bounded(goal, 6_000),
         if history.is_empty() { "(none)" } else { &history },
     );
 
