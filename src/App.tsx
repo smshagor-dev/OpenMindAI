@@ -82,6 +82,8 @@ export function App() {
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<AttachmentDraft[]>([]);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [activity, setActivity] = useState<RealtimeActivity>({
@@ -179,16 +181,6 @@ export function App() {
     if (!preferences || updateCheckStartedRef.current) return;
     updateCheckStartedRef.current = true;
     if (!preferences.autoCheckAppUpdates) return;
-    // Background-only: never blocks startup, never surfaces a failure to
-    // the UI. A real endpoint doesn't exist yet, so failure is expected
-    // and must stay quiet (spec: update checks never block offline use).
-    // Auto-download (if enabled) never auto-restarts -- the user always
-    // confirms the restart themselves, from Settings > Updates or the
-    // notification below. `downloadAndInstall` only ever replaces this
-    // app's own installed files (found via the OS's app-registration
-    // metadata, not anything we pass it) -- it has no reference to
-    // OPENMINDAI_ROOT and cannot reach user data, by construction of
-    // Phase 2's app/data separation.
     void checkForAppUpdate()
       .then(async (update) => {
         if (!update) return;
@@ -216,11 +208,6 @@ export function App() {
     if (!preferences || modelUpdateCheckStartedRef.current) return;
     modelUpdateCheckStartedRef.current = true;
     if (!preferences.notifyModelUpdates) return;
-    // Same non-blocking, quiet-on-failure shape as the app-update check
-    // above. v1's catalog has exactly one entry matching the model already
-    // shipped, so `updateAvailable` is honestly always false today -- this
-    // is real wiring, ready for whenever a future catalog entry changes
-    // that, not dead code (see model_catalog.rs).
     void api
       .checkModelUpdates()
       .then(async (report) => {
@@ -291,6 +278,7 @@ export function App() {
     if (!activeId) {
       setMessages([]);
       setArtifacts([]);
+      setEditingMessageId(null);
       return;
     }
     api
@@ -318,6 +306,7 @@ export function App() {
           event.payload.assistant,
         ]);
         setStreamingId(event.payload.assistant.id);
+        setSubmitting(false);
         setActivity((current) => ({ ...current, typing: true }));
         setConversations((items) =>
           items.map((item) =>
@@ -345,6 +334,7 @@ export function App() {
           ),
         );
         setStreamingId((current) => (current === event.payload.messageId ? null : current));
+        setSubmitting(false);
         setActivity((current) => ({ ...current, typing: false, detail: null }));
       }),
       listen<Artifact>("artifact:started", (event) =>
@@ -380,6 +370,9 @@ export function App() {
   const newConversation = useCallback(() => {
     setActiveId(null);
     setMessages([]);
+    setPrompt("");
+    setAttachments([]);
+    setEditingMessageId(null);
     setView("chat");
     setEditingTitle(false);
     setTitleDraft("");
@@ -390,51 +383,78 @@ export function App() {
 
   const sendMessage = useCallback(async () => {
     const content = prompt.trim();
-    if ((!content && attachments.length === 0) || streamingId) return;
+    if ((!content && attachments.length === 0) || streamingId || submitting) return;
+
+    const draftPrompt = prompt;
+    const draftAttachments = attachments.slice();
+    const editTargetId = editingMessageId;
     const inferredMode = inferChatMode(content, attachments);
     const messageContent = buildMessageContent(content, attachments, inferredMode);
     const inferenceMedia = attachmentMedia(attachments);
-    setPrompt("");
-    setAttachments([]);
     let conversationId = activeId;
     let conversationForTitle =
       conversations.find((conversation) => conversation.id === conversationId) ?? null;
-    if (!conversationId) {
-      const conversation = await api.createConversation();
-      conversationId = conversation.id;
-      conversationForTitle = conversation;
-      setConversations((items) => [conversation, ...items]);
-      setActiveId(conversation.id);
+    let optimisticUser: Message | null = null;
+    let editedBranchChanged = false;
 
-      if (pendingModelId) {
-        setModelSwitching(true);
-        try {
-          await api.activateModel(conversationId, pendingModelId);
-          setConversations((items) =>
-            items.map((item) =>
-              item.id === conversationId ? { ...item, activeModelId: pendingModelId } : item,
-            ),
-          );
-        } catch (caught) {
-          setModelSwitchError(formatError(caught));
-        } finally {
-          setModelSwitching(false);
-          setPendingModelId(null);
+    setSubmitting(true);
+    try {
+      if (!conversationId) {
+        const conversation = await api.createConversation();
+        conversationId = conversation.id;
+        conversationForTitle = conversation;
+        setConversations((items) => [conversation, ...items]);
+        setActiveId(conversation.id);
+
+        if (pendingModelId) {
+          setModelSwitching(true);
+          try {
+            await api.activateModel(conversationId, pendingModelId);
+            setConversations((items) =>
+              items.map((item) =>
+                item.id === conversationId ? { ...item, activeModelId: pendingModelId } : item,
+              ),
+            );
+          } catch (caught) {
+            setModelSwitchError(formatError(caught));
+          } finally {
+            setModelSwitching(false);
+            setPendingModelId(null);
+          }
         }
       }
-    }
-    const optimisticUser: Message = {
-      id: `local-${crypto.randomUUID()}`,
-      conversationId,
-      role: "user",
-      content: messageContent,
-      status: "completed",
-      modelId: null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    setMessages((items) => [...items, optimisticUser]);
-    try {
+
+      if (editTargetId) {
+        const targetIndex = messages.findIndex((message) => message.id === editTargetId);
+        if (targetIndex < 0) {
+          throw new Error("The message being edited is no longer available. Reload the chat and try again.");
+        }
+        const branch = messages.slice(targetIndex);
+        editedBranchChanged = branch.length > 0;
+        for (const message of branch.slice().reverse()) {
+          await api.deleteMessage(message.id);
+        }
+        setMessages((items) => {
+          const index = items.findIndex((message) => message.id === editTargetId);
+          return index >= 0 ? items.slice(0, index) : items;
+        });
+        setEditingMessageId(null);
+      }
+
+      setPrompt("");
+      setAttachments([]);
+      optimisticUser = {
+        id: `local-${crypto.randomUUID()}`,
+        conversationId,
+        role: "user",
+        content: messageContent,
+        status: "completed",
+        modelId: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      setMessages((items) => [...items, optimisticUser as Message]);
+
       if (preferences?.autoGenerateTitles ?? true) {
         const generatedTitle = titleFromPrompt(
           content || attachments[0]?.name || "New conversation",
@@ -454,6 +474,7 @@ export function App() {
           );
         }
       }
+
       const assistant = await api.sendChatMessage(
         conversationId,
         messageContent,
@@ -478,23 +499,34 @@ export function App() {
       await refreshMessages(conversationId, setMessages, showError);
       await refreshApp();
     } catch (caught) {
-      setMessages((items) =>
-        items
-          .filter((message) => message.id !== optimisticUser.id)
-          .map((message) =>
-            message.conversationId === conversationId && message.status === "streaming"
-              ? { ...message, status: "failed" }
-              : message,
-          ),
-      );
+      if (optimisticUser) {
+        setMessages((items) =>
+          items
+            .filter((message) => message.id !== optimisticUser?.id)
+            .map((message) =>
+              message.conversationId === conversationId && message.status === "streaming"
+                ? { ...message, status: "failed" }
+                : message,
+            ),
+        );
+      }
       setStreamingId(null);
+      setPrompt(draftPrompt);
+      setAttachments(draftAttachments);
+      setEditingMessageId(editedBranchChanged ? null : editTargetId);
       showError(caught);
-      await refreshMessages(conversationId, setMessages, showError);
+      if (conversationId) {
+        await refreshMessages(conversationId, setMessages, showError);
+      }
+    } finally {
+      setSubmitting(false);
     }
   }, [
     activeId,
     attachments,
     conversations,
+    editingMessageId,
+    messages,
     pendingModelId,
     preferences?.autoGenerateTitles,
     preferences?.openArtifactsAfterGeneration,
@@ -502,15 +534,22 @@ export function App() {
     refreshApp,
     showError,
     streamingId,
+    submitting,
   ]);
 
   const stopGeneration = useCallback(async () => {
     if (!streamingId || !activeId) return;
-    await api.cancelGeneration(activeId);
-  }, [activeId, streamingId]);
+    try {
+      await api.cancelGeneration(activeId);
+    } catch (caught) {
+      showError(caught);
+    }
+  }, [activeId, showError, streamingId]);
 
-  const editUserMessage = useCallback((content: string) => {
+  const editUserMessage = useCallback((messageId: string, content: string) => {
+    setEditingMessageId(messageId);
     setPrompt(content);
+    setAttachments([]);
     setView("chat");
     window.setTimeout(() => {
       const node = composerRef.current;
@@ -521,6 +560,7 @@ export function App() {
   }, []);
 
   const startToolPrompt = useCallback((content: string) => {
+    setEditingMessageId(null);
     setPrompt(content);
     setView("chat");
     window.setTimeout(() => {
@@ -533,19 +573,31 @@ export function App() {
 
   const regenerate = useCallback(
     async (assistantMessageId: string) => {
-      if (!activeId || streamingId) return;
+      if (!activeId || streamingId || submitting) return;
+      const targetIndex = messages.findIndex((message) => message.id === assistantMessageId);
+      const user =
+        targetIndex > 0
+          ? messages
+              .slice(0, targetIndex)
+              .reverse()
+              .find((message) => message.role === "user")
+          : null;
+      const mode = user ? persistedChatMode(user.content) : "chat";
+      setSubmitting(true);
       setMessages((items) => items.filter((message) => message.id !== assistantMessageId));
       try {
-        await api.regenerateMessage(activeId, assistantMessageId, "chat");
+        await api.regenerateMessage(activeId, assistantMessageId, mode);
         setStreamingId(null);
         await refreshMessages(activeId, setMessages, showError);
         await refreshApp();
       } catch (caught) {
         showError(caught);
         await refreshMessages(activeId, setMessages, showError);
+      } finally {
+        setSubmitting(false);
       }
     },
-    [activeId, refreshApp, showError, streamingId],
+    [activeId, messages, refreshApp, showError, streamingId, submitting],
   );
 
   const selectModel = useCallback(
@@ -614,13 +666,35 @@ export function App() {
 
   async function addFiles(files: FileList | null) {
     if (!files) return;
-    try {
-      const next = await Promise.all(Array.from(files).map(readAttachment));
-      setAttachments((items) => [...items, ...next]);
+    const results = await Promise.allSettled(Array.from(files).map(readAttachment));
+    const loaded = results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+    const failures = results.flatMap((result) =>
+      result.status === "rejected" ? [formatError(result.reason)] : [],
+    );
+
+    const accepted: AttachmentDraft[] = [];
+    let imageCount = attachments.filter((item) => item.kind === "image").length;
+    for (const attachment of loaded) {
+      if (attachments.length + accepted.length >= 8) {
+        failures.push("A chat can contain at most 8 attachments at once.");
+        continue;
+      }
+      if (attachment.kind === "image" && imageCount >= 4) {
+        failures.push("Local vision supports at most 4 images in one request.");
+        continue;
+      }
+      accepted.push(attachment);
+      if (attachment.kind === "image") imageCount += 1;
+    }
+
+    if (accepted.length > 0) {
+      setAttachments((items) => [...items, ...accepted]);
+      setEditingMessageId(null);
       setView("chat");
       composerRef.current?.focus();
-    } catch (caught) {
-      showError(caught);
+    }
+    if (failures.length > 0) {
+      showError(new Error(Array.from(new Set(failures)).join(" ")));
     }
   }
 
@@ -630,6 +704,7 @@ export function App() {
     if (activeId === id) {
       setActiveId(null);
       setMessages([]);
+      setEditingMessageId(null);
       setEditingTitle(false);
       setTitleDraft("");
     }
@@ -649,6 +724,7 @@ export function App() {
     if (activeId === id) {
       setActiveId(null);
       setMessages([]);
+      setEditingMessageId(null);
       setEditingTitle(false);
       setTitleDraft("");
     }
@@ -673,6 +749,7 @@ export function App() {
     }
     await refreshApp();
     setActiveId(created.id);
+    setEditingMessageId(null);
     setView("chat");
   }
 
@@ -681,6 +758,7 @@ export function App() {
     const conversation = await api.createConversation(title);
     setConversations((items) => [conversation, ...items]);
     setActiveId(conversation.id);
+    setEditingMessageId(null);
     setView("chat");
     setMessages([]);
     await refreshApp();
@@ -857,6 +935,7 @@ export function App() {
         onOpenConversation={(id) => {
           setView("chat");
           setActiveId(id);
+          setEditingMessageId(null);
           setEditingTitle(false);
           setTitleDraft("");
           setPendingModelId(null);
@@ -864,6 +943,7 @@ export function App() {
         onRename={(conversation) => {
           setView("chat");
           setActiveId(conversation.id);
+          setEditingMessageId(null);
           setTitleDraft(conversation.title);
           setEditingTitle(true);
         }}
@@ -984,6 +1064,7 @@ export function App() {
             editUserMessage={editUserMessage}
             composerRef={composerRef}
             streaming={Boolean(streamingId)}
+            submitting={submitting}
             models={models}
             activeModelId={activeModelId}
             runtime={runtime}
@@ -1020,6 +1101,7 @@ export function App() {
             onOpenConversation={(id) => {
               setView("chat");
               setActiveId(id);
+              setEditingMessageId(null);
             }}
             onCreateProjectChat={createProjectConversation}
           />
@@ -1053,6 +1135,7 @@ export function App() {
         onSelect={(id) => {
           setView("chat");
           setActiveId(id);
+          setEditingMessageId(null);
         }}
         onClose={() => setSearchOpen(false)}
       />
@@ -1062,6 +1145,7 @@ export function App() {
         onOpenConversation={(id) => {
           setView("chat");
           setActiveId(id);
+          setEditingMessageId(null);
         }}
       />
       {modelsOpen ? (
@@ -1126,4 +1210,17 @@ function upsertArtifactInList(items: Artifact[], next: Artifact) {
 function generationKindForMode(mode: ChatMode): "image" | "video" | "voice" | null {
   if (mode === "image" || mode === "video" || mode === "voice") return mode;
   return null;
+}
+
+function persistedChatMode(content: string): ChatMode {
+  if (content.startsWith("[Mode: Web Search]")) return "search";
+  if (content.startsWith("[Mode: Deep Research]")) return "research";
+  if (content.startsWith("[Mode: Think carefully before answering.")) return "thinking";
+  if (content.startsWith("[Mode: Document Writer]")) return "document";
+  if (content.startsWith("[Mode: PDF]")) return "pdf";
+  if (content.startsWith("[Mode: Image Creation]")) return "image";
+  if (content.startsWith("[Mode: Video Creation]")) return "video";
+  if (content.startsWith("[Mode: Voice Creation]")) return "voice";
+  if (content.startsWith("[Mode: Image/Vision Review]")) return "vision";
+  return "chat";
 }
