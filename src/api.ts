@@ -36,6 +36,17 @@ import type {
 const isTauri = "__TAURI_INTERNALS__" in window;
 const CHAT_FAILURE_RECOVERY_CLOCK_SKEW_MS = 250;
 
+interface CachedMessageMeta {
+  conversationId: string;
+  role: Message["role"];
+  order: number;
+}
+
+const cachedMessageMeta = new Map<string, CachedMessageMeta>();
+const pendingMessageDeletes = new Set<string>();
+let pendingDeleteTimer: number | null = null;
+let pendingDeleteFlush: Promise<void> | null = null;
+
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri) {
     return browserFallback<T>(command, args);
@@ -76,6 +87,93 @@ async function recoverRecentFailedGeneration(conversationId: string, startedAt: 
   });
 }
 
+function rememberMessages(conversationId: string, messages: Message[]) {
+  messages.forEach((message, order) => {
+    cachedMessageMeta.set(message.id, {
+      conversationId,
+      role: message.role,
+      order,
+    });
+  });
+}
+
+function queueMessageDelete(messageId: string) {
+  pendingMessageDeletes.add(messageId);
+  if (pendingDeleteTimer === null) {
+    pendingDeleteTimer = window.setTimeout(() => {
+      pendingDeleteTimer = null;
+      void flushPendingMessageDeletes().catch((error) => {
+        console.error("Failed to flush queued message deletion", error);
+      });
+    }, 0);
+  }
+  // Edit/resend currently awaits every delete call. Resolve immediately so
+  // all branch IDs can be collected in one event-loop turn; send/regenerate
+  // explicitly flush the queue before creating any replacement message.
+  return Promise.resolve();
+}
+
+async function flushPendingMessageDeletes(): Promise<void> {
+  if (pendingDeleteTimer !== null) {
+    window.clearTimeout(pendingDeleteTimer);
+    pendingDeleteTimer = null;
+  }
+  if (pendingDeleteFlush) {
+    await pendingDeleteFlush;
+  }
+  if (pendingMessageDeletes.size === 0) return;
+
+  const ids = Array.from(pendingMessageDeletes);
+  pendingMessageDeletes.clear();
+  const work = async () => {
+    const byConversation = new Map<string, Array<{ id: string; meta: CachedMessageMeta }>>();
+    const unknownIds: string[] = [];
+
+    for (const id of ids) {
+      const meta = cachedMessageMeta.get(id);
+      if (!meta) {
+        unknownIds.push(id);
+        continue;
+      }
+      const group = byConversation.get(meta.conversationId) ?? [];
+      group.push({ id, meta });
+      byConversation.set(meta.conversationId, group);
+    }
+
+    for (const group of byConversation.values()) {
+      const userTurns = group
+        .filter((entry) => entry.meta.role === "user")
+        .sort((left, right) => left.meta.order - right.meta.order);
+      if (userTurns.length > 0) {
+        // The repository deletes this user turn plus every later non-system
+        // turn atomically. Choosing the earliest queued user collapses the UI's
+        // reverse delete loop into one durable branch truncation.
+        await call<void>("delete_message", { messageId: userTurns[0].id });
+        continue;
+      }
+      for (const entry of group) {
+        await call<void>("delete_message", { messageId: entry.id });
+      }
+    }
+
+    for (const id of unknownIds) {
+      await call<void>("delete_message", { messageId: id });
+    }
+  };
+
+  const current = work();
+  pendingDeleteFlush = current;
+  try {
+    await current;
+  } finally {
+    if (pendingDeleteFlush === current) pendingDeleteFlush = null;
+  }
+
+  if (pendingMessageDeletes.size > 0) {
+    await flushPendingMessageDeletes();
+  }
+}
+
 export const api = {
   root: () => call<PortableRootInfo>("get_portable_root"),
   installationStatus: () => call<InstallationStatus>("installation_status"),
@@ -98,8 +196,15 @@ export const api = {
   activateModel: (conversationId: string, modelId: string) =>
     call<LlamaRuntimeStatus>("activate_model", { conversationId, modelId }),
   archiveConversation: (id: string) => call<void>("archive_conversation", { id }),
-  deleteConversation: (id: string) => call<void>("delete_conversation", { id }),
-  messages: (conversationId: string) => call<Message[]>("list_messages", { conversationId }),
+  deleteConversation: async (id: string) => {
+    await flushPendingMessageDeletes();
+    return call<void>("delete_conversation", { id });
+  },
+  messages: async (conversationId: string) => {
+    const messages = await call<Message[]>("list_messages", { conversationId });
+    rememberMessages(conversationId, messages);
+    return messages;
+  },
   addUserMessage: (conversationId: string, content: string) =>
     call<Message>("add_user_message", { conversationId, content }),
   createStreamingAssistantMessage: (conversationId: string) =>
@@ -108,7 +213,7 @@ export const api = {
     call<void>("append_message_chunk", { messageId, chunk }),
   completeMessage: (messageId: string, status: Message["status"]) =>
     call<void>("complete_message", { messageId, status }),
-  deleteMessage: (messageId: string) => call<void>("delete_message", { messageId }),
+  deleteMessage: (messageId: string) => queueMessageDelete(messageId),
   projects: () => call<Project[]>("list_projects"),
   createProject: (name: string) => call<Project>("create_project", { name }),
   updateProject: (projectId: string, name: string, instructions: string) =>
@@ -171,7 +276,7 @@ export const api = {
   cancelRuntimeInstall: () => call<RuntimeInstallStatus>("cancel_runtime_install"),
   startRuntime: () => call<LlamaRuntimeStatus>("start_llama_runtime"),
   stopRuntime: () => call<void>("stop_llama_runtime"),
-  sendChatMessage: (
+  sendChatMessage: async (
     conversationId: string,
     content: string,
     mode: string,
@@ -181,9 +286,14 @@ export const api = {
       mimeType: "image/png" | "image/jpeg";
       dataUrl: string;
     }> = [],
-  ) => call<Message>("send_chat_message", { conversationId, content, mode, media }),
-  regenerateMessage: (conversationId: string, assistantMessageId: string, mode: string) =>
-    call<Message>("regenerate_message", { conversationId, assistantMessageId, mode }),
+  ) => {
+    await flushPendingMessageDeletes();
+    return call<Message>("send_chat_message", { conversationId, content, mode, media });
+  },
+  regenerateMessage: async (conversationId: string, assistantMessageId: string, mode: string) => {
+    await flushPendingMessageDeletes();
+    return call<Message>("regenerate_message", { conversationId, assistantMessageId, mode });
+  },
   cancelGeneration: (conversationId: string) => call<void>("cancel_generation", { conversationId }),
   preferences: () => call<AppPreferences>("get_app_preferences"),
   savePreferences: (preferences: AppPreferences) =>
