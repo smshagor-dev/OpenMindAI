@@ -78,6 +78,59 @@ if (/placeholder|example|replace|changeme/i.test(decodedKey)) {
   fail("plugins.updater.pubkey appears to be a placeholder");
 }
 
+const releasePackage = readJson("package.json");
+const releaseVersion = releasePackage.version;
+const releaseTag = `v${releaseVersion}`;
+const releaseNotesRelativePath = path.join(".github", "releases", `${releaseTag}.txt`);
+const releaseNotesPath = path.join(root, releaseNotesRelativePath);
+if (!fs.existsSync(releaseNotesPath)) {
+  fail(`missing production release notes: ${releaseNotesRelativePath}`);
+}
+const releaseNotes = fs.readFileSync(releaseNotesPath, "utf8");
+if (!releaseNotes.includes(`# OpenMindAI ${releaseTag}`)) {
+  fail(`release notes title must be '# OpenMindAI ${releaseTag}'`);
+}
+if (/\b(?:TODO|TBD|PLACEHOLDER)\b/i.test(releaseNotes)) {
+  fail("release notes contain unfinished placeholder text");
+}
+
+const releaseWorkflow = fs.readFileSync(path.join(root, ".github", "workflows", "release.yml"), "utf8");
+for (const requiredSecret of [
+  "TAURI_SIGNING_PRIVATE_KEY",
+  "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+  "WINDOWS_CERTIFICATE",
+  "WINDOWS_CERTIFICATE_PASSWORD",
+]) {
+  if (!releaseWorkflow.includes(`secrets.${requiredSecret}`)) {
+    fail(`production release workflow no longer references required secret ${requiredSecret}`);
+  }
+}
+if (!releaseWorkflow.includes("releaseDraft: true")) {
+  fail("production release must remain a draft until signed asset and install/upgrade verification completes");
+}
+for (const requiredAsset of [
+  "OpenMindAI-Setup.bat",
+  "OpenMindAI-Setup.command",
+  "openmindai-setup.sh",
+  "openmindai.marker",
+  "latest.json",
+  "SHA256SUMS.txt",
+]) {
+  if (!releaseWorkflow.includes(requiredAsset)) {
+    fail(`production release workflow does not enforce required asset ${requiredAsset}`);
+  }
+}
+for (const releaseGate of [
+  "Get-AuthenticodeSignature",
+  "Invoke-SilentInstaller",
+  "OpenMindAI_2.0.0_x64-setup.exe",
+  ".github/releases/$tag.txt",
+]) {
+  if (!releaseWorkflow.includes(releaseGate)) {
+    fail(`production release workflow is missing required trust gate: ${releaseGate}`);
+  }
+}
+
 console.log(
-  `Release readiness config OK: NSIS updater enabled, HTTPS latest.json endpoint configured, minisign public key ${keyLines[0].split(": ").at(-1)} validated structurally.`,
+  `Release readiness config OK: NSIS updater enabled, HTTPS latest.json endpoint configured, v${releaseVersion} notes present, signed install/upgrade gates enforced, and minisign public key ${keyLines[0].split(": ").at(-1)} validated structurally.`,
 );

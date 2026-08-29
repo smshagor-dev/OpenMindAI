@@ -40,13 +40,17 @@ The project is designed around four practical goals:
 
 ## Current Release
 
+**Current source version: v3.0.0 (release candidate)**
+
 **Latest public release: [v2.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v2.0.0)**
 
-The v2.0.0 release includes the Windows installer together with bootstrap installers for Windows, Linux, and macOS.
+The v3.0.0 source candidate turns Projects into an active local development workspace: a folder can be opened as a project, the local agent can inspect and edit files, run explicitly permitted terminal commands, observe failures, retry repairs, validate changes, and inspect Git state while preserving the Full PC + Terminal permission boundary.
+
+The public download table stays on v2.0.0 until the signed v3.0.0 release pipeline has produced and verified the installer, updater signature, metadata, checksums, clean install, and v2-to-v3 upgrade path.
 
 | Platform | Installation path | Current status |
 | --- | --- | --- |
-| Windows x64 | [OpenMindAI v2.0.0 installer](https://github.com/smshagor-dev/OpenMindAI/releases/download/v2.0.0/OpenMindAI_2.0.0_x64-setup.exe) | Primary tested platform |
+| Windows x64 | [OpenMindAI v2.0.0 installer](https://github.com/smshagor-dev/OpenMindAI/releases/download/v2.0.0/OpenMindAI_2.0.0_x64-setup.exe) | Latest public Windows release |
 | Windows | [Git bootstrap](https://github.com/smshagor-dev/OpenMindAI/releases/download/v2.0.0/OpenMindAI-Setup.bat) | Available |
 | Linux x64 | [Shell bootstrap](https://github.com/smshagor-dev/OpenMindAI/releases/download/v2.0.0/openmindai-setup.sh) | Implemented; broader hardware validation in progress |
 | macOS | [Command bootstrap](https://github.com/smshagor-dev/OpenMindAI/releases/download/v2.0.0/OpenMindAI-Setup.command) | Implemented; broader hardware validation in progress |
@@ -54,7 +58,7 @@ The v2.0.0 release includes the Windows installer together with bootstrap instal
 
 For release notes and downloadable assets, use the [Releases](https://github.com/smshagor-dev/OpenMindAI/releases) page rather than third-party mirrors.
 
-> The currently published Windows build can still trigger Windows SmartScreen on systems that do not recognize the publisher. Download releases only from this repository and verify published checksums when available.
+> Production v3.0.0 remains intentionally unpublished until the signing and installer trust gates pass. The release workflow fails closed when signing material is unavailable.
 
 ## What It Can Do
 
@@ -72,7 +76,7 @@ Requests can be routed internally to an appropriate local capability based on th
 
 ### Projects and local context
 
-Projects can group conversations, instructions, and local files. Text and code files can become project context, while larger or binary files remain tracked as local project resources.
+Projects can group conversations, instructions, and local files. A local folder can also be opened directly as a project. Project Agent uses the attached workspace as live context and can read, create, edit, rename, or delete scoped files. When the user explicitly enables Full PC + Terminal access, the agent can run non-interactive shell commands and hardened Git status/diff inspection, recover from non-zero command failures, refresh its workspace snapshot after edits, and require appropriate validation before reporting a changed workspace as complete. Text and code files can become project context, while larger or binary files remain tracked as local project resources.
 
 ### Tools and maintenance
 
@@ -151,7 +155,7 @@ A missing or unavailable configured storage location should be reported rather t
 
 ## Default Model
 
-The default v2.0.0 setup targets **Qwen3 4B (`Q4_K_M`)** as the baseline local language model.
+The default v3.0.0 setup targets **Qwen3 4B (`Q4_K_M`)** as the baseline local language model.
 
 Model weights are deliberately excluded from the Git repository. They are downloaded separately and stored in the user's selected AI data root. This keeps the repository source-focused and prevents multi-gigabyte model binaries from entering normal Git history.
 
