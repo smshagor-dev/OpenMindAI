@@ -1,0 +1,44 @@
+name: Fix Model Catalog Test
+
+on:
+  push:
+    branches:
+      - feat/free-model-catalog
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/free-model-catalog
+          fetch-depth: 1
+
+      - name: Fix order-independent installed-model assertion
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src-tauri/src/model_catalog.rs')
+          text = path.read_text(encoding='utf-8')
+          old = '''        assert!(report.entries.len() > 1);\n        assert!(report.entries[0].installed);\n        assert!(!report.entries[0].update_available);\n'''
+          new = '''        assert!(report.entries.len() > 1);\n        let core = report\n            .entries\n            .iter()\n            .find(|entry| entry.entry.id == "qwen3-4b-q4km")\n            .expect("OpenMindAI Core should exist in the catalog");\n        assert!(core.installed);\n        assert!(!core.update_available);\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one brittle assertion block, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Commit test fix and remove helper
+        shell: bash
+        run: |
+          rm .github/workflows/fix-model-catalog-test.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src-tauri/src/model_catalog.rs .github/workflows/fix-model-catalog-test.yml
+          git commit -m "test(models): make catalog assertion order independent"
+          git push origin HEAD:feat/free-model-catalog
