@@ -9,37 +9,33 @@ permissions:
   contents: write
 
 jobs:
-  fix:
-    if: github.actor != 'github-actions[bot]'
+  repair:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout branch
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           ref: feature/project-agent-production-hardening
 
-      - name: Fix cancellable model request select branch
+      - name: Patch tokio select branch
+        shell: bash
         run: |
-          python - <<'PY'
+          python3 - <<'PY'
           from pathlib import Path
-
-          path = Path('src-tauri/src/local_agent.rs')
+          path = Path("src-tauri/src/local_agent.rs")
           text = path.read_text()
-          old = '''                step,
-            ).await => result?,
-'''
-          new = '''                step,
-            ) => result?,
-'''
-          if text.count(old) != 1:
-              raise SystemExit(f'expected one select await anchor, found {text.count(old)}')
+          old = "                step,\n            ).await => result?,\n"
+          new = "                step,\n            ) => result?,\n"
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f"expected one anchor, found {count}")
           path.write_text(text.replace(old, new, 1))
           PY
 
-      - name: Commit fix and remove helper
+      - name: Commit source fix and remove helper
+        shell: bash
         run: |
-          git config user.name "openmindai-ci"
-          git config user.email "actions@users.noreply.github.com"
+          git config user.name openmindai-ci
+          git config user.email actions@users.noreply.github.com
           git add src-tauri/src/local_agent.rs
           git rm .github/workflows/project-agent-select-fix.yml
           git diff --cached --check
