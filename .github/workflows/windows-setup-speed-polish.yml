@@ -1,0 +1,74 @@
+name: Windows Setup Speed Polish
+
+on:
+  push:
+    branches:
+      - perf/windows-setup-speed
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: perf/windows-setup-speed
+          fetch-depth: 1
+
+      - name: Apply follow-up fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              if text.count(old) != 1:
+                  raise SystemExit(f'{label}: expected one match, found {text.count(old)}')
+              p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'bootstrap/windows/bootstrap.ps1',
+              '  ChecksumUrl = if ($checksumAsset) { $checksumAsset.browser_download_url } else { $null }',
+              '  ChecksumUrl = $(if ($checksumAsset) { $checksumAsset.browser_download_url } else { $null })',
+              'PowerShell hashtable checksum expression',
+          )
+
+          replace_once(
+              'bootstrap/windows/bootstrap.ps1',
+              '  # Developer mode, or the rare case where no compatible prebuilt\n  # release exists, falls back to source. Only now pay Git/clone and\n  # frontend/Rust build costs.\n',
+              '  if (-not $exePath) {\n    # Developer mode, or the rare case where no compatible prebuilt\n    # release exists, falls back to source. Only now pay Git/clone and\n    # frontend/Rust build costs.\n',
+              'source fallback guard open',
+          )
+          replace_once(
+              'bootstrap/windows/bootstrap.ps1',
+              '  if ($exePath -and -not $NoLaunch) {\n',
+              '  }\n\n  if ($exePath -and -not $NoLaunch) {\n',
+              'source fallback guard close',
+          )
+
+          replace_once(
+              'src-tauri/src/runtime_install.rs',
+              '''            Err(error) => {\n                let message = error.to_string();\n                self.set_state(RuntimeInstallState::Failed, Some(message))?;\n                return Err(error);\n            }\n''',
+              '''            Err(error) => {\n                *self\n                    .cancel_token\n                    .lock()\n                    .map_err(|_| AppError::internal("runtime install cancel lock poisoned"))? = None;\n                let message = error.to_string();\n                self.set_state(RuntimeInstallState::Failed, Some(message))?;\n                return Err(error);\n            }\n''',
+              'runtime cancellation cleanup',
+          )
+          PY
+
+          cargo fmt --manifest-path src-tauri/Cargo.toml
+          cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+          pwsh -NoProfile -NonInteractive -Command '[scriptblock]::Create((Get-Content -Raw "bootstrap/windows/bootstrap.ps1")) | Out-Null'
+
+      - name: Commit production changes and remove helper
+        shell: bash
+        run: |
+          rm .github/workflows/windows-setup-speed-polish.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bootstrap/windows/bootstrap.ps1 src-tauri/src/runtime_install.rs .github/workflows/windows-setup-speed-polish.yml
+          git commit -m "fix(setup): preserve fast path and runtime cleanup"
+          git push origin HEAD:perf/windows-setup-speed
