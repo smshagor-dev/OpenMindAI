@@ -31,7 +31,7 @@ export function Composer(props: {
   enterToSend: boolean;
   streaming: boolean;
   submitting: boolean;
-  addFiles: (files: FileList | null) => void;
+  addFiles: (files: FileList | null) => void | Promise<void>;
   removeAttachment: (id: string) => void;
   sendMessage: () => void;
   stopGeneration: () => void;
@@ -50,6 +50,9 @@ export function Composer(props: {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const audioPreviewUrlsRef = useRef(new Map<string, string>());
+  const attachmentsRef = useRef(props.attachments);
+  attachmentsRef.current = props.attachments;
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [micError, setMicError] = useState<string | null>(null);
@@ -66,9 +69,15 @@ export function Composer(props: {
     () => () => {
       if (recorderRef.current?.state === "recording") recorderRef.current.stop();
       streamRef.current?.getTracks().forEach((track) => track.stop());
+      for (const url of audioPreviewUrlsRef.current.values()) URL.revokeObjectURL(url);
+      audioPreviewUrlsRef.current.clear();
     },
     [],
   );
+
+  useEffect(() => {
+    pruneAudioPreviews(audioPreviewUrlsRef.current, props.attachments);
+  }, [props.attachments]);
 
   const insertTemplate = (template: string) => {
     props.setPrompt(template);
@@ -108,9 +117,12 @@ export function Composer(props: {
       });
       streamRef.current = stream;
       chunksRef.current = [];
-      const preferred = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"]
-        .find((mimeType) => MediaRecorder.isTypeSupported(mimeType));
-      const recorder = preferred ? new MediaRecorder(stream, { mimeType: preferred }) : new MediaRecorder(stream);
+      const preferred = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((mimeType) =>
+        MediaRecorder.isTypeSupported(mimeType),
+      );
+      const recorder = preferred
+        ? new MediaRecorder(stream, { mimeType: preferred })
+        : new MediaRecorder(stream);
       recorderRef.current = recorder;
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) chunksRef.current.push(event.data);
@@ -128,7 +140,9 @@ export function Composer(props: {
         const chunks = chunksRef.current.slice();
         chunksRef.current = [];
         if (chunks.length === 0) return;
-        const blob = new Blob(chunks, { type: recorder.mimeType || chunks[0].type || "audio/webm" });
+        const blob = new Blob(chunks, {
+          type: recorder.mimeType || chunks[0].type || "audio/webm",
+        });
         setTranscribing(true);
         void transcribeAudioBlob(blob, "microphone")
           .then((result) => {
@@ -154,6 +168,34 @@ export function Composer(props: {
     }
   };
 
+  const addSelectedFiles = async (files: FileList | null) => {
+    if (!files) return;
+    for (const file of Array.from(files)) {
+      if (!isAudioPreviewFile(file)) continue;
+      const key = attachmentPreviewKey(file);
+      if (!audioPreviewUrlsRef.current.has(key)) {
+        audioPreviewUrlsRef.current.set(key, URL.createObjectURL(file));
+      }
+    }
+    try {
+      await props.addFiles(files);
+    } finally {
+      window.setTimeout(() => {
+        pruneAudioPreviews(audioPreviewUrlsRef.current, attachmentsRef.current);
+      }, 0);
+    }
+  };
+
+  const removeAttachment = (attachment: AttachmentDraft) => {
+    const key = attachmentPreviewKey(attachment);
+    const previewUrl = audioPreviewUrlsRef.current.get(key);
+    if (previewUrl) {
+      URL.revokeObjectURL(previewUrl);
+      audioPreviewUrlsRef.current.delete(key);
+    }
+    props.removeAttachment(attachment.id);
+  };
+
   return (
     <form
       className="composer"
@@ -166,27 +208,53 @@ export function Composer(props: {
       <div className="composer-box">
         {props.attachments.length ? (
           <div className="attachment-tray">
-            {props.attachments.map((attachment) => (
-              <span className="attachment-chip" key={attachment.id}>
-                {attachment.kind === "image" ? (
-                  <Image size={14} />
-                ) : attachment.kind === "pdf" ? (
-                  <FileText size={14} />
-                ) : attachment.kind === "audio" ? (
-                  <Volume2 size={14} />
-                ) : attachment.kind === "video" ? (
-                  <Video size={14} />
-                ) : (
-                  <Paperclip size={14} />
-                )}
-                <span>{attachment.name}</span>
-                <small>{attachment.kind}</small>
-                <small>{formatBytes(attachment.size)}</small>
-                <button type="button" title="Remove attachment" onClick={() => props.removeAttachment(attachment.id)}>
-                  <X size={13} />
-                </button>
-              </span>
-            ))}
+            {props.attachments.map((attachment) => {
+              const audioPreview =
+                attachment.kind === "audio"
+                  ? audioPreviewUrlsRef.current.get(attachmentPreviewKey(attachment)) ?? null
+                  : null;
+              return (
+                <span className="attachment-chip attachment-chip-media" key={attachment.id}>
+                  {attachment.kind === "image" && attachment.mediaDataUrl ? (
+                    <img
+                      className="attachment-inline-image"
+                      src={attachment.mediaDataUrl}
+                      alt={attachment.name}
+                    />
+                  ) : attachment.kind === "image" ? (
+                    <Image size={14} />
+                  ) : attachment.kind === "pdf" ? (
+                    <FileText size={14} />
+                  ) : attachment.kind === "audio" ? (
+                    <Volume2 size={14} />
+                  ) : attachment.kind === "video" ? (
+                    <Video size={14} />
+                  ) : (
+                    <Paperclip size={14} />
+                  )}
+                  <span>{attachment.name}</span>
+                  <small>{attachment.kind}</small>
+                  <small>{formatBytes(attachment.size)}</small>
+                  {audioPreview ? (
+                    <audio
+                      className="attachment-inline-audio"
+                      controls
+                      preload="metadata"
+                      src={audioPreview}
+                    >
+                      Your system cannot play this local audio format.
+                    </audio>
+                  ) : null}
+                  <button
+                    type="button"
+                    title="Remove attachment"
+                    onClick={() => removeAttachment(attachment)}
+                  >
+                    <X size={13} />
+                  </button>
+                </span>
+              );
+            })}
           </div>
         ) : null}
         <div className="composer-row">
@@ -207,8 +275,9 @@ export function Composer(props: {
             accept="text/*,.md,.txt,.json,.csv,.ts,.tsx,.js,.jsx,.rs,.py,.html,.css,.sql,.toml,.yaml,.yml,application/pdf,image/png,image/jpeg,image/webp,audio/*,.wav,.mp3,.m4a,.aac,.flac,.ogg,.opus,video/*,.mp4,.webm,.mov,.m4v"
             className="hidden-file-input"
             onChange={(event) => {
-              void props.addFiles(event.target.files);
+              const files = event.currentTarget.files;
               event.currentTarget.value = "";
+              void addSelectedFiles(files);
             }}
           />
           <textarea
@@ -230,7 +299,13 @@ export function Composer(props: {
                 void props.sendMessage();
               }
             }}
-            placeholder={recording ? "Listening..." : transcribing ? "Transcribing locally..." : props.placeholder ?? "Ask anything..."}
+            placeholder={
+              recording
+                ? "Listening..."
+                : transcribing
+                  ? "Transcribing locally..."
+                  : (props.placeholder ?? "Ask anything...")
+            }
             rows={1}
           />
           <div className="composer-trailing">
@@ -245,12 +320,20 @@ export function Composer(props: {
             <button
               type="button"
               className={recording ? "icon-button mic-active" : "icon-button"}
-              title={recording ? "Stop recording" : transcribing ? "Transcribing locally" : "Voice input"}
+              title={
+                recording ? "Stop recording" : transcribing ? "Transcribing locally" : "Voice input"
+              }
               aria-pressed={recording}
               disabled={transcribing || props.streaming || props.submitting}
               onClick={() => void toggleMicrophone()}
             >
-              {transcribing ? <Loader2 size={18} className="spin" /> : recording ? <MicOff size={18} /> : <Mic size={18} />}
+              {transcribing ? (
+                <Loader2 size={18} className="spin" />
+              ) : recording ? (
+                <MicOff size={18} />
+              ) : (
+                <Mic size={18} />
+              )}
             </button>
             {props.streaming ? (
               <button type="button" title="Stop" onClick={props.stopGeneration}>
@@ -269,9 +352,40 @@ export function Composer(props: {
           </div>
         </div>
       </div>
-      {micError ? <p className="composer-note composer-note-error">{micError}</p> : props.note ? <p className="composer-note">{props.note}</p> : null}
+      {micError ? (
+        <p className="composer-note composer-note-error">{micError}</p>
+      ) : props.note ? (
+        <p className="composer-note">{props.note}</p>
+      ) : null}
     </form>
   );
+}
+
+function attachmentPreviewKey(file: Pick<File, "name" | "size" | "type"> | AttachmentDraft) {
+  return `${file.name}\u0000${file.size}\u0000${file.type}`;
+}
+
+function isAudioPreviewFile(file: File) {
+  return (
+    file.type.toLowerCase().startsWith("audio/") ||
+    /\.(wav|mp3|m4a|aac|flac|ogg|opus)$/i.test(file.name)
+  );
+}
+
+function pruneAudioPreviews(
+  previews: Map<string, string>,
+  attachments: AttachmentDraft[],
+) {
+  const active = new Set(
+    attachments
+      .filter((attachment) => attachment.kind === "audio")
+      .map((attachment) => attachmentPreviewKey(attachment)),
+  );
+  for (const [key, url] of previews) {
+    if (active.has(key)) continue;
+    URL.revokeObjectURL(url);
+    previews.delete(key);
+  }
 }
 
 function ComposerTools(props: {
@@ -301,7 +415,9 @@ function ComposerTools(props: {
         setGenerationModels({
           image: catalog.entries.some((item) => item.installed && item.entry.kind === "image"),
           video: catalog.entries.some((item) => item.installed && item.entry.kind === "video"),
-          voice: catalog.entries.some((item) => item.installed && item.entry.kind === "text-to-speech"),
+          voice: catalog.entries.some(
+            (item) => item.installed && item.entry.kind === "text-to-speech",
+          ),
         });
       })
       .catch(() => {
@@ -345,25 +461,102 @@ function ComposerTools(props: {
               setOpen(false);
             }}
           >
-            <span className="tool-menu-icon"><Paperclip size={16} /></span>
-            <span className="tool-menu-text"><strong>Attach file</strong><small>Text, PDF, image, audio, or video</small></span>
+            <span className="tool-menu-icon">
+              <Paperclip size={16} />
+            </span>
+            <span className="tool-menu-text">
+              <strong>Attach file</strong>
+              <small>Text, PDF, image, audio, or video</small>
+            </span>
           </button>
-          <button type="button" role="menuitem" onClick={() => { props.onCreateDocument(); setOpen(false); }}>
-            <span className="tool-menu-icon"><FileText size={16} /></span>
-            <span className="tool-menu-text"><strong>Create Word document</strong><small>Generate a .docx from your request</small></span>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              props.onCreateDocument();
+              setOpen(false);
+            }}
+          >
+            <span className="tool-menu-icon">
+              <FileText size={16} />
+            </span>
+            <span className="tool-menu-text">
+              <strong>Create Word document</strong>
+              <small>Generate a .docx from your request</small>
+            </span>
           </button>
-          <button type="button" role="menuitem" onClick={() => { props.onCreatePdf(); setOpen(false); }}>
-            <span className="tool-menu-icon"><FileType size={16} /></span>
-            <span className="tool-menu-text"><strong>Create PDF</strong><small>Generate a formatted PDF</small></span>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              props.onCreatePdf();
+              setOpen(false);
+            }}
+          >
+            <span className="tool-menu-icon">
+              <FileType size={16} />
+            </span>
+            <span className="tool-menu-text">
+              <strong>Create PDF</strong>
+              <small>Generate a formatted PDF</small>
+            </span>
           </button>
-          <button type="button" role="menuitem" onClick={() => { props.onCreateMarkdown(); setOpen(false); }}>
-            <span className="tool-menu-icon"><Hash size={16} /></span>
-            <span className="tool-menu-text"><strong>Create Markdown</strong><small>Generate a .md document</small></span>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              props.onCreateMarkdown();
+              setOpen(false);
+            }}
+          >
+            <span className="tool-menu-icon">
+              <Hash size={16} />
+            </span>
+            <span className="tool-menu-text">
+              <strong>Create Markdown</strong>
+              <small>Generate a .md document</small>
+            </span>
           </button>
-          <GenerationTool enabled={generationModels.image} icon={<Image size={16} />} title="Generate image" description="Create with OpenMindAI Canvas" onClick={() => { props.onGenerateImage(); setOpen(false); }} />
-          <GenerationTool enabled={generationModels.video} icon={<Video size={16} />} title="Generate video" description="Create with OpenMindAI Motion" onClick={() => { props.onGenerateVideo(); setOpen(false); }} />
-          <GenerationTool enabled={generationModels.voice} icon={<Volume2 size={16} />} title="Generate voice" description="Create with OpenMindAI Speak" onClick={() => { props.onGenerateVoice(); setOpen(false); }} />
-          <GenerationTool enabled icon={<Music2 size={16} />} title="Generate music / SFX" description="Create offline with OpenMindAI Soundscape" onClick={() => { props.onGenerateSound(); setOpen(false); }} />
+          <GenerationTool
+            enabled={generationModels.image}
+            icon={<Image size={16} />}
+            title="Generate image"
+            description="Create with OpenMindAI Canvas"
+            onClick={() => {
+              props.onGenerateImage();
+              setOpen(false);
+            }}
+          />
+          <GenerationTool
+            enabled={generationModels.video}
+            icon={<Video size={16} />}
+            title="Generate video"
+            description="Create with OpenMindAI Motion"
+            onClick={() => {
+              props.onGenerateVideo();
+              setOpen(false);
+            }}
+          />
+          <GenerationTool
+            enabled={generationModels.voice}
+            icon={<Volume2 size={16} />}
+            title="Generate voice"
+            description="Create with OpenMindAI Speak"
+            onClick={() => {
+              props.onGenerateVoice();
+              setOpen(false);
+            }}
+          />
+          <GenerationTool
+            enabled
+            icon={<Music2 size={16} />}
+            title="Generate music / SFX"
+            description="Create offline with OpenMindAI Soundscape"
+            onClick={() => {
+              props.onGenerateSound();
+              setOpen(false);
+            }}
+          />
         </div>
       ) : null}
     </div>
@@ -388,7 +581,9 @@ function GenerationTool(props: {
       <span className="tool-menu-text">
         <strong>
           {props.title}
-          {!props.enabled ? <small className="tool-menu-badge tool-menu-badge-required">Model download required</small> : null}
+          {!props.enabled ? (
+            <small className="tool-menu-badge tool-menu-badge-required">Model download required</small>
+          ) : null}
         </strong>
         <small>{props.enabled ? props.description : "Download the model from Settings > Models"}</small>
       </span>
