@@ -1,0 +1,161 @@
+name: Connected Agent CI Fix
+
+on:
+  push:
+    branches:
+      - fix/connected-agent-ci-green
+
+permissions:
+  contents: write
+
+jobs:
+  fix-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Refactor connected agent and validate
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src-tauri/src/connected_agent.rs')
+          text = path.read_text()
+
+          old_model = 'model: &crate::models::ModelRecord,'
+          new_model = 'model: &crate::model_registry::ModelRecord,'
+          assert text.count(old_model) == 1, f'model ref occurrences: {text.count(old_model)}'
+          text = text.replace(old_model, new_model, 1)
+
+          old_signature = '''async fn request_agent_decision(
+              client: &reqwest::Client,
+              endpoint: &str,
+              goal: &str,
+              action_catalog: &[ConnectedActionDefinition],
+              recent_chat: &str,
+              project_context: &str,
+              transcript: &VecDeque<String>,
+              step: usize,
+              allow_tools: bool,
+          ) -> Result<Value, AppError> {
+          '''
+          new_signature = '''struct AgentDecisionRequest<'a> {
+              endpoint: &'a str,
+              goal: &'a str,
+              action_catalog: &'a [ConnectedActionDefinition],
+              recent_chat: &'a str,
+              project_context: &'a str,
+              transcript: &'a VecDeque<String>,
+              step: usize,
+              allow_tools: bool,
+          }
+
+          async fn request_agent_decision(
+              client: &reqwest::Client,
+              request: AgentDecisionRequest<'_>,
+          ) -> Result<Value, AppError> {
+              let AgentDecisionRequest {
+                  endpoint,
+                  goal,
+                  action_catalog,
+                  recent_chat,
+                  project_context,
+                  transcript,
+                  step,
+                  allow_tools,
+              } = request;
+          '''
+          assert text.count(old_signature) == 1, f'signature occurrences: {text.count(old_signature)}'
+          text = text.replace(old_signature, new_signature, 1)
+
+          old_approved = '''            let decision = request_agent_decision(
+                      &state.http,
+                      &endpoint,
+                      content,
+                      action_catalog,
+                      &conversation_context(state, conversation_id)?,
+                      &project_context(state, conversation_id)?,
+                      &transcript,
+                      0,
+                      false,
+                  )
+                  .await?;
+          '''
+          new_approved = '''            let recent_chat = conversation_context(state, conversation_id)?;
+                  let project = project_context(state, conversation_id)?;
+                  let decision = request_agent_decision(
+                      &state.http,
+                      AgentDecisionRequest {
+                          endpoint: &endpoint,
+                          goal: content,
+                          action_catalog,
+                          recent_chat: &recent_chat,
+                          project_context: &project,
+                          transcript: &transcript,
+                          step: 0,
+                          allow_tools: false,
+                      },
+                  )
+                  .await?;
+          '''
+          assert text.count(old_approved) == 1, f'approved call occurrences: {text.count(old_approved)}'
+          text = text.replace(old_approved, new_approved, 1)
+
+          old_loop = '''                result = request_agent_decision(
+                          &state.http,
+                          &endpoint,
+                          content,
+                          action_catalog,
+                          &recent_chat,
+                          &project,
+                          &transcript,
+                          step,
+                          true,
+                      ) => result?,
+          '''
+          new_loop = '''                result = request_agent_decision(
+                          &state.http,
+                          AgentDecisionRequest {
+                              endpoint: &endpoint,
+                              goal: content,
+                              action_catalog,
+                              recent_chat: &recent_chat,
+                              project_context: &project,
+                              transcript: &transcript,
+                              step,
+                              allow_tools: true,
+                          },
+                      ) => result?,
+          '''
+          assert text.count(old_loop) == 1, f'loop call occurrences: {text.count(old_loop)}'
+          text = text.replace(old_loop, new_loop, 1)
+
+          path.write_text(text)
+          PY
+
+          cargo fmt --manifest-path src-tauri/Cargo.toml
+          cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --all-features
+      - name: Commit validated fix
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo 'No changes to commit.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src-tauri/src/connected_agent.rs
+          git commit -m 'fix(agent): satisfy strict connected-app CI'
+          git push origin HEAD:fix/connected-agent-ci-green
