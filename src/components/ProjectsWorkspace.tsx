@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Bot,
-  BriefcaseBusiness,
+  ArrowUp,
   CheckCircle2,
-  Clock3,
   FilePlus2,
+  FileText,
   Files,
   FolderKanban,
-  Link2,
   LoaderCircle,
   MessageSquarePlus,
   MessagesSquare,
@@ -23,10 +21,36 @@ import { api } from "../api";
 import type { Conversation, Project, ProjectFile } from "../types";
 import { formatBytes, formatError, formatTime } from "../lib/format";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { ProjectLocalWorkspace } from "./ProjectLocalWorkspace";
 import { OpenFolderProjectButton } from "./OpenFolderProjectButton";
+import { ProjectLocalWorkspace } from "./ProjectLocalWorkspace";
 
 const MAX_PROJECT_INSTRUCTIONS_CHARS = 20_000;
+const QUICK_TASKS = [
+  {
+    title: "Research and summarize",
+    description: "Pull together the important details and give me a clear brief.",
+    prompt: "Research this project and give me a concise brief with the key findings, risks, and next steps.",
+    icon: Search,
+  },
+  {
+    title: "Create a polished deliverable",
+    description: "Turn the project context into something ready to use or share.",
+    prompt: "Create a polished deliverable from this project context. Choose the most useful format and make it ready to use.",
+    icon: FileText,
+  },
+  {
+    title: "Analyze the project",
+    description: "Review what is here, find gaps, and recommend what to do next.",
+    prompt: "Analyze this project thoroughly, identify the most important gaps or issues, and recommend the next actions in priority order.",
+    icon: Sparkles,
+  },
+  {
+    title: "Fix or improve something",
+    description: "Inspect the workspace, make the changes, and validate the result.",
+    prompt: "Inspect this project, find the highest-impact issue or improvement, implement it, and validate the result.",
+    icon: CheckCircle2,
+  },
+] as const;
 
 export function ProjectsWorkspace(props: {
   conversations: Conversation[];
@@ -35,15 +59,12 @@ export function ProjectsWorkspace(props: {
 }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [activePane, setActivePane] = useState<"overview" | "work">("overview");
   const [workDraft, setWorkDraft] = useState("");
   const [draftName, setDraftName] = useState("");
-  const [linkSearch, setLinkSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [addingFiles, setAddingFiles] = useState(false);
-  const [draggingFiles, setDraggingFiles] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const [deleteFileTarget, setDeleteFileTarget] = useState<ProjectFile | null>(null);
@@ -82,28 +103,10 @@ export function ProjectsWorkspace(props: {
   const projectConversations = useMemo(() => {
     if (!activeProject) return [];
     const allowed = new Set(activeProject.conversationIds);
-    return props.conversations.filter((conversation) => allowed.has(conversation.id));
-  }, [activeProject, props.conversations]);
-
-  const conversationOwner = useMemo(() => {
-    const owners = new Map<string, string>();
-    for (const project of projects) {
-      for (const conversationId of project.conversationIds) {
-        if (!owners.has(conversationId)) owners.set(conversationId, project.name);
-      }
-    }
-    return owners;
-  }, [projects]);
-
-  const linkableConversations = useMemo(() => {
-    if (!activeProject) return [];
-    const linked = new Set(activeProject.conversationIds);
-    const query = linkSearch.trim().toLocaleLowerCase();
     return props.conversations
-      .filter((conversation) => !linked.has(conversation.id))
-      .filter((conversation) => !query || conversation.title.toLocaleLowerCase().includes(query))
-      .slice(0, 50);
-  }, [activeProject, linkSearch, props.conversations]);
+      .filter((conversation) => allowed.has(conversation.id))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }, [activeProject, props.conversations]);
 
   const runAction = async <T,>(key: string, action: () => Promise<T>): Promise<T | undefined> => {
     if (busyAction) return undefined;
@@ -125,8 +128,8 @@ export function ProjectsWorkspace(props: {
     const project = await runAction("create-project", () => api.createProject(name));
     if (!project) return;
     await refreshProjects(project.id).catch((caught) => setError(formatError(caught)));
-    setSavedAt(null);
     setDraftName("");
+    setSavedAt(null);
   };
 
   const updateProject = async (
@@ -152,43 +155,18 @@ export function ProjectsWorkspace(props: {
     setSavedAt(Date.now());
   };
 
-  const createChat = async (draft?: string) => {
-    if (!activeProject) return;
-    const conversation = await runAction("create-chat", async () => {
+  const startWork = async (draft?: string) => {
+    const task = draft?.trim() || workDraft.trim();
+    if (!activeProject || !task || busyAction) return;
+    const conversation = await runAction("start-work", async () => {
       const created = await props.onCreateProjectChat(activeProject);
       await api.linkProjectConversation(activeProject.id, created.id);
       await refreshProjects(activeProject.id);
       return created;
     });
-    if (conversation) props.onOpenConversation(conversation.id, draft);
-    return conversation;
-  };
-
-  const openAgentChat = async (draft?: string) => {
-    const existing = projectConversations[0];
-    if (existing) {
-      props.onOpenConversation(existing.id, draft);
-      return;
-    }
-    await createChat(draft);
-  };
-
-  const linkConversation = async (conversationId: string) => {
-    if (!activeProject) return;
-    const linked = await runAction(`link-${conversationId}`, async () => {
-      await api.linkProjectConversation(activeProject.id, conversationId);
-      await refreshProjects(activeProject.id);
-      return true;
-    });
-    if (linked) setLinkSearch("");
-  };
-
-  const unlinkConversation = async (conversationId: string) => {
-    if (!activeProject) return;
-    await runAction(`unlink-${conversationId}`, async () => {
-      await api.unlinkProjectConversation(activeProject.id, conversationId);
-      await refreshProjects(activeProject.id);
-    });
+    if (!conversation) return;
+    setWorkDraft("");
+    props.onOpenConversation(conversation.id, task);
   };
 
   const addFiles = async (files: FileList | null) => {
@@ -225,7 +203,6 @@ export function ProjectsWorkspace(props: {
       setError(formatError(caught));
     } finally {
       setAddingFiles(false);
-      setDraggingFiles(false);
     }
   };
 
@@ -255,11 +232,10 @@ export function ProjectsWorkspace(props: {
   };
 
   const readyFiles = activeProject?.files.filter((file) => file.status === "ready").length ?? 0;
-  const contextReady = Boolean(activeProject?.instructions.trim()) || readyFiles > 0;
   const busy = busyAction !== null;
 
   return (
-    <div className="projects-workspace projects-workspace-v2">
+    <div className="cg-work-page">
       <input
         ref={fileInputRef}
         type="file"
@@ -271,125 +247,226 @@ export function ProjectsWorkspace(props: {
         }}
       />
 
-      <aside className="projects-list-panel projects-sidebar-v2" aria-label="Projects">
-        <div className="projects-sidebar-heading">
-          <div>
-            <span className="projects-kicker">Workspace</span>
-            <h2>Projects</h2>
-          </div>
-          <span className="projects-count-badge">{projects.length}</span>
-        </div>
-        <p className="projects-sidebar-copy">
-          Keep chats, working files, and instructions together in one focused space.
-        </p>
+      {error ? (
+        <button className="error-banner cg-work-error" onClick={() => setError(null)}>
+          <span>{error}</span>
+          <X size={14} />
+        </button>
+      ) : null}
 
-        <div className="projects-create-row projects-create-row-v2">
-          <input
-            value={draftName}
-            maxLength={120}
-            disabled={busy}
-            onChange={(event) => setDraftName(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && draftName.trim()) void createProject();
-            }}
-            placeholder="New project name"
-            aria-label="New project name"
-          />
-          <button
-            type="button"
-            title="Create project"
-            aria-label="Create project"
-            disabled={busy || !draftName.trim()}
-            onClick={() => void createProject()}
-          >
-            {busyAction === "create-project" ? (
-              <LoaderCircle className="spin" size={16} />
-            ) : (
-              <Plus size={16} />
-            )}
-          </button>
-        </div>
-
-        <OpenFolderProjectButton
-          disabled={busy}
-          onCreateProjectChat={props.onCreateProjectChat}
-          onCreated={async (project) => {
-            await refreshProjects(project.id);
-            setActivePane("work");
-          }}
-          onError={setError}
-        />
-
-        <div className="projects-list">
-          {loading ? (
-            <div className="projects-loading" aria-live="polite">
-              <LoaderCircle className="spin" size={18} /> Loading projects…
-            </div>
-          ) : projects.length === 0 ? (
-            <div className="projects-sidebar-empty">
-              <FolderKanban size={20} />
-              <span>Your projects will appear here.</span>
-            </div>
-          ) : (
-            projects.map((project) => (
-              <button
-                type="button"
-                key={project.id}
-                className={
-                  project.id === activeProject?.id
-                    ? "project-list-item project-list-item-v2 active"
-                    : "project-list-item project-list-item-v2"
-                }
-                onClick={() => {
-                  setActiveId(project.id);
-                  setLinkSearch("");
+      <section className="cg-work-main" aria-label="Work">
+        <div className="cg-work-context-bar">
+          <span className="cg-work-mode-label">Work</span>
+          {projects.length ? (
+            <label className="cg-work-project-select">
+              <FolderKanban size={14} />
+              <select
+                aria-label="Project context"
+                value={activeProject?.id ?? ""}
+                onChange={(event) => {
+                  setActiveId(event.target.value || null);
                   setSavedAt(null);
-                  setActivePane("overview");
                   setWorkDraft("");
                   setError(null);
                 }}
               >
-                <span className="project-list-icon">
-                  <FolderKanban size={16} />
-                </span>
-                <span className="project-list-copy">
-                  <strong>{project.name}</strong>
-                  <small>
-                    {project.conversationIds.length} chats · {project.files.length} files
-                  </small>
-                </span>
-                <small className="project-list-time">{formatTime(project.updatedAt)}</small>
-              </button>
-            ))
-          )}
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
         </div>
-      </aside>
 
-      <section className="project-detail project-detail-v2">
-        {error ? (
-          <button className="error-banner project-error-banner" onClick={() => setError(null)}>
-            <span>{error}</span>
-            <X size={14} />
-          </button>
-        ) : null}
+        <div className="cg-work-hero">
+          <h1>What can I help you get done?</h1>
+        </div>
 
         {loading ? (
-          <div className="project-empty project-loading-detail">
-            <LoaderCircle className="spin" size={30} />
-            <h2>Loading your workspace</h2>
-            <p className="muted">Opening local project data…</p>
+          <div className="cg-work-loading">
+            <LoaderCircle className="spin" size={20} /> Loading your work context…
           </div>
         ) : activeProject ? (
           <>
-            <header className="project-hero">
-              <div className="project-hero-main">
-                <div className="project-hero-icon">
-                  <FolderKanban size={23} />
+            <form
+              className="cg-work-composer"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void startWork();
+              }}
+            >
+              <textarea
+                autoFocus
+                rows={3}
+                value={workDraft}
+                placeholder="Describe a task or deliverable"
+                onChange={(event) => setWorkDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+                    event.preventDefault();
+                    void startWork();
+                  }
+                }}
+              />
+              <div className="cg-work-composer-footer">
+                <div className="cg-work-composer-tools">
+                  <button
+                    type="button"
+                    className="cg-work-round-button"
+                    title="Add project files"
+                    aria-label="Add project files"
+                    disabled={addingFiles || busy}
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    {addingFiles ? (
+                      <LoaderCircle className="spin" size={18} />
+                    ) : (
+                      <Plus size={19} />
+                    )}
+                  </button>
+                  <span className="cg-work-context-pill">
+                    <FolderKanban size={14} />
+                    <span>{activeProject.name}</span>
+                  </span>
+                  {readyFiles > 0 ? (
+                    <span className="cg-work-context-pill cg-work-context-pill-muted">
+                      <Files size={14} /> {readyFiles} file{readyFiles === 1 ? "" : "s"}
+                    </span>
+                  ) : null}
                 </div>
-                <div className="project-hero-copy">
-                  <span className="tools-eyebrow">Project workspace</span>
+                <button
+                  type="submit"
+                  className="cg-work-send"
+                  aria-label="Start work"
+                  title="Start work"
+                  disabled={busy || !workDraft.trim()}
+                >
+                  {busyAction === "start-work" ? (
+                    <LoaderCircle className="spin" size={18} />
+                  ) : (
+                    <ArrowUp size={19} />
+                  )}
+                </button>
+              </div>
+            </form>
+
+            <div className="cg-work-shortcuts" aria-label="Suggested tasks">
+              {QUICK_TASKS.map((task) => {
+                const Icon = task.icon;
+                return (
+                  <button
+                    key={task.title}
+                    type="button"
+                    onClick={() => setWorkDraft(task.prompt)}
+                  >
+                    <span className="cg-work-shortcut-icon">
+                      <Icon size={17} />
+                    </span>
+                    <span>
+                      <strong>{task.title}</strong>
+                      <small>{task.description}</small>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {projectConversations.length ? (
+              <section className="cg-work-recents">
+                <div className="cg-work-section-heading">
+                  <h2>Recent work</h2>
+                </div>
+                <div className="cg-work-recent-list">
+                  {projectConversations.slice(0, 6).map((conversation) => (
+                    <button
+                      type="button"
+                      key={conversation.id}
+                      onClick={() => props.onOpenConversation(conversation.id)}
+                    >
+                      <span className="cg-work-recent-icon">
+                        <MessagesSquare size={16} />
+                      </span>
+                      <span className="cg-work-recent-copy">
+                        <strong>{conversation.title}</strong>
+                        <small>{formatTime(conversation.updatedAt)}</small>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+          </>
+        ) : (
+          <div className="cg-work-empty">
+            <div className="cg-work-empty-icon">
+              <FolderKanban size={24} />
+            </div>
+            <h2>Add a project to start working</h2>
+            <p>Open a local folder or create a project, then describe the outcome you want.</p>
+            <OpenFolderProjectButton
+              disabled={busy}
+              onCreateProjectChat={props.onCreateProjectChat}
+              onCreated={async (project) => {
+                await refreshProjects(project.id);
+              }}
+              onError={setError}
+            />
+          </div>
+        )}
+      </section>
+
+      <details className="cg-work-manage">
+        <summary>
+          <span>
+            <FolderKanban size={15} /> Projects and context
+          </span>
+          <small>Manage folders, files, instructions, and local access</small>
+        </summary>
+        <div className="cg-work-manage-body">
+          <div className="cg-work-project-create">
+            <div className="cg-work-project-create-row">
+              <input
+                value={draftName}
+                maxLength={120}
+                disabled={busy}
+                placeholder="New project name"
+                onChange={(event) => setDraftName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && draftName.trim()) void createProject();
+                }}
+              />
+              <button
+                type="button"
+                disabled={busy || !draftName.trim()}
+                onClick={() => void createProject()}
+              >
+                {busyAction === "create-project" ? (
+                  <LoaderCircle className="spin" size={15} />
+                ) : (
+                  <Plus size={15} />
+                )}
+                Create
+              </button>
+            </div>
+            <OpenFolderProjectButton
+              disabled={busy}
+              onCreateProjectChat={props.onCreateProjectChat}
+              onCreated={async (project) => {
+                await refreshProjects(project.id);
+              }}
+              onError={setError}
+            />
+          </div>
+
+          {activeProject ? (
+            <div className="cg-work-project-settings">
+              <div className="cg-work-project-settings-head">
+                <div>
+                  <span className="cg-work-eyebrow">Current project</span>
                   <input
-                    className="project-title-input project-title-input-v2"
+                    className="cg-work-project-name"
                     value={activeProject.name}
                     maxLength={120}
                     aria-label="Project name"
@@ -405,504 +482,174 @@ export function ProjectsWorkspace(props: {
                       void updateProject(activeProject.id, { name: event.currentTarget.value })
                     }
                   />
-                  <div className="project-meta-row">
-                    <span>
-                      <MessagesSquare size={13} /> {projectConversations.length} chats
-                    </span>
-                    <span>
-                      <Files size={13} /> {activeProject.files.length} files
-                    </span>
-                    <span className={contextReady ? "project-meta-ready" : ""}>
-                      {contextReady ? <CheckCircle2 size={13} /> : <Sparkles size={13} />}
-                      {contextReady ? "Context ready" : "Add context"}
-                    </span>
-                    <span>
-                      <Clock3 size={13} /> {formatTime(activeProject.updatedAt)}
-                    </span>
-                  </div>
                 </div>
-              </div>
-
-              <div className="project-hero-actions">
                 <button
                   type="button"
-                  className="primary-button project-primary-action"
-                  disabled={busy}
-                  onClick={() => void createChat()}
-                >
-                  {busyAction === "create-chat" ? (
-                    <LoaderCircle className="spin" size={16} />
-                  ) : (
-                    <MessageSquarePlus size={16} />
-                  )}
-                  New chat
-                </button>
-                <button
-                  type="button"
-                  className="ghost-button project-secondary-action"
-                  disabled={addingFiles || busy}
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  {addingFiles ? (
-                    <LoaderCircle className="spin" size={16} />
-                  ) : (
-                    <FilePlus2 size={16} />
-                  )}
-                  {addingFiles ? "Adding…" : "Add files"}
-                </button>
-                <button
-                  type="button"
-                  className="project-icon-danger"
-                  aria-label={`Delete ${activeProject.name}`}
+                  className="cg-work-delete-project"
                   title="Delete project"
+                  aria-label={`Delete ${activeProject.name}`}
                   disabled={busy}
                   onClick={() => setDeleteTarget(activeProject)}
                 >
-                  <Trash2 size={16} />
+                  <Trash2 size={15} />
                 </button>
               </div>
-            </header>
 
-            <div className="project-content-tabs" role="tablist" aria-label="Project content">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activePane === "overview"}
-                className={activePane === "overview" ? "active" : ""}
-                onClick={() => setActivePane("overview")}
-              >
-                <FolderKanban size={15} /> Overview
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activePane === "work"}
-                className={activePane === "work" ? "active" : ""}
-                onClick={() => setActivePane("work")}
-              >
-                <BriefcaseBusiness size={15} /> Work
-              </button>
-            </div>
+              <label className="cg-work-instructions">
+                <span>
+                  <Pencil size={14} /> Instructions
+                  <small>
+                    {busyAction === "save-project" ? "Saving…" : savedAt ? "Saved" : "Auto-save"}
+                  </small>
+                </span>
+                <textarea
+                  value={activeProject.instructions}
+                  maxLength={MAX_PROJECT_INSTRUCTIONS_CHARS}
+                  disabled={busyAction === "save-project"}
+                  placeholder="Add private instructions for this project…"
+                  onChange={(event) => {
+                    const instructions = event.target.value;
+                    setProjects((items) =>
+                      items.map((item) =>
+                        item.id === activeProject.id ? { ...item, instructions } : item,
+                      ),
+                    );
+                  }}
+                  onBlur={(event) =>
+                    void updateProject(activeProject.id, {
+                      instructions: event.currentTarget.value,
+                    })
+                  }
+                />
+              </label>
 
-            {activePane === "overview" ? (
-              <>
-                <section className="project-card project-instructions-card">
-                  <div className="project-card-heading">
-                    <div>
-                      <h3>
-                        <Pencil size={15} /> Project instructions
-                      </h3>
-                      <p>
-                        Applied privately to every chat in this project together with ready text
-                        files.
-                      </p>
-                    </div>
-                    <span className="project-save-state">
-                      {busyAction === "save-project" ? (
-                        <>
-                          <LoaderCircle className="spin" size={13} /> Saving…
-                        </>
-                      ) : savedAt ? (
-                        <>
-                          <CheckCircle2 size={13} /> Saved
-                        </>
-                      ) : (
-                        "Auto-save on blur"
-                      )}
-                    </span>
-                  </div>
-                  <textarea
-                    value={activeProject.instructions}
-                    maxLength={MAX_PROJECT_INSTRUCTIONS_CHARS}
-                    disabled={busyAction === "save-project"}
-                    onChange={(event) => {
-                      const instructions = event.target.value;
-                      setProjects((items) =>
-                        items.map((item) =>
-                          item.id === activeProject.id ? { ...item, instructions } : item,
-                        ),
-                      );
-                    }}
-                    onBlur={(event) =>
-                      void updateProject(activeProject.id, {
-                        instructions: event.currentTarget.value,
-                      })
-                    }
-                    placeholder="Example: Keep answers concise, use this project's terminology, and treat attached specs as the source of truth."
-                  />
-                  <div className="project-instructions-footer">
-                    <span>
-                      {activeProject.instructions.length.toLocaleString()} /{" "}
-                      {MAX_PROJECT_INSTRUCTIONS_CHARS.toLocaleString()}
-                    </span>
-                    <span>
-                      {readyFiles
-                        ? `${readyFiles} ready file${readyFiles === 1 ? "" : "s"} also included`
-                        : "No file context yet"}
-                    </span>
-                  </div>
-                </section>
-
-                <div className="project-columns project-columns-v2">
-                  <section className="project-card project-resource-card">
-                    <div className="project-card-heading project-resource-heading">
-                      <div>
-                        <h3>
-                          <MessagesSquare size={15} /> Chats{" "}
-                          <span className="project-section-count">
-                            {projectConversations.length}
-                          </span>
-                        </h3>
-                        <p>Conversations here use this project's context automatically.</p>
-                      </div>
-                    </div>
-
-                    <div className="project-resource-list">
-                      {projectConversations.length ? (
-                        projectConversations.map((conversation) => (
-                          <div
-                            className="project-chat-row project-chat-row-v2"
-                            key={conversation.id}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => props.onOpenConversation(conversation.id)}
-                            >
-                              <span>{conversation.title}</span>
-                              <small>{formatTime(conversation.updatedAt)}</small>
-                            </button>
-                            <button
-                              type="button"
-                              title="Remove from project"
-                              aria-label={`Remove ${conversation.title} from project`}
-                              disabled={busy}
-                              onClick={() => void unlinkConversation(conversation.id)}
-                            >
-                              {busyAction === `unlink-${conversation.id}` ? (
-                                <LoaderCircle className="spin" size={14} />
-                              ) : (
-                                <X size={14} />
-                              )}
-                            </button>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="project-inline-empty">
-                          <MessageSquarePlus size={20} />
-                          <div>
-                            <strong>No project chats yet</strong>
-                            <span>Start a new chat or move an existing one here.</span>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    {props.conversations.length > projectConversations.length ? (
-                      <details className="project-link-menu project-link-menu-v2">
-                        <summary>
-                          <Link2 size={14} /> Add or move existing chat
-                        </summary>
-                        <div className="project-link-popover">
-                          <label className="project-link-search">
-                            <Search size={14} />
-                            <input
-                              value={linkSearch}
-                              onChange={(event) => setLinkSearch(event.target.value)}
-                              placeholder="Search chats"
-                              aria-label="Search chats to add to project"
-                            />
-                          </label>
-                          <div className="project-link-results">
-                            {linkableConversations.length ? (
-                              linkableConversations.map((conversation) => {
-                                const owner = conversationOwner.get(conversation.id);
-                                return (
-                                  <button
-                                    type="button"
-                                    key={conversation.id}
-                                    disabled={busy}
-                                    onClick={() => void linkConversation(conversation.id)}
-                                  >
-                                    <span>
-                                      <strong>{conversation.title}</strong>
-                                      <small>
-                                        {owner
-                                          ? `Move from ${owner}`
-                                          : `Updated ${formatTime(conversation.updatedAt)}`}
-                                      </small>
-                                    </span>
-                                    {busyAction === `link-${conversation.id}` ? (
-                                      <LoaderCircle className="spin" size={14} />
-                                    ) : (
-                                      <Plus size={14} />
-                                    )}
-                                  </button>
-                                );
-                              })
-                            ) : (
-                              <p className="muted project-link-empty">No matching chats.</p>
-                            )}
-                          </div>
-                        </div>
-                      </details>
-                    ) : null}
-                  </section>
-
-                  <section className="project-card project-resource-card">
-                    <div className="project-card-heading project-resource-heading">
-                      <div>
-                        <h3>
-                          <Files size={15} /> Files{" "}
-                          <span className="project-section-count">
-                            {activeProject.files.length}
-                          </span>
-                        </h3>
-                        <p>
-                          Text and code files become bounded local context. Other files stay tracked
-                          locally.
-                        </p>
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      className={draggingFiles ? "project-drop-zone dragging" : "project-drop-zone"}
-                      disabled={addingFiles || busy}
-                      onClick={() => fileInputRef.current?.click()}
-                      onDragEnter={(event) => {
-                        event.preventDefault();
-                        setDraggingFiles(true);
-                      }}
-                      onDragOver={(event) => {
-                        event.preventDefault();
-                        setDraggingFiles(true);
-                      }}
-                      onDragLeave={(event) => {
-                        event.preventDefault();
-                        if (event.currentTarget === event.target) setDraggingFiles(false);
-                      }}
-                      onDrop={(event) => {
-                        event.preventDefault();
-                        setDraggingFiles(false);
-                        void addFiles(event.dataTransfer.files);
-                      }}
-                    >
-                      {addingFiles ? (
-                        <LoaderCircle className="spin" size={20} />
-                      ) : (
-                        <UploadCloud size={20} />
-                      )}
-                      <span>
-                        <strong>{addingFiles ? "Adding files…" : "Drop files here"}</strong>
-                        <small>or choose files from your device</small>
-                      </span>
-                    </button>
-
-                    <div className="project-resource-list project-file-list-v2">
-                      {activeProject.files.length ? (
-                        activeProject.files.map((file) => (
-                          <div className="project-file-row project-file-row-v2" key={file.id}>
-                            <div>
-                              <span>{file.name}</span>
-                              <small>
-                                {formatBytes(file.sizeBytes)}
-                                {file.mimeType ? ` · ${file.mimeType}` : ""}
-                              </small>
-                              {file.error ? (
-                                <small className="project-file-error">{file.error}</small>
-                              ) : null}
-                            </div>
-                            <span
-                              className={`project-file-status project-file-status-${file.status}`}
-                            >
-                              {formatFileStatus(file.status)}
-                            </span>
-                            <button
-                              type="button"
-                              title="Remove file"
-                              aria-label={`Remove ${file.name}`}
-                              disabled={busy}
-                              onClick={() => setDeleteFileTarget(file)}
-                            >
-                              <X size={14} />
-                            </button>
-                          </div>
-                        ))
-                      ) : (
-                        <div className="project-inline-empty project-files-empty">
-                          <Files size={20} />
-                          <div>
-                            <strong>No files yet</strong>
-                            <span>Add notes, specs, code, or reference material.</span>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </section>
-                </div>
-              </>
-            ) : (
-              <div className="project-work-pane project-work-chatgpt">
-                <section className="project-work-start">
-                  <div className="project-work-start-copy">
-                    <span className="project-work-orb">
-                      <Bot size={22} />
-                    </span>
-                    <span className="tools-eyebrow">Project Work</span>
-                    <h2>What should I work on?</h2>
-                    <p>
-                      Describe the outcome. OpenMindAI can inspect the attached project, edit files,
-                      run permitted commands, recover from errors, and validate its changes.
-                    </p>
-                  </div>
-
-                  <form
-                    className="project-work-composer"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      const draft = workDraft.trim();
-                      if (!draft || busy) return;
-                      setWorkDraft("");
-                      void openAgentChat(draft);
-                    }}
+              <div className="cg-work-files-panel">
+                <div className="cg-work-subheading">
+                  <span>
+                    <Files size={14} /> Files
+                  </span>
+                  <button
+                    type="button"
+                    disabled={addingFiles || busy}
+                    onClick={() => fileInputRef.current?.click()}
                   >
-                    <textarea
-                      value={workDraft}
-                      rows={3}
-                      placeholder="Ask OpenMindAI to build, fix, audit, test, or review this project…"
-                      onChange={(event) => setWorkDraft(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (
-                          (event.ctrlKey || event.metaKey) &&
-                          event.key === "Enter" &&
-                          workDraft.trim()
-                        ) {
-                          event.preventDefault();
-                          const draft = workDraft.trim();
-                          setWorkDraft("");
-                          void openAgentChat(draft);
-                        }
-                      }}
-                    />
-                    <div className="project-work-composer-footer">
-                      <div
-                        className="project-work-suggestions"
-                        aria-label="Suggested project tasks"
-                      >
-                        {[
-                          "Audit this project",
-                          "Fix failing tests",
-                          "Review recent changes",
-                          "Find and fix bugs",
-                        ].map((suggestion) => (
-                          <button
-                            type="button"
-                            key={suggestion}
-                            onClick={() => setWorkDraft(suggestion)}
-                          >
-                            {suggestion}
-                          </button>
-                        ))}
-                      </div>
-                      <button
-                        type="submit"
-                        className="primary-button project-work-submit"
-                        disabled={busy || !workDraft.trim()}
-                      >
-                        <Sparkles size={15} /> Continue in chat
-                      </button>
-                    </div>
-                  </form>
-
-                  <div className="project-work-trust-row">
-                    <span>
-                      <CheckCircle2 size={13} /> Uses this project's files and instructions
-                    </span>
-                    <span>
-                      <CheckCircle2 size={13} /> Validates workspace changes before completion
-                    </span>
-                    <span>
-                      <CheckCircle2 size={13} /> Connected apps stay internal
-                    </span>
-                  </div>
-                </section>
-
-                {projectConversations.length ? (
-                  <section className="project-card project-work-recent">
-                    <div className="project-card-heading">
-                      <div>
-                        <h3>
-                          <MessagesSquare size={15} /> Recent work
-                        </h3>
-                        <p>Continue a project conversation without leaving the project context.</p>
-                      </div>
-                    </div>
-                    <div className="project-work-chat-list">
-                      {projectConversations.slice(0, 5).map((conversation) => (
+                    {addingFiles ? (
+                      <LoaderCircle className="spin" size={14} />
+                    ) : (
+                      <FilePlus2 size={14} />
+                    )}
+                    Add files
+                  </button>
+                </div>
+                {activeProject.files.length ? (
+                  <div className="cg-work-file-list">
+                    {activeProject.files.map((file) => (
+                      <div key={file.id} className="cg-work-file-row">
+                        <span className="cg-work-file-icon">
+                          <FileText size={15} />
+                        </span>
+                        <span className="cg-work-file-copy">
+                          <strong>{file.name}</strong>
+                          <small>
+                            {formatBytes(file.sizeBytes)} · {formatFileStatus(file.status)}
+                          </small>
+                        </span>
                         <button
                           type="button"
-                          key={conversation.id}
-                          onClick={() => props.onOpenConversation(conversation.id)}
+                          title="Remove file"
+                          aria-label={`Remove ${file.name}`}
+                          disabled={busy}
+                          onClick={() => setDeleteFileTarget(file)}
                         >
-                          <span>
-                            <strong>{conversation.title}</strong>
-                            <small>{formatTime(conversation.updatedAt)}</small>
-                          </span>
-                          <MessageSquarePlus size={15} />
+                          <X size={14} />
                         </button>
-                      ))}
-                    </div>
-                  </section>
-                ) : null}
-
-                <details className="project-card project-work-access">
-                  <summary>
-                    <span>
-                      <FolderKanban size={15} />
-                      <strong>Workspace access</strong>
-                    </span>
-                    <small>Folders, file access, and optional terminal permissions</small>
-                  </summary>
-                  <div className="project-work-access-body">
-                    <ProjectLocalWorkspace
-                      projectId={activeProject.id}
-                      projectName={activeProject.name}
-                    />
+                      </div>
+                    ))}
                   </div>
-                </details>
+                ) : (
+                  <button
+                    type="button"
+                    className="cg-work-file-empty"
+                    disabled={addingFiles || busy}
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <UploadCloud size={18} />
+                    <span>
+                      <strong>Add files</strong>
+                      <small>Notes, specs, code, or other project context</small>
+                    </span>
+                  </button>
+                )}
               </div>
-            )}
-          </>
-        ) : (
-          <div className="project-empty project-empty-v2">
-            <div className="project-empty-icon">
-              <FolderKanban size={30} />
+
+              <div className="cg-work-project-chat-panel">
+                <div className="cg-work-subheading">
+                  <span>
+                    <MessagesSquare size={14} /> Project chats
+                  </span>
+                  <button type="button" disabled={busy} onClick={() => void startWork("Start a new work thread for this project.")}>
+                    <MessageSquarePlus size={14} /> New work
+                  </button>
+                </div>
+                {projectConversations.length ? (
+                  <div className="cg-work-project-chat-list">
+                    {projectConversations.slice(0, 8).map((conversation) => (
+                      <button
+                        type="button"
+                        key={conversation.id}
+                        onClick={() => props.onOpenConversation(conversation.id)}
+                      >
+                        <span>{conversation.title}</span>
+                        <small>{formatTime(conversation.updatedAt)}</small>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="cg-work-muted">No work threads yet.</p>
+                )}
+              </div>
+
+              <details className="cg-work-local-access">
+                <summary>
+                  <FolderKanban size={14} /> Local workspace access
+                </summary>
+                <ProjectLocalWorkspace projectId={activeProject.id} projectName={activeProject.name} />
+              </details>
             </div>
-            <span className="tools-eyebrow">Focused workspaces</span>
-            <h2>Create your first project</h2>
-            <p className="muted">
-              Group chats, local files, and private instructions so OpenMindAI keeps the right
-              context together.
-            </p>
-            <div className="project-empty-features">
-              <span>
-                <MessagesSquare size={15} /> Related chats
-              </span>
-              <span>
-                <Files size={15} /> Local context files
-              </span>
-              <span>
-                <Sparkles size={15} /> Project instructions
-              </span>
+          ) : null}
+
+          {projects.length > 1 ? (
+            <div className="cg-work-project-grid">
+              {projects.map((project) => (
+                <button
+                  type="button"
+                  key={project.id}
+                  className={project.id === activeProject?.id ? "active" : ""}
+                  onClick={() => {
+                    setActiveId(project.id);
+                    setSavedAt(null);
+                    setWorkDraft("");
+                    setError(null);
+                  }}
+                >
+                  <FolderKanban size={16} />
+                  <span>
+                    <strong>{project.name}</strong>
+                    <small>
+                      {project.conversationIds.length} chats · {project.files.length} files
+                    </small>
+                  </span>
+                </button>
+              ))}
             </div>
-          </div>
-        )}
-      </section>
+          ) : null}
+        </div>
+      </details>
 
       <ConfirmDialog
         open={deleteTarget !== null}
         title={`Delete ${deleteTarget?.name ?? "project"}?`}
-        description="This removes the project and its file links. Conversations are kept and return to your regular chat history."
+        description="This removes the project and its file links. Conversations are kept in chat history."
         confirmLabel="Delete project"
         danger
         onConfirm={() => void deleteProject()}
@@ -992,9 +739,8 @@ async function ingestProjectFile(file: File): Promise<FileIngestion> {
     const text = await file.text();
     const characters = Array.from(text);
     const truncated = characters.length > MAX_PROJECT_FILE_TEXT_CHARS;
-    const trimmed = characters.slice(0, MAX_PROJECT_FILE_TEXT_CHARS).join("");
     return {
-      contentText: trimmed,
+      contentText: characters.slice(0, MAX_PROJECT_FILE_TEXT_CHARS).join(""),
       status: "ready",
       error: truncated ? "Ready for context. Stored preview was truncated." : null,
     };
