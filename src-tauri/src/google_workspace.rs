@@ -519,6 +519,12 @@ pub async fn execute_google_workspace_action(
                 format!("https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}?format=full");
             google_request(&state, Method::GET, &url, None).await
         }
+        "gmail.thread" => {
+            let id = required_str(&params, "threadId")?;
+            let url =
+                format!("https://gmail.googleapis.com/gmail/v1/users/me/threads/{id}?format=full");
+            google_request(&state, Method::GET, &url, None).await
+        }
         "gmail.labels" => {
             google_request(
                 &state,

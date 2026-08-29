@@ -37,6 +37,7 @@ const github = (
 export const CONNECTED_ACTIONS: ConnectedActionDefinition[] = [
   google("gmail.search", "Gmail · Search", "Search the connected mailbox.", false, { query: "newer_than:7d", maxResults: 25 }),
   google("gmail.get", "Gmail · Read message", "Read a Gmail message including headers and body payload.", false, { messageId: "MESSAGE_ID" }),
+  google("gmail.thread", "Gmail · Read thread", "Read a Gmail conversation thread with its messages.", false, { threadId: "THREAD_ID" }),
   google("gmail.labels", "Gmail · List labels", "List mailbox labels.", false, {}),
   google("gmail.send", "Gmail · Send", "Send a new plain-text email.", true, { to: "person@example.com", subject: "Hello", body: "Message body" }),
   google("gmail.reply", "Gmail · Reply", "Reply in the original Gmail thread.", true, { messageId: "MESSAGE_ID", body: "Reply body" }),
