@@ -1,0 +1,94 @@
+name: Project Agent Context Patch
+
+on:
+  push:
+    branches:
+      - feature/project-agent-autonomy-hardening
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feature/project-agent-autonomy-hardening
+
+      - name: Patch context refresh and permission boundary
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src-tauri/src/local_agent.rs')
+          text = path.read_text()
+
+          def replace_once(old, new, label):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one anchor, found {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              'const MAX_AGENT_STEPS: usize = 18;\n',
+              'const MAX_AGENT_STEPS: usize = 28;\n',
+              'step budget',
+          )
+          replace_once(
+              '    let agent_context = load_agent_context(state, conversation_id)?;\n',
+              '    let mut agent_context = load_agent_context(state, conversation_id)?;\n',
+              'mutable agent context',
+          )
+          replace_once(
+              '        "max_tokens": 1600,\n',
+              '        "max_tokens": 4096,\n',
+              'model response budget',
+          )
+
+          old_mutation = '''                    if tool_mutates_workspace(tool) {\n                        validation_required = true;\n                        validation_deferrals = 0;\n                    }\n'''
+          new_mutation = '''                    if tool_mutates_workspace(tool) {\n                        validation_required = true;\n                        validation_deferrals = 0;\n                        if let Err(error) = refresh_agent_workspace_context(state, &mut agent_context) {\n                            push_transcript(\n                                &mut transcript,\n                                format!(\n                                    "HOST WARNING: workspace changed successfully, but the automatic workspace snapshot refresh failed: {}",\n                                    one_line(&error.to_string(), 700)\n                                ),\n                            );\n                        }\n                    }\n'''
+          replace_once(old_mutation, new_mutation, 'workspace refresh hook')
+
+          load_anchor = '''fn recent_conversation_context(\n    database: &Database,\n'''
+          load_replacement = '''fn refresh_agent_workspace_context(\n    state: &State<'_, AppState>,\n    context: &mut AgentContext,\n) -> Result<(), AppError> {\n    let db = state\n        .database\n        .lock()\n        .map_err(|_| AppError::internal("database lock poisoned"))?;\n    context.workspace_context = local_workspace::workspace_context_for_project(&db, &context.project.id)?\n        .unwrap_or_else(|| "No workspace snapshot is available yet.".to_string());\n    Ok(())\n}\n\nfn recent_conversation_context(\n    database: &Database,\n'''
+          replace_once(load_anchor, load_replacement, 'workspace refresh helper')
+
+          replace_once(
+              '''        "git_status" => {\n            let root_id = optional_string(action, "rootId");\n''',
+              '''        "git_status" => {\n            if !config.full_pc_access {\n                return Err(AppError::internal(\n                    "Git inspection requires Full PC + Terminal access for this project",\n                ));\n            }\n            let root_id = optional_string(action, "rootId");\n''',
+              'git status permission',
+          )
+          replace_once(
+              '''        "git_diff" => {\n            let root_id = optional_string(action, "rootId");\n''',
+              '''        "git_diff" => {\n            if !config.full_pc_access {\n                return Err(AppError::internal(\n                    "Git inspection requires Full PC + Terminal access for this project",\n                ));\n            }\n            let root_id = optional_string(action, "rootId");\n''',
+              'git diff permission',
+          )
+
+          replace_once(
+              '- Before editing a Git repository, use git_status when useful; use git_diff to review unstaged/staged changes. These read-only Git tools stay available inside attached roots even when arbitrary terminal access is disabled.\\n\\\n',
+              '- When Full PC + Terminal access is enabled, use git_status before editing a Git repository when useful and git_diff to review unstaged/staged changes. Git inspection remains behind the same explicit local-process permission boundary as terminal execution.\\n\\\n',
+              'git permission prompt',
+          )
+
+          path.write_text(text)
+          PY
+
+      - name: Format and validate
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml
+          git diff --check
+          grep -q 'MAX_AGENT_STEPS: usize = 28' src-tauri/src/local_agent.rs
+          grep -q 'refresh_agent_workspace_context' src-tauri/src/local_agent.rs
+          grep -q '"max_tokens": 4096' src-tauri/src/local_agent.rs
+
+      - name: Commit patch and remove helper
+        run: |
+          git config user.name "openmindai-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git add src-tauri/src/local_agent.rs
+          git rm .github/workflows/project-agent-context-patch.yml
+          git diff --cached --check
+          git commit -m "feat(agent): refresh workspace state during autonomous runs"
+          git push origin HEAD:feature/project-agent-autonomy-hardening
