@@ -158,11 +158,7 @@ fn installed_path_for(
     let download = entry.download.as_ref();
     let primary = installed
         .iter()
-        .find(|model| {
-            model.source_repository.as_deref() == Some(entry.repo.as_str())
-                || (model.family.as_deref() == Some(entry.family.as_str())
-                    && model.quantization.as_deref() == Some(entry.quantization.as_str()))
-        })
+        .find(|model| installed_model_matches_entry(entry, model))
         .map(|model| model.path.clone())
         .or_else(|| download.and_then(|download| find_downloaded_file(root, download)))?;
 
@@ -181,6 +177,19 @@ fn installed_path_for(
     }
 
     Some(primary)
+}
+
+fn installed_model_matches_entry(entry: &ModelCatalogEntry, model: &ModelRecord) -> bool {
+    if model.source_repository.as_deref() == Some(entry.repo.as_str()) {
+        return true;
+    }
+
+    let Some(download) = entry.download.as_ref() else {
+        return false;
+    };
+    let model_path = model.path.replace('\\', "/");
+    let destination = download.destination_dir.trim_end_matches('/');
+    model_path == destination || model_path.starts_with(&format!("{destination}/"))
 }
 
 fn find_downloaded_file(
@@ -476,6 +485,46 @@ mod tests {
             .expect("OpenMindAI Core should exist in the catalog");
         assert!(core.installed);
         assert!(!core.update_available);
+    }
+
+    #[test]
+    fn qwen_catalog_entries_do_not_cross_match_on_family_and_quantization() {
+        let hardware = hardware_with(32 * 1024 * 1024 * 1024, Some(16 * 1024 * 1024 * 1024));
+        let installed = vec![ModelRecord {
+            id: "installed-core".to_string(),
+            name: "OpenMindAI Core".to_string(),
+            family: Some("qwen".to_string()),
+            path: "models/llm/qwen/qwen3-4b/model.gguf".to_string(),
+            format: "gguf".to_string(),
+            quantization: Some("Q4_K_M".to_string()),
+            size_bytes: 2_497_280_256,
+            capabilities: "[\"chat\"]".to_string(),
+            context_length: None,
+            preferred_backend: None,
+            enabled: true,
+            source_repository: None,
+            verification: Some("verified".to_string()),
+            state: crate::model_registry::ModelLifecycleState::Ready,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+        }];
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+
+        let report = check_model_updates(&installed, &hardware, &root).unwrap();
+        let installed_by_id = |id: &str| {
+            report
+                .entries
+                .iter()
+                .find(|item| item.entry.id == id)
+                .expect("catalog model should exist")
+                .installed
+        };
+
+        assert!(installed_by_id("qwen3-4b-q4km"));
+        assert!(!installed_by_id("qwen3-17b-q4km"));
+        assert!(!installed_by_id("qwen3-8b-q4km"));
     }
 
     #[test]
