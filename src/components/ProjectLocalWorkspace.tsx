@@ -152,7 +152,9 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
     const next = await run("attach", () => localWorkspaceApi.attachFolder(props.projectId, selected));
     if (!next) return;
     setStatus(next);
-    const root = next.roots.find((item) => sameDisplayPath(item.path, selected)) ?? next.roots.at(-1);
+    const root =
+      next.roots.find((item) => sameDisplayPath(item.path, selected)) ??
+      next.roots[next.roots.length - 1];
     if (root) setActiveRootId(root.id);
   };
 
