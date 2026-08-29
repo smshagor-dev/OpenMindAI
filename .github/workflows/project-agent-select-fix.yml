@@ -1,0 +1,47 @@
+name: Project Agent Select Fix
+
+on:
+  push:
+    branches:
+      - feature/project-agent-production-hardening
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v7
+        with:
+          ref: feature/project-agent-production-hardening
+
+      - name: Fix cancellable model request select branch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src-tauri/src/local_agent.rs')
+          text = path.read_text()
+          old = '''                step,
+            ).await => result?,
+'''
+          new = '''                step,
+            ) => result?,
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one select await anchor, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Commit fix and remove helper
+        run: |
+          git config user.name "openmindai-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git add src-tauri/src/local_agent.rs
+          git rm .github/workflows/project-agent-select-fix.yml
+          git diff --cached --check
+          git commit -m "fix(agent): await model request through tokio select"
+          git push origin HEAD:feature/project-agent-production-hardening
