@@ -25,21 +25,54 @@ jobs:
           from pathlib import Path
           path = Path('src-tauri/src/local_agent.rs')
           text = path.read_text()
-          old = "    emit_agent_chunk(\n        app,\n        state,\n        conversation_id,\n        &assistant.id,\n        &format!(\"{intro}\\\\n\\\\n\"),\n    )?;\n\n    let loop_result = async {"
-          new = "    if let Err(error) = emit_agent_chunk(\n        app,\n        state,\n        conversation_id,\n        &assistant.id,\n        &format!(\"{intro}\\\\n\\\\n\"),\n    ) {\n        state.active_generations.finish(conversation_id);\n        return Err(error);\n    }\n\n    let loop_result = async {"
-          if old not in text:
-              raise SystemExit('intro emit anchor missing')
-          text = text.replace(old, new, 1)
+
+          intro_pos = text.index('    let intro = format!(')
+          call_start = text.index('    emit_agent_chunk(', intro_pos)
+          loop_marker = '\n\n    let loop_result = async {'
+          call_end = text.index(loop_marker, call_start)
+          call = text[call_start:call_end]
+          if not call.endswith(')?;'):
+              raise SystemExit('unexpected intro emit shape')
+          call_without_try = call[:-2].strip()
+          replacement = (
+              '    if let Err(error) = ' + call_without_try + ' {\n'
+              '        state.active_generations.finish(conversation_id);\n'
+              '        return Err(error);\n'
+              '    }'
+          )
+          text = text[:call_start] + replacement + text[call_end:]
+
           old = "    finish_agent_message(app, state, conversation_id, &assistant.id, status)?;\n    state.active_generations.finish(conversation_id);\n    latest_message(state, conversation_id, &assistant.id)"
           new = "    let finish_result = finish_agent_message(app, state, conversation_id, &assistant.id, status);\n    state.active_generations.finish(conversation_id);\n    finish_result?;\n    latest_message(state, conversation_id, &assistant.id)"
           if old not in text:
               raise SystemExit('finish anchor missing')
           text = text.replace(old, new, 1)
-          old = "    let response = client\n        .post(endpoint)\n        .json(&body)\n        .send()\n        .await\n        .map_err(|error| {\n            AppError::InferenceFailed(format!(\"agent model request failed: {error}\"))\n        })?;"
-          new = "    let url = format!(\"{}/v1/chat/completions\", endpoint.trim_end_matches('/'));\n    let mut retry = 0u8;\n    let response = loop {\n        let response = client\n            .post(&url)\n            .json(&body)\n            .send()\n            .await\n            .map_err(|error| {\n                AppError::InferenceFailed(format!(\"agent model request failed: {error}\"))\n            })?;\n        if response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE && retry < 5 {\n            retry += 1;\n            tokio::time::sleep(Duration::from_millis(600)).await;\n            continue;\n        }\n        break response;\n    };"
-          if old not in text:
-              raise SystemExit('completion request anchor missing')
-          text = text.replace(old, new, 1)
+
+          body_pos = text.index('    let body = json!({', text.index('async fn request_agent_decision'))
+          request_start = text.index('    let response = client', body_pos)
+          status_marker = '\n    let status = response.status();'
+          request_end = text.index(status_marker, request_start)
+          request = (
+              '    let url = format!("{}/v1/chat/completions", endpoint.trim_end_matches(\'/\'));\n'
+              '    let mut retry = 0u8;\n'
+              '    let response = loop {\n'
+              '        let response = client\n'
+              '            .post(&url)\n'
+              '            .json(&body)\n'
+              '            .send()\n'
+              '            .await\n'
+              '            .map_err(|error| {\n'
+              '                AppError::InferenceFailed(format!("agent model request failed: {error}"))\n'
+              '            })?;\n'
+              '        if response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE && retry < 5 {\n'
+              '            retry += 1;\n'
+              '            tokio::time::sleep(Duration::from_millis(600)).await;\n'
+              '            continue;\n'
+              '        }\n'
+              '        break response;\n'
+              '    };'
+          )
+          text = text[:request_start] + request + text[request_end:]
           path.write_text(text)
           PY
           cargo fmt --manifest-path src-tauri/Cargo.toml
