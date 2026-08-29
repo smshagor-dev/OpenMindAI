@@ -1,5 +1,5 @@
 {
-  "catalogVersion": 4,
+  "catalogVersion": 5,
   "models": [
     {
       "id": "qwen3-4b-q4km",
@@ -212,7 +212,7 @@
     },
     {
       "id": "stable-audio-open",
-      "name": "OpenMindAI Soundscape",
+      "name": "OpenMindAI Soundscape Neural (optional)",
       "version": "1.0",
       "family": "stable-audio",
       "kind": "audio",
@@ -229,13 +229,8 @@
       "minRamBytes": 17179869184,
       "minVramBytes": 8589934592,
       "license": "stability-ai-nc",
-      "description": "Local music, ambience, and sound design package.",
-      "download": {
-        "strategy": "singleFile",
-        "filenamePattern": "*.safetensors",
-        "destinationDir": "models/audio/stable-audio",
-        "format": "safetensors"
-      }
+      "description": "Optional gated upstream neural audio package. OpenMindAI does not auto-download it; the built-in Soundscape engine remains available offline without an account or model download.",
+      "download": null
     },
     {
       "id": "wan21-t2v-13b",
