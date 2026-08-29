@@ -18,16 +18,11 @@ jobs:
         with:
           ref: connected-agent-e2e-stabilization
 
-      - name: Install Linux system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Refresh lock against current manifest
-        run: cargo check --manifest-path src-tauri/Cargo.toml --all-features
+        run: cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1 > /dev/null
 
       - name: Commit lock delta
         shell: bash
