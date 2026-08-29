@@ -155,7 +155,8 @@ pub async fn regenerate_project_agent_message(
         user
     };
 
-    run_agent_message(&app, &state, &conversation_id, &user.content, Some(user)).await
+    let content = user.content.clone();
+    run_agent_message(&app, &state, &conversation_id, &content, Some(user)).await
 }
 
 async fn run_agent_message(
