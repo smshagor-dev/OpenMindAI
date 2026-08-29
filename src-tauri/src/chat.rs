@@ -524,8 +524,20 @@ mod tests {
 
         repo.delete_message(&second_user.id).unwrap();
         let messages = repo.list_messages(&conversation.id).unwrap();
-        assert_eq!(messages.iter().filter(|message| message.role == "system").count(), 1);
-        assert_eq!(messages.iter().filter(|message| message.role != "system").count(), 2);
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.role == "system")
+                .count(),
+            1
+        );
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.role != "system")
+                .count(),
+            2
+        );
         assert!(messages.iter().any(|message| message.id == first_user.id));
         assert!(!messages.iter().any(|message| message.id == second_user.id));
     }
@@ -544,15 +556,35 @@ mod tests {
         )
         .unwrap();
         let messages = repo.list_messages(&conversation.id).unwrap();
-        assert_eq!(messages.iter().filter(|message| message.role == "system").count(), 2);
-        assert!(messages.iter().any(|message| message.content.starts_with(PROFILE_CONTEXT_MARKER)));
-        assert!(messages.iter().any(|message| message.content.starts_with(PROJECT_CONTEXT_MARKER)));
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.role == "system")
+                .count(),
+            2
+        );
+        assert!(messages
+            .iter()
+            .any(|message| message.content.starts_with(PROFILE_CONTEXT_MARKER)));
+        assert!(messages
+            .iter()
+            .any(|message| message.content.starts_with(PROJECT_CONTEXT_MARKER)));
 
         repo.upsert_profile_context(&conversation.id, None).unwrap();
         let messages = repo.list_messages(&conversation.id).unwrap();
-        assert_eq!(messages.iter().filter(|message| message.role == "system").count(), 1);
-        assert!(messages.iter().any(|message| message.content.starts_with(PROFILE_CONTEXT_MARKER)));
-        assert!(!messages.iter().any(|message| message.content.starts_with(PROJECT_CONTEXT_MARKER)));
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.role == "system")
+                .count(),
+            1
+        );
+        assert!(messages
+            .iter()
+            .any(|message| message.content.starts_with(PROFILE_CONTEXT_MARKER)));
+        assert!(!messages
+            .iter()
+            .any(|message| message.content.starts_with(PROJECT_CONTEXT_MARKER)));
     }
 
     #[test]
