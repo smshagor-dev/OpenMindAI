@@ -1,0 +1,61 @@
+name: Project Workspace Final Hardening
+
+on:
+  push:
+    branches:
+      - project-local-workspace-access
+    paths:
+      - .github/workflows/project-workspace-final-hardening.yml
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: project-local-workspace-access
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Bound model context and clean project settings
+        shell: python
+        run: |
+          from pathlib import Path
+
+          workspace = Path("src-tauri/src/local_workspace.rs")
+          text = workspace.read_text()
+          text = text.replace("const WORKSPACE_CONTEXT_PATHS: usize = 120;", "const WORKSPACE_CONTEXT_PATHS: usize = 80;")
+          text = text.replace("const WORKSPACE_CONTEXT_FILE_CHARS: usize = 3_000;", "const WORKSPACE_CONTEXT_FILE_CHARS: usize = 1_200;")
+          text = text.replace("const WORKSPACE_CONTEXT_TOTAL_CHARS: usize = 18_000;", "const WORKSPACE_CONTEXT_TOTAL_CHARS: usize = 7_000;")
+          anchor = "fn lock_database(state: &State<AppState>)"
+          helper = """pub(crate) fn clear_project_workspace_config(\n    database: &Database,\n    project_id: &str,\n) -> Result<(), AppError> {\n    database.connection().execute(\n        \"DELETE FROM app_settings WHERE key = ?1\",\n        params![config_key(project_id)],\n    )?;\n    Ok(())\n}\n\n"""
+          if "pub(crate) fn clear_project_workspace_config" not in text:
+              if anchor not in text:
+                  raise SystemExit("local workspace helper anchor missing")
+              text = text.replace(anchor, helper + anchor, 1)
+          workspace.write_text(text)
+
+          legacy = Path("src-tauri/src/lib_legacy.rs")
+          text = legacy.read_text()
+          old = """    repo.delete_project(&project_id)?;\n    let chats = ChatRepository::new(&db);"""
+          new = """    repo.delete_project(&project_id)?;\n    local_workspace::clear_project_workspace_config(&db, &project_id)?;\n    let chats = ChatRepository::new(&db);"""
+          if new not in text:
+              if old not in text:
+                  raise SystemExit("delete project cleanup anchor missing")
+              text = text.replace(old, new, 1)
+          legacy.write_text(text)
+
+          Path(".github/workflows/project-workspace-final-hardening.yml").unlink()
+      - name: Format Rust
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+      - name: Commit hardening
+        shell: bash
+        run: |
+          git config user.name openmindai-ci
+          git config user.email actions@users.noreply.github.com
+          git add -A
+          git commit -m "fix(projects): bound local context and clean access state"
+          git push origin HEAD:project-local-workspace-access
