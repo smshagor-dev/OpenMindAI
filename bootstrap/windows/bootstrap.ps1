@@ -201,37 +201,48 @@ function Resolve-PrebuiltRelease {
     Write-Info "Latest release ($($release.tag_name)) has no Windows x64 installer asset -- falling back to source build."
     return $null
   }
-  return [PSCustomObject]@{
-    Version = $release.tag_name
-    Name    = $asset.name
-    Url     = $asset.browser_download_url
-  }
+  $checksumAsset = $release.assets | Where-Object { $_.name -eq "SHA256SUMS.txt" } | Select-Object -First 1
+return [PSCustomObject]@{
+  Version     = $release.tag_name
+  Name        = $asset.name
+  Url         = $asset.browser_download_url
+  Digest      = $asset.digest
+  ChecksumUrl = if ($checksumAsset) { $checksumAsset.browser_download_url } else { $null }
+}
 }
 
 function Install-PrebuiltRelease($asset, [string]$installDir) {
   Write-Step "Downloading OpenMindAI $($asset.Version) ($($asset.Name))..."
   New-Item -ItemType Directory -Force -Path $installDir | Out-Null
   $installerPath = Join-Path $installDir $asset.Name
+  $downloadTimer = [System.Diagnostics.Stopwatch]::StartNew()
   Invoke-WebRequest -UseBasicParsing -Uri $asset.Url -OutFile $installerPath
+  $downloadTimer.Stop()
+  Write-Info ("Installer download completed in {0:N1}s." -f $downloadTimer.Elapsed.TotalSeconds)
 
-  $checksumAsset = $null
-  try {
-    $checksumAsset = (Invoke-RestMethod -UseBasicParsing -Uri "https://api.github.com/repos/$RepoOwner/$RepoName/releases/latest").assets |
-      Where-Object { $_.name -eq "SHA256SUMS.txt" } | Select-Object -First 1
-  } catch {}
-  if ($checksumAsset) {
-    Write-Info "Verifying checksum..."
-    $sums = Invoke-WebRequest -UseBasicParsing -Uri $checksumAsset.browser_download_url | Select-Object -ExpandProperty Content
-    $expected = ($sums -split "`n" | Where-Object { $_ -match [regex]::Escape($asset.Name) } | Select-Object -First 1) -split '\s+' | Select-Object -First 1
-    $actual = (Get-FileHash -Path $installerPath -Algorithm SHA256).Hash
-    if ($expected -and ($actual -notlike "$expected*")) {
-      Remove-Item $installerPath -Force
-      throw "Checksum mismatch for downloaded installer -- refusing to run it."
-    }
-    Write-Info "Checksum verified."
-  } else {
-    Write-Warn "No published checksum found for this release -- installing unverified."
+  $expected = $null
+  if ($asset.Digest -and $asset.Digest -match '^sha256:([0-9a-fA-F]{64})$') {
+    $expected = $matches[1]
+  } elseif ($asset.ChecksumUrl) {
+    $sums = Invoke-WebRequest -UseBasicParsing -Uri $asset.ChecksumUrl | Select-Object -ExpandProperty Content
+    $line = $sums -split "`n" | Where-Object { $_ -match [regex]::Escape($asset.Name) } | Select-Object -First 1
+    if ($line) { $expected = ($line -split '\s+' | Select-Object -First 1) }
   }
+
+  if (-not $expected) {
+    Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+    throw "No SHA-256 digest is published for this installer -- refusing to run an unverified download."
+  }
+
+  Write-Info "Verifying installer SHA-256..."
+  $verifyTimer = [System.Diagnostics.Stopwatch]::StartNew()
+  $actual = (Get-FileHash -Path $installerPath -Algorithm SHA256).Hash
+  $verifyTimer.Stop()
+  if ($actual -ine $expected) {
+    Remove-Item $installerPath -Force
+    throw "Checksum mismatch for downloaded installer -- refusing to run it."
+  }
+  Write-Info ("Checksum verified in {0:N1}s." -f $verifyTimer.Elapsed.TotalSeconds)
 
   Write-Step "Running installer..."
   Start-Process -FilePath $installerPath -Wait
@@ -296,8 +307,13 @@ function Build-FromSource([string]$sourceRoot) {
       # ($exePath = Build-FromSource ...), thousands of npm/cargo log lines
       # would otherwise get silently appended to the return value, turning
       # it into an array instead of the single path string it's meant to be.
-      & npm install | Out-Host
+      if (Test-Path (Join-Path $sourceRoot "package-lock.json")) {
+      & npm ci --no-audit --no-fund | Out-Host
+      if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
+    } else {
+      & npm install --no-audit --no-fund | Out-Host
       if ($LASTEXITCODE -ne 0) { throw "npm install failed" }
+    }
     }
     Write-Step "Building OpenMindAI (this can take several minutes)..."
     & npm run tauri -- build --no-bundle | Out-Host
@@ -322,13 +338,44 @@ try {
   Write-Info $(if ($online) { "Internet: available" } else { "Internet: unavailable -- using what's already installed" })
 
   $sourceRoot = Resolve-SourceRoot
+  $sourceValid = Test-ValidOpenMindAISource $sourceRoot
+  $existingExe = $null
+  if ($sourceValid -and (Get-Command cargo -ErrorAction SilentlyContinue)) {
+    $existingExe = Find-ExistingBuild $sourceRoot
+  }
+  $exePath = $null
 
-  if (-not (Test-ValidOpenMindAISource $sourceRoot)) {
+  # Normal users take the small prebuilt release path first. Do not
+  # install Git, clone source, or invoke Cargo unless source fallback
+  # is actually required.
+  if (-not $DeveloperMode) {
+    if ($existingExe) {
+      Write-Info "Using existing OpenMindAI build."
+      $exePath = $existingExe
+    } elseif ($online) {
+      $release = Resolve-PrebuiltRelease
+      if ($release) {
+        $installDir = Join-Path $LauncherRoot "release-download"
+        Install-PrebuiltRelease $release $installDir | Out-Null
+        Write-Step "OpenMindAI installed. Launch it from the Start Menu."
+        if (-not $NoLaunch) { exit 0 }
+        Write-Host ""
+        Write-Host "OpenMindAI is ready." -ForegroundColor Green
+        exit 0
+      }
+    }
+  }
+
+  # Developer mode, or the rare case where no compatible prebuilt
+  # release exists, falls back to source. Only now pay Git/clone and
+  # frontend/Rust build costs.
+  if (-not $sourceValid) {
     if (-not $online) {
       throw "OpenMindAI isn't installed yet and no internet connection is available to set it up. Connect to the internet and run setup again."
     }
     if (-not (Test-GitAvailable)) { Install-Git }
     Sync-Source $sourceRoot
+    $sourceValid = $true
   } else {
     Write-Info "Existing OpenMindAI source found at $sourceRoot"
     if ((Test-Path (Join-Path $sourceRoot ".git")) -and (Test-GitAvailable) -and $online) {
@@ -336,23 +383,14 @@ try {
     }
   }
 
-  # Already built? Reuse it -- this is the fast "second run" / offline path.
-  $existingExe = Find-ExistingBuild $sourceRoot
-  $exePath = $null
+  if (-not $existingExe -and (Get-Command cargo -ErrorAction SilentlyContinue)) {
+    $existingExe = Find-ExistingBuild $sourceRoot
+  }
 
   if ($existingExe -and -not $DeveloperMode) {
-    Write-Info "Using existing OpenMindAI build."
     $exePath = $existingExe
-  } elseif ($online) {
-    $release = Resolve-PrebuiltRelease
-    if ($release) {
-      $installDir = Join-Path $LauncherRoot "release-download"
-      Install-PrebuiltRelease $release $installDir | Out-Null
-      Write-Step "OpenMindAI installed. Launch it from the Start Menu."
-      if (-not $NoLaunch) { exit 0 }
-    } else {
-      $exePath = Build-FromSource $sourceRoot
-    }
+  } elseif ($DeveloperMode -or $online) {
+    $exePath = Build-FromSource $sourceRoot
   } elseif ($existingExe) {
     $exePath = $existingExe
   } else {
