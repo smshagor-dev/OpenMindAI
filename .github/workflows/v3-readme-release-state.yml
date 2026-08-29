@@ -14,44 +14,16 @@ jobs:
   correct-readme:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout release branch
+        uses: actions/checkout@v7
         with:
           ref: release/v3.0.0-readiness
           fetch-depth: 0
 
-      - name: Keep release-candidate documentation truthful
-        shell: python
-        run: |
-          from pathlib import Path
-          path = Path("README.md")
-          text = path.read_text(encoding="utf-8")
-          start = text.index("## Current Release\n")
-          end = text.index("\n## What It Can Do\n", start)
-          replacement = '''## Current Release
+      - name: Correct README release state
+        run: python3 scripts/fix-v3-readme.py
 
-**Current source version: v3.0.0 (release candidate)**
-
-**Latest public release: [v2.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v2.0.0)**
-
-The v3.0.0 source candidate turns Projects into an active local development workspace: a folder can be opened as a project, the local agent can inspect and edit files, run explicitly permitted terminal commands, observe failures, retry repairs, validate changes, and inspect Git state while preserving the Full PC + Terminal permission boundary.
-
-The public download table stays on v2.0.0 until the signed v3.0.0 release pipeline has produced and verified the installer, updater signature, metadata, checksums, clean install, and v2-to-v3 upgrade path.
-
-| Platform | Installation path | Current status |
-| --- | --- | --- |
-| Windows x64 | [OpenMindAI v2.0.0 installer](https://github.com/smshagor-dev/OpenMindAI/releases/download/v2.0.0/OpenMindAI_2.0.0_x64-setup.exe) | Latest public Windows release |
-| Windows | [Git bootstrap](https://github.com/smshagor-dev/OpenMindAI/releases/download/v2.0.0/OpenMindAI-Setup.bat) | Available |
-| Linux x64 | [Shell bootstrap](https://github.com/smshagor-dev/OpenMindAI/releases/download/v2.0.0/openmindai-setup.sh) | Implemented; broader hardware validation in progress |
-| macOS | [Command bootstrap](https://github.com/smshagor-dev/OpenMindAI/releases/download/v2.0.0/OpenMindAI-Setup.command) | Implemented; broader hardware validation in progress |
-| Linux ARM64 | — | Not currently supported |
-
-For release notes and downloadable assets, use the [Releases](https://github.com/smshagor-dev/OpenMindAI/releases) page rather than third-party mirrors.
-
-> Production v3.0.0 remains intentionally unpublished until the signing and installer trust gates pass. The release workflow fails closed when signing material is unavailable.
-'''
-          path.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
-
-      - name: Validate and remove helper
+      - name: Validate and commit
         shell: bash
         run: |
           set -euo pipefail
@@ -60,7 +32,7 @@ For release notes and downloadable assets, use the [Releases](https://github.com
           git diff --check
           git config user.name "openmindai-ci"
           git config user.email "actions@users.noreply.github.com"
-          git rm .github/workflows/v3-readme-release-state.yml
+          git rm .github/workflows/v3-readme-release-state.yml scripts/fix-v3-readme.py
           git add README.md
           git commit -m "docs(release): mark v3.0.0 as release candidate"
           git push origin HEAD:release/v3.0.0-readiness
