@@ -17,6 +17,11 @@ export function OpenFolderProjectButton(props: {
   const openFolderProject = async () => {
     if (busy || props.disabled) return;
     setBusy(true);
+
+    let project: Project | null = null;
+    let conversation: Conversation | null = null;
+    let committed = false;
+
     try {
       const selected = await open({
         directory: true,
@@ -26,7 +31,7 @@ export function OpenFolderProjectButton(props: {
       if (!selected || Array.isArray(selected)) return;
 
       const projectName = folderName(selected) || "Local project";
-      const project = await api.createProject(projectName);
+      project = await api.createProject(projectName);
       await localWorkspaceApi.attachFolder(project.id, selected);
 
       const grantFullAccess = window.confirm(
@@ -36,11 +41,39 @@ export function OpenFolderProjectButton(props: {
         await localWorkspaceApi.setFullAccess(project.id, true, true);
       }
 
-      const conversation = await props.onCreateProjectChat(project);
+      conversation = await props.onCreateProjectChat(project);
       await api.linkProjectConversation(project.id, conversation.id);
+      // From this point the durable Project ↔ chat relationship is complete; UI refresh failures must not roll it back.
+      committed = true;
       await props.onCreated(project, conversation);
     } catch (caught) {
-      props.onError(formatError(caught));
+      const failure = formatError(caught);
+      if (committed) {
+        props.onError(failure);
+        return;
+      }
+
+      const cleanupFailures: string[] = [];
+      if (conversation) {
+        try {
+          await api.deleteConversation(conversation.id);
+        } catch (cleanupError) {
+          cleanupFailures.push(`chat cleanup failed: ${formatError(cleanupError)}`);
+        }
+      }
+      if (project) {
+        try {
+          await api.deleteProject(project.id);
+        } catch (cleanupError) {
+          cleanupFailures.push(`project cleanup failed: ${formatError(cleanupError)}`);
+        }
+      }
+
+      props.onError(
+        cleanupFailures.length > 0
+          ? `${failure} Cleanup warning: ${cleanupFailures.join("; ")}`
+          : failure,
+      );
     } finally {
       setBusy(false);
     }

@@ -271,7 +271,7 @@ async fn run_agent_message(
                 &agent_context,
                 &transcript,
                 step,
-            ).await => result?,
+            ) => result?,
                 _ = cancellation.cancelled() => {
                     status = "cancelled";
                     emit_agent_chunk(app, state, conversation_id, &assistant.id, "Agent run cancelled.")?;
