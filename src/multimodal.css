@@ -1,0 +1,29 @@
+.artifact-inline-image {
+  display: block;
+  width: min(100%, 720px);
+  max-height: 520px;
+  margin-top: 12px;
+  border-radius: 12px;
+  object-fit: contain;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+}
+
+.artifact-inline-audio {
+  display: block;
+  width: min(100%, 640px);
+  margin-top: 12px;
+}
+
+.mic-active {
+  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 24%, transparent);
+}
+
+.composer-note-error {
+  color: #c43c35;
+}
+
+@media (prefers-color-scheme: dark) {
+  .composer-note-error {
+    color: #ff8d86;
+  }
+}
