@@ -1,5 +1,6 @@
 import type { Message } from "../types";
 import { formatBytes } from "./format";
+import { analyzeVideoFile, transcribeAudioFile } from "./media";
 import { extractPdfText } from "./pdf";
 
 export type ChatMode =
@@ -12,24 +13,26 @@ export type ChatMode =
   | "image"
   | "video"
   | "voice"
+  | "sound"
   | "vision";
-
-export interface AttachmentDraft {
-  id: string;
-  name: string;
-  size: number;
-  type: string;
-  kind: "text" | "image" | "pdf" | "binary";
-  contentPreview: string | null;
-  mediaDataUrl: string | null;
-  mediaMimeType: "image/png" | "image/jpeg" | null;
-}
 
 export interface InferenceMediaDraft {
   kind: "image";
   name: string;
   mimeType: "image/png" | "image/jpeg";
   dataUrl: string;
+}
+
+export interface AttachmentDraft {
+  id: string;
+  name: string;
+  size: number;
+  type: string;
+  kind: "text" | "image" | "pdf" | "audio" | "video" | "binary";
+  contentPreview: string | null;
+  mediaDataUrl: string | null;
+  mediaMimeType: "image/png" | "image/jpeg" | null;
+  mediaItems: InferenceMediaDraft[];
 }
 
 export interface UserMessageDisplay {
@@ -45,6 +48,7 @@ const ATTACHMENT_TRUNCATION_MARKER = "\n[truncated to fit local chat context]";
 const MAX_VISION_IMAGE_INPUT_BYTES = 16 * 1024 * 1024;
 const MAX_VISION_IMAGE_DATA_URL_CHARS = 6_000_000;
 const MAX_VISION_IMAGE_DIMENSION = 2048;
+const MAX_INFERENCE_MEDIA_ITEMS = 4;
 const SUPPORTED_VISION_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const CHAT_MODES: ChatMode[] = [
   "search",
@@ -55,6 +59,7 @@ const CHAT_MODES: ChatMode[] = [
   "image",
   "video",
   "voice",
+  "sound",
   "vision",
 ];
 
@@ -160,7 +165,7 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
 
   if (kind === "binary") {
     throw new Error(
-      "This file type cannot be read by local chat. Attach text/code, PDF, PNG, JPEG, or WebP files.",
+      "This file type cannot be read by local chat. Attach text/code, PDF, image, audio, or video files.",
     );
   }
   if (isTextLike && file.size > MAX_TEXT_ATTACHMENT_BYTES) {
@@ -170,31 +175,55 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
   let contentPreview: string | null = null;
   let mediaDataUrl: string | null = null;
   let mediaMimeType: "image/png" | "image/jpeg" | null = null;
+  let mediaItems: InferenceMediaDraft[] = [];
+
   if (isTextLike) {
-    contentPreview = takeAttachmentContext(
-      await file.text(),
-      MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS,
-    );
+    contentPreview = takeAttachmentContext(await file.text(), MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS);
   } else if (kind === "image") {
     const encoded = await encodeVisionImage(file);
     mediaDataUrl = encoded.dataUrl;
     mediaMimeType = encoded.mimeType;
-    contentPreview = `[Image attached: ${file.name}. Optimized image bytes are supplied only to the current local vision request and are not stored in chat history.]`;
+    mediaItems = [
+      {
+        kind: "image",
+        name: file.name,
+        mimeType: encoded.mimeType,
+        dataUrl: encoded.dataUrl,
+      },
+    ];
+    contentPreview = `[Image attached: ${file.name}. The actual optimized image bytes are supplied to OpenMindAI Lens for this request.]`;
   } else if (kind === "pdf") {
-    try {
-      const extracted = await extractPdfText(file);
-      const status = [
-        `${extracted.pageCount} page${extracted.pageCount === 1 ? "" : "s"}`,
-        `${extracted.pagesRead} processed`,
-        extracted.truncated ? "text truncated to fit local chat context" : null,
-      ]
-        .filter(Boolean)
-        .join(", ");
-      contentPreview = `[PDF text extracted locally: ${status}. Page markers below correspond to the original PDF.]\n\n${extracted.text}`;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      contentPreview = `[PDF attached: ${file.name}. Local PDF extraction could not produce usable text: ${message} Do not claim to have read inaccessible pages. If this is a scanned/image-only PDF, use OCR/vision once OpenMindAI Lens is available.]`;
-    }
+    const extracted = await extractPdfText(file);
+    mediaItems = extracted.visionPages.map((page) => ({
+      kind: "image",
+      name: `${file.name} - page ${page.pageNumber}`,
+      mimeType: page.mimeType,
+      dataUrl: page.dataUrl,
+    }));
+    const status = [
+      `${extracted.pageCount} page${extracted.pageCount === 1 ? "" : "s"}`,
+      `${extracted.pagesRead} processed`,
+      extracted.scannedPages.length ? `${extracted.scannedPages.length} image/scanned page(s) detected` : null,
+      extracted.visionPages.length ? `${extracted.visionPages.length} representative page(s) sent to Lens` : null,
+      extracted.truncated ? "text truncated to fit local chat context" : null,
+    ]
+      .filter(Boolean)
+      .join(", ");
+    const body = extracted.text
+      ? extracted.text
+      : "[No reliable selectable text was found. Use the supplied rendered PDF page images for visual/OCR analysis.]";
+    contentPreview = `[PDF processed locally: ${status}. Page markers below correspond to the original PDF.]\n\n${body}`;
+  } else if (kind === "audio") {
+    const transcript = await transcribeAudioFile(file);
+    const language = transcript.language ? `, language ${transcript.language}` : "";
+    contentPreview = `[Audio transcribed locally with OpenMindAI Hear: ${transcript.durationSeconds.toFixed(1)} seconds${language}]\n\n${transcript.text}`;
+  } else if (kind === "video") {
+    const analysis = await analyzeVideoFile(file);
+    mediaItems = analysis.frames;
+    const transcript = analysis.transcript?.text
+      ? `\n\n--- Audio transcript ---\n${analysis.transcript.text}`
+      : "\n\n[No local audio transcript was available; analyze the supplied representative video frames.]";
+    contentPreview = `[Video processed locally: ${analysis.durationSeconds.toFixed(1)} seconds, ${analysis.frames.length} representative frame(s) sent to OpenMindAI Lens.]${transcript}`;
   }
 
   return {
@@ -206,30 +235,15 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
     contentPreview,
     mediaDataUrl,
     mediaMimeType,
+    mediaItems,
   };
 }
 
 export function attachmentMedia(attachments: AttachmentDraft[]): InferenceMediaDraft[] {
-  return attachments.flatMap((attachment) => {
-    if (attachment.kind !== "image" || !attachment.mediaDataUrl || !attachment.mediaMimeType) {
-      return [];
-    }
-    return [
-      {
-        kind: "image" as const,
-        name: attachment.name,
-        mimeType: attachment.mediaMimeType,
-        dataUrl: attachment.mediaDataUrl,
-      },
-    ];
-  });
+  return attachments.flatMap((attachment) => attachment.mediaItems).slice(0, MAX_INFERENCE_MEDIA_ITEMS);
 }
 
-export function buildMessageContent(
-  prompt: string,
-  attachments: AttachmentDraft[],
-  mode: ChatMode,
-) {
+export function buildMessageContent(prompt: string, attachments: AttachmentDraft[], mode: ChatMode) {
   const modePrefix = modeInstruction(mode);
   if (attachments.length === 0) return [modePrefix, prompt].filter(Boolean).join("\n\n");
 
@@ -288,7 +302,7 @@ export function userMessageDisplay(content: string): UserMessageDisplay {
   const prompt = (attachmentStart >= 0 ? visible.slice(0, attachmentStart) : visible).trim();
   const attachmentNames = Array.from(
     attachmentPayload.matchAll(
-      /^\[Attachment:\s*(.+?),\s*(?:text|image|pdf|binary),\s*[^,\]]+,\s*[^\]]+\]$/gm,
+      /^\[Attachment:\s*(.+?),\s*(?:text|image|pdf|audio|video|binary),\s*[^,\]]+,\s*[^\]]+\]$/gm,
     ),
     (match) => match[1].trim(),
   );
@@ -307,7 +321,7 @@ export function userMessageDisplay(content: string): UserMessageDisplay {
 
 export function inferChatMode(prompt: string, attachments: AttachmentDraft[]): ChatMode {
   const text = prompt.toLowerCase();
-  if (attachments.some((attachment) => attachment.kind === "image")) return "vision";
+  if (attachments.some((attachment) => attachment.mediaItems.length > 0)) return "vision";
   if (attachments.some((attachment) => attachment.kind === "pdf")) return "pdf";
   if (/\b(web|search|google|latest|today|current|news|source|sources|verify)\b/.test(text))
     return "search";
@@ -334,6 +348,12 @@ export function inferChatMode(prompt: string, attachments: AttachmentDraft[]): C
     )
   )
     return "voice";
+  if (
+    /\b(generate music|create music|make music|sound effect|sound effects|sfx|soundscape|ambience|ambient sound|background music|notification sound)\b/.test(
+      text,
+    )
+  )
+    return "sound";
   if (/\b(think|reason|solve|debug|step by step|carefully)\b/.test(text)) return "thinking";
   return "chat";
 }
@@ -363,6 +383,12 @@ export function titleFromPrompt(prompt: string) {
 export function attachmentKind(file: File): AttachmentDraft["kind"] {
   if (file.type.startsWith("image/") || /\.(png|jpe?g|webp)$/i.test(file.name)) return "image";
   if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) return "pdf";
+  if (file.type.startsWith("audio/") || /\.(wav|mp3|m4a|aac|flac|ogg|opus)$/i.test(file.name)) {
+    return "audio";
+  }
+  if (file.type.startsWith("video/") || /\.(mp4|webm|mov|m4v|mpeg|mpg)$/i.test(file.name)) {
+    return "video";
+  }
   if (
     file.type.startsWith("text/") ||
     /\.(md|txt|json|csv|ts|tsx|js|jsx|rs|py|html|css|sql|toml|yaml|yml)$/i.test(file.name)
@@ -391,7 +417,7 @@ export function modeInstruction(mode: ChatMode) {
     case "pdf":
       return [
         "[Mode: PDF]",
-        "If an attached PDF includes locally extracted text, answer from that text and use the supplied Page markers when page-specific attribution helps. Never claim to have read pages whose text was unavailable. If the request is to create/export a PDF instead, produce clean PDF-ready content with headings, concise paragraphs, and tables where useful.",
+        "Answer from the locally extracted PDF text. Use supplied Page markers when page-specific attribution helps. If visual page images are supplied, use them for scanned/image-only content and OCR-style reading. Distinguish unavailable pages from analyzed pages instead of inventing content. If the request is to create/export a PDF, produce clean PDF-ready content.",
       ].join("\n");
     case "image":
       return "[Mode: Image Creation]\nCreate a concise production-quality prompt for the connected local image renderer, including subject, composition, style, lighting, camera/framing, colors, and useful negative constraints. Do not claim rendering succeeded until the artifact pipeline reports a ready image.";
@@ -399,8 +425,10 @@ export function modeInstruction(mode: ChatMode) {
       return "[Mode: Video Creation]\nWrite only the final positive visual prompt for the local video renderer. Describe subject, environment, action, scene progression, camera motion, lighting, composition, and visual style in natural prose. Do not add headings, markdown, negative prompts, duration, aspect-ratio recommendations, explanations, or claims that rendering already succeeded; the local runtime controls those settings separately.";
     case "voice":
       return "[Mode: Voice Creation]\nWrite only the final words that should be spoken aloud. Do not include headings, voice-style metadata, stage directions, markdown, or explanations. Keep punctuation natural for text-to-speech. The local voice runtime will synthesize this exact response after generation completes.";
+    case "sound":
+      return "[Mode: Music/SFX Creation]\nWrite one concise generation description for the local Soundscape engine. Preserve requested mood, genre, sound source, tempo/BPM, duration, environment, and whether the request is music, ambience, or a UI/SFX sound. Do not claim audio already exists.";
     case "vision":
-      return "[Mode: Image/Vision Review]\nAnalyze only the image bytes supplied to the current local Lens request. Never invent visual details from attachment metadata. If Lens rejects or cannot access the image, say so clearly.";
+      return "[Mode: Multimodal Vision Review]\nAnalyze only the image bytes supplied to the current local Lens request together with any locally extracted PDF text, video timestamps, or audio transcript included in the message. Treat rendered PDF pages and video keyframes as sampled visual evidence, not a guarantee that every frame/page was inspected. Never invent visual details from filenames or metadata.";
     default:
       return "";
   }
