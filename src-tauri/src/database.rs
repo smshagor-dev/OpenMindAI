@@ -247,12 +247,10 @@ fn register_artifact_cleanup(
             if !path.exists() {
                 return Ok(0_i64);
             }
-            let canonical_root = std::fs::canonicalize(root).map_err(|error| {
-                SqliteError::UserFunctionError(Box::new(error))
-            })?;
-            let canonical_path = std::fs::canonicalize(&path).map_err(|error| {
-                SqliteError::UserFunctionError(Box::new(error))
-            })?;
+            let canonical_root = std::fs::canonicalize(root)
+                .map_err(|error| SqliteError::UserFunctionError(Box::new(error)))?;
+            let canonical_path = std::fs::canonicalize(&path)
+                .map_err(|error| SqliteError::UserFunctionError(Box::new(error)))?;
             if !canonical_path.starts_with(&canonical_root) {
                 return Err(SqliteError::UserFunctionError(Box::new(io::Error::new(
                     io::ErrorKind::PermissionDenied,
