@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { FileCode, FileText, FileType, Folder, Image, Loader2, RefreshCw, Video, Volume2 } from "lucide-react";
 import type { Artifact } from "../types";
 import { formatBytes } from "../lib/format";
 import { renderMarkdown } from "../lib/markdown";
+import { artifactMediaDataUrl } from "../lib/media";
 
 const KIND_LABELS: Record<Artifact["kind"], string> = {
   text: "Text document",
@@ -11,14 +12,13 @@ const KIND_LABELS: Record<Artifact["kind"], string> = {
   pdf: "PDF document",
   docx: "Word document",
   image: "Image",
-  audio: "Voice audio",
+  audio: "Audio",
   video: "Video",
 };
 
 export function KindIcon(props: { kind: Artifact["kind"] }) {
   switch (props.kind) {
     case "pdf":
-      return <FileType size={20} />;
     case "docx":
       return <FileType size={20} />;
     case "code":
@@ -42,7 +42,34 @@ export function ArtifactCard(props: {
   onRetry: (artifact: Artifact) => void;
 }) {
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [mediaUrl, setMediaUrl] = useState<string | null>(null);
+  const [mediaError, setMediaError] = useState<string | null>(null);
   const artifact = props.artifact;
+
+  useEffect(() => {
+    let cancelled = false;
+    setMediaUrl(null);
+    setMediaError(null);
+    if (
+      artifact.status !== "ready" ||
+      (artifact.kind !== "image" && artifact.kind !== "audio")
+    ) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void artifactMediaDataUrl(artifact.id)
+      .then((url) => {
+        if (!cancelled) setMediaUrl(url);
+      })
+      .catch((error) => {
+        if (!cancelled) setMediaError(error instanceof Error ? error.message : String(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [artifact.id, artifact.kind, artifact.status]);
 
   return (
     <div className={`artifact-card artifact-${artifact.status}`}>
@@ -66,15 +93,24 @@ export function ArtifactCard(props: {
                 : artifact.kind === "image"
                   ? "Generating image..."
                   : artifact.kind === "audio"
-                    ? "Generating voice..."
+                    ? "Generating audio..."
                     : artifact.kind === "video"
                       ? "Generating video..."
-                : "Generating..."}
+                      : "Generating..."}
           </span>
         ) : null}
         {artifact.status === "failed" ? (
           <span className="artifact-status artifact-error">{artifact.error ?? "Generation failed."}</span>
         ) : null}
+        {artifact.status === "ready" && artifact.kind === "image" && mediaUrl ? (
+          <img className="artifact-inline-image" src={mediaUrl} alt={artifact.name} />
+        ) : null}
+        {artifact.status === "ready" && artifact.kind === "audio" && mediaUrl ? (
+          <audio className="artifact-inline-audio" controls preload="metadata" src={mediaUrl}>
+            Your system cannot play this local audio format.
+          </audio>
+        ) : null}
+        {mediaError ? <span className="artifact-status artifact-error">Inline preview unavailable: {mediaError}</span> : null}
       </div>
       <div className="artifact-actions">
         {artifact.status === "ready" && artifact.kind === "markdown" && props.previewContent ? (
