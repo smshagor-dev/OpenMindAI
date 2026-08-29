@@ -1,0 +1,96 @@
+name: Project Workspace Rust Fix
+
+on:
+  push:
+    branches:
+      - project-local-workspace-access
+    paths:
+      - .github/workflows/project-workspace-rust-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: project-local-workspace-access
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Preserve nested new paths and format
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path("src-tauri/src/local_workspace.rs")
+          text = path.read_text()
+          old = '''fn resolve_new_path(path: &Path) -> Result<PathBuf, AppError> {
+    if path.exists() {
+        return fs::canonicalize(path).map_err(AppError::from);
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| AppError::internal("path has no parent directory"))?;
+    let canonical_parent = canonical_existing_parent(parent)?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| AppError::internal("path requires a file or folder name"))?;
+    Ok(canonical_parent.join(name))
+}'''
+          new = '''fn resolve_new_path(path: &Path) -> Result<PathBuf, AppError> {
+    if path.exists() {
+        return fs::canonicalize(path).map_err(AppError::from);
+    }
+
+    let mut probe = path.to_path_buf();
+    let mut missing = Vec::new();
+    while !probe.exists() {
+        let name = probe
+            .file_name()
+            .ok_or_else(|| AppError::internal("path requires a file or folder name"))?
+            .to_os_string();
+        missing.push(name);
+        if !probe.pop() {
+            return Err(AppError::internal("no existing parent directory found for path"));
+        }
+    }
+
+    let mut resolved = fs::canonicalize(probe)?;
+    for component in missing.into_iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
+}'''
+          if old not in text:
+              raise SystemExit("resolve_new_path anchor missing")
+          text = text.replace(old, new, 1)
+          test_anchor = '''    #[test]
+    fn scoped_new_path_cannot_escape_through_parent_segments() {'''
+          test = '''    #[test]
+    fn nested_new_path_preserves_missing_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        fs::create_dir_all(&root).unwrap();
+        let resolved = resolve_new_path(&root.join("new/sub/file.txt")).unwrap();
+        assert_eq!(resolved, root.canonicalize().unwrap().join("new/sub/file.txt"));
+    }
+
+'''
+          if test not in text:
+              if test_anchor not in text:
+                  raise SystemExit("workspace test anchor missing")
+              text = text.replace(test_anchor, test + test_anchor, 1)
+          path.write_text(text)
+          Path(".github/workflows/project-workspace-rust-fix.yml").unlink()
+      - name: Format Rust
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+      - name: Commit fix
+        shell: bash
+        run: |
+          git config user.name openmindai-ci
+          git config user.email actions@users.noreply.github.com
+          git add -A
+          git commit -m "fix(projects): harden local workspace path creation"
+          git push origin HEAD:project-local-workspace-access
