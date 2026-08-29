@@ -207,7 +207,7 @@ return [PSCustomObject]@{
   Name        = $asset.name
   Url         = $asset.browser_download_url
   Digest      = $asset.digest
-  ChecksumUrl = if ($checksumAsset) { $checksumAsset.browser_download_url } else { $null }
+  ChecksumUrl = $(if ($checksumAsset) { $checksumAsset.browser_download_url } else { $null })
 }
 }
 
@@ -366,9 +366,10 @@ try {
     }
   }
 
-  # Developer mode, or the rare case where no compatible prebuilt
-  # release exists, falls back to source. Only now pay Git/clone and
-  # frontend/Rust build costs.
+  if (-not $exePath) {
+    # Developer mode, or the rare case where no compatible prebuilt
+    # release exists, falls back to source. Only now pay Git/clone and
+    # frontend/Rust build costs.
   if (-not $sourceValid) {
     if (-not $online) {
       throw "OpenMindAI isn't installed yet and no internet connection is available to set it up. Connect to the internet and run setup again."
@@ -395,6 +396,8 @@ try {
     $exePath = $existingExe
   } else {
     throw "No installed OpenMindAI build found, and no internet connection is available to install one."
+  }
+
   }
 
   if ($exePath -and -not $NoLaunch) {

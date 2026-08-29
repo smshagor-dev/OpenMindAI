@@ -247,6 +247,10 @@ impl RuntimeInstaller {
         let releases = match fetch_recent_releases(&self.client).await {
             Ok(releases) => releases,
             Err(error) => {
+                *self
+                    .cancel_token
+                    .lock()
+                    .map_err(|_| AppError::internal("runtime install cancel lock poisoned"))? = None;
                 let message = error.to_string();
                 self.set_state(RuntimeInstallState::Failed, Some(message))?;
                 return Err(error);
