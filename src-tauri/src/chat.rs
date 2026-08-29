@@ -121,9 +121,7 @@ impl<'a> ChatRepository<'a> {
             .connection()
             .execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
         if changed == 0 {
-            return Err(AppError::internal(format!(
-                "conversation not found: {id}"
-            )));
+            return Err(AppError::internal(format!("conversation not found: {id}")));
         }
         Ok(())
     }
