@@ -34,12 +34,46 @@ import type {
 } from "./types";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
+const CHAT_FAILURE_RECOVERY_CLOCK_SKEW_MS = 250;
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri) {
     return browserFallback<T>(command, args);
   }
-  return invoke<T>(command, args);
+
+  const startedAt = Date.now();
+  try {
+    return await invoke<T>(command, args);
+  } catch (error) {
+    const conversationId = args?.conversationId;
+    if (
+      typeof conversationId === "string" &&
+      (command === "send_chat_message" || command === "regenerate_message")
+    ) {
+      await recoverRecentFailedGeneration(conversationId, startedAt).catch(() => undefined);
+    }
+    throw error;
+  }
+}
+
+async function recoverRecentFailedGeneration(conversationId: string, startedAt: number) {
+  const messages = await invoke<Message[]>("list_messages", { conversationId });
+  const cutoff = startedAt - CHAT_FAILURE_RECOVERY_CLOCK_SKEW_MS;
+  const failedAttempt = messages
+    .slice()
+    .reverse()
+    .find((message) => {
+      if (message.role !== "assistant") return false;
+      if (message.status !== "streaming" && message.status !== "pending") return false;
+      const createdAt = Date.parse(message.createdAt);
+      return Number.isFinite(createdAt) && createdAt >= cutoff;
+    });
+
+  if (!failedAttempt) return;
+  await invoke<void>("complete_message", {
+    messageId: failedAttempt.id,
+    status: "failed",
+  });
 }
 
 export const api = {
