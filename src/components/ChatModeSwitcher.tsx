@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ConnectedWorkspace } from "./ConnectedWorkspace";
+import { ConnectedAgentPanel } from "./ConnectedAgentPanel";
 
 export function ChatModeSwitcher() {
   const [workOpen, setWorkOpen] = useState(false);
@@ -21,13 +21,13 @@ export function ChatModeSwitcher() {
           className={`chat-mode-tab${workOpen ? " active" : ""}`}
           role="tab"
           aria-selected={workOpen}
-          title="Google Workspace and GitHub actions"
+          title="Google Workspace and GitHub connected work"
           onClick={() => setWorkOpen(true)}
         >
           Work
         </button>
       </div>
-      {workOpen ? <ConnectedWorkspace onClose={() => setWorkOpen(false)} /> : null}
+      {workOpen ? <ConnectedAgentPanel onClose={() => setWorkOpen(false)} /> : null}
     </>
   );
 }
