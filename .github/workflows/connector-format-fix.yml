@@ -22,7 +22,9 @@ jobs:
       - name: Apply connector hardening
         shell: python
         run: |
+          import re
           from pathlib import Path
+
           path = Path('src-tauri/src/connector_ecosystem.rs')
           text = path.read_text()
 
@@ -107,19 +109,8 @@ jobs:
           assert old in text, 'Dropbox account action pattern missing'
           text = text.replace(old, new, 1)
 
-          old = '''        "chat.send" => slack_request(
-              state,
-              "chat.postMessage",
-              json!({
-                  "channel": required_str("slack", params, "channel")?,
-                  "text": required_str("slack", params, "text")?,
-                  "thread_ts": optional_str(params, "threadTs")
-              }),
-              false,
-          )
-          .await,
-          '''
-          new = '''        "chat.send" => {
+          pattern = r'        "chat\.send" => slack_request\(.*?\n        \.await,\n(?=        "chat\.update")'
+          replacement = '''        "chat.send" => {
               let mut payload = json!({
                   "channel": required_str("slack", params, "channel")?,
                   "text": required_str("slack", params, "text")?
@@ -130,8 +121,8 @@ jobs:
               slack_request(state, "chat.postMessage", payload, false).await
           }
           '''
-          assert old in text, 'Slack chat.send pattern missing'
-          text = text.replace(old, new, 1)
+          text, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+          assert count == 1, 'Slack chat.send pattern missing'
 
           old = '''        assert_eq!(encode_graph_path("Docs/My File.txt"), "Docs/My+File.txt");
           '''
