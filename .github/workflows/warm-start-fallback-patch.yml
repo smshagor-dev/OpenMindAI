@@ -1,0 +1,288 @@
+name: Warm Start Fallback Patch
+
+on:
+  push:
+    branches:
+      - fix/warm-start-available-model-fallback
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: fix/warm-start-available-model-fallback
+          fetch-depth: 1
+
+      - name: Apply available-model fallback
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src-tauri/src/warm_start.rs')
+          text = path.read_text(encoding='utf-8')
+
+          def replace_once(old, new, label):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, found {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              '"startup model warmup skipped because OpenMindAI Core is not installed"',
+              '"startup model warmup skipped because no usable local chat model is installed"',
+              'generic no-model warmup log',
+          )
+
+          replace_once(
+              'prime_local_server(&client, &endpoint).await;',
+              'prime_local_server(&client, &endpoint, &model).await;',
+              'pass selected model to warmup request',
+          )
+
+          old_selection = '''fn select_startup_model(state: &AppState) -> Result<Option<ModelRecord>, AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| AppError::internal("database lock poisoned"))?;
+    let models = ModelRegistry::new(&db, &state.root).list_models()?;
+    if models.is_empty() {
+        return Ok(None);
+    }
+
+    let conversations = ChatRepository::new(&db).list_conversations()?;
+    let last_active_model_id = conversations
+        .iter()
+        .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
+        .and_then(|conversation| conversation.active_model_id.as_deref());
+
+    // Respect the user's last model only when it is the lightweight Core model.
+    // 8B, vision and media models stay on-demand so startup does not consume
+    // unnecessary RAM/VRAM.
+    let last_core = last_active_model_id.and_then(|id| {
+        models
+            .iter()
+            .find(|model| model.id == id && is_core_model(model))
+            .cloned()
+    });
+    Ok(last_core.or_else(|| models.iter().find(|model| is_core_model(model)).cloned()))
+}
+
+fn is_core_model(model: &ModelRecord) -> bool {
+    model.enabled && model.source_repository.as_deref() == Some(CORE_MODEL_REPOSITORY)
+}
+
+async fn prime_local_server(client: &Client, endpoint: &str) {
+    let body = json!({
+        "model": "qwen3-4b-q4_k_m",
+        "messages": [{"role": "user", "content": "Hi"}],
+        "stream": false,
+        "temperature": 0.0,
+        "max_tokens": 1,
+        "cache_prompt": true,
+        "chat_template_kwargs": {"enable_thinking": false}
+    });
+'''
+
+          new_selection = '''fn select_startup_model(state: &AppState) -> Result<Option<ModelRecord>, AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| AppError::internal("database lock poisoned"))?;
+    let models = ModelRegistry::new(&db, &state.root).list_models()?;
+    if models.is_empty() {
+        return Ok(None);
+    }
+
+    let conversations = ChatRepository::new(&db).list_conversations()?;
+    let last_active_model_id = conversations
+        .iter()
+        .max_by(|left, right| left.updated_at.cmp(&right.updated_at))
+        .and_then(|conversation| conversation.active_model_id.as_deref());
+
+    Ok(choose_startup_model(&models, last_active_model_id))
+}
+
+fn choose_startup_model(
+    models: &[ModelRecord],
+    last_active_model_id: Option<&str>,
+) -> Option<ModelRecord> {
+    // Prefer OpenMindAI Core when it is available. If Core is absent, never
+    // leave the warm-start path without a model when another usable local chat
+    // model exists. Prefer text-only chat models before multimodal ones and use
+    // the smallest candidate in each fallback tier to avoid unnecessary startup
+    // RAM/VRAM pressure. A multimodal/heavier chat model is still a valid final
+    // fallback when it is the only usable local model.
+    let last_core = last_active_model_id.and_then(|id| {
+        models
+            .iter()
+            .find(|model| model.id == id && is_core_model(model))
+            .cloned()
+    });
+    if last_core.is_some() {
+        return last_core;
+    }
+
+    if let Some(core) = models.iter().find(|model| is_core_model(model)).cloned() {
+        return Some(core);
+    }
+
+    let text_chat = models
+        .iter()
+        .filter(|model| is_usable_local_chat_model(model) && !is_multimodal_model(model));
+    if let Some(model) = smallest_model(text_chat) {
+        return Some(model);
+    }
+
+    smallest_model(
+        models
+            .iter()
+            .filter(|model| is_usable_local_chat_model(model)),
+    )
+}
+
+fn smallest_model<'a>(models: impl Iterator<Item = &'a ModelRecord>) -> Option<ModelRecord> {
+    models
+        .min_by_key(|model| model.size_bytes.max(0))
+        .cloned()
+}
+
+fn is_core_model(model: &ModelRecord) -> bool {
+    is_usable_local_chat_model(model)
+        && model.source_repository.as_deref() == Some(CORE_MODEL_REPOSITORY)
+}
+
+fn is_usable_local_chat_model(model: &ModelRecord) -> bool {
+    model.enabled
+        && model.format.eq_ignore_ascii_case("gguf")
+        && model.verification.as_deref() != Some("failed")
+        && has_capability(model, "chat")
+}
+
+fn is_multimodal_model(model: &ModelRecord) -> bool {
+    ["vision", "image", "video", "voice", "audio", "ocr"]
+        .iter()
+        .any(|capability| has_capability(model, capability))
+}
+
+fn has_capability(model: &ModelRecord, capability: &str) -> bool {
+    serde_json::from_str::<Vec<String>>(&model.capabilities)
+        .map(|capabilities| {
+            capabilities
+                .iter()
+                .any(|current| current.eq_ignore_ascii_case(capability))
+        })
+        .unwrap_or(false)
+}
+
+async fn prime_local_server(client: &Client, endpoint: &str, model: &ModelRecord) {
+    let body = json!({
+        "model": model.id.as_str(),
+        "messages": [{"role": "user", "content": "Hi"}],
+        "stream": false,
+        "temperature": 0.0,
+        "max_tokens": 1,
+        "cache_prompt": true
+    });
+'''
+          replace_once(old_selection, new_selection, 'startup fallback selection')
+
+          old_tests = '''    #[test]
+    fn foreground_request_prevents_background_start() {
+        let coordinator = WarmStartCoordinator::default();
+        coordinator.note_foreground_request("core");
+        assert!(!coordinator.begin_background_load("core"));
+    }
+}
+'''
+          new_tests = '''    #[test]
+    fn foreground_request_prevents_background_start() {
+        let coordinator = WarmStartCoordinator::default();
+        coordinator.note_foreground_request("core");
+        assert!(!coordinator.begin_background_load("core"));
+    }
+
+    fn test_model(
+        id: &str,
+        repo: Option<&str>,
+        size_bytes: i64,
+        capabilities: &[&str],
+    ) -> ModelRecord {
+        ModelRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            family: None,
+            path: format!("models/{id}.gguf"),
+            format: "gguf".to_string(),
+            quantization: None,
+            size_bytes,
+            capabilities: serde_json::to_string(capabilities).unwrap(),
+            context_length: None,
+            preferred_backend: Some("vulkan".to_string()),
+            enabled: true,
+            source_repository: repo.map(ToString::to_string),
+            verification: Some("verified".to_string()),
+            state: crate::model_registry::ModelLifecycleState::Ready,
+            created_at: "now".to_string(),
+            updated_at: "now".to_string(),
+        }
+    }
+
+    #[test]
+    fn core_model_wins_when_available() {
+        let fallback = test_model("small", None, 1_000, &["chat"]);
+        let core = test_model("core", Some(CORE_MODEL_REPOSITORY), 2_000, &["chat"]);
+        let selected = choose_startup_model(&[fallback, core], None).unwrap();
+        assert_eq!(selected.id, "core");
+    }
+
+    #[test]
+    fn missing_core_falls_back_to_smallest_text_chat_model() {
+        let large = test_model("large", None, 8_000, &["chat", "thinking"]);
+        let small = test_model("small", None, 3_000, &["chat"]);
+        let vision = test_model("vision", None, 2_000, &["chat", "vision"]);
+        let selected = choose_startup_model(&[large, small, vision], None).unwrap();
+        assert_eq!(selected.id, "small");
+    }
+
+    #[test]
+    fn multimodal_chat_is_used_when_it_is_the_only_available_chat_model() {
+        let vision = test_model("vision", None, 4_000, &["chat", "vision"]);
+        let selected = choose_startup_model(&[vision], None).unwrap();
+        assert_eq!(selected.id, "vision");
+    }
+
+    #[test]
+    fn disabled_failed_and_non_chat_models_are_not_warm_candidates() {
+        let mut disabled = test_model("disabled", None, 1_000, &["chat"]);
+        disabled.enabled = false;
+        let mut failed = test_model("failed", None, 2_000, &["chat"]);
+        failed.verification = Some("failed".to_string());
+        let vision_only = test_model("vision-only", None, 500, &["vision"]);
+        assert!(choose_startup_model(&[disabled, failed, vision_only], None).is_none());
+    }
+}
+'''
+          replace_once(old_tests, new_tests, 'warm fallback tests')
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          cargo fmt --manifest-path src-tauri/Cargo.toml
+          cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Commit production fix and remove helper
+        shell: bash
+        run: |
+          rm .github/workflows/warm-start-fallback-patch.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src-tauri/src/warm_start.rs .github/workflows/warm-start-fallback-patch.yml
+          git commit -m "fix(chat): fall back to available local warm model"
+          git push origin HEAD:fix/warm-start-available-model-fallback
