@@ -22,31 +22,20 @@ jobs:
       - name: Remove failed MCP token
         shell: python
         run: |
+          import re
           from pathlib import Path
           path = Path('src-tauri/src/connector_ecosystem.rs')
           text = path.read_text()
-          old = '''        "mcp" => {
-              secret_store::set_secret(&access_slot(provider), token)?;
-              mcp_rpc(state, "tools/list", json!({}), None).await?;
-              load_record(state, provider)?
-                  .and_then(|record| config_str(&record.config, "name").map(ToOwned::to_owned))
-                  .unwrap_or_else(|| "MCP server".to_string())
-          }
-          '''
-          new = '''        "mcp" => {
-              let slot = access_slot(provider);
-              secret_store::set_secret(&slot, token)?;
-              if let Err(error) = mcp_rpc(state, "tools/list", json!({}), None).await {
-                  let _ = secret_store::delete_secret(&slot);
-                  return Err(error);
-              }
-              load_record(state, provider)?
-                  .and_then(|record| config_str(&record.config, "name").map(ToOwned::to_owned))
-                  .unwrap_or_else(|| "MCP server".to_string())
-          }
-          '''
-          assert old in text, 'MCP token block not found'
-          path.write_text(text.replace(old, new, 1))
+          pattern = r'secret_store::set_secret\(&access_slot\(provider\), token\)\?;\s*mcp_rpc\(state, "tools/list", json!\(\{\}\), None\)\.await\?;'
+          replacement = '''let slot = access_slot(provider);
+                  secret_store::set_secret(&slot, token)?;
+                  if let Err(error) = mcp_rpc(state, "tools/list", json!({}), None).await {
+                      let _ = secret_store::delete_secret(&slot);
+                      return Err(error);
+                  }'''
+          text, count = re.subn(pattern, replacement, text, count=1)
+          assert count == 1, 'MCP token sequence not found'
+          path.write_text(text)
       - name: Rustfmt
         run: cargo fmt --manifest-path src-tauri/Cargo.toml
       - name: Remove temporary workflow and commit
