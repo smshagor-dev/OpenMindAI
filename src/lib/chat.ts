@@ -38,6 +38,7 @@ export interface UserMessageDisplay {
   displayText: string;
 }
 
+const MAX_TEXT_ATTACHMENT_BYTES = 1024 * 1024;
 const MAX_VISION_IMAGE_INPUT_BYTES = 16 * 1024 * 1024;
 const MAX_VISION_IMAGE_DATA_URL_CHARS = 6_000_000;
 const MAX_VISION_IMAGE_DIMENSION = 2048;
@@ -142,16 +143,24 @@ export function mergeStreamingSnapshot(current: Message[], snapshot: Message[]) 
 }
 
 export async function readAttachment(file: File): Promise<AttachmentDraft> {
-  const maxPreviewBytes = 1024 * 1024;
   const kind = attachmentKind(file);
   const isTextLike =
     file.type.startsWith("text/") ||
     /\.(md|txt|json|csv|ts|tsx|js|jsx|rs|py|html|css|sql|toml|yaml|yml)$/i.test(file.name);
 
+  if (kind === "binary") {
+    throw new Error(
+      "This file type cannot be read by local chat. Attach text/code, PDF, PNG, JPEG, or WebP files.",
+    );
+  }
+  if (isTextLike && file.size > MAX_TEXT_ATTACHMENT_BYTES) {
+    throw new Error("Text and code attachments must be 1 MB or smaller for local chat context.");
+  }
+
   let contentPreview: string | null = null;
   let mediaDataUrl: string | null = null;
   let mediaMimeType: "image/png" | "image/jpeg" | null = null;
-  if (isTextLike && file.size <= maxPreviewBytes) {
+  if (isTextLike) {
     contentPreview = await file.text();
   } else if (kind === "image") {
     const encoded = await encodeVisionImage(file);
