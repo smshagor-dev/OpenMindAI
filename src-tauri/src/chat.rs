@@ -31,6 +31,7 @@ pub struct Message {
 }
 
 const PROFILE_CONTEXT_MARKER: &str = "[open-mind-ai-profile-context]";
+const PROJECT_CONTEXT_MARKER: &str = "[open-mind-ai-project-context]";
 
 pub struct ChatRepository<'a> {
     database: &'a Database,
@@ -167,6 +168,18 @@ impl<'a> ChatRepository<'a> {
         conversation_id: &str,
         content: Option<&str>,
     ) -> Result<(), AppError> {
+        // This method is also used by the project-context sync path. Keep the
+        // two system slots independent so refreshing project instructions can
+        // never overwrite (or delete) the user's profile/custom instructions.
+        // UserProfile::to_system_context() always returns Some; None therefore
+        // means "remove project context" for the sync path.
+        let marker = match content {
+            Some(value) if value.trim_start().starts_with(PROJECT_CONTEXT_MARKER) => {
+                PROJECT_CONTEXT_MARKER
+            }
+            Some(_) => PROFILE_CONTEXT_MARKER,
+            None => PROJECT_CONTEXT_MARKER,
+        };
         let existing_id: Option<String> = self
             .database
             .connection()
@@ -174,7 +187,7 @@ impl<'a> ChatRepository<'a> {
                 "SELECT id FROM messages
                  WHERE conversation_id = ?1 AND role = 'system' AND content LIKE ?2
                  LIMIT 1",
-                params![conversation_id, format!("{PROFILE_CONTEXT_MARKER}%")],
+                params![conversation_id, format!("{marker}%")],
                 |row| row.get(0),
             )
             .optional()?;
@@ -184,19 +197,23 @@ impl<'a> ChatRepository<'a> {
             content.filter(|value| !value.trim().is_empty()),
         ) {
             (Some(id), Some(content)) => {
+                let stored = if content.trim_start().starts_with(marker) {
+                    content.to_string()
+                } else {
+                    format!("{marker}\n{content}")
+                };
                 self.database.connection().execute(
                     "UPDATE messages SET content = ?1, status = 'completed', updated_at = ?2 WHERE id = ?3",
-                    params![format!("{PROFILE_CONTEXT_MARKER}\n{content}"), Utc::now().to_rfc3339(), id],
+                    params![stored, Utc::now().to_rfc3339(), id],
                 )?;
             }
             (None, Some(content)) => {
-                self.add_message(
-                    conversation_id,
-                    "system",
-                    &format!("{PROFILE_CONTEXT_MARKER}\n{content}"),
-                    "completed",
-                    None,
-                )?;
+                let stored = if content.trim_start().starts_with(marker) {
+                    content.to_string()
+                } else {
+                    format!("{marker}\n{content}")
+                };
+                self.add_message(conversation_id, "system", &stored, "completed", None)?;
             }
             (Some(id), None) => {
                 self.database
@@ -237,10 +254,37 @@ impl<'a> ChatRepository<'a> {
     }
 
     pub fn delete_message(&self, message_id: &str) -> Result<(), AppError> {
-        let changed = self
+        let target: Option<(String, String, i64)> = self
             .database
             .connection()
-            .execute("DELETE FROM messages WHERE id = ?1", params![message_id])?;
+            .query_row(
+                "SELECT conversation_id, role, rowid FROM messages WHERE id = ?1",
+                params![message_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((conversation_id, role, row_id)) = target else {
+            return Err(AppError::internal(format!(
+                "message not found: {message_id}"
+            )));
+        };
+
+        // Deleting a user turn is the edit/resend branch operation. A single
+        // SQL statement removes that turn and every later non-system message,
+        // so the conversation cannot be left half-truncated if a process or
+        // request fails between individual deletes. Assistant deletion remains
+        // single-row behavior for regenerate/retry flows.
+        let changed = if role == "user" {
+            self.database.connection().execute(
+                "DELETE FROM messages
+                 WHERE conversation_id = ?1 AND rowid >= ?2 AND role != 'system'",
+                params![conversation_id, row_id],
+            )?
+        } else {
+            self.database
+                .connection()
+                .execute("DELETE FROM messages WHERE id = ?1", params![message_id])?
+        };
         if changed == 0 {
             return Err(AppError::internal(format!(
                 "message not found: {message_id}"
@@ -458,6 +502,89 @@ mod tests {
             repo.delete_message(&message.id).unwrap_err(),
             AppError::Internal(_)
         ));
+    }
+
+    #[test]
+    fn deleting_user_turn_atomically_truncates_following_branch() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let conversation = repo.create_conversation(Some("Branch edit")).unwrap();
+        repo.upsert_profile_context(&conversation.id, Some("profile context"))
+            .unwrap();
+        let first_user = repo
+            .add_message(&conversation.id, "user", "first", "completed", None)
+            .unwrap();
+        repo.add_message(&conversation.id, "assistant", "one", "completed", None)
+            .unwrap();
+        let second_user = repo
+            .add_message(&conversation.id, "user", "second", "completed", None)
+            .unwrap();
+        repo.add_message(&conversation.id, "assistant", "two", "completed", None)
+            .unwrap();
+
+        repo.delete_message(&second_user.id).unwrap();
+        let messages = repo.list_messages(&conversation.id).unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.role == "system")
+                .count(),
+            1
+        );
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.role != "system")
+                .count(),
+            2
+        );
+        assert!(messages.iter().any(|message| message.id == first_user.id));
+        assert!(!messages.iter().any(|message| message.id == second_user.id));
+    }
+
+    #[test]
+    fn profile_and_project_context_are_independent() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let conversation = repo.create_conversation(Some("Context")).unwrap();
+
+        repo.upsert_profile_context(&conversation.id, Some("profile instructions"))
+            .unwrap();
+        repo.upsert_profile_context(
+            &conversation.id,
+            Some("[open-mind-ai-project-context]\nProject: Demo"),
+        )
+        .unwrap();
+        let messages = repo.list_messages(&conversation.id).unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.role == "system")
+                .count(),
+            2
+        );
+        assert!(messages
+            .iter()
+            .any(|message| message.content.starts_with(PROFILE_CONTEXT_MARKER)));
+        assert!(messages
+            .iter()
+            .any(|message| message.content.starts_with(PROJECT_CONTEXT_MARKER)));
+
+        repo.upsert_profile_context(&conversation.id, None).unwrap();
+        let messages = repo.list_messages(&conversation.id).unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message.role == "system")
+                .count(),
+            1
+        );
+        assert!(messages
+            .iter()
+            .any(|message| message.content.starts_with(PROFILE_CONTEXT_MARKER)));
+        assert!(!messages
+            .iter()
+            .any(|message| message.content.starts_with(PROJECT_CONTEXT_MARKER)));
     }
 
     #[test]

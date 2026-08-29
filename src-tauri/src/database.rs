@@ -1,13 +1,17 @@
-use std::path::PathBuf;
+use std::{
+    io,
+    path::{Component, Path, PathBuf},
+};
 
 use chrono::Utc;
-use rusqlite::{params, Connection};
+use rusqlite::{functions::FunctionFlags, params, Connection, Error as SqliteError};
 use uuid::Uuid;
 
 use crate::app_error::AppError;
 use crate::portable_root::CURRENT_SCHEMA_VERSION;
 
 const SCHEMA_VERSION_KEY: &str = "schema.version";
+const ARTIFACT_DELETE_FUNCTION: &str = "openmind_delete_artifact";
 
 struct Migration {
     number: u32,
@@ -42,6 +46,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "004_project_file_ingestion",
         sql: include_str!("../migrations/004_project_file_ingestion.sql"),
     },
+    Migration {
+        number: 5,
+        name: "005_artifact_cleanup_and_media_kinds",
+        sql: include_str!("../migrations/005_artifact_cleanup_and_media_kinds.sql"),
+    },
 ];
 
 pub struct Database {
@@ -54,9 +63,11 @@ impl Database {
             std::fs::create_dir_all(parent)?;
         }
 
+        let artifact_root = artifact_root_for_database(&path);
         let connection = Connection::open(path)?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
+        register_artifact_cleanup(&connection, artifact_root)?;
         let mut database = Self { connection };
         database.migrate()?;
         database.recover_interrupted_chat_messages()?;
@@ -68,6 +79,10 @@ impl Database {
     pub fn in_memory() -> Result<Self, AppError> {
         let connection = Connection::open_in_memory()?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
+        // In-memory repository tests have no portable root. Register the same
+        // SQL function as a no-op so the production trigger remains testable
+        // without granting tests arbitrary filesystem deletion authority.
+        register_artifact_cleanup(&connection, None)?;
         let mut database = Self { connection };
         database.migrate()?;
         database.ensure_local_profile()?;
@@ -187,6 +202,72 @@ impl Database {
     }
 }
 
+fn artifact_root_for_database(path: &Path) -> Option<PathBuf> {
+    let database_dir = path.parent()?;
+    if database_dir.file_name()?.to_string_lossy() != "database" {
+        return None;
+    }
+    let data_dir = database_dir.parent()?;
+    if data_dir.file_name()?.to_string_lossy() != "data" {
+        return None;
+    }
+    data_dir.parent().map(Path::to_path_buf)
+}
+
+fn register_artifact_cleanup(
+    connection: &Connection,
+    root: Option<PathBuf>,
+) -> Result<(), AppError> {
+    connection.create_scalar_function(
+        ARTIFACT_DELETE_FUNCTION,
+        1,
+        FunctionFlags::SQLITE_UTF8,
+        move |context| {
+            let relative: String = context.get(0)?;
+            let Some(root) = root.as_ref() else {
+                return Ok(0_i64);
+            };
+            let relative_path = Path::new(&relative);
+            let unsafe_path = relative_path.is_absolute()
+                || !relative_path.starts_with("generated")
+                || relative_path.components().any(|component| {
+                    matches!(
+                        component,
+                        Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                    )
+                });
+            if unsafe_path {
+                return Err(SqliteError::UserFunctionError(Box::new(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "artifact cleanup path escaped the generated directory",
+                ))));
+            }
+
+            let path = root.join(relative_path);
+            if !path.exists() {
+                return Ok(0_i64);
+            }
+            let canonical_root = std::fs::canonicalize(root)
+                .map_err(|error| SqliteError::UserFunctionError(Box::new(error)))?;
+            let canonical_path = std::fs::canonicalize(&path)
+                .map_err(|error| SqliteError::UserFunctionError(Box::new(error)))?;
+            if !canonical_path.starts_with(&canonical_root) {
+                return Err(SqliteError::UserFunctionError(Box::new(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "artifact cleanup resolved outside the portable root",
+                ))));
+            }
+
+            match std::fs::remove_file(&path) {
+                Ok(()) => Ok(1_i64),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(0_i64),
+                Err(error) => Err(SqliteError::UserFunctionError(Box::new(error))),
+            }
+        },
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,6 +371,102 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, "failed");
+    }
+
+    #[test]
+    fn conversation_delete_cleans_generated_artifact_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("OpenMindAI");
+        let database_dir = root.join("data/database");
+        let generated_dir = root.join("generated/files");
+        std::fs::create_dir_all(&database_dir).unwrap();
+        std::fs::create_dir_all(&generated_dir).unwrap();
+        let artifact_path = generated_dir.join("chat-note.txt");
+        std::fs::write(&artifact_path, b"generated chat artifact").unwrap();
+
+        let database = Database::open(database_dir.join("openmind_ai.db")).unwrap();
+        let chat = crate::chat::ChatRepository::new(&database);
+        let conversation = chat.create_conversation(Some("Cleanup")).unwrap();
+        crate::artifacts::ArtifactRepository::new(&database)
+            .create(
+                &conversation.id,
+                None,
+                "chat-note.txt",
+                "generated/files/chat-note.txt",
+                "text/plain",
+                "text",
+                "ready",
+            )
+            .unwrap();
+
+        chat.delete_conversation(&conversation.id).unwrap();
+
+        assert!(!artifact_path.exists());
+        let artifact_count: i64 = database
+            .connection
+            .query_row("SELECT COUNT(*) FROM artifacts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(artifact_count, 0);
+    }
+
+    #[test]
+    fn artifact_cleanup_rejects_paths_outside_generated_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("OpenMindAI");
+        let database_dir = root.join("data/database");
+        std::fs::create_dir_all(&database_dir).unwrap();
+        let outside_path = root.join("keep.txt");
+        std::fs::write(&outside_path, b"keep").unwrap();
+
+        let database = Database::open(database_dir.join("openmind_ai.db")).unwrap();
+        let chat = crate::chat::ChatRepository::new(&database);
+        let conversation = chat.create_conversation(Some("Guarded cleanup")).unwrap();
+        crate::artifacts::ArtifactRepository::new(&database)
+            .create(
+                &conversation.id,
+                None,
+                "keep.txt",
+                "../keep.txt",
+                "text/plain",
+                "text",
+                "ready",
+            )
+            .unwrap();
+
+        assert!(chat.delete_conversation(&conversation.id).is_err());
+        assert!(outside_path.exists());
+        assert!(chat.find_conversation(&conversation.id).is_ok());
+    }
+
+    #[test]
+    fn artifact_schema_accepts_audio_and_video_kinds() {
+        let database = Database::in_memory().unwrap();
+        let chat = crate::chat::ChatRepository::new(&database);
+        let conversation = chat.create_conversation(Some("Media")).unwrap();
+        let artifacts = crate::artifacts::ArtifactRepository::new(&database);
+
+        artifacts
+            .create(
+                &conversation.id,
+                None,
+                "voice.wav",
+                "generated/audio/voice.wav",
+                "audio/wav",
+                "audio",
+                "generating",
+            )
+            .unwrap();
+        artifacts
+            .create(
+                &conversation.id,
+                None,
+                "clip.webm",
+                "generated/video/clip.webm",
+                "video/webm",
+                "video",
+                "generating",
+            )
+            .unwrap();
     }
 
     #[test]

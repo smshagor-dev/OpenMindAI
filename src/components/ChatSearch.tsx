@@ -15,20 +15,21 @@ export function ChatSearch(props: {
   onSelect: (id: string) => void;
   onClose: () => void;
 }) {
+  const { open, conversations, onSelect, onClose } = props;
   const [query, setQuery] = useState("");
   const [entries, setEntries] = useState<SearchEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    if (!props.open) return;
+    if (!open) return;
     setQuery("");
     window.setTimeout(() => inputRef.current?.focus(), 0);
 
     let cancelled = false;
     setLoading(true);
     void Promise.allSettled(
-      props.conversations.map(async (conversation) => {
+      conversations.map(async (conversation) => {
         const messages = await api.messages(conversation.id);
         const searchable = messages
           .filter((message) => message.role !== "system")
@@ -43,7 +44,7 @@ export function ChatSearch(props: {
       const loaded = results.flatMap((result, index) =>
         result.status === "fulfilled"
           ? [result.value]
-          : [{ conversation: props.conversations[index], content: "" }],
+          : [{ conversation: conversations[index], content: "" }],
       );
       setEntries(loaded);
       setLoading(false);
@@ -52,19 +53,19 @@ export function ChatSearch(props: {
     return () => {
       cancelled = true;
     };
-  }, [props.conversations, props.open]);
+  }, [conversations, open]);
 
   useEffect(() => {
-    if (!props.open) return;
+    if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        props.onClose();
+        onClose();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [props.open, props.onClose]);
+  }, [open, onClose]);
 
   const results = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -78,10 +79,10 @@ export function ChatSearch(props: {
     return source.slice(0, 40);
   }, [entries, query]);
 
-  if (!props.open) return null;
+  if (!open) return null;
 
   return (
-    <div className="modal-overlay" role="presentation" onClick={props.onClose}>
+    <div className="modal-overlay" role="presentation" onClick={onClose}>
       <div
         className="modal-card search-card"
         role="dialog"
@@ -108,8 +109,8 @@ export function ChatSearch(props: {
                 className="search-result"
                 key={conversation.id}
                 onClick={() => {
-                  props.onSelect(conversation.id);
-                  props.onClose();
+                  onSelect(conversation.id);
+                  onClose();
                 }}
               >
                 <MessageSquare size={15} />
