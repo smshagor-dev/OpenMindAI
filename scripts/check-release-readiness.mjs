@@ -81,9 +81,10 @@ if (/placeholder|example|replace|changeme/i.test(decodedKey)) {
 const releasePackage = readJson("package.json");
 const releaseVersion = releasePackage.version;
 const releaseTag = `v${releaseVersion}`;
-const releaseNotesPath = path.join(root, "docs", "releases", `${releaseTag}.md`);
+const releaseNotesRelativePath = path.join(".github", "releases", `${releaseTag}.txt`);
+const releaseNotesPath = path.join(root, releaseNotesRelativePath);
 if (!fs.existsSync(releaseNotesPath)) {
-  fail(`missing production release notes: docs/releases/${releaseTag}.md`);
+  fail(`missing production release notes: ${releaseNotesRelativePath}`);
 }
 const releaseNotes = fs.readFileSync(releaseNotesPath, "utf8");
 if (!releaseNotes.includes(`# OpenMindAI ${releaseTag}`)) {
@@ -92,6 +93,7 @@ if (!releaseNotes.includes(`# OpenMindAI ${releaseTag}`)) {
 if (/\b(?:TODO|TBD|PLACEHOLDER)\b/i.test(releaseNotes)) {
   fail("release notes contain unfinished placeholder text");
 }
+
 const releaseWorkflow = fs.readFileSync(path.join(root, ".github", "workflows", "release.yml"), "utf8");
 for (const requiredSecret of [
   "TAURI_SIGNING_PRIVATE_KEY",
@@ -118,7 +120,17 @@ for (const requiredAsset of [
     fail(`production release workflow does not enforce required asset ${requiredAsset}`);
   }
 }
+for (const releaseGate of [
+  "Get-AuthenticodeSignature",
+  "Invoke-SilentInstaller",
+  "OpenMindAI_2.0.0_x64-setup.exe",
+  ".github/releases/$tag.txt",
+]) {
+  if (!releaseWorkflow.includes(releaseGate)) {
+    fail(`production release workflow is missing required trust gate: ${releaseGate}`);
+  }
+}
 
 console.log(
-  `Release readiness config OK: NSIS updater enabled, HTTPS latest.json endpoint configured, minisign public key ${keyLines[0].split(": ").at(-1)} validated structurally.`,
+  `Release readiness config OK: NSIS updater enabled, HTTPS latest.json endpoint configured, v${releaseVersion} notes present, signed install/upgrade gates enforced, and minisign public key ${keyLines[0].split(": ").at(-1)} validated structurally.`,
 );
