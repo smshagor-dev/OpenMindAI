@@ -833,7 +833,15 @@ fn normalize_reply(content: &str) -> String {
     content
         .trim()
         .to_ascii_lowercase()
-        .trim_matches(|character: char| matches!(character, '.' | '!' | '?' | ','))
+        .chars()
+        .map(|character| {
+            if matches!(character, '.' | '!' | '?' | ',' | ';' | ':') {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
