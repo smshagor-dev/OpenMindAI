@@ -1323,7 +1323,11 @@ fn resolve_conversation_model(
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
     let repo = ChatRepository::new(&db);
     let registry = ModelRegistry::new(&db, &state.root);
-    let models = registry.discover_gguf_models()?;
+    // Model discovery is a filesystem maintenance operation. The registry is
+    // refreshed at startup/model install; routing a chat should only read the
+    // already-registered rows instead of recursively scanning models/ on every
+    // message.
+    let models = registry.list_models()?;
 
     let active_model_id = repo
         .find_conversation(conversation_id)
@@ -1370,8 +1374,8 @@ async fn run_streaming_completion(
             .runtime
             .lock()
             .map_err(|_| app_error::AppError::internal("runtime lock poisoned"))?;
-        runtime.ensure_model_server(&hardware, &plan.config)?;
-        runtime.status(&hardware)?.endpoint.ok_or_else(|| {
+        let status = runtime.ensure_model_server(&hardware, &plan.config)?;
+        status.endpoint.ok_or_else(|| {
             app_error::AppError::InferenceServerUnavailable("runtime endpoint missing".to_string())
         })?
     };
