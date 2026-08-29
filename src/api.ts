@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Message } from "./types";
+import type { Artifact, Message } from "./types";
 import { createSoundscapeArtifact } from "./lib/media";
 import { api as legacyApi } from "./api_legacy";
 
@@ -11,6 +11,22 @@ type VisualMedia = {
   mimeType: "image/png" | "image/jpeg";
   dataUrl: string;
 };
+
+async function messageUsesSoundscape(conversationId: string, messageId: string | null) {
+  if (!messageId) return false;
+  const history = await legacyApi.messages(conversationId);
+  const targetIndex = history.findIndex((message) => message.id === messageId);
+  if (targetIndex < 0) return false;
+  const target = history[targetIndex];
+  if (target.role === "user") {
+    return target.content.startsWith("[Mode: Music/SFX Creation]");
+  }
+  const source = history
+    .slice(0, targetIndex)
+    .reverse()
+    .find((message) => message.role === "user");
+  return source?.content.startsWith("[Mode: Music/SFX Creation]") ?? false;
+}
 
 export const api = {
   ...legacyApi,
@@ -82,5 +98,16 @@ export const api = {
       );
     }
     return assistant;
+  },
+  createGenerationArtifact: async (
+    conversationId: string,
+    messageId: string | null,
+    kind: "image" | "video" | "voice",
+    prompt: string,
+  ): Promise<Artifact> => {
+    if (kind === "voice" && isTauri && (await messageUsesSoundscape(conversationId, messageId))) {
+      return createSoundscapeArtifact(conversationId, messageId, prompt);
+    }
+    return legacyApi.createGenerationArtifact(conversationId, messageId, kind, prompt);
   },
 };
