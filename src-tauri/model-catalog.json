@@ -1,6 +1,52 @@
 {
-  "catalogVersion": 5,
+  "catalogVersion": 6,
   "models": [
+    {
+      "id": "qwen3-06b-q4",
+      "name": "OpenMindAI Nano",
+      "version": "1",
+      "family": "qwen",
+      "kind": "chat",
+      "runtime": "llama.cpp",
+      "repo": "ggml-org/Qwen3-0.6B-GGUF",
+      "quantization": "Q4_0",
+      "required": false,
+      "capabilities": ["chat", "reasoning", "code"],
+      "sizeBytes": 429000000,
+      "minRamBytes": 4294967296,
+      "minVramBytes": null,
+      "license": "apache-2.0",
+      "description": "Ultra-light local assistant for low-memory systems, quick chat, writing, and basic code help.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "*Q4_0*.gguf",
+        "destinationDir": "models/llm/qwen/qwen3-0.6b",
+        "format": "gguf"
+      }
+    },
+    {
+      "id": "qwen3-17b-q4km",
+      "name": "OpenMindAI Swift",
+      "version": "1",
+      "family": "qwen",
+      "kind": "chat",
+      "runtime": "llama.cpp",
+      "repo": "ggml-org/Qwen3-1.7B-GGUF",
+      "quantization": "Q4_K_M",
+      "required": false,
+      "capabilities": ["chat", "reasoning", "code"],
+      "sizeBytes": 1280000000,
+      "minRamBytes": 4294967296,
+      "minVramBytes": null,
+      "license": "apache-2.0",
+      "description": "Fast lightweight local assistant for everyday chat, writing, reasoning, and coding on modest hardware.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "*Q4_K_M*.gguf",
+        "destinationDir": "models/llm/qwen/qwen3-1.7b",
+        "format": "gguf"
+      }
+    },
     {
       "id": "qwen3-4b-q4km",
       "name": "OpenMindAI Core",
@@ -11,11 +57,7 @@
       "repo": "Qwen/Qwen3-4B-GGUF",
       "quantization": "Q4_K_M",
       "required": true,
-      "capabilities": [
-        "chat",
-        "reasoning",
-        "code"
-      ],
+      "capabilities": ["chat", "reasoning", "code"],
       "sizeBytes": 2497280256,
       "minRamBytes": 8589934592,
       "minVramBytes": null,
@@ -29,6 +71,47 @@
       }
     },
     {
+      "id": "phi4-mini-q4km",
+      "name": "OpenMindAI Logic",
+      "version": "1",
+      "family": "phi",
+      "kind": "chat",
+      "runtime": "llama.cpp",
+      "repo": "unsloth/Phi-4-mini-instruct-GGUF",
+      "quantization": "Q4_K_M",
+      "required": false,
+      "capabilities": ["chat", "reasoning", "code", "math"],
+      "sizeBytes": 2490000000,
+      "minRamBytes": 8589934592,
+      "minVramBytes": null,
+      "license": "mit",
+      "description": "Compact Microsoft Phi reasoning model for structured answers, coding, and math-oriented local work.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "*Q4_K_M*.gguf",
+        "destinationDir": "models/llm/phi/phi-4-mini",
+        "format": "gguf"
+      }
+    },
+    {
+      "id": "llama32-3b-q4km",
+      "name": "OpenMindAI Compact",
+      "version": "1",
+      "family": "llama",
+      "kind": "chat",
+      "runtime": "llama.cpp",
+      "repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",
+      "quantization": "Q4_K_M",
+      "required": false,
+      "capabilities": ["chat", "reasoning", "code"],
+      "sizeBytes": 2020000000,
+      "minRamBytes": 8589934592,
+      "minVramBytes": null,
+      "license": "llama-3.2-community",
+      "description": "Free-to-use Llama 3.2 local assistant. Upstream community license and attribution terms apply; install manually after accepting them.",
+      "download": null
+    },
+    {
       "id": "qwen3-8b-q4km",
       "name": "OpenMindAI Titan",
       "version": "1",
@@ -38,20 +121,85 @@
       "repo": "Qwen/Qwen3-8B-GGUF",
       "quantization": "Q4_K_M",
       "required": false,
-      "capabilities": [
-        "chat",
-        "reasoning",
-        "code"
-      ],
+      "capabilities": ["chat", "reasoning", "code"],
       "sizeBytes": 5200000000,
       "minRamBytes": 17179869184,
-      "minVramBytes": 8589934592,
+      "minVramBytes": null,
       "license": "apache-2.0",
-      "description": "Stronger local brain tuned for NVIDIA/CUDA PCs.",
+      "description": "Stronger general-purpose local brain for higher-quality chat, reasoning, and code on capable systems.",
       "download": {
         "strategy": "singleFile",
         "filenamePattern": "*Q4_K_M*.gguf",
         "destinationDir": "models/llm/qwen/qwen3-8b",
+        "format": "gguf"
+      }
+    },
+    {
+      "id": "mistral-small31-24b-q4km",
+      "name": "OpenMindAI Expert",
+      "version": "1",
+      "family": "mistral",
+      "kind": "chat",
+      "runtime": "llama.cpp",
+      "repo": "second-state/Mistral-Small-3.1-24B-Instruct-2503-GGUF",
+      "quantization": "Q4_K_M",
+      "required": false,
+      "capabilities": ["chat", "reasoning", "code"],
+      "sizeBytes": 14333910304,
+      "minRamBytes": 34359738368,
+      "minVramBytes": null,
+      "license": "apache-2.0",
+      "description": "High-capability local assistant for workstations with large memory budgets, long-form reasoning, and advanced coding.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "*Q4_K_M*.gguf",
+        "destinationDir": "models/llm/mistral/mistral-small-3.1-24b",
+        "format": "gguf"
+      }
+    },
+    {
+      "id": "deepseek-r1-15b-q4km",
+      "name": "OpenMindAI Reasoning Mini",
+      "version": "1",
+      "family": "deepseek-r1",
+      "kind": "reasoning",
+      "runtime": "llama.cpp",
+      "repo": "lmstudio-community/DeepSeek-R1-Distill-Qwen-1.5B-GGUF",
+      "quantization": "Q4_K_M",
+      "required": false,
+      "capabilities": ["chat", "reasoning", "math", "code"],
+      "sizeBytes": 1120000000,
+      "minRamBytes": 6442450944,
+      "minVramBytes": null,
+      "license": "mit",
+      "description": "Lightweight dedicated reasoning model for math, logic, and code when memory is limited.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "*Q4_K_M*.gguf",
+        "destinationDir": "models/llm/deepseek/r1-distill-qwen-1.5b",
+        "format": "gguf"
+      }
+    },
+    {
+      "id": "deepseek-r1-7b-q4km",
+      "name": "OpenMindAI Reasoning",
+      "version": "1",
+      "family": "deepseek-r1",
+      "kind": "reasoning",
+      "runtime": "llama.cpp",
+      "repo": "lmstudio-community/DeepSeek-R1-Distill-Qwen-7B-GGUF",
+      "quantization": "Q4_K_M",
+      "required": false,
+      "capabilities": ["chat", "reasoning", "math", "code"],
+      "sizeBytes": 4680000000,
+      "minRamBytes": 17179869184,
+      "minVramBytes": null,
+      "license": "mit",
+      "description": "Dedicated local reasoning model for deeper math, logic, analysis, and coding tasks.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "*Q4_K_M*.gguf",
+        "destinationDir": "models/llm/deepseek/r1-distill-qwen-7b",
         "format": "gguf"
       }
     },
@@ -65,11 +213,7 @@
       "repo": "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF",
       "quantization": "Q4_K_M",
       "required": false,
-      "capabilities": [
-        "vision",
-        "ocr",
-        "image-review"
-      ],
+      "capabilities": ["vision", "ocr", "image-review"],
       "sizeBytes": 2775000000,
       "minRamBytes": 8589934592,
       "minVramBytes": 4294967296,
@@ -91,6 +235,24 @@
       }
     },
     {
+      "id": "gemma3-4b-q4",
+      "name": "OpenMindAI Lens Plus",
+      "version": "1",
+      "family": "gemma",
+      "kind": "vision",
+      "runtime": "llama.cpp",
+      "repo": "google/gemma-3-4b-it-qat-q4_0-gguf",
+      "quantization": "Q4_0",
+      "required": false,
+      "capabilities": ["chat", "vision", "reasoning", "ocr", "image-review"],
+      "sizeBytes": 3160000000,
+      "minRamBytes": 8589934592,
+      "minVramBytes": 4294967296,
+      "license": "gemma",
+      "description": "Free/open-weight Gemma 3 multimodal model. Google Gemma terms must be accepted upstream before manual installation.",
+      "download": null
+    },
+    {
       "id": "whisper-large-v3-turbo-q5",
       "name": "OpenMindAI Hear",
       "version": "1",
@@ -100,11 +262,7 @@
       "repo": "ggerganov/whisper.cpp",
       "quantization": "Q5_0",
       "required": false,
-      "capabilities": [
-        "transcription",
-        "translation",
-        "audio"
-      ],
+      "capabilities": ["transcription", "translation", "audio"],
       "sizeBytes": 574000000,
       "minRamBytes": 4294967296,
       "minVramBytes": null,
@@ -127,10 +285,7 @@
       "repo": "hexgrad/Kokoro-82M",
       "quantization": "FP32",
       "required": false,
-      "capabilities": [
-        "tts",
-        "voice"
-      ],
+      "capabilities": ["tts", "voice"],
       "sizeBytes": 328000000,
       "minRamBytes": 4294967296,
       "minVramBytes": null,
@@ -167,10 +322,7 @@
       "repo": "stabilityai/stable-diffusion-xl-base-1.0",
       "quantization": "FP16",
       "required": false,
-      "capabilities": [
-        "text-to-image",
-        "image"
-      ],
+      "capabilities": ["text-to-image", "image"],
       "sizeBytes": 6930000000,
       "minRamBytes": 17179869184,
       "minVramBytes": 8589934592,
@@ -194,10 +346,7 @@
       "repo": "black-forest-labs/FLUX.1-schnell",
       "quantization": "BF16",
       "required": false,
-      "capabilities": [
-        "text-to-image",
-        "image"
-      ],
+      "capabilities": ["text-to-image", "image"],
       "sizeBytes": 24000000000,
       "minRamBytes": 34359738368,
       "minVramBytes": 12884901888,
@@ -220,11 +369,7 @@
       "repo": "stabilityai/stable-audio-open-1.0",
       "quantization": "FP16",
       "required": false,
-      "capabilities": [
-        "text-to-audio",
-        "music",
-        "sound"
-      ],
+      "capabilities": ["text-to-audio", "music", "sound"],
       "sizeBytes": 4500000000,
       "minRamBytes": 17179869184,
       "minVramBytes": 8589934592,
@@ -242,10 +387,7 @@
       "repo": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
       "quantization": "FP16+Q5_K_M",
       "required": false,
-      "capabilities": [
-        "text-to-video",
-        "video"
-      ],
+      "capabilities": ["text-to-video", "video"],
       "sizeBytes": 7250000000,
       "minRamBytes": 17179869184,
       "minVramBytes": 6442450944,

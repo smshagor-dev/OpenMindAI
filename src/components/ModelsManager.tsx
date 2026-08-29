@@ -55,7 +55,10 @@ export function ModelsManager(props: {
     };
   }, []);
 
-  const recommendedIds = useMemo(() => recommendedModelIds(catalog?.entries ?? [], props.hardware), [catalog, props.hardware]);
+  const recommendedIds = useMemo(
+    () => recommendedModelIds(catalog?.entries ?? [], props.hardware),
+    [catalog, props.hardware],
+  );
 
   const groupedCatalog = useMemo(() => {
     const groups = new Map<string, ModelCatalogStatus[]>();
@@ -76,11 +79,19 @@ export function ModelsManager(props: {
   const primaryRecommendation = useMemo(() => {
     const entries = catalog?.entries ?? [];
     return (
-      entries.find((item) => recommendedIds.has(item.entry.id) && item.entry.kind === "chat") ??
-      entries.find((item) => recommendedIds.has(item.entry.id)) ??
+      entries.find(
+        (item) =>
+          recommendedIds.has(item.entry.id) &&
+          item.entry.kind === "chat" &&
+          (item.downloadSupported || item.installed),
+      ) ??
+      entries.find(
+        (item) => recommendedIds.has(item.entry.id) && (item.downloadSupported || item.installed),
+      ) ??
       null
     );
   }, [catalog, recommendedIds]);
+
   const downloadedCount = catalog?.entries.filter((item) => item.installed).length ?? 0;
   const recommendedCount = catalog?.entries.filter((item) => recommendedIds.has(item.entry.id)).length ?? 0;
   const activeDownload = catalog?.entries.find((item) => item.entry.id === downloadStatus?.modelId) ?? null;
@@ -154,24 +165,32 @@ export function ModelsManager(props: {
         </section>
       ))}
 
-      {props.showRuntimeInfo === false ? null : <div className="sub-panel">
-        <Info label="Runtime selected" value={props.runtime?.selected?.manifest.runtimeName ?? "None"} />
-        <Info label="Runtime backend" value={props.runtime?.selected?.manifest.backend} />
-        <Info label="llama.cpp device" value={props.runtime?.selected?.deviceOutput?.slice(0, 180)} />
-        <div className="button-row">
-          <button type="button" onClick={validateFirstModel} title="Validate and plan first chat model" disabled={props.models.length === 0}>
-            <RefreshCw size={16} />
-          </button>
+      {props.showRuntimeInfo === false ? null : (
+        <div className="sub-panel">
+          <Info label="Runtime selected" value={props.runtime?.selected?.manifest.runtimeName ?? "None"} />
+          <Info label="Runtime backend" value={props.runtime?.selected?.manifest.backend} />
+          <Info label="llama.cpp device" value={props.runtime?.selected?.deviceOutput?.slice(0, 180)} />
+          <div className="button-row">
+            <button
+              type="button"
+              onClick={validateFirstModel}
+              title="Validate and plan first chat model"
+              disabled={props.models.length === 0}
+            >
+              <RefreshCw size={16} />
+            </button>
+          </div>
+          {launchPlan ? (
+            <>
+              <Info label="Planned context" value={String(launchPlan.config.contextSize)} />
+              <Info label="GPU layers" value={String(launchPlan.config.gpuLayers)} />
+              <Info label="CPU threads" value={String(launchPlan.config.threads)} />
+              <Info label="Flash attention" value={launchPlan.config.flashAttention ? "On" : "Off"} />
+            </>
+          ) : null}
         </div>
-        {launchPlan ? (
-          <>
-            <Info label="Planned context" value={String(launchPlan.config.contextSize)} />
-            <Info label="GPU layers" value={String(launchPlan.config.gpuLayers)} />
-            <Info label="CPU threads" value={String(launchPlan.config.threads)} />
-            <Info label="Flash attention" value={launchPlan.config.flashAttention ? "On" : "Off"} />
-          </>
-        ) : null}
-      </div>}
+      )}
+
       <ConfirmDialog
         open={deleteTarget !== null}
         title={`Delete ${deleteTarget?.entry.name ?? "model"}?`}
@@ -225,7 +244,9 @@ function ModelCatalogOverview(props: {
           {props.activeDownloadName && props.downloadStatus ? (
             <span>
               {props.activeDownloadName}
-              {props.downloadStatus.speedBytesPerSec ? ` · ${formatBytes(props.downloadStatus.speedBytesPerSec)}/s` : ""}
+              {props.downloadStatus.speedBytesPerSec
+                ? ` · ${formatBytes(props.downloadStatus.speedBytesPerSec)}/s`
+                : ""}
             </span>
           ) : null}
         </div>
@@ -270,28 +291,35 @@ function CatalogModelCard(props: {
   onDelete?: () => void;
 }) {
   const entry = props.item.entry;
-  const busy = props.status?.state === "resolving" || props.status?.state === "downloading" || props.status?.state === "verifying";
+  const busy =
+    props.status?.state === "resolving" ||
+    props.status?.state === "downloading" ||
+    props.status?.state === "verifying";
   const paused = props.status?.state === "pausedInterrupted";
+  const availabilityBadge = props.item.installed
+    ? "Downloaded"
+    : props.item.downloadSupported
+      ? "Download"
+      : "Manual access";
+
   return (
     <div className="model-download-card">
       <div>
         <strong>
           {entry.name}
           <span className={props.item.installed ? "model-badge downloaded" : "model-badge"}>
-            {props.item.installed ? "Downloaded" : "Download"}
+            {availabilityBadge}
           </span>
           {props.recommended ? <span className="model-badge recommended">Recommended</span> : null}
           {props.item.installed ? <CheckCircle2 size={15} /> : null}
         </strong>
         <span>
-          OpenMindAI local package · {entry.quantization} · {entry.runtime} · {formatBytes(entry.sizeBytes)}
+          OpenMindAI local package · {entry.quantization} · {entry.runtime} · {formatBytes(entry.sizeBytes)} · {licenseLabel(entry.license)}
         </span>
         <small>{entry.description}</small>
       </div>
       <div className="download-progress">
-        <span>
-          {props.item.installed ? "Ready" : props.item.compatible ? "Available" : "Needs stronger hardware"}
-        </span>
+        <span>{catalogAvailabilityLabel(props.item)}</span>
         {props.status?.totalBytes ? (
           <small>
             {formatBytes(props.status.downloadedBytes)} / {formatBytes(props.status.totalBytes)}
@@ -309,7 +337,12 @@ function CatalogModelCard(props: {
               <CheckCircle2 size={16} />
             </button>
             {props.onDelete ? (
-              <button type="button" className="danger-button" onClick={props.onDelete} title={`Delete ${entry.name}`}>
+              <button
+                type="button"
+                className="danger-button"
+                onClick={props.onDelete}
+                title={`Delete ${entry.name}`}
+              >
                 <Trash2 size={16} />
               </button>
             ) : null}
@@ -327,7 +360,11 @@ function CatalogModelCard(props: {
           <button
             type="button"
             onClick={props.onDownload}
-            title={`${paused ? "Resume" : "Download"} ${entry.name}`}
+            title={
+              props.item.downloadSupported
+                ? `${paused ? "Resume" : "Download"} ${entry.name}`
+                : `${entry.name} requires manual upstream license/access setup`
+            }
             disabled={!props.item.downloadSupported}
           >
             <Download size={16} />
@@ -342,6 +379,7 @@ function CatalogModelCard(props: {
 function collectionLabel(kind: string) {
   const labels: Record<string, string> = {
     chat: "OpenMindAI Core",
+    reasoning: "OpenMindAI Reasoning",
     vision: "OpenMindAI Lens",
     "speech-to-text": "OpenMindAI Hear",
     "text-to-speech": "OpenMindAI Speak",
@@ -354,24 +392,70 @@ function collectionLabel(kind: string) {
 
 function recommendedModelIds(entries: ModelCatalogStatus[], hardware: HardwareProfile | null) {
   const ids = new Set<string>();
-  const compatible = entries.filter((entry) => entry.compatible);
+  const compatible = entries.filter(
+    (entry) => entry.compatible && (entry.downloadSupported || entry.installed),
+  );
+  const totalRam = hardware?.memory.totalBytes ?? 0;
+  const maxVram = Math.max(
+    0,
+    ...(hardware?.gpus ?? []).map((gpu) => gpu.dedicatedVramBytes ?? 0),
+  );
   const hasNvidia = Boolean(hardware?.backends.cuda);
-  const hasLargeMemory =
-    (hardware?.memory.totalBytes ?? 0) >= 32 * 1024 * 1024 * 1024 ||
-    (hardware?.gpus ?? []).some((gpu) => (gpu.dedicatedVramBytes ?? 0) >= 12 * 1024 * 1024 * 1024);
+  const hasLargeMemory = totalRam >= 32 * 1024 * 1024 * 1024 || maxVram >= 12 * 1024 * 1024 * 1024;
 
-  addPreferred(ids, compatible, "chat", hasNvidia ? "qwen3-8b-q4km" : "qwen3-4b-q4km");
+  addFirstAvailable(ids, compatible, chatPreferenceOrder(totalRam, maxVram));
+  addFirstAvailable(
+    ids,
+    compatible,
+    totalRam >= 16 * 1024 * 1024 * 1024
+      ? ["deepseek-r1-7b-q4km", "deepseek-r1-15b-q4km"]
+      : ["deepseek-r1-15b-q4km", "deepseek-r1-7b-q4km"],
+  );
   addPreferred(ids, compatible, "vision", "qwen25-vl-3b-q4km");
   addPreferred(ids, compatible, "speech-to-text", "whisper-large-v3-turbo-q5");
   addPreferred(ids, compatible, "text-to-speech", "kokoro-82m-onnx");
   addPreferred(ids, compatible, "image", hasNvidia && hasLargeMemory ? "flux1-schnell" : "sdxl-base-1");
-  addPreferred(ids, compatible, "audio", "stable-audio-open");
-  addPreferred(ids, compatible, "video", hasNvidia && hasLargeMemory ? "wan21-t2v-13b" : "ltx-video");
+  addPreferred(ids, compatible, "video", "wan21-t2v-13b");
 
   return ids;
 }
 
-function addPreferred(ids: Set<string>, entries: ModelCatalogStatus[], kind: string, preferredId: string) {
+function chatPreferenceOrder(totalRam: number, maxVram: number) {
+  const gib = 1024 * 1024 * 1024;
+  if (totalRam >= 32 * gib || maxVram >= 16 * gib) {
+    return [
+      "mistral-small31-24b-q4km",
+      "qwen3-8b-q4km",
+      "qwen3-4b-q4km",
+      "qwen3-17b-q4km",
+      "qwen3-06b-q4",
+    ];
+  }
+  if (totalRam >= 16 * gib || maxVram >= 8 * gib) {
+    return ["qwen3-8b-q4km", "qwen3-4b-q4km", "qwen3-17b-q4km", "qwen3-06b-q4"];
+  }
+  if (totalRam >= 8 * gib) {
+    return ["qwen3-4b-q4km", "phi4-mini-q4km", "qwen3-17b-q4km", "qwen3-06b-q4"];
+  }
+  if (totalRam >= 6 * gib) {
+    return ["qwen3-17b-q4km", "qwen3-06b-q4"];
+  }
+  return ["qwen3-06b-q4", "qwen3-17b-q4km"];
+}
+
+function addFirstAvailable(ids: Set<string>, entries: ModelCatalogStatus[], preferredIds: string[]) {
+  const preferred = preferredIds
+    .map((id) => entries.find((entry) => entry.entry.id === id))
+    .find((entry): entry is ModelCatalogStatus => Boolean(entry));
+  if (preferred) ids.add(preferred.entry.id);
+}
+
+function addPreferred(
+  ids: Set<string>,
+  entries: ModelCatalogStatus[],
+  kind: string,
+  preferredId: string,
+) {
   const preferred = entries.find((entry) => entry.entry.id === preferredId);
   if (preferred) {
     ids.add(preferred.entry.id);
@@ -390,10 +474,34 @@ function modelSortScore(item: ModelCatalogStatus, recommendedIds: Set<string>) {
   return score;
 }
 
+function catalogAvailabilityLabel(item: ModelCatalogStatus) {
+  if (item.installed) return "Ready";
+  if (!item.downloadSupported) return "Manual license/access";
+  if (item.compatible) return "Available";
+  return "Needs stronger hardware";
+}
+
 function systemFitLabel(item: ModelCatalogStatus) {
   if (item.installed) return "Ready";
+  if (!item.downloadSupported) {
+    return item.compatible
+      ? `Compatible · manual upstream access · ${licenseLabel(item.entry.license)}`
+      : `Not recommended for this PC · manual upstream access`;
+  }
   if (!item.compatible) return "Not recommended for this PC";
-  return item.downloadSupported ? "Ready for this PC" : "Manual setup required";
+  return "Ready for this PC";
+}
+
+function licenseLabel(license: string) {
+  const labels: Record<string, string> = {
+    "apache-2.0": "Apache 2.0",
+    mit: "MIT",
+    gemma: "Gemma terms",
+    "llama-3.2-community": "Llama 3.2 terms",
+    "openrail++": "OpenRAIL++",
+    "stability-ai-nc": "Stability AI Community",
+  };
+  return labels[license.toLowerCase()] ?? license;
 }
 
 function Info(props: { label: string; value?: string | null }) {
