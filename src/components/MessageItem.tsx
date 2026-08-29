@@ -7,6 +7,7 @@ import {
   renderMarkdown,
   splitMarkdownBlocks,
 } from "../lib/markdown";
+import { userMessageDisplay } from "../lib/chat";
 import { formatTime } from "../lib/format";
 import { ArtifactCard } from "./ArtifactCard";
 import type { PreviewTarget } from "./PreviewPanel";
@@ -36,16 +37,19 @@ export function MessageItem(props: {
   onRevealArtifact: (artifact: Artifact) => void;
   onRetryArtifact: (artifact: Artifact) => void;
   onPreview: (target: PreviewTarget) => void;
-  onEditUser?: () => void;
+  onEditUser?: (content: string) => void;
 }) {
   const message = props.message;
   const isAssistant = message.role === "assistant";
+  const userDisplay = message.role === "user" ? userMessageDisplay(message.content) : null;
+  const renderedContent = userDisplay?.displayText || message.content;
   const isThinking = isAssistant && message.status === "streaming" && message.content.trim().length === 0;
   const canSave = isAssistant && message.status === "completed" && message.content.trim().length > 0;
   const showActions = isAssistant && !isThinking && message.status !== "streaming" && message.content.trim().length > 0;
+  const canEditUser = Boolean(props.onEditUser && userDisplay?.prompt);
   const [copied, setCopied] = useState(false);
   const copyMessage = async () => {
-    await navigator.clipboard.writeText(message.content);
+    await navigator.clipboard.writeText(renderedContent);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1400);
   };
@@ -70,7 +74,7 @@ export function MessageItem(props: {
         </div>
       ) : (
         <MessageContent
-          content={message.content}
+          content={renderedContent}
           role={message.role}
           markdown={props.markdown}
           codeCopyButtons={props.codeCopyButtons}
@@ -88,8 +92,12 @@ export function MessageItem(props: {
           >
             <Copy size={14} /> {copied ? "Copied" : "Copy"}
           </button>
-          {props.onEditUser ? (
-            <button className="message-action-pill" title="Edit and resend" onClick={props.onEditUser}>
+          {canEditUser ? (
+            <button
+              className="message-action-pill"
+              title="Edit and resend"
+              onClick={() => props.onEditUser?.(userDisplay?.prompt ?? "")}
+            >
               <Pencil size={14} /> Edit
             </button>
           ) : null}
