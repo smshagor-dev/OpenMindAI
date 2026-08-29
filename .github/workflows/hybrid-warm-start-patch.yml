@@ -18,6 +18,11 @@ jobs:
           ref: perf/hybrid-warm-start
           fetch-depth: 1
 
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
       - name: Integrate hybrid warm start
         shell: bash
         run: |
@@ -32,7 +37,6 @@ jobs:
                   raise SystemExit(f'{label}: expected exactly one match, found {count}')
               p.write_text(text.replace(old, new, 1), encoding='utf-8')
 
-          # Register the module before lib_legacy.rs is included.
           replace_once(
               'src-tauri/src/lib.rs',
               'mod vision_batch;\n\npub(crate) use connected_agent::{',
@@ -40,7 +44,6 @@ jobs:
               'register warm_start module',
           )
 
-          # Add an inexpensive active-generation check used by memory trimming.
           replace_once(
               'src-tauri/src/inference.rs',
               '''    pub fn finish(&self, conversation_id: &str) {\n        if let Ok(mut tokens) = self.tokens.lock() {\n            tokens.remove(conversation_id);\n        }\n    }\n}\n''',
@@ -61,26 +64,18 @@ jobs:
               '''    active_generations: ActiveGenerations,\n    warm_start: warm_start::WarmStartCoordinator,\n    http: Client,\n}\n''',
               'app warm coordinator state',
           )
-
-          # Explicit model activation should also become the warm resident model.
           replace_once(
               legacy,
               '''        let mut runtime = state\n            .runtime\n            .lock()\n            .map_err(|_| app_error::AppError::internal("runtime lock poisoned"))?;\n        runtime.ensure_model_server(&hardware, &plan.config)?\n    };\n\n    let db = state\n''',
               '''        let mut runtime = state\n            .runtime\n            .lock()\n            .map_err(|_| app_error::AppError::internal("runtime lock poisoned"))?;\n        let status = runtime.ensure_model_server(&hardware, &plan.config)?;\n        state.warm_start.mark_runtime_ready(&model.id);\n        status\n    };\n\n    let db = state\n''',
               'activate model warm state',
           )
-
-          # Mark the successfully resolved generation runtime as warm.
           replace_once(
               legacy,
               '''        let status = runtime.ensure_model_server(&hardware, &plan.config)?;\n        status.endpoint.ok_or_else(|| {\n            app_error::AppError::InferenceServerUnavailable("runtime endpoint missing".to_string())\n        })?\n''',
               '''        let status = runtime.ensure_model_server(&hardware, &plan.config)?;\n        state.warm_start.mark_runtime_ready(&model.id);\n        status.endpoint.ok_or_else(|| {\n            app_error::AppError::InferenceServerUnavailable("runtime endpoint missing".to_string())\n        })?\n''',
               'generation warm state',
           )
-
-          # Queue a first foreground request behind an already-running preload of
-          # the exact same model. Different/on-demand models never wait on the
-          # coordinator; they continue to the normal runtime switch path.
           replace_once(
               legacy,
               '''    let routing = resolve_conversation_model(&state, &conversation_id, &mode, trimmed)?;\n    let model = routing.model;\n    sync_project_context(&state, &conversation_id)?;\n''',
@@ -93,14 +88,12 @@ jobs:
               '''    let routing = resolve_conversation_model(&state, &conversation_id, &mode, &user.content)?;\n    let model = routing.model;\n    state.warm_start.note_foreground_request(&model.id);\n    state.warm_start.wait_if_loading(&model.id).await;\n    sync_project_context(&state, &conversation_id)?;\n''',
               'regenerate warm queue',
           )
-
           replace_once(
               legacy,
               '''fn stop_llama_runtime(state: State<AppState>) -> Result<(), app_error::AppError> {\n    let mut runtime = state\n        .runtime\n        .lock()\n        .map_err(|_| app_error::AppError::internal("runtime lock poisoned"))?;\n    runtime.stop()\n}\n''',
               '''fn stop_llama_runtime(state: State<AppState>) -> Result<(), app_error::AppError> {\n    let mut runtime = state\n        .runtime\n        .lock()\n        .map_err(|_| app_error::AppError::internal("runtime lock poisoned"))?;\n    runtime.stop()?;\n    state.warm_start.mark_runtime_stopped();\n    Ok(())\n}\n''',
               'manual runtime stop warm state',
           )
-
           replace_once(
               legacy,
               '''            runtime_installer,\n            active_generations: ActiveGenerations::default(),\n            http: Client::new(),\n        })\n        .invoke_handler(tauri::generate_handler![\n''',
@@ -108,7 +101,6 @@ jobs:
               'spawn startup warm services',
           )
 
-          # Add a public coordinator reset used by the existing manual stop action.
           warm = Path('src-tauri/src/warm_start.rs')
           text = warm.read_text(encoding='utf-8')
           old = '''    pub fn mark_runtime_ready(&self, model_id: &str) {\n        if let Ok(mut state) = self.state.lock() {\n            state.phase = WarmPhase::Ready;\n            state.model_id = Some(model_id.to_string());\n        }\n        self.notify.notify_waiters();\n    }\n'''
@@ -120,9 +112,9 @@ jobs:
 
           cargo fmt --manifest-path src-tauri/Cargo.toml
           cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-          cargo check --manifest-path src-tauri/Cargo.toml
-          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
-          cargo test --manifest-path src-tauri/Cargo.toml warm_start::tests
+          cargo check --locked --manifest-path src-tauri/Cargo.toml
+          cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+          cargo test --locked --manifest-path src-tauri/Cargo.toml warm_start::tests
 
       - name: Commit production changes and remove helper
         shell: bash
