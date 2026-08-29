@@ -1017,8 +1017,12 @@ async fn connect_with_token(
         "notion" => notion_account_label(&state.http, token).await?,
         "dropbox" => dropbox_account_label(&state.http, token).await?,
         "mcp" => {
-            secret_store::set_secret(&access_slot(provider), token)?;
-            mcp_rpc(state, "tools/list", json!({}), None).await?;
+            let slot = access_slot(provider);
+            secret_store::set_secret(&slot, token)?;
+            if let Err(error) = mcp_rpc(state, "tools/list", json!({}), None).await {
+                let _ = secret_store::delete_secret(&slot);
+                return Err(error);
+            }
             load_record(state, provider)?
                 .and_then(|record| config_str(&record.config, "name").map(ToOwned::to_owned))
                 .unwrap_or_else(|| "MCP server".to_string())
