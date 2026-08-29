@@ -584,6 +584,13 @@ async fn request_agent_decision(
     } else {
         "terminal is NOT AVAILABLE. Use filesystem tools only."
     };
+    let platform_rule = if cfg!(target_os = "windows") {
+        "Host OS: Windows. terminal uses Windows PowerShell (powershell.exe -NoProfile -NonInteractive). Use PowerShell-compatible syntax."
+    } else if cfg!(target_os = "macos") {
+        "Host OS: macOS. terminal uses /bin/sh -lc. Use POSIX shell-compatible syntax."
+    } else {
+        "Host OS: Linux. terminal uses /bin/sh -lc. Use POSIX shell-compatible syntax."
+    };
 
     let system = format!(
         "You are OpenMindAI Local Project Agent. You operate directly on a user's local project only to fulfill the latest user request.\n\
@@ -610,12 +617,14 @@ Rules:\n\
 - After edits, validate with appropriate tests/build/lint when terminal is available. Run validation commands one at a time so each exit code is authoritative. If validation fails, inspect the error, change approach, fix, and rerun until green or a concrete blocker is established.\n\
 - A terminal timeout or non-zero exit is a failed tool action even when stdout/stderr is available; use that output to recover.\n\
 - Do not repeat an identical failed tool action. Inspect more context or choose a different recovery action.\n\
-- For dependency installs or heavy builds, set timeoutSec as needed up to 600 seconds.\n\
+- For dependency installs or heavy builds, set timeoutSec as needed up to 600 seconds. Avoid interactive prompts, pagers, editors, sudo/password prompts, and commands that wait for user input.\n\
+- Follow the host shell syntax described below; do not assume Bash on Windows or PowerShell on macOS/Linux.\n\
 - After changing workspace files, do not finalize before a successful applicable validation. Only use validationSkippedReason when no meaningful automated validation exists for the change.\n\
 - Never claim a command/test passed unless a tool result showed it.\n\
 - Do not delete unrelated data. delete_path is only for task-required paths.\n\
 - Absolute paths are only allowed when Full PC access is enabled.\n\
 - {terminal_rule}\n\
+- {platform_rule}\n\
 Attached roots:\n{root_summary}"
     );
 
