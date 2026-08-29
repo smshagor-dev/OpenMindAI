@@ -119,6 +119,7 @@ export function ProjectsWorkspace(props: {
     const project = await runAction("create-project", () => api.createProject(name));
     if (!project) return;
     await refreshProjects(project.id).catch((caught) => setError(formatError(caught)));
+    setSavedAt(null);
     setDraftName("");
   };
 
@@ -235,7 +236,10 @@ export function ProjectsWorkspace(props: {
       await refreshProjects(null);
       return true;
     });
-    if (deleted) setDeleteTarget(null);
+    if (deleted) {
+      setSavedAt(null);
+      setDeleteTarget(null);
+    }
   };
 
   const readyFiles = activeProject?.files.filter((file) => file.status === "ready").length ?? 0;
@@ -309,6 +313,7 @@ export function ProjectsWorkspace(props: {
                 onClick={() => {
                   setActiveId(project.id);
                   setLinkSearch("");
+                  setSavedAt(null);
                   setError(null);
                 }}
               >
@@ -685,11 +690,13 @@ async function ingestProjectFile(file: File): Promise<FileIngestion> {
 
   try {
     const text = await file.text();
-    const trimmed = Array.from(text).slice(0, MAX_PROJECT_FILE_TEXT_CHARS).join("");
+    const characters = Array.from(text);
+    const truncated = characters.length > MAX_PROJECT_FILE_TEXT_CHARS;
+    const trimmed = characters.slice(0, MAX_PROJECT_FILE_TEXT_CHARS).join("");
     return {
       contentText: trimmed,
       status: "ready",
-      error: text.length > trimmed.length ? "Ready for context. Stored preview was truncated." : null,
+      error: truncated ? "Ready for context. Stored preview was truncated." : null,
     };
   } catch {
     return {
