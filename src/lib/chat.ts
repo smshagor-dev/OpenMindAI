@@ -39,6 +39,9 @@ export interface UserMessageDisplay {
 }
 
 const MAX_TEXT_ATTACHMENT_BYTES = 1024 * 1024;
+const MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS = 8_000;
+const MAX_TOTAL_ATTACHMENT_CONTEXT_CHARS = 16_000;
+const ATTACHMENT_TRUNCATION_MARKER = "\n[truncated to fit local chat context]";
 const MAX_VISION_IMAGE_INPUT_BYTES = 16 * 1024 * 1024;
 const MAX_VISION_IMAGE_DATA_URL_CHARS = 6_000_000;
 const MAX_VISION_IMAGE_DIMENSION = 2048;
@@ -54,6 +57,13 @@ const CHAT_MODES: ChatMode[] = [
   "voice",
   "vision",
 ];
+
+function takeAttachmentContext(value: string, limit: number) {
+  if (limit <= 0) return "";
+  if (value.length <= limit) return value;
+  if (limit <= ATTACHMENT_TRUNCATION_MARKER.length) return value.slice(0, limit);
+  return `${value.slice(0, limit - ATTACHMENT_TRUNCATION_MARKER.length)}${ATTACHMENT_TRUNCATION_MARKER}`;
+}
 
 function visionMimeType(file: File) {
   const declared = file.type.toLowerCase();
@@ -161,7 +171,10 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
   let mediaDataUrl: string | null = null;
   let mediaMimeType: "image/png" | "image/jpeg" | null = null;
   if (isTextLike) {
-    contentPreview = await file.text();
+    contentPreview = takeAttachmentContext(
+      await file.text(),
+      MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS,
+    );
   } else if (kind === "image") {
     const encoded = await encodeVisionImage(file);
     mediaDataUrl = encoded.dataUrl;
@@ -219,12 +232,29 @@ export function buildMessageContent(
 ) {
   const modePrefix = modeInstruction(mode);
   if (attachments.length === 0) return [modePrefix, prompt].filter(Boolean).join("\n\n");
-  const attachmentText = attachments
-    .map((attachment) => {
-      const header = `[Attachment: ${attachment.name}, ${attachment.kind}, ${formatBytes(attachment.size)}, ${attachment.type}]`;
-      return attachment.contentPreview ? `${header}\n${attachment.contentPreview}` : header;
-    })
-    .join("\n\n");
+
+  let remaining = MAX_TOTAL_ATTACHMENT_CONTEXT_CHARS;
+  const attachmentParts: string[] = [];
+  for (const attachment of attachments) {
+    if (remaining <= 0) break;
+    const header = `[Attachment: ${attachment.name}, ${attachment.kind}, ${formatBytes(attachment.size)}, ${attachment.type}]`;
+    const previewBudget = Math.max(0, remaining - header.length - 1);
+    const preview = attachment.contentPreview
+      ? takeAttachmentContext(
+          attachment.contentPreview,
+          Math.min(MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS, previewBudget),
+        )
+      : "";
+    const serialized = preview ? `${header}\n${preview}` : header.slice(0, remaining);
+    attachmentParts.push(serialized);
+    remaining -= serialized.length + 2;
+  }
+
+  if (attachments.length > attachmentParts.length && remaining > 0) {
+    attachmentParts.push("[Additional attachments omitted to fit local chat context]");
+  }
+
+  const attachmentText = attachmentParts.join("\n\n");
   return [modePrefix, prompt, attachmentText].filter(Boolean).join("\n\n");
 }
 
