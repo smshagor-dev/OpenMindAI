@@ -21,58 +21,37 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
+          import re
 
           path = Path("src/components/ProjectsWorkspace.tsx")
           text = path.read_text()
 
-          replacements = [
-              (
-                  '''    await refreshProjects(project.id).catch((caught) => setError(formatError(caught)));
-              setDraftName("");''',
-                  '''    await refreshProjects(project.id).catch((caught) => setError(formatError(caught)));
-              setSavedAt(null);
-              setDraftName("");''',
-              ),
-              (
-                  '''                  setActiveId(project.id);
-                  setLinkSearch("");
-                  setError(null);''',
-                  '''                  setActiveId(project.id);
-                  setLinkSearch("");
-                  setSavedAt(null);
-                  setError(null);''',
-              ),
-              (
-                  '''    if (deleted) setDeleteTarget(null);''',
-                  '''    if (deleted) {
-              setSavedAt(null);
-              setDeleteTarget(null);
-            }''',
-              ),
-              (
-                  '''    const text = await file.text();
-              const trimmed = Array.from(text).slice(0, MAX_PROJECT_FILE_TEXT_CHARS).join("");
-              return {
-                contentText: trimmed,
-                status: "ready",
-                error: text.length > trimmed.length ? "Ready for context. Stored preview was truncated." : null,
-              };''',
-                  '''    const text = await file.text();
-              const characters = Array.from(text);
-              const truncated = characters.length > MAX_PROJECT_FILE_TEXT_CHARS;
-              const trimmed = characters.slice(0, MAX_PROJECT_FILE_TEXT_CHARS).join("");
-              return {
-                contentText: trimmed,
-                status: "ready",
-                error: truncated ? "Ready for context. Stored preview was truncated." : null,
-              };''',
-              ),
-          ]
+          def replace_once(pattern, replacement, label):
+              global text
+              text, count = re.subn(pattern, replacement, text, count=1, flags=re.MULTILINE)
+              if count != 1:
+                  raise SystemExit(f"could not apply {label}")
 
-          for old, new in replacements:
-              if old not in text:
-                  raise SystemExit(f"expected Project workspace pattern missing: {old[:100]!r}")
-              text = text.replace(old, new, 1)
+          replace_once(
+              r'(await refreshProjects\(project\.id\)\.catch\(\(caught\) => setError\(formatError\(caught\)\)\);\n\s*)(setDraftName\(""\);)',
+              r'\1setSavedAt(null);\n    \2',
+              "new-project saved state reset",
+          )
+          replace_once(
+              r'(setActiveId\(project\.id\);\n\s*setLinkSearch\(""\);\n)(\s*setError\(null\);)',
+              r'\1                  setSavedAt(null);\n\2',
+              "project-switch saved state reset",
+          )
+          replace_once(
+              r'if \(deleted\) setDeleteTarget\(null\);',
+              'if (deleted) {\n      setSavedAt(null);\n      setDeleteTarget(null);\n    }',
+              "delete-project saved state reset",
+          )
+          replace_once(
+              r'const text = await file\.text\(\);\n\s*const trimmed = Array\.from\(text\)\.slice\(0, MAX_PROJECT_FILE_TEXT_CHARS\)\.join\(""\);\n\s*return \{\n\s*contentText: trimmed,\n\s*status: "ready",\n\s*error: text\.length > trimmed\.length \? "Ready for context\. Stored preview was truncated\." : null,\n\s*\};',
+              'const text = await file.text();\n    const characters = Array.from(text);\n    const truncated = characters.length > MAX_PROJECT_FILE_TEXT_CHARS;\n    const trimmed = characters.slice(0, MAX_PROJECT_FILE_TEXT_CHARS).join("");\n    return {\n      contentText: trimmed,\n      status: "ready",\n      error: truncated ? "Ready for context. Stored preview was truncated." : null,\n    };',
+              "Unicode-safe truncation status",
+          )
 
           path.write_text(text)
           Path(".github/workflows/projects-final-polish.yml").unlink()
