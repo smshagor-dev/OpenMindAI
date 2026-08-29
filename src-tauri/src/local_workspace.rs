@@ -132,7 +132,11 @@ pub fn attach_project_workspace_folder(
     ensure_project_exists(&db, &project_id)?;
     let mut config = load_config(&db, &project_id)?;
 
-    if !config.roots.iter().any(|root| same_path(&root.path, &display_path)) {
+    if !config
+        .roots
+        .iter()
+        .any(|root| same_path(&root.path, &display_path))
+    {
         if config.roots.len() >= MAX_ROOTS {
             return Err(AppError::internal(format!(
                 "a project can attach at most {MAX_ROOTS} local folders"
@@ -262,8 +266,9 @@ pub fn read_project_workspace_file(
         )));
     }
     let bytes = fs::read(&file_path)?;
-    let content = String::from_utf8(bytes)
-        .map_err(|_| AppError::internal("binary or non-UTF-8 files cannot be opened in the text editor"))?;
+    let content = String::from_utf8(bytes).map_err(|_| {
+        AppError::internal("binary or non-UTF-8 files cannot be opened in the text editor")
+    })?;
     Ok(WorkspaceFileContent {
         path: display_path(&file_path),
         content,
@@ -281,10 +286,14 @@ pub fn write_project_workspace_file(
     state: State<AppState>,
 ) -> Result<WorkspaceMutationResult, AppError> {
     if !approved {
-        return Err(AppError::internal("saving a local file requires explicit approval"));
+        return Err(AppError::internal(
+            "saving a local file requires explicit approval",
+        ));
     }
     if content.chars().count() > MAX_WRITE_CHARS {
-        return Err(AppError::internal("file content exceeds the local editor limit"));
+        return Err(AppError::internal(
+            "file content exceeds the local editor limit",
+        ));
     }
     let config = load_project_config(&state, &project_id)?;
     let file_path = resolve_path(&config, root_id.as_deref(), &path, false)?;
@@ -310,7 +319,9 @@ pub fn create_project_workspace_directory(
     state: State<AppState>,
 ) -> Result<WorkspaceMutationResult, AppError> {
     if !approved {
-        return Err(AppError::internal("creating a local folder requires explicit approval"));
+        return Err(AppError::internal(
+            "creating a local folder requires explicit approval",
+        ));
     }
     let config = load_project_config(&state, &project_id)?;
     let directory = resolve_path(&config, root_id.as_deref(), &path, false)?;
@@ -331,7 +342,9 @@ pub fn move_project_workspace_path(
     state: State<AppState>,
 ) -> Result<WorkspaceMutationResult, AppError> {
     if !approved {
-        return Err(AppError::internal("moving or renaming a local path requires explicit approval"));
+        return Err(AppError::internal(
+            "moving or renaming a local path requires explicit approval",
+        ));
     }
     let config = load_project_config(&state, &project_id)?;
     let source = resolve_path(&config, root_id.as_deref(), &source_path, true)?;
@@ -360,7 +373,9 @@ pub fn delete_project_workspace_path(
     state: State<AppState>,
 ) -> Result<(), AppError> {
     if !approved {
-        return Err(AppError::internal("deleting a local path requires explicit approval"));
+        return Err(AppError::internal(
+            "deleting a local path requires explicit approval",
+        ));
     }
     let config = load_project_config(&state, &project_id)?;
     let target = resolve_path(&config, root_id.as_deref(), &path, true)?;
@@ -384,14 +399,18 @@ pub async fn run_project_terminal_command(
     state: State<'_, AppState>,
 ) -> Result<TerminalCommandResult, AppError> {
     if !approved {
-        return Err(AppError::internal("running a terminal command requires explicit approval"));
+        return Err(AppError::internal(
+            "running a terminal command requires explicit approval",
+        ));
     }
     let command_text = command.trim();
     if command_text.is_empty() {
         return Err(AppError::internal("terminal command cannot be empty"));
     }
     if command_text.chars().count() > MAX_TERMINAL_COMMAND_CHARS {
-        return Err(AppError::internal("terminal command exceeds the safety limit"));
+        return Err(AppError::internal(
+            "terminal command exceeds the safety limit",
+        ));
     }
 
     let config = load_project_config(&state, &project_id)?;
@@ -407,27 +426,32 @@ pub async fn run_project_terminal_command(
         resolve_path(&config, root_id.as_deref(), &cwd, true)?
     };
     if !start_dir.is_dir() {
-        return Err(AppError::internal("terminal working directory is not a directory"));
+        return Err(AppError::internal(
+            "terminal working directory is not a directory",
+        ));
     }
 
     let started = Instant::now();
     let mut process = terminal_process(command_text, &start_dir);
     process.kill_on_drop(true);
-    let output = match tokio::time::timeout(Duration::from_secs(TERMINAL_TIMEOUT_SECS), process.output()).await {
-        Ok(result) => result?,
-        Err(_) => {
-            return Ok(TerminalCommandResult {
-                command: command_text.to_string(),
-                cwd: display_path(&start_dir),
-                exit_code: -1,
-                stdout: String::new(),
-                stderr: format!("Command timed out after {TERMINAL_TIMEOUT_SECS} seconds."),
-                duration_ms: started.elapsed().as_millis(),
-                timed_out: true,
-                truncated: false,
-            });
-        }
-    };
+    let output =
+        match tokio::time::timeout(Duration::from_secs(TERMINAL_TIMEOUT_SECS), process.output())
+            .await
+        {
+            Ok(result) => result?,
+            Err(_) => {
+                return Ok(TerminalCommandResult {
+                    command: command_text.to_string(),
+                    cwd: display_path(&start_dir),
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: format!("Command timed out after {TERMINAL_TIMEOUT_SECS} seconds."),
+                    duration_ms: started.elapsed().as_millis(),
+                    timed_out: true,
+                    truncated: false,
+                });
+            }
+        };
 
     let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -456,7 +480,8 @@ pub(crate) fn workspace_context_for_project(
         return Ok(None);
     }
 
-    let mut sections = vec![format!(
+    let mut sections =
+        vec![format!(
         "[open-mind-ai-local-workspace]\nAttached local folders: {}\nFull PC + terminal access: {}",
         config.roots.len(),
         if config.full_pc_access { "enabled" } else { "disabled" }
@@ -513,7 +538,10 @@ fn lock_database(state: &State<AppState>) -> Result<std::sync::MutexGuard<'_, Da
         .map_err(|_| AppError::internal("database lock poisoned"))
 }
 
-fn load_project_config(state: &State<AppState>, project_id: &str) -> Result<ProjectWorkspaceConfig, AppError> {
+fn load_project_config(
+    state: &State<AppState>,
+    project_id: &str,
+) -> Result<ProjectWorkspaceConfig, AppError> {
     let db = lock_database(state)?;
     ensure_project_exists(&db, project_id)?;
     load_config(&db, project_id)
@@ -526,7 +554,9 @@ fn ensure_project_exists(database: &Database, project_id: &str) -> Result<(), Ap
         |row| row.get(0),
     )?;
     if !exists {
-        return Err(AppError::internal(format!("project not found: {project_id}")));
+        return Err(AppError::internal(format!(
+            "project not found: {project_id}"
+        )));
     }
     Ok(())
 }
@@ -545,8 +575,11 @@ fn load_config(database: &Database, project_id: &str) -> Result<ProjectWorkspace
         )
         .optional()?;
     match raw {
-        Some(raw) => serde_json::from_str(&raw)
-            .map_err(|error| AppError::internal(format!("invalid project local workspace configuration: {error}"))),
+        Some(raw) => serde_json::from_str(&raw).map_err(|error| {
+            AppError::internal(format!(
+                "invalid project local workspace configuration: {error}"
+            ))
+        }),
         None => Ok(ProjectWorkspaceConfig::default()),
     }
 }
@@ -556,8 +589,9 @@ fn save_config(
     project_id: &str,
     config: &ProjectWorkspaceConfig,
 ) -> Result<(), AppError> {
-    let value = serde_json::to_string(config)
-        .map_err(|error| AppError::internal(format!("failed to serialize project local access: {error}")))?;
+    let value = serde_json::to_string(config).map_err(|error| {
+        AppError::internal(format!("failed to serialize project local access: {error}"))
+    })?;
     database.connection().execute(
         "INSERT INTO app_settings (key, value_json, updated_at) VALUES (?1, ?2, ?3)
          ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
@@ -566,7 +600,10 @@ fn save_config(
     Ok(())
 }
 
-fn status_from_config(project_id: &str, config: &ProjectWorkspaceConfig) -> ProjectLocalAccessStatus {
+fn status_from_config(
+    project_id: &str,
+    config: &ProjectWorkspaceConfig,
+) -> ProjectLocalAccessStatus {
     ProjectLocalAccessStatus {
         project_id: project_id.to_string(),
         full_pc_access: config.full_pc_access,
@@ -597,12 +634,17 @@ fn normalize_existing_directory(path: &Path) -> Result<PathBuf, AppError> {
     }
     let canonical = fs::canonicalize(path)?;
     if !canonical.is_dir() {
-        return Err(AppError::internal("selected workspace path is not a directory"));
+        return Err(AppError::internal(
+            "selected workspace path is not a directory",
+        ));
     }
     Ok(canonical)
 }
 
-fn selected_root<'a>(config: &'a ProjectWorkspaceConfig, root_id: Option<&str>) -> Result<&'a WorkspaceRootConfig, AppError> {
+fn selected_root<'a>(
+    config: &'a ProjectWorkspaceConfig,
+    root_id: Option<&str>,
+) -> Result<&'a WorkspaceRootConfig, AppError> {
     let id = root_id.ok_or_else(|| AppError::internal("an attached project folder is required"))?;
     config
         .roots
@@ -611,7 +653,10 @@ fn selected_root<'a>(config: &'a ProjectWorkspaceConfig, root_id: Option<&str>) 
         .ok_or_else(|| AppError::internal("attached project folder not found"))
 }
 
-fn selected_root_path(config: &ProjectWorkspaceConfig, root_id: Option<&str>) -> Result<PathBuf, AppError> {
+fn selected_root_path(
+    config: &ProjectWorkspaceConfig,
+    root_id: Option<&str>,
+) -> Result<PathBuf, AppError> {
     let root = selected_root(config, root_id)?;
     normalize_existing_directory(Path::new(&root.path))
 }
@@ -627,7 +672,11 @@ fn resolve_path(
         return Err(AppError::internal("path contains a null character"));
     }
 
-    let supplied = if raw.is_empty() { Path::new(".") } else { Path::new(raw) };
+    let supplied = if raw.is_empty() {
+        Path::new(".")
+    } else {
+        Path::new(raw)
+    };
     let (candidate, scoped_root) = if supplied.is_absolute() {
         if !config.full_pc_access {
             return Err(AppError::internal(
@@ -655,7 +704,9 @@ fn resolve_path(
             canonical_existing_parent(&resolved)?
         };
         if !security_path.starts_with(&canonical_root) {
-            return Err(AppError::internal("workspace path escaped the attached project folder"));
+            return Err(AppError::internal(
+                "workspace path escaped the attached project folder",
+            ));
         }
     }
 
@@ -666,27 +717,45 @@ fn resolve_new_path(path: &Path) -> Result<PathBuf, AppError> {
     if path.exists() {
         return fs::canonicalize(path).map_err(AppError::from);
     }
-    let parent = path
-        .parent()
-        .ok_or_else(|| AppError::internal("path has no parent directory"))?;
-    let canonical_parent = canonical_existing_parent(parent)?;
-    let name = path
-        .file_name()
-        .ok_or_else(|| AppError::internal("path requires a file or folder name"))?;
-    Ok(canonical_parent.join(name))
+
+    let mut probe = path.to_path_buf();
+    let mut missing = Vec::new();
+    while !probe.exists() {
+        let name = probe
+            .file_name()
+            .ok_or_else(|| AppError::internal("path requires a file or folder name"))?
+            .to_os_string();
+        missing.push(name);
+        if !probe.pop() {
+            return Err(AppError::internal(
+                "no existing parent directory found for path",
+            ));
+        }
+    }
+
+    let mut resolved = fs::canonicalize(probe)?;
+    for component in missing.into_iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
 }
 
 fn canonical_existing_parent(path: &Path) -> Result<PathBuf, AppError> {
     let mut probe = path.to_path_buf();
     while !probe.exists() {
         if !probe.pop() {
-            return Err(AppError::internal("no existing parent directory found for path"));
+            return Err(AppError::internal(
+                "no existing parent directory found for path",
+            ));
         }
     }
     fs::canonicalize(probe).map_err(AppError::from)
 }
 
-fn reject_attached_root_mutation(config: &ProjectWorkspaceConfig, path: &Path) -> Result<(), AppError> {
+fn reject_attached_root_mutation(
+    config: &ProjectWorkspaceConfig,
+    path: &Path,
+) -> Result<(), AppError> {
     let canonical = fs::canonicalize(path)?;
     for root in &config.roots {
         if let Ok(root_path) = fs::canonicalize(&root.path) {
@@ -791,7 +860,11 @@ fn collect_workspace_paths(root: &Path, current: &Path, depth: usize, output: &m
             continue;
         }
         let path = entry.path();
-        let relative = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .into_owned();
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
@@ -809,7 +882,16 @@ fn collect_workspace_paths(root: &Path, current: &Path, depth: usize, output: &m
 fn should_skip_context_name(name: &str) -> bool {
     matches!(
         name,
-        ".git" | "node_modules" | "target" | "dist" | "build" | ".next" | ".venv" | "venv" | "cache" | ".cache"
+        ".git"
+            | "node_modules"
+            | "target"
+            | "dist"
+            | "build"
+            | ".next"
+            | ".venv"
+            | "venv"
+            | "cache"
+            | ".cache"
     )
 }
 
@@ -845,10 +927,25 @@ mod tests {
 
     #[test]
     fn filesystem_root_delete_is_rejected() {
-        let root = if cfg!(windows) { PathBuf::from(r"C:\\") } else { PathBuf::from("/") };
+        let root = if cfg!(windows) {
+            PathBuf::from(r"C:\\")
+        } else {
+            PathBuf::from("/")
+        };
         assert!(reject_filesystem_root(&root).is_err());
     }
 
+    #[test]
+    fn nested_new_path_preserves_missing_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        fs::create_dir_all(&root).unwrap();
+        let resolved = resolve_new_path(&root.join("new/sub/file.txt")).unwrap();
+        assert_eq!(
+            resolved,
+            root.canonicalize().unwrap().join("new/sub/file.txt")
+        );
+    }
     #[test]
     fn scoped_new_path_cannot_escape_through_parent_segments() {
         let temp = tempfile::tempdir().unwrap();

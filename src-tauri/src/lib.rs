@@ -66,9 +66,9 @@ pub(crate) use google_workspace::{
 pub(crate) use local_workspace::{
     attach_project_workspace_folder, create_project_workspace_directory,
     delete_project_workspace_path, detach_project_workspace_folder,
-    list_project_workspace_directory, move_project_workspace_path,
-    project_local_access_status, read_project_workspace_file, run_project_terminal_command,
-    set_project_full_local_access, write_project_workspace_file,
+    list_project_workspace_directory, move_project_workspace_path, project_local_access_status,
+    read_project_workspace_file, run_project_terminal_command, set_project_full_local_access,
+    write_project_workspace_file,
 };
 pub(crate) use multimodal::{
     artifact_media_data_url, create_soundscape_artifact, regenerate_multimodal_message,
