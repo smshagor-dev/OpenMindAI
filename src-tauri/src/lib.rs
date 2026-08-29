@@ -32,7 +32,10 @@ macro_rules! openmind_generate_handler {
             create_project_workspace_directory,
             move_project_workspace_path,
             delete_project_workspace_path,
-            run_project_terminal_command
+            run_project_terminal_command,
+            project_agent_status_for_conversation,
+            send_project_agent_message,
+            regenerate_project_agent_message
         ]
     };
 }
@@ -47,6 +50,7 @@ mod connector_input_guard;
 mod connector_stabilization;
 mod github_workspace;
 mod google_workspace;
+mod local_agent;
 mod local_workspace;
 mod multimodal;
 mod pdf_ocr;
@@ -62,6 +66,10 @@ pub(crate) use connector_input_guard::{
 };
 pub(crate) use google_workspace::{
     connect_google_workspace, disconnect_google_workspace, google_workspace_status,
+};
+pub(crate) use local_agent::{
+    project_agent_status_for_conversation, regenerate_project_agent_message,
+    send_project_agent_message,
 };
 pub(crate) use local_workspace::{
     attach_project_workspace_folder, create_project_workspace_directory,
