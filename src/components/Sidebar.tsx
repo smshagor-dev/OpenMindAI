@@ -24,7 +24,7 @@ export function Sidebar(props: {
   onToggleCollapsed: () => void;
   conversations: Conversation[];
   activeId: string | null;
-  view: "chat" | "settings" | "tools" | "projects";
+  view: "chat" | "work" | "settings" | "tools" | "projects";
   userProfile: UserProfile | null;
   width: number;
   onWidthChange: (width: number) => void;
@@ -42,7 +42,8 @@ export function Sidebar(props: {
   onOpenProjects: () => void;
   onOpenSettings: (section?: string) => void;
 }) {
-  const displayName = props.userProfile?.preferredName || props.userProfile?.fullName || "Local User";
+  const displayName =
+    props.userProfile?.preferredName || props.userProfile?.fullName || "Local User";
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [resizing, setResizing] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
@@ -90,7 +91,11 @@ export function Sidebar(props: {
         </div>
         {!props.collapsed ? (
           <div className="sidebar-header-actions">
-            <button className="icon-button" title="Search chats (Ctrl+K)" onClick={props.onOpenSearch}>
+            <button
+              className="icon-button"
+              title="Search chats (Ctrl+K)"
+              onClick={props.onOpenSearch}
+            >
               <Search size={16} />
             </button>
             <button
@@ -102,7 +107,11 @@ export function Sidebar(props: {
             </button>
           </div>
         ) : (
-          <button className="icon-button sidebar-collapse-toggle" title="Expand sidebar" onClick={props.onToggleCollapsed}>
+          <button
+            className="icon-button sidebar-collapse-toggle"
+            title="Expand sidebar"
+            onClick={props.onToggleCollapsed}
+          >
             <PanelLeftOpen size={16} />
           </button>
         )}
@@ -119,7 +128,11 @@ export function Sidebar(props: {
         <button className="nav-button" onClick={props.onOpenModels} title="Models">
           <Database size={18} /> {!props.collapsed ? "Models" : null}
         </button>
-        <button className={props.view === "tools" ? "nav-button active" : "nav-button"} onClick={props.onOpenTools} title="Tools">
+        <button
+          className={props.view === "tools" ? "nav-button active" : "nav-button"}
+          onClick={props.onOpenTools}
+          title="Tools"
+        >
           <Wrench size={18} /> {!props.collapsed ? "Tools" : null}
         </button>
         <button className="nav-button" onClick={props.onOpenLibrary} title="Files & Artifacts">
@@ -158,7 +171,9 @@ export function Sidebar(props: {
           <button
             className="profile-trigger"
             title={displayName}
-            onClick={() => (props.collapsed ? props.onOpenSettings() : setProfileMenuOpen((value) => !value))}
+            onClick={() =>
+              props.collapsed ? props.onOpenSettings() : setProfileMenuOpen((value) => !value)
+            }
           >
             <span className="profile-avatar">
               {props.userProfile?.avatarDataUrl ? (

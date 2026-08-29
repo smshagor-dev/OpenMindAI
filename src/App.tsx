@@ -38,6 +38,7 @@ import { StatusBar } from "./components/StatusBar";
 import { PreviewPanel, type PreviewTarget } from "./components/PreviewPanel";
 import { ToolsWorkspace } from "./components/ToolsWorkspace";
 import { ProjectsWorkspace } from "./components/ProjectsWorkspace";
+import { WorkWorkspace } from "./components/WorkWorkspace";
 import { notifyUser } from "./lib/notify";
 import {
   attachmentMedia,
@@ -53,7 +54,7 @@ import {
 } from "./lib/chat";
 import { formatError } from "./lib/format";
 
-type View = "chat" | "settings" | "tools" | "projects";
+type View = "chat" | "work" | "settings" | "tools" | "projects";
 
 interface RealtimeActivity {
   typing: boolean;
@@ -993,17 +994,19 @@ export function App() {
                   ? activeConversation?.title
                   : view === "tools"
                     ? "Tools"
-                    : view === "projects"
-                      ? "Projects"
-                      : "Settings"}
+                    : view === "work"
+                      ? "Work"
+                      : view === "projects"
+                        ? "Projects"
+                        : "Settings"}
               </h1>
             )}
           </div>
           <div className="topbar-center">
             <ChatModeSwitcher
-              active={view === "projects" ? "work" : "chat"}
+              active={view === "work" ? "work" : "chat"}
               onChat={() => setView("chat")}
-              onWork={() => setView("projects")}
+              onWork={() => setView("work")}
             />
           </div>
           <div className="topbar-actions">
@@ -1097,6 +1100,26 @@ export function App() {
               setView("settings");
             }}
           />
+        ) : view === "work" ? (
+          <WorkWorkspace
+            conversations={conversations}
+            onOpenConversation={(id, draft) => {
+              setView("chat");
+              setActiveId(id);
+              setEditingMessageId(null);
+              setAttachments([]);
+              if (draft?.trim()) {
+                setPrompt(draft.trim());
+                window.setTimeout(() => {
+                  const node = composerRef.current;
+                  if (!node) return;
+                  node.focus();
+                  node.setSelectionRange(node.value.length, node.value.length);
+                }, 0);
+              }
+            }}
+            onCreateProjectChat={createProjectConversation}
+          />
         ) : view === "projects" ? (
           <ProjectsWorkspace
             conversations={conversations}
@@ -1136,7 +1159,9 @@ export function App() {
             initialSection={settingsSection}
           />
         )}
-        <StatusBar models={models} activeModelId={activeModelId} runtime={runtime} root={root} />
+        {view !== "work" ? (
+          <StatusBar models={models} activeModelId={activeModelId} runtime={runtime} root={root} />
+        ) : null}
       </section>
 
       <PreviewPanel target={previewTarget} onClose={() => setPreviewTarget(null)} />
