@@ -427,7 +427,9 @@ export function App() {
       if (editTargetId) {
         const targetIndex = messages.findIndex((message) => message.id === editTargetId);
         if (targetIndex < 0) {
-          throw new Error("The message being edited is no longer available. Reload the chat and try again.");
+          throw new Error(
+            "The message being edited is no longer available. Reload the chat and try again.",
+          );
         }
         const branch = messages.slice(targetIndex);
         editedBranchChanged = branch.length > 0;
@@ -667,7 +669,9 @@ export function App() {
   async function addFiles(files: FileList | null) {
     if (!files) return;
     const results = await Promise.allSettled(Array.from(files).map(readAttachment));
-    const loaded = results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+    const loaded = results.flatMap((result) =>
+      result.status === "fulfilled" ? [result.value] : [],
+    );
     const failures = results.flatMap((result) =>
       result.status === "rejected" ? [formatError(result.reason)] : [],
     );
@@ -997,10 +1001,10 @@ export function App() {
           </div>
           <div className="topbar-center">
             <ChatModeSwitcher
-    active={view === "projects" ? "work" : "chat"}
-    onChat={() => setView("chat")}
-    onWork={() => setView("projects")}
-  />
+              active={view === "projects" ? "work" : "chat"}
+              onChat={() => setView("chat")}
+              onWork={() => setView("projects")}
+            />
           </div>
           <div className="topbar-actions">
             {view === "chat" && activeConversation ? (
@@ -1097,20 +1101,20 @@ export function App() {
           <ProjectsWorkspace
             conversations={conversations}
             onOpenConversation={(id, draft) => {
-    setView("chat");
-    setActiveId(id);
-    setEditingMessageId(null);
-    setAttachments([]);
-    if (draft?.trim()) {
-      setPrompt(draft.trim());
-      window.setTimeout(() => {
-        const node = composerRef.current;
-        if (!node) return;
-        node.focus();
-        node.setSelectionRange(node.value.length, node.value.length);
-      }, 0);
-    }
-  }}
+              setView("chat");
+              setActiveId(id);
+              setEditingMessageId(null);
+              setAttachments([]);
+              if (draft?.trim()) {
+                setPrompt(draft.trim());
+                window.setTimeout(() => {
+                  const node = composerRef.current;
+                  if (!node) return;
+                  node.focus();
+                  node.setSelectionRange(node.value.length, node.value.length);
+                }, 0);
+              }
+            }}
             onCreateProjectChat={createProjectConversation}
           />
         ) : (

@@ -230,7 +230,11 @@
   padding: 22px 22px 18px;
   border-bottom: 1px solid var(--border);
   background:
-    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 38%),
+    radial-gradient(
+      circle at 12% 0%,
+      color-mix(in srgb, var(--accent) 10%, transparent),
+      transparent 38%
+    ),
     var(--surface);
 }
 
@@ -881,7 +885,6 @@
   }
 }
 
-
 /* v3 Project Work content area */
 .project-content-tabs {
   display: inline-flex;
@@ -1002,7 +1005,6 @@
     align-items: flex-start;
   }
 }
-
 
 /* ChatGPT-style Project Work surface */
 .project-work-chatgpt {

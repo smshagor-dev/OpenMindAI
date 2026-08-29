@@ -142,11 +142,7 @@ export function ProjectsWorkspace(props: {
       return;
     }
     const updated = await runAction("save-project", () =>
-      api.updateProject(
-        projectId,
-        nextName,
-        patch.instructions ?? current.instructions,
-      ),
+      api.updateProject(projectId, nextName, patch.instructions ?? current.instructions),
     );
     if (!updated) {
       await refreshProjects(projectId).catch(() => undefined);
@@ -169,13 +165,13 @@ export function ProjectsWorkspace(props: {
   };
 
   const openAgentChat = async (draft?: string) => {
-  const existing = projectConversations[0];
-  if (existing) {
-    props.onOpenConversation(existing.id, draft);
-    return;
-  }
-  await createChat(draft);
-};
+    const existing = projectConversations[0];
+    if (existing) {
+      props.onOpenConversation(existing.id, draft);
+      return;
+    }
+    await createChat(draft);
+  };
 
   const linkConversation = async (conversationId: string) => {
     if (!activeProject) return;
@@ -306,7 +302,11 @@ export function ProjectsWorkspace(props: {
             disabled={busy || !draftName.trim()}
             onClick={() => void createProject()}
           >
-            {busyAction === "create-project" ? <LoaderCircle className="spin" size={16} /> : <Plus size={16} />}
+            {busyAction === "create-project" ? (
+              <LoaderCircle className="spin" size={16} />
+            ) : (
+              <Plus size={16} />
+            )}
           </button>
         </div>
 
@@ -335,7 +335,11 @@ export function ProjectsWorkspace(props: {
               <button
                 type="button"
                 key={project.id}
-                className={project.id === activeProject?.id ? "project-list-item project-list-item-v2 active" : "project-list-item project-list-item-v2"}
+                className={
+                  project.id === activeProject?.id
+                    ? "project-list-item project-list-item-v2 active"
+                    : "project-list-item project-list-item-v2"
+                }
                 onClick={() => {
                   setActiveId(project.id);
                   setLinkSearch("");
@@ -345,10 +349,14 @@ export function ProjectsWorkspace(props: {
                   setError(null);
                 }}
               >
-                <span className="project-list-icon"><FolderKanban size={16} /></span>
+                <span className="project-list-icon">
+                  <FolderKanban size={16} />
+                </span>
                 <span className="project-list-copy">
                   <strong>{project.name}</strong>
-                  <small>{project.conversationIds.length} chats · {project.files.length} files</small>
+                  <small>
+                    {project.conversationIds.length} chats · {project.files.length} files
+                  </small>
                 </span>
                 <small className="project-list-time">{formatTime(project.updatedAt)}</small>
               </button>
@@ -360,7 +368,8 @@ export function ProjectsWorkspace(props: {
       <section className="project-detail project-detail-v2">
         {error ? (
           <button className="error-banner project-error-banner" onClick={() => setError(null)}>
-            <span>{error}</span><X size={14} />
+            <span>{error}</span>
+            <X size={14} />
           </button>
         ) : null}
 
@@ -374,7 +383,9 @@ export function ProjectsWorkspace(props: {
           <>
             <header className="project-hero">
               <div className="project-hero-main">
-                <div className="project-hero-icon"><FolderKanban size={23} /></div>
+                <div className="project-hero-icon">
+                  <FolderKanban size={23} />
+                </div>
                 <div className="project-hero-copy">
                   <span className="tools-eyebrow">Project workspace</span>
                   <input
@@ -385,19 +396,29 @@ export function ProjectsWorkspace(props: {
                     onChange={(event) => {
                       const name = event.target.value;
                       setProjects((items) =>
-                        items.map((item) => item.id === activeProject.id ? { ...item, name } : item),
+                        items.map((item) =>
+                          item.id === activeProject.id ? { ...item, name } : item,
+                        ),
                       );
                     }}
-                    onBlur={(event) => void updateProject(activeProject.id, { name: event.currentTarget.value })}
+                    onBlur={(event) =>
+                      void updateProject(activeProject.id, { name: event.currentTarget.value })
+                    }
                   />
                   <div className="project-meta-row">
-                    <span><MessagesSquare size={13} /> {projectConversations.length} chats</span>
-                    <span><Files size={13} /> {activeProject.files.length} files</span>
+                    <span>
+                      <MessagesSquare size={13} /> {projectConversations.length} chats
+                    </span>
+                    <span>
+                      <Files size={13} /> {activeProject.files.length} files
+                    </span>
                     <span className={contextReady ? "project-meta-ready" : ""}>
                       {contextReady ? <CheckCircle2 size={13} /> : <Sparkles size={13} />}
                       {contextReady ? "Context ready" : "Add context"}
                     </span>
-                    <span><Clock3 size={13} /> {formatTime(activeProject.updatedAt)}</span>
+                    <span>
+                      <Clock3 size={13} /> {formatTime(activeProject.updatedAt)}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -409,7 +430,11 @@ export function ProjectsWorkspace(props: {
                   disabled={busy}
                   onClick={() => void createChat()}
                 >
-                  {busyAction === "create-chat" ? <LoaderCircle className="spin" size={16} /> : <MessageSquarePlus size={16} />}
+                  {busyAction === "create-chat" ? (
+                    <LoaderCircle className="spin" size={16} />
+                  ) : (
+                    <MessageSquarePlus size={16} />
+                  )}
                   New chat
                 </button>
                 <button
@@ -418,7 +443,11 @@ export function ProjectsWorkspace(props: {
                   disabled={addingFiles || busy}
                   onClick={() => fileInputRef.current?.click()}
                 >
-                  {addingFiles ? <LoaderCircle className="spin" size={16} /> : <FilePlus2 size={16} />}
+                  {addingFiles ? (
+                    <LoaderCircle className="spin" size={16} />
+                  ) : (
+                    <FilePlus2 size={16} />
+                  )}
                   {addingFiles ? "Adding…" : "Add files"}
                 </button>
                 <button
@@ -457,192 +486,274 @@ export function ProjectsWorkspace(props: {
 
             {activePane === "overview" ? (
               <>
-            <section className="project-card project-instructions-card">
-              <div className="project-card-heading">
-                <div>
-                  <h3><Pencil size={15} /> Project instructions</h3>
-                  <p>Applied privately to every chat in this project together with ready text files.</p>
-                </div>
-                <span className="project-save-state">
-                  {busyAction === "save-project" ? (
-                    <><LoaderCircle className="spin" size={13} /> Saving…</>
-                  ) : savedAt ? (
-                    <><CheckCircle2 size={13} /> Saved</>
-                  ) : (
-                    "Auto-save on blur"
-                  )}
-                </span>
-              </div>
-              <textarea
-                value={activeProject.instructions}
-                maxLength={MAX_PROJECT_INSTRUCTIONS_CHARS}
-                disabled={busyAction === "save-project"}
-                onChange={(event) => {
-                  const instructions = event.target.value;
-                  setProjects((items) =>
-                    items.map((item) => item.id === activeProject.id ? { ...item, instructions } : item),
-                  );
-                }}
-                onBlur={(event) => void updateProject(activeProject.id, { instructions: event.currentTarget.value })}
-                placeholder="Example: Keep answers concise, use this project's terminology, and treat attached specs as the source of truth."
-              />
-              <div className="project-instructions-footer">
-                <span>{activeProject.instructions.length.toLocaleString()} / {MAX_PROJECT_INSTRUCTIONS_CHARS.toLocaleString()}</span>
-                <span>{readyFiles ? `${readyFiles} ready file${readyFiles === 1 ? "" : "s"} also included` : "No file context yet"}</span>
-              </div>
-            </section>
-
-            <div className="project-columns project-columns-v2">
-              <section className="project-card project-resource-card">
-                <div className="project-card-heading project-resource-heading">
-                  <div>
-                    <h3><MessagesSquare size={15} /> Chats <span className="project-section-count">{projectConversations.length}</span></h3>
-                    <p>Conversations here use this project's context automatically.</p>
-                  </div>
-                </div>
-
-                <div className="project-resource-list">
-                  {projectConversations.length ? (
-                    projectConversations.map((conversation) => (
-                      <div className="project-chat-row project-chat-row-v2" key={conversation.id}>
-                        <button type="button" onClick={() => props.onOpenConversation(conversation.id)}>
-                          <span>{conversation.title}</span>
-                          <small>{formatTime(conversation.updatedAt)}</small>
-                        </button>
-                        <button
-                          type="button"
-                          title="Remove from project"
-                          aria-label={`Remove ${conversation.title} from project`}
-                          disabled={busy}
-                          onClick={() => void unlinkConversation(conversation.id)}
-                        >
-                          {busyAction === `unlink-${conversation.id}` ? <LoaderCircle className="spin" size={14} /> : <X size={14} />}
-                        </button>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="project-inline-empty">
-                      <MessageSquarePlus size={20} />
-                      <div><strong>No project chats yet</strong><span>Start a new chat or move an existing one here.</span></div>
+                <section className="project-card project-instructions-card">
+                  <div className="project-card-heading">
+                    <div>
+                      <h3>
+                        <Pencil size={15} /> Project instructions
+                      </h3>
+                      <p>
+                        Applied privately to every chat in this project together with ready text
+                        files.
+                      </p>
                     </div>
-                  )}
-                </div>
+                    <span className="project-save-state">
+                      {busyAction === "save-project" ? (
+                        <>
+                          <LoaderCircle className="spin" size={13} /> Saving…
+                        </>
+                      ) : savedAt ? (
+                        <>
+                          <CheckCircle2 size={13} /> Saved
+                        </>
+                      ) : (
+                        "Auto-save on blur"
+                      )}
+                    </span>
+                  </div>
+                  <textarea
+                    value={activeProject.instructions}
+                    maxLength={MAX_PROJECT_INSTRUCTIONS_CHARS}
+                    disabled={busyAction === "save-project"}
+                    onChange={(event) => {
+                      const instructions = event.target.value;
+                      setProjects((items) =>
+                        items.map((item) =>
+                          item.id === activeProject.id ? { ...item, instructions } : item,
+                        ),
+                      );
+                    }}
+                    onBlur={(event) =>
+                      void updateProject(activeProject.id, {
+                        instructions: event.currentTarget.value,
+                      })
+                    }
+                    placeholder="Example: Keep answers concise, use this project's terminology, and treat attached specs as the source of truth."
+                  />
+                  <div className="project-instructions-footer">
+                    <span>
+                      {activeProject.instructions.length.toLocaleString()} /{" "}
+                      {MAX_PROJECT_INSTRUCTIONS_CHARS.toLocaleString()}
+                    </span>
+                    <span>
+                      {readyFiles
+                        ? `${readyFiles} ready file${readyFiles === 1 ? "" : "s"} also included`
+                        : "No file context yet"}
+                    </span>
+                  </div>
+                </section>
 
-                {props.conversations.length > projectConversations.length ? (
-                  <details className="project-link-menu project-link-menu-v2">
-                    <summary><Link2 size={14} /> Add or move existing chat</summary>
-                    <div className="project-link-popover">
-                      <label className="project-link-search">
-                        <Search size={14} />
-                        <input
-                          value={linkSearch}
-                          onChange={(event) => setLinkSearch(event.target.value)}
-                          placeholder="Search chats"
-                          aria-label="Search chats to add to project"
-                        />
-                      </label>
-                      <div className="project-link-results">
-                        {linkableConversations.length ? linkableConversations.map((conversation) => {
-                          const owner = conversationOwner.get(conversation.id);
-                          return (
+                <div className="project-columns project-columns-v2">
+                  <section className="project-card project-resource-card">
+                    <div className="project-card-heading project-resource-heading">
+                      <div>
+                        <h3>
+                          <MessagesSquare size={15} /> Chats{" "}
+                          <span className="project-section-count">
+                            {projectConversations.length}
+                          </span>
+                        </h3>
+                        <p>Conversations here use this project's context automatically.</p>
+                      </div>
+                    </div>
+
+                    <div className="project-resource-list">
+                      {projectConversations.length ? (
+                        projectConversations.map((conversation) => (
+                          <div
+                            className="project-chat-row project-chat-row-v2"
+                            key={conversation.id}
+                          >
                             <button
                               type="button"
-                              key={conversation.id}
-                              disabled={busy}
-                              onClick={() => void linkConversation(conversation.id)}
+                              onClick={() => props.onOpenConversation(conversation.id)}
                             >
-                              <span>
-                                <strong>{conversation.title}</strong>
-                                <small>{owner ? `Move from ${owner}` : `Updated ${formatTime(conversation.updatedAt)}`}</small>
-                              </span>
-                              {busyAction === `link-${conversation.id}` ? <LoaderCircle className="spin" size={14} /> : <Plus size={14} />}
+                              <span>{conversation.title}</span>
+                              <small>{formatTime(conversation.updatedAt)}</small>
                             </button>
-                          );
-                        }) : (
-                          <p className="muted project-link-empty">No matching chats.</p>
-                        )}
-                      </div>
-                    </div>
-                  </details>
-                ) : null}
-              </section>
-
-              <section className="project-card project-resource-card">
-                <div className="project-card-heading project-resource-heading">
-                  <div>
-                    <h3><Files size={15} /> Files <span className="project-section-count">{activeProject.files.length}</span></h3>
-                    <p>Text and code files become bounded local context. Other files stay tracked locally.</p>
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  className={draggingFiles ? "project-drop-zone dragging" : "project-drop-zone"}
-                  disabled={addingFiles || busy}
-                  onClick={() => fileInputRef.current?.click()}
-                  onDragEnter={(event) => {
-                    event.preventDefault();
-                    setDraggingFiles(true);
-                  }}
-                  onDragOver={(event) => {
-                    event.preventDefault();
-                    setDraggingFiles(true);
-                  }}
-                  onDragLeave={(event) => {
-                    event.preventDefault();
-                    if (event.currentTarget === event.target) setDraggingFiles(false);
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    setDraggingFiles(false);
-                    void addFiles(event.dataTransfer.files);
-                  }}
-                >
-                  {addingFiles ? <LoaderCircle className="spin" size={20} /> : <UploadCloud size={20} />}
-                  <span><strong>{addingFiles ? "Adding files…" : "Drop files here"}</strong><small>or choose files from your device</small></span>
-                </button>
-
-                <div className="project-resource-list project-file-list-v2">
-                  {activeProject.files.length ? (
-                    activeProject.files.map((file) => (
-                      <div className="project-file-row project-file-row-v2" key={file.id}>
-                        <div>
-                          <span>{file.name}</span>
-                          <small>{formatBytes(file.sizeBytes)}{file.mimeType ? ` · ${file.mimeType}` : ""}</small>
-                          {file.error ? <small className="project-file-error">{file.error}</small> : null}
-                        </div>
-                        <span className={`project-file-status project-file-status-${file.status}`}>
-                          {formatFileStatus(file.status)}
-                        </span>
-                        <button
-                          type="button"
-                          title="Remove file"
-                          aria-label={`Remove ${file.name}`}
-                          disabled={busy}
-                          onClick={() => setDeleteFileTarget(file)}
-                        >
-                          <X size={14} />
-                        </button>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="project-inline-empty project-files-empty">
-                      <Files size={20} />
-                      <div><strong>No files yet</strong><span>Add notes, specs, code, or reference material.</span></div>
-                    </div>
-                  )}
-                </div>
-              </section>
-            </div>
-              </>
+                            <button
+                              type="button"
+                              title="Remove from project"
+                              aria-label={`Remove ${conversation.title} from project`}
+                              disabled={busy}
+                              onClick={() => void unlinkConversation(conversation.id)}
+                            >
+                              {busyAction === `unlink-${conversation.id}` ? (
+                                <LoaderCircle className="spin" size={14} />
+                              ) : (
+                                <X size={14} />
+                              )}
+                            </button>
+                          </div>
+                        ))
                       ) : (
+                        <div className="project-inline-empty">
+                          <MessageSquarePlus size={20} />
+                          <div>
+                            <strong>No project chats yet</strong>
+                            <span>Start a new chat or move an existing one here.</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {props.conversations.length > projectConversations.length ? (
+                      <details className="project-link-menu project-link-menu-v2">
+                        <summary>
+                          <Link2 size={14} /> Add or move existing chat
+                        </summary>
+                        <div className="project-link-popover">
+                          <label className="project-link-search">
+                            <Search size={14} />
+                            <input
+                              value={linkSearch}
+                              onChange={(event) => setLinkSearch(event.target.value)}
+                              placeholder="Search chats"
+                              aria-label="Search chats to add to project"
+                            />
+                          </label>
+                          <div className="project-link-results">
+                            {linkableConversations.length ? (
+                              linkableConversations.map((conversation) => {
+                                const owner = conversationOwner.get(conversation.id);
+                                return (
+                                  <button
+                                    type="button"
+                                    key={conversation.id}
+                                    disabled={busy}
+                                    onClick={() => void linkConversation(conversation.id)}
+                                  >
+                                    <span>
+                                      <strong>{conversation.title}</strong>
+                                      <small>
+                                        {owner
+                                          ? `Move from ${owner}`
+                                          : `Updated ${formatTime(conversation.updatedAt)}`}
+                                      </small>
+                                    </span>
+                                    {busyAction === `link-${conversation.id}` ? (
+                                      <LoaderCircle className="spin" size={14} />
+                                    ) : (
+                                      <Plus size={14} />
+                                    )}
+                                  </button>
+                                );
+                              })
+                            ) : (
+                              <p className="muted project-link-empty">No matching chats.</p>
+                            )}
+                          </div>
+                        </div>
+                      </details>
+                    ) : null}
+                  </section>
+
+                  <section className="project-card project-resource-card">
+                    <div className="project-card-heading project-resource-heading">
+                      <div>
+                        <h3>
+                          <Files size={15} /> Files{" "}
+                          <span className="project-section-count">
+                            {activeProject.files.length}
+                          </span>
+                        </h3>
+                        <p>
+                          Text and code files become bounded local context. Other files stay tracked
+                          locally.
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      className={draggingFiles ? "project-drop-zone dragging" : "project-drop-zone"}
+                      disabled={addingFiles || busy}
+                      onClick={() => fileInputRef.current?.click()}
+                      onDragEnter={(event) => {
+                        event.preventDefault();
+                        setDraggingFiles(true);
+                      }}
+                      onDragOver={(event) => {
+                        event.preventDefault();
+                        setDraggingFiles(true);
+                      }}
+                      onDragLeave={(event) => {
+                        event.preventDefault();
+                        if (event.currentTarget === event.target) setDraggingFiles(false);
+                      }}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        setDraggingFiles(false);
+                        void addFiles(event.dataTransfer.files);
+                      }}
+                    >
+                      {addingFiles ? (
+                        <LoaderCircle className="spin" size={20} />
+                      ) : (
+                        <UploadCloud size={20} />
+                      )}
+                      <span>
+                        <strong>{addingFiles ? "Adding files…" : "Drop files here"}</strong>
+                        <small>or choose files from your device</small>
+                      </span>
+                    </button>
+
+                    <div className="project-resource-list project-file-list-v2">
+                      {activeProject.files.length ? (
+                        activeProject.files.map((file) => (
+                          <div className="project-file-row project-file-row-v2" key={file.id}>
+                            <div>
+                              <span>{file.name}</span>
+                              <small>
+                                {formatBytes(file.sizeBytes)}
+                                {file.mimeType ? ` · ${file.mimeType}` : ""}
+                              </small>
+                              {file.error ? (
+                                <small className="project-file-error">{file.error}</small>
+                              ) : null}
+                            </div>
+                            <span
+                              className={`project-file-status project-file-status-${file.status}`}
+                            >
+                              {formatFileStatus(file.status)}
+                            </span>
+                            <button
+                              type="button"
+                              title="Remove file"
+                              aria-label={`Remove ${file.name}`}
+                              disabled={busy}
+                              onClick={() => setDeleteFileTarget(file)}
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="project-inline-empty project-files-empty">
+                          <Files size={20} />
+                          <div>
+                            <strong>No files yet</strong>
+                            <span>Add notes, specs, code, or reference material.</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                </div>
+              </>
+            ) : (
               <div className="project-work-pane project-work-chatgpt">
                 <section className="project-work-start">
                   <div className="project-work-start-copy">
-                    <span className="project-work-orb"><Bot size={22} /></span>
+                    <span className="project-work-orb">
+                      <Bot size={22} />
+                    </span>
                     <span className="tools-eyebrow">Project Work</span>
                     <h2>What should I work on?</h2>
-                    <p>Describe the outcome. OpenMindAI can inspect the attached project, edit files, run permitted commands, recover from errors, and validate its changes.</p>
+                    <p>
+                      Describe the outcome. OpenMindAI can inspect the attached project, edit files,
+                      run permitted commands, recover from errors, and validate its changes.
+                    </p>
                   </div>
 
                   <form
@@ -661,7 +772,11 @@ export function ProjectsWorkspace(props: {
                       placeholder="Ask OpenMindAI to build, fix, audit, test, or review this project…"
                       onChange={(event) => setWorkDraft(event.target.value)}
                       onKeyDown={(event) => {
-                        if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && workDraft.trim()) {
+                        if (
+                          (event.ctrlKey || event.metaKey) &&
+                          event.key === "Enter" &&
+                          workDraft.trim()
+                        ) {
                           event.preventDefault();
                           const draft = workDraft.trim();
                           setWorkDraft("");
@@ -670,33 +785,69 @@ export function ProjectsWorkspace(props: {
                       }}
                     />
                     <div className="project-work-composer-footer">
-                      <div className="project-work-suggestions" aria-label="Suggested project tasks">
-                        {["Audit this project", "Fix failing tests", "Review recent changes", "Find and fix bugs"].map((suggestion) => (
-                          <button type="button" key={suggestion} onClick={() => setWorkDraft(suggestion)}>{suggestion}</button>
+                      <div
+                        className="project-work-suggestions"
+                        aria-label="Suggested project tasks"
+                      >
+                        {[
+                          "Audit this project",
+                          "Fix failing tests",
+                          "Review recent changes",
+                          "Find and fix bugs",
+                        ].map((suggestion) => (
+                          <button
+                            type="button"
+                            key={suggestion}
+                            onClick={() => setWorkDraft(suggestion)}
+                          >
+                            {suggestion}
+                          </button>
                         ))}
                       </div>
-                      <button type="submit" className="primary-button project-work-submit" disabled={busy || !workDraft.trim()}>
+                      <button
+                        type="submit"
+                        className="primary-button project-work-submit"
+                        disabled={busy || !workDraft.trim()}
+                      >
                         <Sparkles size={15} /> Continue in chat
                       </button>
                     </div>
                   </form>
 
                   <div className="project-work-trust-row">
-                    <span><CheckCircle2 size={13} /> Uses this project's files and instructions</span>
-                    <span><CheckCircle2 size={13} /> Validates workspace changes before completion</span>
-                    <span><CheckCircle2 size={13} /> Connected apps stay internal</span>
+                    <span>
+                      <CheckCircle2 size={13} /> Uses this project's files and instructions
+                    </span>
+                    <span>
+                      <CheckCircle2 size={13} /> Validates workspace changes before completion
+                    </span>
+                    <span>
+                      <CheckCircle2 size={13} /> Connected apps stay internal
+                    </span>
                   </div>
                 </section>
 
                 {projectConversations.length ? (
                   <section className="project-card project-work-recent">
                     <div className="project-card-heading">
-                      <div><h3><MessagesSquare size={15} /> Recent work</h3><p>Continue a project conversation without leaving the project context.</p></div>
+                      <div>
+                        <h3>
+                          <MessagesSquare size={15} /> Recent work
+                        </h3>
+                        <p>Continue a project conversation without leaving the project context.</p>
+                      </div>
                     </div>
                     <div className="project-work-chat-list">
                       {projectConversations.slice(0, 5).map((conversation) => (
-                        <button type="button" key={conversation.id} onClick={() => props.onOpenConversation(conversation.id)}>
-                          <span><strong>{conversation.title}</strong><small>{formatTime(conversation.updatedAt)}</small></span>
+                        <button
+                          type="button"
+                          key={conversation.id}
+                          onClick={() => props.onOpenConversation(conversation.id)}
+                        >
+                          <span>
+                            <strong>{conversation.title}</strong>
+                            <small>{formatTime(conversation.updatedAt)}</small>
+                          </span>
                           <MessageSquarePlus size={15} />
                         </button>
                       ))}
@@ -706,11 +857,17 @@ export function ProjectsWorkspace(props: {
 
                 <details className="project-card project-work-access">
                   <summary>
-                    <span><FolderKanban size={15} /><strong>Workspace access</strong></span>
+                    <span>
+                      <FolderKanban size={15} />
+                      <strong>Workspace access</strong>
+                    </span>
                     <small>Folders, file access, and optional terminal permissions</small>
                   </summary>
                   <div className="project-work-access-body">
-                    <ProjectLocalWorkspace projectId={activeProject.id} projectName={activeProject.name} />
+                    <ProjectLocalWorkspace
+                      projectId={activeProject.id}
+                      projectName={activeProject.name}
+                    />
                   </div>
                 </details>
               </div>
@@ -718,14 +875,25 @@ export function ProjectsWorkspace(props: {
           </>
         ) : (
           <div className="project-empty project-empty-v2">
-            <div className="project-empty-icon"><FolderKanban size={30} /></div>
+            <div className="project-empty-icon">
+              <FolderKanban size={30} />
+            </div>
             <span className="tools-eyebrow">Focused workspaces</span>
             <h2>Create your first project</h2>
-            <p className="muted">Group chats, local files, and private instructions so OpenMindAI keeps the right context together.</p>
+            <p className="muted">
+              Group chats, local files, and private instructions so OpenMindAI keeps the right
+              context together.
+            </p>
             <div className="project-empty-features">
-              <span><MessagesSquare size={15} /> Related chats</span>
-              <span><Files size={15} /> Local context files</span>
-              <span><Sparkles size={15} /> Project instructions</span>
+              <span>
+                <MessagesSquare size={15} /> Related chats
+              </span>
+              <span>
+                <Files size={15} /> Local context files
+              </span>
+              <span>
+                <Sparkles size={15} /> Project instructions
+              </span>
             </div>
           </div>
         )}
