@@ -21,6 +21,7 @@ import { api } from "../api";
 import type { Conversation, Project, ProjectFile } from "../types";
 import { formatBytes, formatError, formatTime } from "../lib/format";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { ProjectLocalWorkspace } from "./ProjectLocalWorkspace";
 
 const MAX_PROJECT_INSTRUCTIONS_CHARS = 20_000;
 
@@ -583,6 +584,8 @@ export function ProjectsWorkspace(props: {
                 </div>
               </section>
             </div>
+
+            <ProjectLocalWorkspace projectId={activeProject.id} projectName={activeProject.name} />
           </>
         ) : (
           <div className="project-empty project-empty-v2">

@@ -767,7 +767,7 @@ fn take_terminal_cwd(stdout: &mut String) -> Option<String> {
         .trim()
         .to_string();
     stdout.truncate(index);
-    while stdout.ends_with(['\r', '\n']) {
+    while stdout.ends_with('\r') || stdout.ends_with('\n') {
         stdout.pop();
     }
     (!cwd.is_empty()).then_some(cwd)
