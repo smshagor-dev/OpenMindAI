@@ -1,4 +1,4 @@
-# Validation rerun after local workspace lint and TypeScript compatibility fixes.
+# Validation rerun after frontend compatibility, Rust formatting, and nested-path hardening.
 name: Project Workspace Preflight
 
 on:
