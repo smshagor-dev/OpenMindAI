@@ -25,6 +25,7 @@ mod tauri {
     pub use crate::tauri_crate::*;
 }
 
+mod connector_stabilization;
 mod github_workspace;
 mod google_workspace;
 mod multimodal;
@@ -32,10 +33,11 @@ mod pdf_ocr;
 mod speech_runtime;
 mod vision_batch;
 
-pub(crate) use github_workspace::execute_github_workspace_action;
+pub(crate) use connector_stabilization::{
+    execute_github_workspace_action, execute_google_workspace_action,
+};
 pub(crate) use google_workspace::{
-    connect_google_workspace, disconnect_google_workspace, execute_google_workspace_action,
-    google_workspace_status,
+    connect_google_workspace, disconnect_google_workspace, google_workspace_status,
 };
 pub(crate) use multimodal::{
     artifact_media_data_url, create_soundscape_artifact, regenerate_multimodal_message,
