@@ -78,6 +78,47 @@ if (/placeholder|example|replace|changeme/i.test(decodedKey)) {
   fail("plugins.updater.pubkey appears to be a placeholder");
 }
 
+const releasePackage = readJson("package.json");
+const releaseVersion = releasePackage.version;
+const releaseTag = `v${releaseVersion}`;
+const releaseNotesPath = path.join(root, "docs", "releases", `${releaseTag}.md`);
+if (!fs.existsSync(releaseNotesPath)) {
+  fail(`missing production release notes: docs/releases/${releaseTag}.md`);
+}
+const releaseNotes = fs.readFileSync(releaseNotesPath, "utf8");
+if (!releaseNotes.includes(`# OpenMindAI ${releaseTag}`)) {
+  fail(`release notes title must be '# OpenMindAI ${releaseTag}'`);
+}
+if (/\b(?:TODO|TBD|PLACEHOLDER)\b/i.test(releaseNotes)) {
+  fail("release notes contain unfinished placeholder text");
+}
+const releaseWorkflow = fs.readFileSync(path.join(root, ".github", "workflows", "release.yml"), "utf8");
+for (const requiredSecret of [
+  "TAURI_SIGNING_PRIVATE_KEY",
+  "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
+  "WINDOWS_CERTIFICATE",
+  "WINDOWS_CERTIFICATE_PASSWORD",
+]) {
+  if (!releaseWorkflow.includes(`secrets.${requiredSecret}`)) {
+    fail(`production release workflow no longer references required secret ${requiredSecret}`);
+  }
+}
+if (!releaseWorkflow.includes("releaseDraft: true")) {
+  fail("production release must remain a draft until signed asset and install/upgrade verification completes");
+}
+for (const requiredAsset of [
+  "OpenMindAI-Setup.bat",
+  "OpenMindAI-Setup.command",
+  "openmindai-setup.sh",
+  "openmindai.marker",
+  "latest.json",
+  "SHA256SUMS.txt",
+]) {
+  if (!releaseWorkflow.includes(requiredAsset)) {
+    fail(`production release workflow does not enforce required asset ${requiredAsset}`);
+  }
+}
+
 console.log(
   `Release readiness config OK: NSIS updater enabled, HTTPS latest.json endpoint configured, minisign public key ${keyLines[0].split(": ").at(-1)} validated structurally.`,
 );

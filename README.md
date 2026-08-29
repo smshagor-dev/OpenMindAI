@@ -40,16 +40,18 @@ The project is designed around four practical goals:
 
 ## Current Release
 
-**Latest public release: [v2.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v2.0.0)**
+**Latest public release: [v3.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v3.0.0)**
 
-The v2.0.0 release includes the Windows installer together with bootstrap installers for Windows, Linux, and macOS.
+The v3.0.0 release includes the Windows installer together with bootstrap installers for Windows, Linux, and macOS.
+
+Version 3 turns Projects into an active local development workspace: a folder can be opened as a project, the local agent can inspect and edit files, run permitted terminal commands, observe failures, retry repairs, validate changes, and inspect Git state while preserving the explicit Full PC + Terminal permission boundary.
 
 | Platform | Installation path | Current status |
 | --- | --- | --- |
-| Windows x64 | [OpenMindAI v2.0.0 installer](https://github.com/smshagor-dev/OpenMindAI/releases/download/v2.0.0/OpenMindAI_2.0.0_x64-setup.exe) | Primary tested platform |
-| Windows | [Git bootstrap](https://github.com/smshagor-dev/OpenMindAI/releases/download/v2.0.0/OpenMindAI-Setup.bat) | Available |
-| Linux x64 | [Shell bootstrap](https://github.com/smshagor-dev/OpenMindAI/releases/download/v2.0.0/openmindai-setup.sh) | Implemented; broader hardware validation in progress |
-| macOS | [Command bootstrap](https://github.com/smshagor-dev/OpenMindAI/releases/download/v2.0.0/OpenMindAI-Setup.command) | Implemented; broader hardware validation in progress |
+| Windows x64 | [OpenMindAI v3.0.0 installer](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.0/OpenMindAI_3.0.0_x64-setup.exe) | Primary tested platform |
+| Windows | [Git bootstrap](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.0/OpenMindAI-Setup.bat) | Available |
+| Linux x64 | [Shell bootstrap](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.0/openmindai-setup.sh) | Implemented; broader hardware validation in progress |
+| macOS | [Command bootstrap](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.0/OpenMindAI-Setup.command) | Implemented; broader hardware validation in progress |
 | Linux ARM64 | — | Not currently supported |
 
 For release notes and downloadable assets, use the [Releases](https://github.com/smshagor-dev/OpenMindAI/releases) page rather than third-party mirrors.
@@ -72,7 +74,7 @@ Requests can be routed internally to an appropriate local capability based on th
 
 ### Projects and local context
 
-Projects can group conversations, instructions, and local files. Text and code files can become project context, while larger or binary files remain tracked as local project resources.
+Projects can group conversations, instructions, and local files. A local folder can also be opened directly as a project. Project Agent uses the attached workspace as live context and can read, create, edit, rename, or delete scoped files. When the user explicitly enables Full PC + Terminal access, the agent can run non-interactive shell commands and hardened Git status/diff inspection, recover from non-zero command failures, refresh its workspace snapshot after edits, and require appropriate validation before reporting a changed workspace as complete. Text and code files can become project context, while larger or binary files remain tracked as local project resources.
 
 ### Tools and maintenance
 
@@ -151,7 +153,7 @@ A missing or unavailable configured storage location should be reported rather t
 
 ## Default Model
 
-The default v2.0.0 setup targets **Qwen3 4B (`Q4_K_M`)** as the baseline local language model.
+The default v3.0.0 setup targets **Qwen3 4B (`Q4_K_M`)** as the baseline local language model.
 
 Model weights are deliberately excluded from the Git repository. They are downloaded separately and stored in the user's selected AI data root. This keeps the repository source-focused and prevents multi-gigabyte model binaries from entering normal Git history.
 
