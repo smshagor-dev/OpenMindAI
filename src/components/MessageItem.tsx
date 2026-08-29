@@ -46,7 +46,9 @@ export function MessageItem(props: {
   const isThinking = isAssistant && message.status === "streaming" && message.content.trim().length === 0;
   const canSave = isAssistant && message.status === "completed" && message.content.trim().length > 0;
   const showActions = isAssistant && !isThinking && message.status !== "streaming" && message.content.trim().length > 0;
-  const canEditUser = Boolean(props.onEditUser && userDisplay?.prompt);
+  const canEditUser = Boolean(
+    props.onEditUser && userDisplay?.prompt && userDisplay.attachmentNames.length === 0,
+  );
   const [copied, setCopied] = useState(false);
   const copyMessage = async () => {
     await navigator.clipboard.writeText(renderedContent);
