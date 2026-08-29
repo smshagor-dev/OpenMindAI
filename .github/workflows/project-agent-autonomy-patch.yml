@@ -1,0 +1,129 @@
+name: Project Agent Autonomy Patch
+
+on:
+  push:
+    branches:
+      - feature/project-agent-autonomy-hardening
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v7
+        with:
+          ref: feature/project-agent-autonomy-hardening
+
+      - name: Patch Project Agent host loop
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src-tauri/src/local_agent.rs')
+          text = path.read_text()
+
+          def replace_once(old: str, new: str, label: str):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one anchor, found {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              'const MAX_AGENT_FAILURES: usize = 5;\n',
+              'const MAX_AGENT_FAILURES: usize = 5;\nconst MAX_IDENTICAL_ACTION_REPEATS: usize = 2;\nconst MAX_VALIDATION_DEFERRALS: usize = 2;\n',
+              'agent limits',
+          )
+          replace_once(
+              'const TERMINAL_TIMEOUT_SECS: u64 = 120;\n',
+              'const DEFAULT_TERMINAL_TIMEOUT_SECS: u64 = 180;\nconst MAX_TERMINAL_TIMEOUT_SECS: u64 = 600;\n',
+              'terminal timeout constants',
+          )
+          replace_once(
+              '    let mut transcript = VecDeque::<String>::new();\n    let mut failures = 0usize;\n    let mut status = "completed";\n',
+              '    let mut transcript = VecDeque::<String>::new();\n    let mut consecutive_failures = 0usize;\n    let mut last_action_signature: Option<String> = None;\n    let mut identical_action_repeats = 0usize;\n    let mut validation_required = false;\n    let mut validation_deferrals = 0usize;\n    let mut status = "completed";\n',
+              'loop state',
+          )
+
+          old_final = '''            if decision_type == "final" {\n                let message = decision\n                    .get("message")\n                    .and_then(Value::as_str)\n                    .map(str::trim)\n                    .filter(|value| !value.is_empty())\n                    .unwrap_or("Task completed.");\n                emit_agent_chunk(\n                    app,\n                    state,\n                    conversation_id,\n                    &assistant.id,\n                    &format!("\\n{message}"),\n                )?;\n                return Ok(());\n            }\n'''
+          new_final = '''            if decision_type == "final" {\n                let validation_skip_reason = decision\n                    .get("validationSkippedReason")\n                    .and_then(Value::as_str)\n                    .map(str::trim)\n                    .filter(|value| !value.is_empty());\n                if validation_required\n                    && agent_context.workspace.full_pc_access\n                    && validation_skip_reason.is_none()\n                {\n                    validation_deferrals += 1;\n                    let requirement = "HOST REQUIREMENT: workspace files changed after the last successful validation. Run an appropriate test/build/lint/check command before finalizing. If no meaningful validation exists for this task, return final with a concise validationSkippedReason.";\n                    emit_agent_chunk(\n                        app,\n                        state,\n                        conversation_id,\n                        &assistant.id,\n                        "• Validation required before completion; continuing.\\n",\n                    )?;\n                    push_transcript(&mut transcript, requirement.to_string());\n                    if validation_deferrals > MAX_VALIDATION_DEFERRALS {\n                        return Err(AppError::InferenceFailed(\n                            "Project Agent repeatedly attempted to finish without validating workspace changes"\n                                .to_string(),\n                        ));\n                    }\n                    continue;\n                }\n\n                let message = decision\n                    .get("message")\n                    .and_then(Value::as_str)\n                    .map(str::trim)\n                    .filter(|value| !value.is_empty())\n                    .unwrap_or("Task completed.");\n                emit_agent_chunk(\n                    app,\n                    state,\n                    conversation_id,\n                    &assistant.id,\n                    &format!("\\n{message}"),\n                )?;\n                return Ok(());\n            }\n'''
+          replace_once(old_final, new_final, 'final validation gate')
+
+          tool_anchor = '''            let tool = decision\n                .get("tool")\n                .and_then(Value::as_str)\n                .map(str::trim)\n                .filter(|value| !value.is_empty())\n                .ok_or_else(|| AppError::InferenceFailed("agent returned no tool name".to_string()))?;\n\n            let result = tokio::select! {\n'''
+          tool_replacement = '''            let tool = decision\n                .get("tool")\n                .and_then(Value::as_str)\n                .map(str::trim)\n                .filter(|value| !value.is_empty())\n                .ok_or_else(|| AppError::InferenceFailed("agent returned no tool name".to_string()))?;\n\n            let action_signature = compact_json(&decision);\n            if last_action_signature.as_deref() == Some(action_signature.as_str()) {\n                identical_action_repeats += 1;\n            } else {\n                last_action_signature = Some(action_signature.clone());\n                identical_action_repeats = 1;\n            }\n            if identical_action_repeats > MAX_IDENTICAL_ACTION_REPEATS {\n                consecutive_failures += 1;\n                let text = format!(\n                    "identical action repeated {identical_action_repeats} times; choose a different inspection, edit, or recovery action"\n                );\n                emit_agent_chunk(\n                    app,\n                    state,\n                    conversation_id,\n                    &assistant.id,\n                    &format!("• {tool} blocked: {text}\\n"),\n                )?;\n                push_transcript(\n                    &mut transcript,\n                    format!(\n                        "STEP {}\\nACTION {}\\nERROR {}",\n                        step + 1,\n                        action_signature,\n                        text\n                    ),\n                );\n                if consecutive_failures >= MAX_AGENT_FAILURES {\n                    return Err(AppError::InferenceFailed(format!(\n                        "Project Agent stopped after {consecutive_failures} consecutive tool failures"\n                    )));\n                }\n                continue;\n            }\n\n            let result = tokio::select! {\n'''
+          replace_once(tool_anchor, tool_replacement, 'repeat breaker')
+
+          old_ok = '''                Ok(outcome) => {\n                    emit_agent_chunk(\n                        app,\n                        state,\n                        conversation_id,\n                        &assistant.id,\n                        &format!("• {}\\n", outcome.trace_label),\n                    )?;\n                    push_transcript(\n                        &mut transcript,\n                        format!(\n                            "STEP {}\\nACTION {}\\nRESULT {}",\n                            step + 1,\n                            compact_json(&decision),\n                            outcome.transcript_result\n                        ),\n                    );\n                }\n'''
+          new_ok = '''                Ok(outcome) => {\n                    consecutive_failures = 0;\n                    if tool_mutates_workspace(tool) {\n                        validation_required = true;\n                        validation_deferrals = 0;\n                    }\n                    if tool == "terminal" {\n                        if let Some(command) = optional_string(&decision, "command") {\n                            if is_validation_command(&command) {\n                                validation_required = false;\n                                validation_deferrals = 0;\n                            }\n                        }\n                    }\n                    emit_agent_chunk(\n                        app,\n                        state,\n                        conversation_id,\n                        &assistant.id,\n                        &format!("• {}\\n", outcome.trace_label),\n                    )?;\n                    push_transcript(\n                        &mut transcript,\n                        format!(\n                            "STEP {}\\nACTION {}\\nRESULT {}",\n                            step + 1,\n                            compact_json(&decision),\n                            outcome.transcript_result\n                        ),\n                    );\n                }\n'''
+          replace_once(old_ok, new_ok, 'successful outcome state')
+
+          old_err = '''                Err(error) => {\n                    failures += 1;\n                    let text = error.to_string();\n                    emit_agent_chunk(\n                        app,\n                        state,\n                        conversation_id,\n                        &assistant.id,\n                        &format!("• {tool} failed: {}\\n", one_line(&text, 240)),\n                    )?;\n                    push_transcript(\n                        &mut transcript,\n                        format!(\n                            "STEP {}\\nACTION {}\\nERROR {}",\n                            step + 1,\n                            compact_json(&decision),\n                            bounded(&text, MAX_TOOL_RESULT_CHARS)\n                        ),\n                    );\n                    if failures >= MAX_AGENT_FAILURES {\n                        return Err(AppError::InferenceFailed(format!(\n                            "Project Agent stopped after {failures} tool failures. Last error: {text}"\n                        )));\n                    }\n                }\n'''
+          new_err = '''                Err(error) => {\n                    consecutive_failures += 1;\n                    let text = error.to_string();\n                    emit_agent_chunk(\n                        app,\n                        state,\n                        conversation_id,\n                        &assistant.id,\n                        &format!("• {tool} failed: {}\\n", one_line(&text, 240)),\n                    )?;\n                    push_transcript(\n                        &mut transcript,\n                        format!(\n                            "STEP {}\\nACTION {}\\nERROR {}",\n                            step + 1,\n                            compact_json(&decision),\n                            bounded(&text, MAX_TOOL_RESULT_CHARS)\n                        ),\n                    );\n                    if consecutive_failures >= MAX_AGENT_FAILURES {\n                        return Err(AppError::InferenceFailed(format!(\n                            "Project Agent stopped after {consecutive_failures} consecutive tool failures. Last error: {text}"\n                        )));\n                    }\n                }\n'''
+          replace_once(old_err, new_err, 'consecutive failures')
+
+          terminal_shape = '{{\\"type\\":\\"tool\\",\\"tool\\":\\"terminal\\",\\"rootId\\":\\"ID\\",\\"cwd\\":\\"relative/or/absolute\\",\\"command\\":\\"command\\"}}\\n\\\n{{\\"type\\":\\"final\\",\\"message\\":\\"concise summary of completed work, validation, and any remaining issue\\"}}'
+          terminal_replacement = '{{\\"type\\":\\"tool\\",\\"tool\\":\\"git_status\\",\\"rootId\\":\\"ID\\"}}\\n\\\n{{\\"type\\":\\"tool\\",\\"tool\\":\\"git_diff\\",\\"rootId\\":\\"ID\\"}}\\n\\\n{{\\"type\\":\\"tool\\",\\"tool\\":\\"terminal\\",\\"rootId\\":\\"ID\\",\\"cwd\\":\\"relative/or/absolute\\",\\"command\\":\\"command\\",\\"timeoutSec\\":180}}\\n\\\n{{\\"type\\":\\"final\\",\\"message\\":\\"concise summary of completed work, validation, and any remaining issue\\",\\"validationSkippedReason\\":\\"optional only when no meaningful validation applies\\"}}'
+          replace_once(terminal_shape, terminal_replacement, 'tool schema')
+
+          validation_rule = '- After edits, validate with appropriate tests/build/lint when terminal is available. If validation fails, inspect the error, fix, and rerun.\\n\\\n- Never claim a command/test passed unless a tool result showed it.'
+          validation_replacement = '- Before editing a Git repository, use git_status when useful; use git_diff to review unstaged/staged changes. These read-only Git tools stay available inside attached roots even when arbitrary terminal access is disabled.\\n\\\n- After edits, validate with appropriate tests/build/lint when terminal is available. If validation fails, inspect the error, change approach, fix, and rerun until green or a concrete blocker is established.\\n\\\n- A terminal timeout or non-zero exit is a failed tool action even when stdout/stderr is available; use that output to recover.\\n\\\n- Do not repeat an identical failed tool action. Inspect more context or choose a different recovery action.\\n\\\n- For dependency installs or heavy builds, set timeoutSec as needed up to 600 seconds.\\n\\\n- After changing workspace files, do not finalize before a successful applicable validation. Only use validationSkippedReason when no meaningful automated validation exists for the change.\\n\\\n- Never claim a command/test passed unless a tool result showed it.'
+          replace_once(validation_rule, validation_replacement, 'agent rules')
+
+          terminal_branch = '''        "terminal" => {\n            if !config.full_pc_access {\n                return Err(AppError::internal(\n                    "terminal requires Full PC + Terminal access for this project",\n                ));\n            }\n            let root_id = optional_string(action, "rootId");\n            let cwd = optional_string(action, "cwd").unwrap_or_default();\n            let command = required_string(action, "command")?;\n            let result = run_terminal(config, root_id.as_deref(), &cwd, &command).await?;\n            Ok(AgentTurnResult {\n                trace_label: format!(\n                    "Ran `{}` (exit {})",\n                    one_line(&command, 120),\n                    result.exit_code\n                ),\n                transcript_result: bounded(\n                    &format!(\n                        "cwd={}\\nexit_code={}\\ntimed_out={}\\nstdout:\\n{}\\nstderr:\\n{}",\n                        result.cwd,\n                        result.exit_code,\n                        result.timed_out,\n                        result.stdout,\n                        result.stderr\n                    ),\n                    MAX_TOOL_RESULT_CHARS,\n                ),\n            })\n        }\n'''
+          terminal_branch_replacement = '''        "git_status" => {\n            let root_id = optional_string(action, "rootId");\n            let result = run_git_command(\n                config,\n                root_id.as_deref(),\n                &["status", "--short", "--branch", "--untracked-files=normal"],\n            )\n            .await?;\n            Ok(AgentTurnResult {\n                trace_label: "Inspected Git status".to_string(),\n                transcript_result: result,\n            })\n        }\n        "git_diff" => {\n            let root_id = optional_string(action, "rootId");\n            let unstaged = run_git_command(\n                config,\n                root_id.as_deref(),\n                &["diff", "--no-ext-diff", "--no-color"],\n            )\n            .await?;\n            let staged = run_git_command(\n                config,\n                root_id.as_deref(),\n                &["diff", "--cached", "--no-ext-diff", "--no-color"],\n            )\n            .await?;\n            Ok(AgentTurnResult {\n                trace_label: "Reviewed Git diff".to_string(),\n                transcript_result: bounded(\n                    &format!("UNSTAGED\\n{unstaged}\\n\\nSTAGED\\n{staged}"),\n                    MAX_TOOL_RESULT_CHARS,\n                ),\n            })\n        }\n        "terminal" => {\n            if !config.full_pc_access {\n                return Err(AppError::internal(\n                    "terminal requires Full PC + Terminal access for this project",\n                ));\n            }\n            let root_id = optional_string(action, "rootId");\n            let cwd = optional_string(action, "cwd").unwrap_or_default();\n            let command = required_string(action, "command")?;\n            let timeout_secs = terminal_timeout_secs(action);\n            let result =\n                run_terminal(config, root_id.as_deref(), &cwd, &command, timeout_secs).await?;\n            if result.timed_out || result.exit_code != 0 {\n                return Err(AppError::internal(format!(\n                    "terminal command failed in {} (exit {}, timed_out={}):\\nstdout:\\n{}\\nstderr:\\n{}",\n                    result.cwd,\n                    result.exit_code,\n                    result.timed_out,\n                    bounded(&result.stdout, 6_000),\n                    bounded(&result.stderr, 6_000)\n                )));\n            }\n            Ok(AgentTurnResult {\n                trace_label: format!(\n                    "Ran `{}` (exit {})",\n                    one_line(&command, 120),\n                    result.exit_code\n                ),\n                transcript_result: bounded(\n                    &format!(\n                        "cwd={}\\nexit_code={}\\ntimed_out={}\\nstdout:\\n{}\\nstderr:\\n{}",\n                        result.cwd,\n                        result.exit_code,\n                        result.timed_out,\n                        result.stdout,\n                        result.stderr\n                    ),\n                    MAX_TOOL_RESULT_CHARS,\n                ),\n            })\n        }\n'''
+          replace_once(terminal_branch, terminal_branch_replacement, 'terminal and git tools')
+
+          replace_once(
+              '''async fn run_terminal(\n    config: &AgentWorkspaceConfig,\n    root_id: Option<&str>,\n    cwd: &str,\n    command: &str,\n) -> Result<AgentTerminalResult, AppError> {\n''',
+              '''async fn run_terminal(\n    config: &AgentWorkspaceConfig,\n    root_id: Option<&str>,\n    cwd: &str,\n    command: &str,\n    timeout_secs: u64,\n) -> Result<AgentTerminalResult, AppError> {\n''',
+              'terminal signature',
+          )
+          replace_once(
+              'match tokio::time::timeout(Duration::from_secs(TERMINAL_TIMEOUT_SECS), process.output())',
+              'match tokio::time::timeout(Duration::from_secs(timeout_secs), process.output())',
+              'terminal timeout call',
+          )
+          replace_once(
+              'stderr: format!("Command timed out after {TERMINAL_TIMEOUT_SECS} seconds."),',
+              'stderr: format!("Command timed out after {timeout_secs} seconds."),',
+              'terminal timeout message',
+          )
+
+          git_helper_anchor = '''fn search_workspace(\n    config: &AgentWorkspaceConfig,\n'''
+          git_helper = '''async fn run_git_command(\n    config: &AgentWorkspaceConfig,\n    root_id: Option<&str>,\n    args: &[&str],\n) -> Result<String, AppError> {\n    let root = selected_root_path(config, root_id)?;\n    let mut process = Command::new("git");\n    process\n        .args(args)\n        .current_dir(&root)\n        .env("GIT_TERMINAL_PROMPT", "0")\n        .env("GIT_PAGER", "cat")\n        .kill_on_drop(true);\n    let output = tokio::time::timeout(Duration::from_secs(30), process.output())\n        .await\n        .map_err(|_| AppError::internal("Git inspection timed out after 30 seconds"))??;\n    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();\n    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();\n    if !output.status.success() {\n        return Err(AppError::internal(format!(\n            "Git inspection failed in {} (exit {}): {}",\n            display_path(&root),\n            output.status.code().unwrap_or(-1),\n            one_line(&stderr, 1_000)\n        )));\n    }\n    Ok(bounded(\n        &format!(\n            "cwd={}\\nstdout:\\n{}\\nstderr:\\n{}",\n            display_path(&root),\n            stdout,\n            stderr\n        ),\n        MAX_TOOL_RESULT_CHARS,\n    ))\n}\n\nfn search_workspace(\n    config: &AgentWorkspaceConfig,\n'''
+          replace_once(git_helper_anchor, git_helper, 'git helper')
+
+          helpers_anchor = '''fn compact_json(value: &Value) -> String {\n'''
+          helpers = '''fn tool_mutates_workspace(tool: &str) -> bool {\n    matches!(\n        tool,\n        "write_file" | "replace_text" | "create_dir" | "move_path" | "delete_path"\n    )\n}\n\nfn is_validation_command(command: &str) -> bool {\n    let command = command.to_ascii_lowercase();\n    [\n        "cargo test",\n        "cargo check",\n        "cargo clippy",\n        "cargo build",\n        "cargo fmt --check",\n        "npm test",\n        "npm run test",\n        "npm run lint",\n        "npm run build",\n        "npm run typecheck",\n        "pnpm test",\n        "pnpm lint",\n        "pnpm build",\n        "yarn test",\n        "yarn lint",\n        "yarn build",\n        "pytest",\n        "python -m pytest",\n        "go test",\n        "go vet",\n        "mvn test",\n        "mvn verify",\n        "gradle test",\n        "gradlew test",\n        "dotnet test",\n        "composer test",\n        "phpunit",\n        "eslint",\n        "tsc --noemit",\n        "ruff check",\n    ]\n    .iter()\n    .any(|needle| command.contains(needle))\n}\n\nfn terminal_timeout_secs(action: &Value) -> u64 {\n    action\n        .get("timeoutSec")\n        .and_then(Value::as_u64)\n        .unwrap_or(DEFAULT_TERMINAL_TIMEOUT_SECS)\n        .clamp(10, MAX_TERMINAL_TIMEOUT_SECS)\n}\n\nfn compact_json(value: &Value) -> String {\n'''
+          replace_once(helpers_anchor, helpers, 'host helpers')
+
+          test_anchor = '''    #[test]\n    fn transcript_drops_old_context() {\n        let mut transcript = VecDeque::new();\n        for index in 0..9 {\n            push_transcript(&mut transcript, format!("step-{index}"));\n        }\n        assert!(transcript.len() <= 6);\n        assert_eq!(transcript.back().unwrap(), "step-8");\n    }\n'''
+          test_replacement = '''    #[test]\n    fn transcript_drops_old_context() {\n        let mut transcript = VecDeque::new();\n        for index in 0..9 {\n            push_transcript(&mut transcript, format!("step-{index}"));\n        }\n        assert!(transcript.len() <= 6);\n        assert_eq!(transcript.back().unwrap(), "step-8");\n    }\n\n    #[test]\n    fn recognizes_workspace_mutations() {\n        assert!(tool_mutates_workspace("replace_text"));\n        assert!(tool_mutates_workspace("delete_path"));\n        assert!(!tool_mutates_workspace("read_file"));\n        assert!(!tool_mutates_workspace("git_status"));\n    }\n\n    #[test]\n    fn recognizes_common_validation_commands() {\n        assert!(is_validation_command("npm run lint && npm run build"));\n        assert!(is_validation_command("cargo clippy --all-targets"));\n        assert!(is_validation_command("python -m pytest -q"));\n        assert!(!is_validation_command("npm install"));\n    }\n\n    #[test]\n    fn clamps_terminal_timeout() {\n        assert_eq!(terminal_timeout_secs(&json!({})), DEFAULT_TERMINAL_TIMEOUT_SECS);\n        assert_eq!(terminal_timeout_secs(&json!({"timeoutSec": 1})), 10);\n        assert_eq!(\n            terminal_timeout_secs(&json!({"timeoutSec": 9_999})),\n            MAX_TERMINAL_TIMEOUT_SECS\n        );\n    }\n'''
+          replace_once(test_anchor, test_replacement, 'agent tests')
+
+          path.write_text(text)
+          PY
+
+      - name: Format Rust source
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+
+      - name: Validate patch shape
+        run: |
+          git diff --check
+          grep -q '"git_status" => {' src-tauri/src/local_agent.rs
+          grep -q 'validation_required' src-tauri/src/local_agent.rs
+          grep -q 'MAX_TERMINAL_TIMEOUT_SECS' src-tauri/src/local_agent.rs
+
+      - name: Commit hardened agent and remove helper
+        run: |
+          git config user.name "openmindai-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git add src-tauri/src/local_agent.rs
+          git rm .github/workflows/project-agent-autonomy-patch.yml
+          git diff --cached --check
+          git commit -m "feat(agent): harden autonomous project execution"
+          git push origin HEAD:feature/project-agent-autonomy-hardening
