@@ -37,7 +37,7 @@ import type {
 import { formatBytes } from "../lib/format";
 import { readImageAsDataUrl } from "../lib/avatar";
 import { ModelsManager } from "./ModelsManager";
-import { Connectors } from "./Connectors";
+import { AppsSettings } from "./AppsSettings";
 import { MaintenanceCenter } from "./MaintenanceCenter";
 import { UpdatesPanel } from "./UpdatesPanel";
 
@@ -112,7 +112,7 @@ export function SettingsDialog(props: {
     { id: "appearance", label: "Appearance", icon: Palette },
     { id: "chat", label: "Chat", icon: MessageSquarePlus },
     { id: "capabilities", label: "Capabilities", icon: Brain },
-    { id: "connectors", label: "Connectors", icon: Plug },
+    { id: "connectors", label: "Apps", icon: Plug },
     { id: "models", label: "Models", icon: Database },
     { id: "runtime", label: "AI Runtime", icon: Server },
     { id: "hardware", label: "Hardware", icon: Cpu },
@@ -241,8 +241,8 @@ export function SettingsDialog(props: {
         ) : null}
 
         {activeSection === "connectors" && (
-          <SettingsGroup title="Connectors">
-            <Connectors />
+          <SettingsGroup title="Apps">
+            <AppsSettings />
           </SettingsGroup>
         )}
 

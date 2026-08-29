@@ -996,7 +996,11 @@ export function App() {
             )}
           </div>
           <div className="topbar-center">
-            <ChatModeSwitcher />
+            <ChatModeSwitcher
+    active={view === "projects" ? "work" : "chat"}
+    onChat={() => setView("chat")}
+    onWork={() => setView("projects")}
+  />
           </div>
           <div className="topbar-actions">
             {view === "chat" && activeConversation ? (
@@ -1092,11 +1096,21 @@ export function App() {
         ) : view === "projects" ? (
           <ProjectsWorkspace
             conversations={conversations}
-            onOpenConversation={(id) => {
-              setView("chat");
-              setActiveId(id);
-              setEditingMessageId(null);
-            }}
+            onOpenConversation={(id, draft) => {
+    setView("chat");
+    setActiveId(id);
+    setEditingMessageId(null);
+    setAttachments([]);
+    if (draft?.trim()) {
+      setPrompt(draft.trim());
+      window.setTimeout(() => {
+        const node = composerRef.current;
+        if (!node) return;
+        node.focus();
+        node.setSelectionRange(node.value.length, node.value.length);
+      }, 0);
+    }
+  }}
             onCreateProjectChat={createProjectConversation}
           />
         ) : (

@@ -30,12 +30,13 @@ const MAX_PROJECT_INSTRUCTIONS_CHARS = 20_000;
 
 export function ProjectsWorkspace(props: {
   conversations: Conversation[];
-  onOpenConversation: (id: string) => void;
+  onOpenConversation: (id: string, draft?: string) => void;
   onCreateProjectChat: (project: Project) => Promise<Conversation>;
 }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [activePane, setActivePane] = useState<"overview" | "work">("overview");
+  const [workDraft, setWorkDraft] = useState("");
   const [draftName, setDraftName] = useState("");
   const [linkSearch, setLinkSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -155,7 +156,7 @@ export function ProjectsWorkspace(props: {
     setSavedAt(Date.now());
   };
 
-  const createChat = async () => {
+  const createChat = async (draft?: string) => {
     if (!activeProject) return;
     const conversation = await runAction("create-chat", async () => {
       const created = await props.onCreateProjectChat(activeProject);
@@ -163,17 +164,18 @@ export function ProjectsWorkspace(props: {
       await refreshProjects(activeProject.id);
       return created;
     });
-    if (conversation) props.onOpenConversation(conversation.id);
+    if (conversation) props.onOpenConversation(conversation.id, draft);
+    return conversation;
   };
 
-  const openAgentChat = async () => {
-    const existing = projectConversations[0];
-    if (existing) {
-      props.onOpenConversation(existing.id);
-      return;
-    }
-    await createChat();
-  };
+  const openAgentChat = async (draft?: string) => {
+  const existing = projectConversations[0];
+  if (existing) {
+    props.onOpenConversation(existing.id, draft);
+    return;
+  }
+  await createChat(draft);
+};
 
   const linkConversation = async (conversationId: string) => {
     if (!activeProject) return;
@@ -339,6 +341,7 @@ export function ProjectsWorkspace(props: {
                   setLinkSearch("");
                   setSavedAt(null);
                   setActivePane("overview");
+                  setWorkDraft("");
                   setError(null);
                 }}
               >
@@ -632,30 +635,84 @@ export function ProjectsWorkspace(props: {
               </section>
             </div>
               </>
-            ) : (
-              <div className="project-work-pane">
-                <section className="project-card project-work-agent-card">
-                  <div className="project-work-agent-copy">
-                    <span className="project-work-agent-icon"><Bot size={19} /></span>
-                    <div>
-                      <span className="tools-eyebrow">Autonomous project agent</span>
-                      <h3>Work on the attached project</h3>
-                      <p>Ask OpenMindAI to inspect code, edit files, run permitted terminal commands, recover from failures, and validate the result before it reports completion.</p>
-                    </div>
+                      ) : (
+              <div className="project-work-pane project-work-chatgpt">
+                <section className="project-work-start">
+                  <div className="project-work-start-copy">
+                    <span className="project-work-orb"><Bot size={22} /></span>
+                    <span className="tools-eyebrow">Project Work</span>
+                    <h2>What should I work on?</h2>
+                    <p>Describe the outcome. OpenMindAI can inspect the attached project, edit files, run permitted commands, recover from errors, and validate its changes.</p>
                   </div>
-                  <div className="project-work-agent-actions">
-                    <span className={projectConversations.length ? "project-work-ready" : "project-work-pending"}>
-                      {projectConversations.length ? <CheckCircle2 size={13} /> : <Sparkles size={13} />}
-                      {projectConversations.length ? `${projectConversations.length} linked chat${projectConversations.length === 1 ? "" : "s"}` : "Agent chat will be created"}
-                    </span>
-                    <button type="button" className="primary-button" disabled={busy} onClick={() => void openAgentChat()}>
-                      {busyAction === "create-chat" ? <LoaderCircle className="spin" size={15} /> : <MessageSquarePlus size={15} />}
-                      {projectConversations.length ? "Open agent chat" : "Start agent chat"}
-                    </button>
+
+                  <form
+                    className="project-work-composer"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const draft = workDraft.trim();
+                      if (!draft || busy) return;
+                      setWorkDraft("");
+                      void openAgentChat(draft);
+                    }}
+                  >
+                    <textarea
+                      value={workDraft}
+                      rows={3}
+                      placeholder="Ask OpenMindAI to build, fix, audit, test, or review this project…"
+                      onChange={(event) => setWorkDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && workDraft.trim()) {
+                          event.preventDefault();
+                          const draft = workDraft.trim();
+                          setWorkDraft("");
+                          void openAgentChat(draft);
+                        }
+                      }}
+                    />
+                    <div className="project-work-composer-footer">
+                      <div className="project-work-suggestions" aria-label="Suggested project tasks">
+                        {["Audit this project", "Fix failing tests", "Review recent changes", "Find and fix bugs"].map((suggestion) => (
+                          <button type="button" key={suggestion} onClick={() => setWorkDraft(suggestion)}>{suggestion}</button>
+                        ))}
+                      </div>
+                      <button type="submit" className="primary-button project-work-submit" disabled={busy || !workDraft.trim()}>
+                        <Sparkles size={15} /> Continue in chat
+                      </button>
+                    </div>
+                  </form>
+
+                  <div className="project-work-trust-row">
+                    <span><CheckCircle2 size={13} /> Uses this project's files and instructions</span>
+                    <span><CheckCircle2 size={13} /> Validates workspace changes before completion</span>
+                    <span><CheckCircle2 size={13} /> Connected apps stay internal</span>
                   </div>
                 </section>
 
-                <ProjectLocalWorkspace projectId={activeProject.id} projectName={activeProject.name} />
+                {projectConversations.length ? (
+                  <section className="project-card project-work-recent">
+                    <div className="project-card-heading">
+                      <div><h3><MessagesSquare size={15} /> Recent work</h3><p>Continue a project conversation without leaving the project context.</p></div>
+                    </div>
+                    <div className="project-work-chat-list">
+                      {projectConversations.slice(0, 5).map((conversation) => (
+                        <button type="button" key={conversation.id} onClick={() => props.onOpenConversation(conversation.id)}>
+                          <span><strong>{conversation.title}</strong><small>{formatTime(conversation.updatedAt)}</small></span>
+                          <MessageSquarePlus size={15} />
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
+
+                <details className="project-card project-work-access">
+                  <summary>
+                    <span><FolderKanban size={15} /><strong>Workspace access</strong></span>
+                    <small>Folders, file access, and optional terminal permissions</small>
+                  </summary>
+                  <div className="project-work-access-body">
+                    <ProjectLocalWorkspace projectId={activeProject.id} projectName={activeProject.name} />
+                  </div>
+                </details>
               </div>
             )}
           </>
