@@ -72,7 +72,7 @@ export function ConnectedWorkspace({ onClose }: { onClose: () => void }) {
     setApproved(false);
     setResult("");
     setError(null);
-  }, [definition?.action]);
+  }, [definition]);
 
   const connectGoogle = async () => {
     setConnectingGoogle(true);
