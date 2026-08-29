@@ -1,0 +1,76 @@
+name: Work Thread Flow
+
+on:
+  push:
+    branches:
+      - fix/separate-work-projects-view
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Wire Work threads
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          app = Path('src/App.tsx')
+          text = app.read_text()
+
+          old = '  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);\n  const composerRef = useRef<HTMLTextAreaElement | null>(null);'
+          new = '  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);\n  const [workThreadId, setWorkThreadId] = useState<string | null>(null);\n  const composerRef = useRef<HTMLTextAreaElement | null>(null);'
+          assert text.count(old) == 1, text.count(old)
+          text = text.replace(old, new, 1)
+
+          marker = '''  ]);\n\n  const stopGeneration = useCallback(async () => {'''
+          assert text.count(marker) >= 1
+          insertion = '''  ]);\n\n  const sendWorkTask = useCallback(\n    async (conversationId: string, content: string) => {\n      const task = content.trim();\n      if (!task || streamingId || submitting) return;\n\n      const inferredMode = inferChatMode(task, []);\n      const messageContent = buildMessageContent(task, [], inferredMode);\n      setSubmitting(true);\n      setPrompt("");\n      setAttachments([]);\n      setEditingMessageId(null);\n      setActiveId(conversationId);\n      setWorkThreadId(conversationId);\n\n      try {\n        const generatedTitle = titleFromPrompt(task);\n        if (generatedTitle) {\n          await api.renameConversation(conversationId, generatedTitle);\n          setConversations((items) =>\n            items.map((conversation) =>\n              conversation.id === conversationId\n                ? { ...conversation, title: generatedTitle }\n                : conversation,\n            ),\n          );\n        }\n        await api.sendChatMessage(conversationId, messageContent, inferredMode, []);\n        setStreamingId(null);\n        await refreshMessages(conversationId, setMessages, showError);\n        await refreshApp();\n      } catch (caught) {\n        setStreamingId(null);\n        showError(caught);\n        await refreshMessages(conversationId, setMessages, showError);\n      } finally {\n        setSubmitting(false);\n      }\n    },\n    [refreshApp, showError, streamingId, submitting],\n  );\n\n  const stopGeneration = useCallback(async () => {'''
+          text = text.replace(marker, insertion, 1)
+
+          old = '    setView("chat");\n    window.setTimeout(() => {'
+          new = '    setView((current) => (current === "work" ? "work" : "chat"));\n    window.setTimeout(() => {'
+          assert text.count(old) >= 1
+          text = text.replace(old, new, 1)
+
+          old = '''            <ChatModeSwitcher\n              active={view === "work" ? "work" : "chat"}\n              onChat={() => setView("chat")}\n              onWork={() => setView("work")}\n            />'''
+          new = '''            <ChatModeSwitcher\n              active={view === "work" ? "work" : "chat"}\n              onChat={() => {\n                setWorkThreadId(null);\n                setView("chat");\n              }}\n              onWork={() => {\n                setWorkThreadId(null);\n                setActiveId(null);\n                setMessages([]);\n                setPrompt("");\n                setAttachments([]);\n                setView("work");\n              }}\n            />'''
+          assert text.count(old) == 1, text.count(old)
+          text = text.replace(old, new, 1)
+
+          start = text.index('        ) : view === "work" ? (\n')
+          end = text.index('        ) : view === "projects" ? (\n', start)
+          work_block = '''        ) : view === "work" ? (\n          workThreadId ? (\n            <ChatView\n              conversation={activeConversation}\n              messages={messages}\n              prompt={prompt}\n              setPrompt={setPrompt}\n              attachments={attachments}\n              preferences={preferences}\n              activity={activity}\n              enterToSend={preferences?.enterToSend ?? true}\n              addFiles={addFiles}\n              removeAttachment={(id) =>\n                setAttachments((items) => items.filter((item) => item.id !== id))\n              }\n              sendMessage={sendMessage}\n              stopGeneration={stopGeneration}\n              regenerate={regenerate}\n              retry={regenerate}\n              editUserMessage={editUserMessage}\n              composerRef={composerRef}\n              streaming={Boolean(streamingId)}\n              submitting={submitting}\n              models={models}\n              activeModelId={activeModelId}\n              runtime={runtime}\n              modelSwitching={modelSwitching}\n              modelSwitchError={modelSwitchError}\n              onSelectModel={selectModel}\n              artifactsByMessage={artifactsByMessage}\n              onCreateArtifact={createArtifact}\n              onOpenArtifact={openArtifactHandler}\n              onRevealArtifact={revealArtifactHandler}\n              onRetryArtifact={retryArtifact}\n              onPreview={setPreviewTarget}\n            />\n          ) : (\n            <WorkWorkspace\n              conversations={conversations}\n              onOpenConversation={(id, draft) => {\n                setView("work");\n                setWorkThreadId(id);\n                setActiveId(id);\n                setEditingMessageId(null);\n                setAttachments([]);\n                setPrompt("");\n                if (draft?.trim()) {\n                  void sendWorkTask(id, draft.trim());\n                }\n              }}\n              onCreateProjectChat={createProjectConversation}\n            />\n          )\n'''
+          text = text[:start] + work_block + text[end:]
+          app.write_text(text)
+          PY
+          npx prettier --write src/App.tsx
+      - name: Validate frontend
+        run: |
+          npm ci
+          npm run lint
+          npm run build
+      - name: Commit Work thread flow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/_work-thread-flow.yml
+          git config user.name "openmindai-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git add src/App.tsx .github/workflows/_work-thread-flow.yml
+          git commit -m "fix(work): execute tasks inside Work threads"
+          git push origin HEAD:fix/separate-work-projects-view
