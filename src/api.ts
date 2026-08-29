@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Artifact, Message } from "./types";
-import type { GoogleWorkspaceStatus } from "./lib/connectedActions";
+import type {
+  ConnectedProvider,
+  GoogleWorkspaceStatus,
+  IntegrationStatus,
+} from "./lib/connectedActions";
 import { createSoundscapeArtifact } from "./lib/media";
 import { api as legacyApi } from "./api_legacy";
 
@@ -13,9 +17,11 @@ type VisualMedia = {
   dataUrl: string;
 };
 
+type EcosystemProvider = Exclude<ConnectedProvider, "google" | "github">;
+
 function connectedInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri) {
-    return Promise.reject(new Error("Connected Google/GitHub actions require the desktop app."));
+    return Promise.reject(new Error("Connected app actions require the OpenMindAI desktop app."));
   }
   return invoke<T>(command, args);
 }
@@ -140,6 +146,39 @@ export const api = {
     approved = false,
   ) =>
     connectedInvoke<unknown>("execute_github_workspace_action", {
+      action,
+      params,
+      approved,
+    }),
+  integrationStatus: (provider: EcosystemProvider) =>
+    connectedInvoke<IntegrationStatus>("integration_status", { provider }),
+  saveIntegrationConfig: (
+    provider: EcosystemProvider,
+    config: Record<string, unknown>,
+    secret?: string,
+  ) =>
+    connectedInvoke<IntegrationStatus>("save_integration_config", {
+      provider,
+      config,
+      secret: secret ?? null,
+    }),
+  clearIntegrationConfig: (provider: EcosystemProvider) =>
+    connectedInvoke<void>("clear_integration_config", { provider }),
+  connectIntegration: (provider: EcosystemProvider, token?: string) =>
+    connectedInvoke<IntegrationStatus>("connect_integration", {
+      provider,
+      token: token?.trim() ? token.trim() : null,
+    }),
+  disconnectIntegration: (provider: EcosystemProvider) =>
+    connectedInvoke<void>("disconnect_integration", { provider }),
+  executeIntegrationAction: (
+    provider: EcosystemProvider,
+    action: string,
+    params: Record<string, unknown>,
+    approved = false,
+  ) =>
+    connectedInvoke<unknown>("execute_integration_action", {
+      provider,
       action,
       params,
       approved,
