@@ -81,3 +81,41 @@ jobs:
 
       - name: Rust tests
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --all-features
+
+  windows-app-build:
+    name: Windows Tauri application build
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Build desktop application without bundling
+        run: npm run tauri -- build --no-bundle
+
+      - name: Verify application binary
+        shell: pwsh
+        run: |
+          $binary = "src-tauri/target/release/open-mind-ai.exe"
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
+            throw "Expected Tauri application binary was not produced: $binary"
+          }
+          if ((Get-Item -LiteralPath $binary).Length -le 0) {
+            throw "Tauri application binary is empty: $binary"
+          }
