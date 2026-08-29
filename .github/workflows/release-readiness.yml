@@ -1,0 +1,182 @@
+name: Release Readiness
+
+on:
+  push:
+    branches:
+      - main
+      - "release/**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-readiness-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-contract:
+    name: Release contract
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate synchronized version
+        run: npm run check:version
+
+      - name: Validate updater and release contract
+        run: npm run check:release
+
+      - name: Validate bootstrap shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n OpenMindAI-Setup.command
+          bash -n openmindai-setup.sh
+          bash -n bootstrap/linux/bootstrap.sh
+          bash -n bootstrap/macos/bootstrap.sh
+
+  windows-nsis-smoke:
+    name: Windows NSIS install and v2 upgrade smoke
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Build unsigned NSIS smoke candidate
+        shell: pwsh
+        run: |
+          $config = @{
+            bundle = @{
+              createUpdaterArtifacts = $false
+            }
+          } | ConvertTo-Json -Depth 10
+          Set-Content -Path "src-tauri/tauri.release-smoke.conf.json" -Value $config -Encoding utf8
+          npm run tauri -- build --bundles nsis --config src-tauri/tauri.release-smoke.conf.json
+
+      - name: Verify clean install and v2 to v3 upgrade
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $installers = @(Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" -File)
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one NSIS smoke installer, found $($installers.Count)."
+          }
+          $candidate = $installers[0]
+          if ($candidate.Length -le 0) {
+            throw "NSIS smoke installer is empty."
+          }
+
+          function Invoke-SilentInstaller {
+            param([string]$InstallerPath, [string]$Destination)
+            if (Test-Path -LiteralPath $Destination) {
+              Remove-Item -LiteralPath $Destination -Recurse -Force
+            }
+            $arguments = @('/S', "/D=$Destination")
+            $process = Start-Process -FilePath $InstallerPath -ArgumentList $arguments -Wait -PassThru
+            if ($process.ExitCode -ne 0) {
+              throw "Installer failed with exit code $($process.ExitCode): $InstallerPath"
+            }
+          }
+
+          function Resolve-InstalledApp {
+            param([string]$Destination)
+            $candidateExe = Get-ChildItem -LiteralPath $Destination -Filter '*.exe' -File -Recurse |
+              Where-Object { $_.Name -notmatch '(?i)uninstall' } |
+              Sort-Object Length -Descending |
+              Select-Object -First 1
+            if ($null -eq $candidateExe) {
+              throw "No installed application executable found under $Destination"
+            }
+            return $candidateExe
+          }
+
+          function Assert-InstalledVersion {
+            param([string]$Destination, [string]$ExpectedVersion)
+            $appExe = Resolve-InstalledApp -Destination $Destination
+            $productVersion = $appExe.VersionInfo.ProductVersion
+            $fileVersion = $appExe.VersionInfo.FileVersion
+            if (($productVersion -notlike "$ExpectedVersion*") -and ($fileVersion -notlike "$ExpectedVersion*")) {
+              throw "Installed executable version mismatch. Expected $ExpectedVersion; product=$productVersion file=$fileVersion path=$($appExe.FullName)"
+            }
+            Write-Host "Verified installed OpenMindAI $ExpectedVersion at $($appExe.FullName)"
+          }
+
+          function Remove-SmokeInstall {
+            param([string]$Destination)
+            if (-not (Test-Path -LiteralPath $Destination)) {
+              return
+            }
+            $uninstaller = Get-ChildItem -LiteralPath $Destination -Filter '*.exe' -File -Recurse |
+              Where-Object { $_.Name -match '(?i)uninstall' } |
+              Select-Object -First 1
+            if ($null -ne $uninstaller) {
+              $process = Start-Process -FilePath $uninstaller.FullName -ArgumentList '/S' -Wait -PassThru
+              if ($process.ExitCode -ne 0) {
+                throw "Uninstaller failed with exit code $($process.ExitCode): $($uninstaller.FullName)"
+              }
+            }
+            if (Test-Path -LiteralPath $Destination) {
+              Remove-Item -LiteralPath $Destination -Recurse -Force
+            }
+          }
+
+          $v2Installer = Join-Path $env:RUNNER_TEMP 'OpenMindAI_2.0.0_x64-setup.exe'
+          Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/smshagor-dev/OpenMindAI/releases/download/v2.0.0/OpenMindAI_2.0.0_x64-setup.exe' -OutFile $v2Installer
+          if ((Get-Item -LiteralPath $v2Installer).Length -le 0) {
+            throw 'Downloaded v2.0.0 installer is empty.'
+          }
+
+          $upgradeRoot = Join-Path $env:RUNNER_TEMP 'OpenMindAI-v3-upgrade-smoke'
+          Invoke-SilentInstaller -InstallerPath $v2Installer -Destination $upgradeRoot
+          if (-not (Test-Path -LiteralPath $upgradeRoot)) {
+            throw 'v2.0.0 smoke installation did not create the expected destination.'
+          }
+          $upgradeProcess = Start-Process -FilePath $candidate.FullName -ArgumentList @('/S', "/D=$upgradeRoot") -Wait -PassThru
+          if ($upgradeProcess.ExitCode -ne 0) {
+            throw "v2.0.0 to $version upgrade failed with exit code $($upgradeProcess.ExitCode)."
+          }
+          Assert-InstalledVersion -Destination $upgradeRoot -ExpectedVersion $version
+          Remove-SmokeInstall -Destination $upgradeRoot
+
+          $cleanRoot = Join-Path $env:RUNNER_TEMP 'OpenMindAI-v3-clean-smoke'
+          Invoke-SilentInstaller -InstallerPath $candidate.FullName -Destination $cleanRoot
+          Assert-InstalledVersion -Destination $cleanRoot -ExpectedVersion $version
+          Remove-SmokeInstall -Destination $cleanRoot
+
+          Write-Host "Windows NSIS clean-install and v2.0.0 -> $version upgrade smoke tests passed."
+
+      - name: Remove smoke build configuration
+        if: always()
+        shell: pwsh
+        run: |
+          Remove-Item "src-tauri/tauri.release-smoke.conf.json" -Force -ErrorAction SilentlyContinue
