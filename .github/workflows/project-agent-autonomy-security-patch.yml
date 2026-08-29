@@ -1,0 +1,85 @@
+name: Project Agent Autonomy Security Patch
+
+on:
+  push:
+    branches:
+      - feature/project-agent-autonomy-hardening
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feature/project-agent-autonomy-hardening
+
+      - name: Harden read-only Git and validation evidence
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src-tauri/src/local_agent.rs')
+          text = path.read_text()
+
+          def replace_once(old, new, label):
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one anchor, found {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              '&["diff", "--no-ext-diff", "--no-color"],',
+              '&["diff", "--no-ext-diff", "--no-textconv", "--no-color"],',
+              'unstaged diff hardening',
+          )
+          replace_once(
+              '&["diff", "--cached", "--no-ext-diff", "--no-color"],',
+              '&[\n                    "diff",\n                    "--cached",\n                    "--no-ext-diff",\n                    "--no-textconv",\n                    "--no-color",\n                ],',
+              'staged diff hardening',
+          )
+          replace_once(
+              '''    process\n        .args(args)\n        .current_dir(&root)\n''',
+              '''    process\n        .arg("-c")\n        .arg("core.fsmonitor=false")\n        .arg("-c")\n        .arg("submodule.recurse=false")\n        .args(args)\n        .current_dir(&root)\n''',
+              'git process config',
+          )
+
+          old_validation = '''fn is_validation_command(command: &str) -> bool {\n    let command = command.to_ascii_lowercase();\n    [\n'''
+          new_validation = '''fn is_validation_command(command: &str) -> bool {\n    let command = command.to_ascii_lowercase();\n    if command.contains("&&")\n        || command.contains("||")\n        || command.contains(';')\n        || command.contains('\\n')\n        || command.contains('\\r')\n    {\n        return false;\n    }\n    [\n'''
+          replace_once(old_validation, new_validation, 'validation shell guard')
+
+          replace_once(
+              '''        assert!(is_validation_command("npm run lint && npm run build"));\n        assert!(is_validation_command("cargo clippy --all-targets"));\n        assert!(is_validation_command("python -m pytest -q"));\n        assert!(!is_validation_command("npm install"));\n''',
+              '''        assert!(is_validation_command("npm run lint"));\n        assert!(is_validation_command("cargo clippy --all-targets"));\n        assert!(is_validation_command("python -m pytest -q"));\n        assert!(!is_validation_command("npm run lint && npm run build"));\n        assert!(!is_validation_command("npm test; exit 0"));\n        assert!(!is_validation_command("npm install"));\n''',
+              'validation tests',
+          )
+
+          replace_once(
+              '- After edits, validate with appropriate tests/build/lint when terminal is available. If validation fails, inspect the error, change approach, fix, and rerun until green or a concrete blocker is established.\\n\\\n',
+              '- After edits, validate with appropriate tests/build/lint when terminal is available. Run validation commands one at a time so each exit code is authoritative. If validation fails, inspect the error, change approach, fix, and rerun until green or a concrete blocker is established.\\n\\\n',
+              'validation prompt',
+          )
+
+          path.write_text(text)
+          PY
+
+      - name: Format and validate
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml
+          git diff --check
+          grep -q 'core.fsmonitor=false' src-tauri/src/local_agent.rs
+          grep -q -- '--no-textconv' src-tauri/src/local_agent.rs
+
+      - name: Commit patch and remove helper
+        run: |
+          git config user.name "openmindai-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git add src-tauri/src/local_agent.rs
+          git rm .github/workflows/project-agent-autonomy-security-patch.yml
+          git diff --cached --check
+          git commit -m "fix(agent): harden git inspection and validation evidence"
+          git push origin HEAD:feature/project-agent-autonomy-hardening
