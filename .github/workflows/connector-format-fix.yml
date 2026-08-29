@@ -1,0 +1,154 @@
+name: Connector Format Fix
+
+on:
+  push:
+    branches:
+      - connector-ecosystem-v2
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: connector-ecosystem-v2
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Apply connector hardening
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('src-tauri/src/connector_ecosystem.rs')
+          text = path.read_text()
+
+          old = '''fn encode_graph_path(path: &str) -> String {
+              path.trim_matches('/')
+                  .split('/')
+                  .filter(|segment| !segment.is_empty())
+                  .map(|segment| url::form_urlencoded::byte_serialize(segment.as_bytes()).collect::<String>())
+                  .collect::<Vec<_>>()
+                  .join("/")
+          }
+          '''
+          new = '''fn encode_graph_segment(segment: &str) -> String {
+              let mut encoded = String::with_capacity(segment.len());
+              for byte in segment.as_bytes() {
+                  match byte {
+                      b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                          encoded.push(*byte as char);
+                      }
+                      _ => encoded.push_str(&format!("%{byte:02X}")),
+                  }
+              }
+              encoded
+          }
+
+          fn encode_graph_path(path: &str) -> String {
+              path.trim_matches('/')
+                  .split('/')
+                  .filter(|segment| !segment.is_empty())
+                  .map(encode_graph_segment)
+                  .collect::<Vec<_>>()
+                  .join("/")
+          }
+          '''
+          assert old in text, 'Graph path encoder pattern missing'
+          text = text.replace(old, new, 1)
+
+          old = '''    let connected = if provider == "mcp" {
+                  is_configured
+              } else {
+                  secret_store::get_secret(&access_slot(&provider))?.is_some()
+              };
+              let record = record.unwrap_or_default();
+          '''
+          new = '''    let connected = if provider == "mcp" {
+                  is_configured
+                      && record
+                          .as_ref()
+                          .and_then(|item| item.account_label.as_ref())
+                          .is_some()
+              } else {
+                  secret_store::get_secret(&access_slot(&provider))?.is_some()
+              };
+              let record = record.unwrap_or_default();
+          '''
+          assert old in text, 'MCP status pattern missing'
+          text = text.replace(old, new, 1)
+
+          marker = '''async fn dropbox_download(state: &State<'_, AppState>, path: &str) -> Result<Value, AppError> {
+          '''
+          helper = '''async fn dropbox_current_account(state: &State<'_, AppState>) -> Result<Value, AppError> {
+              let token = access_token(state, "dropbox").await?;
+              let response = state
+                  .http
+                  .post("https://api.dropboxapi.com/2/users/get_current_account")
+                  .bearer_auth(token)
+                  .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
+                  .send()
+                  .await
+                  .map_err(|error| connector_error("dropbox", error.to_string()))?;
+              json_response("dropbox", response).await
+          }
+
+          async fn dropbox_download(state: &State<'_, AppState>, path: &str) -> Result<Value, AppError> {
+          '''
+          assert marker in text, 'Dropbox download marker missing'
+          text = text.replace(marker, helper, 1)
+          old = '''        "account.get" => dropbox_rpc(state, "users/get_current_account", json!(null)).await,
+          '''
+          new = '''        "account.get" => dropbox_current_account(state).await,
+          '''
+          assert old in text, 'Dropbox account action pattern missing'
+          text = text.replace(old, new, 1)
+
+          old = '''        "chat.send" => slack_request(
+              state,
+              "chat.postMessage",
+              json!({
+                  "channel": required_str("slack", params, "channel")?,
+                  "text": required_str("slack", params, "text")?,
+                  "thread_ts": optional_str(params, "threadTs")
+              }),
+              false,
+          )
+          .await,
+          '''
+          new = '''        "chat.send" => {
+              let mut payload = json!({
+                  "channel": required_str("slack", params, "channel")?,
+                  "text": required_str("slack", params, "text")?
+              });
+              if let Some(thread_ts) = optional_str(params, "threadTs") {
+                  payload["thread_ts"] = Value::String(thread_ts.to_string());
+              }
+              slack_request(state, "chat.postMessage", payload, false).await
+          }
+          '''
+          assert old in text, 'Slack chat.send pattern missing'
+          text = text.replace(old, new, 1)
+
+          old = '''        assert_eq!(encode_graph_path("Docs/My File.txt"), "Docs/My+File.txt");
+          '''
+          new = '''        assert_eq!(encode_graph_path("Docs/My File.txt"), "Docs/My%20File.txt");
+          '''
+          assert old in text, 'Graph path test pattern missing'
+          text = text.replace(old, new, 1)
+
+          path.write_text(text)
+      - name: Rustfmt
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+      - name: Remove temporary workflow and commit
+        shell: bash
+        run: |
+          rm .github/workflows/connector-format-fix.yml
+          git config user.name "openmindai-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(connectors): harden and format provider backend"
+          git push origin HEAD:connector-ecosystem-v2
