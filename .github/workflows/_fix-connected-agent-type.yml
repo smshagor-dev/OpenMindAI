@@ -1,0 +1,44 @@
+name: Fix Connected Agent Type
+
+on:
+  push:
+    branches:
+      - fix/rustfmt-connected-agent
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Fix model type and validate
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src-tauri/src/connected_agent.rs')
+          text = path.read_text()
+          old = 'model: &crate::models::ModelRecord,'
+          new = 'model: &crate::model_registry::ModelRecord,'
+          assert text.count(old) == 1, text.count(old)
+          path.write_text(text.replace(old, new, 1))
+          PY
+          cargo fmt --manifest-path src-tauri/Cargo.toml
+          cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - name: Commit fix
+        run: |
+          rm .github/workflows/_fix-connected-agent-type.yml
+          git config user.name "openmindai-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git add src-tauri/src/connected_agent.rs .github/workflows/_fix-connected-agent-type.yml
+          git commit -m "fix(agent): use registered model type"
+          git push origin HEAD:fix/rustfmt-connected-agent
