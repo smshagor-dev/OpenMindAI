@@ -1,0 +1,56 @@
+name: Local Agent Runtime Hardening
+
+on:
+  push:
+    branches:
+      - project-local-agent-e2e
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: project-local-agent-e2e
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Patch local completion URL and generation cleanup
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src-tauri/src/local_agent.rs')
+          text = path.read_text()
+
+          old = '''    emit_agent_chunk(app, state, conversation_id, &assistant.id, &format!("{intro}\\n\\n"))?;\n\n    let loop_result = async {'''
+          new = '''    if let Err(error) = emit_agent_chunk(\n        app,\n        state,\n        conversation_id,\n        &assistant.id,\n        &format!("{intro}\\n\\n"),\n    ) {\n        state.active_generations.finish(conversation_id);\n        return Err(error);\n    }\n\n    let loop_result = async {'''
+          if old not in text:
+              raise SystemExit('intro emit anchor missing')
+          text = text.replace(old, new, 1)
+
+          old = '''    finish_agent_message(app, state, conversation_id, &assistant.id, status)?;\n    state.active_generations.finish(conversation_id);\n    latest_message(state, conversation_id, &assistant.id)'''
+          new = '''    let finish_result = finish_agent_message(app, state, conversation_id, &assistant.id, status);\n    state.active_generations.finish(conversation_id);\n    finish_result?;\n    latest_message(state, conversation_id, &assistant.id)'''
+          if old not in text:
+              raise SystemExit('finish anchor missing')
+          text = text.replace(old, new, 1)
+
+          old = '''    let response = client\n        .post(endpoint)\n        .json(&body)\n        .send()\n        .await\n        .map_err(|error| AppError::InferenceFailed(format!("agent model request failed: {error}")))?;'''
+          new = '''    let url = format!("{}/v1/chat/completions", endpoint.trim_end_matches('/'));\n    let mut retry = 0u8;\n    let response = loop {\n        let response = client\n            .post(&url)\n            .json(&body)\n            .send()\n            .await\n            .map_err(|error| {\n                AppError::InferenceFailed(format!("agent model request failed: {error}"))\n            })?;\n        if response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE && retry < 5 {\n            retry += 1;\n            tokio::time::sleep(Duration::from_millis(600)).await;\n            continue;\n        }\n        break response;\n    };'''
+          if old not in text:
+              raise SystemExit('completion request anchor missing')
+          text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
+          cargo fmt --manifest-path src-tauri/Cargo.toml
+      - name: Commit hardening
+        run: |
+          git config user.name "openmindai-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git add src-tauri/src/local_agent.rs
+          git diff --cached --check
+          git commit -m "fix(agent): use llama chat endpoint and clean cancellation state"
+          git push
