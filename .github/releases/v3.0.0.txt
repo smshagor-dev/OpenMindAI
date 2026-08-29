@@ -1,0 +1,76 @@
+# OpenMindAI v3.0.0
+
+OpenMindAI v3.0.0 turns local Projects into an active development workspace. A real folder can be attached to a project and project chat can route through a local agent that inspects files, makes scoped changes, uses explicitly permitted terminal commands, observes failures, repairs them, validates the result, and reports what changed.
+
+## Highlights
+
+### Open Folder as Project
+
+- Select an existing folder and create or attach an OpenMindAI Project in one flow.
+- A linked project chat is created automatically.
+- Partial setup rolls back orphan project or conversation state if the durable project-chat link is not completed.
+- Attached-folder filesystem access remains scoped unless Full PC + Terminal access is explicitly approved.
+
+### Local Project Agent
+
+- Reads and edits project files locally.
+- Creates, renames, and deletes workspace files when required by the task.
+- Uses live workspace snapshots and refreshes context after successful edits.
+- Uses recent project conversation context instead of treating every instruction as an isolated turn.
+- Uses the llama-compatible `/v1/chat/completions` endpoint and retries transient model-unavailable responses.
+- Supports responsive cancellation while waiting on the model or a tool.
+
+### Plan, execute, validate, recover
+
+- Non-zero terminal exits and command timeouts are surfaced as failures for the next reasoning step.
+- Successful recovery resets the consecutive-failure budget.
+- Duplicate-action protection prevents the agent from repeating the same broken action indefinitely.
+- Modified workspaces must pass an applicable validation command before completion unless the agent records a concrete reason why automated validation does not apply.
+- Validation commands are credited only when their exit status is authoritative; chained commands cannot mask an earlier failure.
+- The autonomous safety budget supports realistic inspect -> edit -> test -> recover workflows while retaining a hard upper bound.
+
+### Git-aware local work
+
+- Structured Git status and diff inspection are available to the agent when Full PC + Terminal access is enabled.
+- Git inspection disables fsmonitor, external diff, textconv, and recursive submodule behavior that could unexpectedly execute external helpers.
+- Commits, branch changes, resets, cleans, installs, and other arbitrary terminal operations remain governed by the terminal permission boundary and the user's instruction.
+
+### Cross-platform execution
+
+- Windows agent terminal guidance targets non-interactive Windows PowerShell.
+- macOS and Linux guidance targets `/bin/sh -lc`.
+- The agent avoids interactive prompts, editors, pagers, sudo or password requests, and commands that wait indefinitely for user input.
+
+## Release validation and security
+
+The v3 source release is gated by:
+
+- frontend lint, TypeScript, and Vite production build;
+- Rust formatting with rustfmt;
+- strict Clippy with warnings denied;
+- Rust tests on Windows, macOS, and Ubuntu;
+- Windows Tauri application build and executable verification;
+- npm audit and cargo audit;
+- CodeQL analysis;
+- updater and release configuration checks;
+- Windows NSIS clean-install and v2.0.0 -> v3.0.0 upgrade smoke validation;
+- Authenticode and Tauri updater signing checks for the production tagged release.
+
+## Trusted Windows release assets
+
+The production release contract requires:
+
+- `OpenMindAI_3.0.0_x64-setup.exe`
+- `OpenMindAI_3.0.0_x64-setup.exe.sig`
+- `latest.json`
+- `SHA256SUMS.txt`
+- `OpenMindAI-Setup.bat`
+- `OpenMindAI-Setup.command`
+- `openmindai-setup.sh`
+- `openmindai.marker`
+
+Model weights, runtimes, local databases, user projects, logs, caches, signing keys, and other machine-local data are not included in the source repository or release installer.
+
+## Upgrade note
+
+OpenMindAI keeps the user's selected AI data root separate from the desktop application. Updating the application must not delete model files, chat history, projects, or other data stored in the configured OpenMindAI root.
