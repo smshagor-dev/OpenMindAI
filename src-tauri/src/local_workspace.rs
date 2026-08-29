@@ -542,7 +542,9 @@ pub(crate) fn clear_project_workspace_config(
     Ok(())
 }
 
-fn lock_database(state: &State<AppState>) -> Result<std::sync::MutexGuard<'_, Database>, AppError> {
+fn lock_database<'a, 'r>(
+    state: &'a State<'r, AppState>,
+) -> Result<std::sync::MutexGuard<'a, Database>, AppError> {
     state
         .database
         .lock()
