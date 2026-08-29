@@ -1,4 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
+import {
+  ALL_FORMATS,
+  AudioBufferSink,
+  BlobSource,
+  CanvasSink,
+  Input,
+} from "mediabunny";
 import type { Artifact } from "../types";
 
 export interface TranscriptionResult {
@@ -27,9 +34,11 @@ const MAX_AUDIO_FILE_BYTES = 256 * 1024 * 1024;
 const MAX_VIDEO_FILE_BYTES = 1024 * 1024 * 1024;
 const MAX_VIDEO_FRAMES = 4;
 const VIDEO_FRAME_MAX_DIMENSION = 1280;
+const TRANSCRIPTION_CHUNK_SECONDS = 5 * 60;
+const TRANSCRIPTION_CHUNK_SAMPLES = TARGET_SAMPLE_RATE * TRANSCRIPTION_CHUNK_SECONDS;
 
 export async function transcribeAudioBlob(blob: Blob, sourceName = "microphone.wav") {
-  const audioBuffer = await decodeAudio(blob);
+  const audioBuffer = await decodeAudioWithWebAudio(blob);
   return transcribeAudioBuffer(audioBuffer, sourceName);
 }
 
@@ -38,7 +47,38 @@ export async function transcribeAudioFile(file: File) {
   if (file.size > MAX_AUDIO_FILE_BYTES) {
     throw new Error("Audio file is too large. Maximum supported size is 256 MB.");
   }
-  return transcribeAudioBlob(file, file.name);
+
+  const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(file) });
+  try {
+    if (!(await input.canRead())) {
+      throw new Error("This audio container is not recognized by the local media reader.");
+    }
+    const track = await input.getPrimaryAudioTrack();
+    if (!track) throw new Error("No audio track was found in this file.");
+    if (!(await track.canDecode())) {
+      throw new Error("The audio codec in this file is not supported by the system decoder.");
+    }
+    const start = Math.max(0, await track.getFirstTimestamp());
+    const end = await track.computeDuration();
+    const duration = Math.max(0, end - start);
+    if (duration <= 0) throw new Error("The audio contains no decodable samples.");
+    if (duration > MAX_AUDIO_DURATION_SECONDS) {
+      throw new Error("Audio is too long. Maximum supported duration is 60 minutes.");
+    }
+    const sink = new AudioBufferSink(track);
+    return await transcribeWrappedAudio(sink.buffers(start, end), file.name);
+  } catch (error) {
+    // Web Audio remains a useful fallback for formats handled natively by the
+    // WebView but not by its WebCodecs implementation.
+    try {
+      const audio = await decodeAudioWithWebAudio(file);
+      return await transcribeAudioBuffer(audio, file.name);
+    } catch {
+      throw error;
+    }
+  } finally {
+    input.dispose();
+  }
 }
 
 export async function analyzeVideoFile(file: File): Promise<VideoAnalysisResult> {
@@ -47,39 +87,44 @@ export async function analyzeVideoFile(file: File): Promise<VideoAnalysisResult>
     throw new Error("Video file is too large. Maximum supported size is 1 GB.");
   }
 
-  const url = URL.createObjectURL(file);
+  const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(file) });
   try {
-    const video = document.createElement("video");
-    video.preload = "metadata";
-    video.muted = true;
-    video.playsInline = true;
-    video.src = url;
-    await waitForVideoMetadata(video);
-
-    if (!Number.isFinite(video.duration) || video.duration <= 0) {
+    if (!(await input.canRead())) {
+      throw new Error("This video container is not recognized by the local media reader.");
+    }
+    const duration = await input.computeDuration();
+    if (!Number.isFinite(duration) || duration <= 0) {
       throw new Error("Could not determine the video duration.");
     }
-    if (video.duration > MAX_VIDEO_DURATION_SECONDS) {
+    if (duration > MAX_VIDEO_DURATION_SECONDS) {
       throw new Error("Video is too long. Maximum supported duration is 2 hours.");
     }
 
-    const frames = await sampleVideoFrames(video, file.name);
+    const videoTrack = await input.getPrimaryVideoTrack();
+    if (!videoTrack) throw new Error("No video track was found in this file.");
+    if (!(await videoTrack.canDecode())) {
+      throw new Error("The video codec is not supported by the system decoder.");
+    }
+    const frames = await sampleVideoFrames(videoTrack, file.name);
+
     let transcript: TranscriptionResult | null = null;
-    try {
-      const audio = await decodeAudio(file);
-      transcript = await transcribeAudioBuffer(audio, file.name);
-    } catch {
-      // Some WebView codecs expose video playback but not demuxed audio to
-      // AudioContext. Visual analysis still works from sampled keyframes.
+    const audioTrack = await input.getPrimaryAudioTrack();
+    if (audioTrack && (await audioTrack.canDecode())) {
+      const start = Math.max(0, await audioTrack.getFirstTimestamp());
+      const end = await audioTrack.computeDuration();
+      if (Math.max(0, end - start) <= MAX_AUDIO_DURATION_SECONDS) {
+        const sink = new AudioBufferSink(audioTrack);
+        try {
+          transcript = await transcribeWrappedAudio(sink.buffers(start, end), file.name);
+        } catch {
+          transcript = null;
+        }
+      }
     }
 
-    return {
-      durationSeconds: video.duration,
-      transcript,
-      frames,
-    };
+    return { durationSeconds: duration, transcript, frames };
   } finally {
-    URL.revokeObjectURL(url);
+    input.dispose();
   }
 }
 
@@ -107,9 +152,63 @@ async function transcribeAudioBuffer(audioBuffer: AudioBuffer, sourceName: strin
     throw new Error("Audio is too long. Maximum supported duration is 60 minutes.");
   }
 
-  const mono = mixToMono(audioBuffer);
-  const resampled = resampleLinear(mono, audioBuffer.sampleRate, TARGET_SAMPLE_RATE);
-  const wav = encodePcm16Wav(resampled, TARGET_SAMPLE_RATE);
+  async function* oneBuffer() {
+    yield { buffer: audioBuffer, duration: audioBuffer.duration };
+  }
+  return transcribeWrappedAudio(oneBuffer(), sourceName);
+}
+
+async function transcribeWrappedAudio(
+  buffers: AsyncIterable<{ buffer: AudioBuffer; duration: number }>,
+  sourceName: string,
+): Promise<TranscriptionResult> {
+  const pending: Float32Array[] = [];
+  let pendingSamples = 0;
+  let totalSeconds = 0;
+  let language: string | null = null;
+  const transcriptParts: string[] = [];
+
+  const flush = async () => {
+    if (pendingSamples === 0) return;
+    const samples = concatenateFloat32(pending, pendingSamples);
+    pending.length = 0;
+    pendingSamples = 0;
+    const result = await transcribeSamples(samples, sourceName);
+    if (!language && result.language) language = result.language;
+    if (result.text.trim()) transcriptParts.push(result.text.trim());
+  };
+
+  for await (const item of buffers) {
+    if (!item.buffer || item.buffer.length === 0) continue;
+    totalSeconds += Math.max(0, item.duration || item.buffer.duration);
+    if (totalSeconds > MAX_AUDIO_DURATION_SECONDS + 1) {
+      throw new Error("Audio is too long. Maximum supported duration is 60 minutes.");
+    }
+    const mono = mixToMono(item.buffer);
+    const resampled = resampleLinear(mono, item.buffer.sampleRate, TARGET_SAMPLE_RATE);
+    if (pendingSamples > 0 && pendingSamples + resampled.length > TRANSCRIPTION_CHUNK_SAMPLES) {
+      await flush();
+    }
+    if (resampled.length > TRANSCRIPTION_CHUNK_SAMPLES) {
+      for (let offset = 0; offset < resampled.length; offset += TRANSCRIPTION_CHUNK_SAMPLES) {
+        pending.push(resampled.slice(offset, offset + TRANSCRIPTION_CHUNK_SAMPLES));
+        pendingSamples += pending[pending.length - 1].length;
+        await flush();
+      }
+    } else {
+      pending.push(resampled);
+      pendingSamples += resampled.length;
+    }
+  }
+  await flush();
+
+  const text = transcriptParts.join(" ").replace(/\s+/g, " ").trim();
+  if (!text) throw new Error("OpenMindAI Hear did not detect speech in this audio.");
+  return { text, language, durationSeconds: totalSeconds };
+}
+
+async function transcribeSamples(samples: Float32Array, sourceName: string) {
+  const wav = encodePcm16Wav(samples, TARGET_SAMPLE_RATE);
   const dataUrl = await blobToDataUrl(new Blob([wav], { type: "audio/wav" }));
   return invoke<TranscriptionResult>("transcribe_audio", {
     audioDataUrl: dataUrl,
@@ -117,7 +216,7 @@ async function transcribeAudioBuffer(audioBuffer: AudioBuffer, sourceName: strin
   });
 }
 
-async function decodeAudio(blob: Blob) {
+async function decodeAudioWithWebAudio(blob: Blob) {
   const AudioContextCtor = window.AudioContext;
   if (!AudioContextCtor) {
     throw new Error("This system does not expose the browser audio decoder required for local transcription.");
@@ -157,6 +256,16 @@ function resampleLinear(input: Float32Array, sourceRate: number, targetRate: num
     const right = Math.min(input.length - 1, left + 1);
     const fraction = position - left;
     output[index] = input[left] * (1 - fraction) + input[right] * fraction;
+  }
+  return output;
+}
+
+function concatenateFloat32(chunks: Float32Array[], totalLength: number) {
+  const output = new Float32Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.length;
   }
   return output;
 }
@@ -201,72 +310,51 @@ function blobToDataUrl(blob: Blob) {
   });
 }
 
-function waitForVideoMetadata(video: HTMLVideoElement) {
-  return new Promise<void>((resolve, reject) => {
-    if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
-      resolve();
-      return;
-    }
-    const cleanup = () => {
-      video.onloadedmetadata = null;
-      video.onerror = null;
-    };
-    video.onloadedmetadata = () => {
-      cleanup();
-      resolve();
-    };
-    video.onerror = () => {
-      cleanup();
-      reject(new Error("Could not decode the selected video."));
-    };
-  });
-}
+async function sampleVideoFrames(
+  videoTrack: Awaited<ReturnType<Input["getPrimaryVideoTrack"]>> & {},
+  sourceName: string,
+) {
+  const start = await videoTrack.getFirstTimestamp();
+  const end = await videoTrack.computeDuration();
+  const duration = Math.max(0.001, end - start);
+  const fractions = duration < 3 ? [0.25, 0.7] : [0.08, 0.34, 0.64, 0.92];
+  const timestamps = fractions
+    .slice(0, MAX_VIDEO_FRAMES)
+    .map((fraction) => Math.max(start, Math.min(end - 0.001, start + duration * fraction)));
 
-async function sampleVideoFrames(video: HTMLVideoElement, sourceName: string) {
-  const fractions = video.duration < 3 ? [0.25, 0.7] : [0.08, 0.34, 0.64, 0.92];
+  const displayWidth = Math.max(1, await videoTrack.getDisplayWidth());
+  const displayHeight = Math.max(1, await videoTrack.getDisplayHeight());
+  const scale = Math.min(1, VIDEO_FRAME_MAX_DIMENSION / Math.max(displayWidth, displayHeight));
+  const sink = new CanvasSink(videoTrack, {
+    width: Math.max(1, Math.round(displayWidth * scale)),
+    height: Math.max(1, Math.round(displayHeight * scale)),
+    fit: "contain",
+    alpha: false,
+  });
+
   const frames: VisionMediaDraft[] = [];
-  for (let index = 0; index < Math.min(MAX_VIDEO_FRAMES, fractions.length); index += 1) {
-    const timestamp = Math.max(0, Math.min(video.duration - 0.02, video.duration * fractions[index]));
-    await seekVideo(video, timestamp);
-    const width = Math.max(1, video.videoWidth);
-    const height = Math.max(1, video.videoHeight);
-    const scale = Math.min(1, VIDEO_FRAME_MAX_DIMENSION / Math.max(width, height));
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(width * scale));
-    canvas.height = Math.max(1, Math.round(height * scale));
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("Could not prepare a video frame for local vision.");
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+  for await (const result of sink.canvasesAtTimestamps(timestamps)) {
+    if (!result) continue;
+    const dataUrl = await canvasToJpegDataUrl(result.canvas);
     frames.push({
       kind: "image",
-      name: `${sourceName} @ ${formatTimestamp(timestamp)}`,
+      name: `${sourceName} @ ${formatTimestamp(result.timestamp)}`,
       mimeType: "image/jpeg",
-      dataUrl: canvas.toDataURL("image/jpeg", 0.82),
+      dataUrl,
     });
+  }
+  if (frames.length === 0) {
+    throw new Error("Could not decode representative frames from this video.");
   }
   return frames;
 }
 
-function seekVideo(video: HTMLVideoElement, timestamp: number) {
-  return new Promise<void>((resolve, reject) => {
-    if (Math.abs(video.currentTime - timestamp) < 0.02 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-      resolve();
-      return;
-    }
-    const cleanup = () => {
-      video.onseeked = null;
-      video.onerror = null;
-    };
-    video.onseeked = () => {
-      cleanup();
-      resolve();
-    };
-    video.onerror = () => {
-      cleanup();
-      reject(new Error("Could not seek the selected video."));
-    };
-    video.currentTime = timestamp;
-  });
+async function canvasToJpegDataUrl(canvas: HTMLCanvasElement | OffscreenCanvas) {
+  if ("toDataURL" in canvas) {
+    return canvas.toDataURL("image/jpeg", 0.82);
+  }
+  const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.82 });
+  return blobToDataUrl(blob);
 }
 
 function formatTimestamp(seconds: number) {
