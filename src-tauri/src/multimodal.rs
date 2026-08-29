@@ -72,7 +72,9 @@ pub(crate) async fn send_multimodal_chat_message(
 ) -> Result<Message, AppError> {
     let trimmed = content.trim();
     if trimmed.is_empty() {
-        return Err(AppError::InferenceFailed("message cannot be empty".to_string()));
+        return Err(AppError::InferenceFailed(
+            "message cannot be empty".to_string(),
+        ));
     }
     if !mode.eq_ignore_ascii_case("vision") {
         return Err(AppError::InferenceFailed(
@@ -268,15 +270,20 @@ fn persist_inference_media(
     media
         .iter()
         .map(|item| {
-            if item.kind != "image" || !matches!(item.mime_type.as_str(), "image/png" | "image/jpeg") {
+            if item.kind != "image"
+                || !matches!(item.mime_type.as_str(), "image/png" | "image/jpeg")
+            {
                 return Err(AppError::InferenceFailed(
                     "persisted vision media must be PNG or JPEG images".to_string(),
                 ));
             }
             let expected_prefix = format!("data:{};base64,", item.mime_type);
-            let encoded = item.data_url.strip_prefix(&expected_prefix).ok_or_else(|| {
-                AppError::InferenceFailed("vision media data URL is invalid".to_string())
-            })?;
+            let encoded = item
+                .data_url
+                .strip_prefix(&expected_prefix)
+                .ok_or_else(|| {
+                    AppError::InferenceFailed("vision media data URL is invalid".to_string())
+                })?;
             let bytes = STANDARD.decode(encoded).map_err(|error| {
                 AppError::InferenceFailed(format!("vision media could not be decoded: {error}"))
             })?;
@@ -289,7 +296,11 @@ fn persist_inference_media(
             validate_image_signature(&bytes, &item.mime_type)?;
 
             let sha256 = format!("{:x}", Sha256::digest(&bytes));
-            let extension = if item.mime_type == "image/png" { "png" } else { "jpg" };
+            let extension = if item.mime_type == "image/png" {
+                "png"
+            } else {
+                "jpg"
+            };
             let path = media_dir.join(format!("{sha256}.{extension}"));
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(mut file) => {
@@ -335,13 +346,17 @@ fn load_media_index(
     if !index_path.is_file() {
         return Ok(Vec::new());
     }
-    let refs: Vec<PersistedMediaRef> = serde_json::from_slice(&fs::read(index_path)?)
-        .map_err(|error| AppError::InferenceFailed(format!("stored media index is invalid: {error}")))?;
+    let refs: Vec<PersistedMediaRef> =
+        serde_json::from_slice(&fs::read(index_path)?).map_err(|error| {
+            AppError::InferenceFailed(format!("stored media index is invalid: {error}"))
+        })?;
     let media_dir = root.resolve_relative("data/media")?;
     refs.into_iter()
         .take(MAX_PERSISTED_MEDIA_ITEMS)
         .map(|item| {
-            if item.sha256.len() != 64 || !item.sha256.chars().all(|value| value.is_ascii_hexdigit()) {
+            if item.sha256.len() != 64
+                || !item.sha256.chars().all(|value| value.is_ascii_hexdigit())
+            {
                 return Err(AppError::InferenceFailed(
                     "stored media reference failed integrity validation".to_string(),
                 ));
@@ -444,8 +459,8 @@ pub(crate) async fn create_soundscape_artifact(
     }
     state.root.validate_root()?;
 
-    let stable_audio_installed = crate::installed_catalog_entry_by_id(&state, "stable-audio-open")?
-        .is_some();
+    let stable_audio_installed =
+        crate::installed_catalog_entry_by_id(&state, "stable-audio-open")?.is_some();
     tracing::info!(
         stable_audio_installed,
         "preparing OpenMindAI Soundscape generation"
@@ -494,7 +509,9 @@ pub(crate) async fn create_soundscape_artifact(
     let artifacts = ArtifactRepository::new(&db);
     let updated = match generation_result {
         Ok(()) => {
-            let size = fs::metadata(&path).map(|meta| meta.len() as i64).unwrap_or(0);
+            let size = fs::metadata(&path)
+                .map(|meta| meta.len() as i64)
+                .unwrap_or(0);
             artifacts.set_ready(&artifact.id, size, None)?;
             artifacts.find(&artifact.id)?
         }
@@ -527,7 +544,9 @@ fn generate_soundscape_wav(prompt: &str, output: &Path) -> Result<(), AppError> 
     let mut seed_bytes = [0_u8; 8];
     seed_bytes.copy_from_slice(&Sha256::digest(prompt.as_bytes())[..8]);
     let mut rng = XorShift64::new(u64::from_le_bytes(seed_bytes));
-    let bpm = requested_bpm(&normalized).unwrap_or(100.0).clamp(50.0, 190.0);
+    let bpm = requested_bpm(&normalized)
+        .unwrap_or(100.0)
+        .clamp(50.0, 190.0);
     let beat_seconds = 60.0 / bpm;
 
     for index in 0..frames {

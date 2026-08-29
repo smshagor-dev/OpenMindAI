@@ -109,7 +109,10 @@ pub async fn transcribe_data_url(
     .map_err(|error| AppError::InferenceFailed(format!("Whisper worker failed: {error}")))?
 }
 
-fn canonical_model(root: &PortableRootManager, model_path: &Path) -> Result<std::path::PathBuf, AppError> {
+fn canonical_model(
+    root: &PortableRootManager,
+    model_path: &Path,
+) -> Result<std::path::PathBuf, AppError> {
     let canonical_root = std::fs::canonicalize(root.root())?;
     let canonical = std::fs::canonicalize(model_path).map_err(|error| {
         AppError::InferenceFailed(format!("OpenMindAI Hear model is unavailable: {error}"))
@@ -159,14 +162,18 @@ fn decode_wav_to_16khz_mono(bytes: &[u8]) -> Result<(Vec<f32>, f64), AppError> {
             .samples::<f32>()
             .map(|sample| sample.map(|value| value.clamp(-1.0, 1.0)))
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| AppError::InferenceFailed(format!("Could not read WAV samples: {error}")))?,
+            .map_err(|error| {
+                AppError::InferenceFailed(format!("Could not read WAV samples: {error}"))
+            })?,
         (SampleFormat::Int, bits) if bits <= 16 => {
             let scale = i16::MAX as f32;
             reader
                 .samples::<i16>()
                 .map(|sample| sample.map(|value| value as f32 / scale))
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| AppError::InferenceFailed(format!("Could not read WAV samples: {error}")))?
+                .map_err(|error| {
+                    AppError::InferenceFailed(format!("Could not read WAV samples: {error}"))
+                })?
         }
         (SampleFormat::Int, bits) if bits <= 32 => {
             let scale = ((1_i64 << (bits.saturating_sub(1) as u32)) - 1).max(1) as f32;
@@ -174,7 +181,9 @@ fn decode_wav_to_16khz_mono(bytes: &[u8]) -> Result<(Vec<f32>, f64), AppError> {
                 .samples::<i32>()
                 .map(|sample| sample.map(|value| (value as f32 / scale).clamp(-1.0, 1.0)))
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| AppError::InferenceFailed(format!("Could not read WAV samples: {error}")))?
+                .map_err(|error| {
+                    AppError::InferenceFailed(format!("Could not read WAV samples: {error}"))
+                })?
         }
         _ => {
             return Err(AppError::InferenceFailed(format!(
