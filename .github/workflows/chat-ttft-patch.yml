@@ -1,0 +1,93 @@
+name: Chat TTFT Patch
+
+on:
+  push:
+    branches:
+      - perf/chat-ttft
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: perf/chat-ttft
+          fetch-depth: 1
+
+      - name: Apply chat hot-path fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str, label: str) -> None:
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, found {count}')
+              p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          runtime = 'src-tauri/src/runtime.rs'
+          replace_once(
+              runtime,
+              '''pub struct LlamaRuntimeManager {\n    root: PortableRootManager,\n    child: Option<Child>,\n    endpoint: Option<String>,\n    state: ServerState,\n    loaded_model_path: Option<String>,\n}\n''',
+              '''pub struct LlamaRuntimeManager {\n    root: PortableRootManager,\n    child: Option<Child>,\n    endpoint: Option<String>,\n    state: ServerState,\n    loaded_model_path: Option<String>,\n    active_runtime: Option<RuntimeValidation>,\n}\n''',
+              'runtime manager cache field',
+          )
+          replace_once(
+              runtime,
+              '''            endpoint: None,\n            state: ServerState::Stopped,\n            loaded_model_path: None,\n        }\n    }\n\n    pub fn status(&self, hardware: &HardwareProfile) -> Result<LlamaRuntimeStatus, AppError> {\n''',
+              '''            endpoint: None,\n            state: ServerState::Stopped,\n            loaded_model_path: None,\n            active_runtime: None,\n        }\n    }\n\n    fn active_status(&self) -> LlamaRuntimeStatus {\n        LlamaRuntimeStatus {\n            available: self.active_runtime.is_some(),\n            backend: self\n                .active_runtime\n                .as_ref()\n                .map(|runtime| runtime.manifest.backend.clone()),\n            endpoint: self.endpoint.clone(),\n            state: self.state.clone(),\n            selected_runtime: self.active_runtime.clone(),\n        }\n    }\n\n    pub fn status(&self, hardware: &HardwareProfile) -> Result<LlamaRuntimeStatus, AppError> {\n''',
+              'runtime active status helper',
+          )
+          replace_once(
+              runtime,
+              '''        if self\n            .child\n            .as_mut()\n            .is_some_and(|child| child.try_wait().ok().flatten().is_none())\n            && self.loaded_model_path.as_deref() == Some(model_path_string.as_str())\n        {\n            return self.status(hardware);\n        }\n''',
+              '''        if self\n            .child\n            .as_mut()\n            .is_some_and(|child| child.try_wait().ok().flatten().is_none())\n            && self.loaded_model_path.as_deref() == Some(model_path_string.as_str())\n        {\n            // Hot chat path: the same model is already loaded and the child is\n            // alive. Re-running status() here used to rediscover runtimes and\n            // spawn --version / --list-devices probes before every message.\n            return Ok(self.active_status());\n        }\n''',
+              'warm model runtime fast path',
+          )
+          replace_once(
+              runtime,
+              '''        self.child = Some(child);\n        self.endpoint = Some(format!("http://{}:{}", config.host, config.port));\n        self.loaded_model_path = Some(model_path_string);\n\n        if wait_for_model_health(&config.host, config.port, Duration::from_secs(120)) {\n            self.state = ServerState::Ready;\n            self.status(hardware)\n''',
+              '''        self.child = Some(child);\n        self.endpoint = Some(format!("http://{}:{}", config.host, config.port));\n        self.loaded_model_path = Some(model_path_string);\n        self.active_runtime = Some(selected);\n\n        if wait_for_model_health(&config.host, config.port, Duration::from_secs(120)) {\n            self.state = ServerState::Ready;\n            Ok(self.active_status())\n''',
+              'cache selected runtime after model launch',
+          )
+          replace_once(
+              runtime,
+              '''        self.endpoint = None;\n        self.loaded_model_path = None;\n        self.state = ServerState::Stopped;\n''',
+              '''        self.endpoint = None;\n        self.loaded_model_path = None;\n        self.active_runtime = None;\n        self.state = ServerState::Stopped;\n''',
+              'clear cached runtime on stop',
+          )
+
+          legacy = 'src-tauri/src/lib_legacy.rs'
+          replace_once(
+              legacy,
+              '''    let registry = ModelRegistry::new(&db, &state.root);\n    let models = registry.discover_gguf_models()?;\n\n    let active_model_id = repo\n''',
+              '''    let registry = ModelRegistry::new(&db, &state.root);\n    // Model discovery is a filesystem maintenance operation. The registry is\n    // refreshed at startup/model install; routing a chat should only read the\n    // already-registered rows instead of recursively scanning models/ on every\n    // message.\n    let models = registry.list_models()?;\n\n    let active_model_id = repo\n''',
+              'chat model routing registry read',
+          )
+          replace_once(
+              legacy,
+              '''    let endpoint = {\n        let mut runtime = state\n            .runtime\n            .lock()\n            .map_err(|_| app_error::AppError::internal("runtime lock poisoned"))?;\n        runtime.ensure_model_server(&hardware, &plan.config)?;\n        runtime.status(&hardware)?.endpoint.ok_or_else(|| {\n            app_error::AppError::InferenceServerUnavailable("runtime endpoint missing".to_string())\n        })?\n    };\n''',
+              '''    let endpoint = {\n        let mut runtime = state\n            .runtime\n            .lock()\n            .map_err(|_| app_error::AppError::internal("runtime lock poisoned"))?;\n        let status = runtime.ensure_model_server(&hardware, &plan.config)?;\n        status.endpoint.ok_or_else(|| {\n            app_error::AppError::InferenceServerUnavailable("runtime endpoint missing".to_string())\n        })?\n    };\n''',
+              'avoid duplicate runtime status probes',
+          )
+          PY
+
+          cargo fmt --manifest-path src-tauri/Cargo.toml
+          cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Commit production patch and remove helper
+        shell: bash
+        run: |
+          rm .github/workflows/chat-ttft-patch.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src-tauri/src/runtime.rs src-tauri/src/lib_legacy.rs .github/workflows/chat-ttft-patch.yml
+          git commit -m "perf(chat): remove repeated warm-path probes"
+          git push origin HEAD:perf/chat-ttft
