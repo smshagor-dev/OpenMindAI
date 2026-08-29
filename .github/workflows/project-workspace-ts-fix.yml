@@ -1,0 +1,39 @@
+name: Project Workspace TS Fix
+
+on:
+  push:
+    branches:
+      - project-local-workspace-access
+    paths:
+      - .github/workflows/project-workspace-ts-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: project-local-workspace-access
+      - name: Replace Array.at usage
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path("src/components/ProjectLocalWorkspace.tsx")
+          text = path.read_text()
+          old = '    const root = next.roots.find((item) => sameDisplayPath(item.path, selected)) ?? next.roots.at(-1);'
+          new = '''    const root =\n      next.roots.find((item) => sameDisplayPath(item.path, selected)) ??\n      next.roots[next.roots.length - 1];'''
+          if old not in text:
+              raise SystemExit("Array.at workspace pattern not found")
+          path.write_text(text.replace(old, new, 1))
+          Path(".github/workflows/project-workspace-ts-fix.yml").unlink()
+      - name: Commit fix
+        shell: bash
+        run: |
+          git config user.name openmindai-ci
+          git config user.email actions@users.noreply.github.com
+          git add -A
+          git commit -m "fix(projects): support configured TypeScript target"
+          git push origin HEAD:project-local-workspace-access
