@@ -21,7 +21,13 @@
   --success: #2fbf71;
   color-scheme: dark;
   font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
   background: var(--bg);
   color: var(--text);
   font-synthesis: none;
@@ -89,7 +95,9 @@ button {
   padding: 12px;
   border-right: 1px solid var(--border);
   background: var(--sidebar);
-  transition: width 180ms ease, padding 180ms ease;
+  transition:
+    width 180ms ease,
+    padding 180ms ease;
   overflow: hidden;
   flex-shrink: 0;
 }
@@ -3467,4 +3475,145 @@ button {
   white-space: pre-wrap;
   word-break: break-all;
   color: var(--text);
+}
+
+/* ChatGPT-style connected Apps settings */
+.apps-settings {
+  display: grid;
+  gap: 16px;
+}
+
+.apps-settings-intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface-2);
+}
+
+.apps-settings-intro h3 {
+  margin: 5px 0 6px;
+  font-size: 19px;
+}
+
+.apps-settings-intro p,
+.app-card p,
+.app-setup-panel p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.apps-connected-count,
+.app-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.app-status.connected {
+  color: var(--text);
+}
+
+.apps-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.app-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 15px 16px;
+  border: 1px solid var(--border);
+  border-radius: 15px;
+  background: var(--surface);
+}
+
+.app-card-main {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  align-items: center;
+  gap: 11px;
+}
+
+.app-card-icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.app-card-main strong {
+  display: block;
+  margin-bottom: 2px;
+}
+
+.app-card-main p {
+  font-size: 12px;
+}
+
+.app-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.app-setup-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 9px;
+  padding: 13px;
+  border-top: 1px solid var(--border);
+}
+
+.app-setup-panel label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.app-setup-panel input {
+  width: 100%;
+}
+
+.apps-error {
+  text-align: left;
+}
+
+.apps-privacy-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+@media (max-width: 760px) {
+  .apps-settings-intro,
+  .app-card {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+
+  .app-card-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
 }

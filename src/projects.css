@@ -230,7 +230,11 @@
   padding: 22px 22px 18px;
   border-bottom: 1px solid var(--border);
   background:
-    radial-gradient(circle at 12% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 38%),
+    radial-gradient(
+      circle at 12% 0%,
+      color-mix(in srgb, var(--accent) 10%, transparent),
+      transparent 38%
+    ),
     var(--surface);
 }
 
@@ -881,7 +885,6 @@
   }
 }
 
-
 /* v3 Project Work content area */
 .project-content-tabs {
   display: inline-flex;
@@ -1000,5 +1003,219 @@
 
   .project-work-agent-actions {
     align-items: flex-start;
+  }
+}
+
+/* ChatGPT-style Project Work surface */
+.project-work-chatgpt {
+  display: grid;
+  gap: 16px;
+  padding-bottom: 24px;
+}
+
+.project-work-start {
+  display: grid;
+  gap: 18px;
+  padding: clamp(26px, 5vw, 58px) clamp(18px, 6vw, 72px) 30px;
+  border-bottom: 1px solid var(--border);
+}
+
+.project-work-start-copy {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  max-width: 720px;
+  margin: 0 auto;
+  text-align: center;
+}
+
+.project-work-orb {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 3px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface-2);
+  color: var(--text);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 8%);
+}
+
+.project-work-start-copy h2 {
+  margin: 2px 0 0;
+  font-size: clamp(24px, 4vw, 34px);
+  line-height: 1.12;
+  letter-spacing: -0.025em;
+}
+
+.project-work-start-copy p {
+  max-width: 650px;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.project-work-composer {
+  width: min(820px, 100%);
+  margin: 0 auto;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--surface);
+  box-shadow: 0 12px 38px rgb(0 0 0 / 8%);
+}
+
+.project-work-composer textarea {
+  width: 100%;
+  min-height: 92px;
+  resize: vertical;
+  padding: 12px 13px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  line-height: 1.55;
+}
+
+.project-work-composer textarea:focus {
+  box-shadow: none;
+}
+
+.project-work-composer-footer {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 4px 2px;
+}
+
+.project-work-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.project-work-suggestions button {
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.project-work-suggestions button:hover {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--text) 24%, var(--border));
+}
+
+.project-work-submit {
+  flex: 0 0 auto;
+  border-radius: 999px;
+}
+
+.project-work-trust-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px 18px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.project-work-trust-row span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.project-work-recent,
+.project-work-access {
+  margin: 0 18px;
+}
+
+.project-work-chat-list {
+  display: grid;
+  gap: 6px;
+}
+
+.project-work-chat-list > button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  text-align: left;
+}
+
+.project-work-chat-list > button:hover {
+  border-color: var(--border);
+  background: var(--surface-2);
+}
+
+.project-work-chat-list > button span {
+  display: grid;
+  gap: 3px;
+}
+
+.project-work-chat-list small {
+  color: var(--muted);
+}
+
+.project-work-access > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.project-work-access > summary::-webkit-details-marker {
+  display: none;
+}
+
+.project-work-access > summary > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-work-access > summary small {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.project-work-access-body {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 760px) {
+  .project-work-start {
+    padding: 28px 14px 22px;
+  }
+
+  .project-work-composer-footer,
+  .project-work-access > summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .project-work-submit {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .project-work-recent,
+  .project-work-access {
+    margin-inline: 10px;
   }
 }
