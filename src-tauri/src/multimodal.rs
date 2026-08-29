@@ -1,23 +1,39 @@
-use std::{fs, io::Cursor, path::Path};
+use std::{
+    fs::{self, OpenOptions},
+    io::{ErrorKind, Write},
+    path::Path,
+};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use hound::{SampleFormat, WavSpec, WavWriter};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::{
     app_error::AppError,
     artifacts::{Artifact, ArtifactManager, ArtifactRepository},
-    chat::ChatRepository,
-    model_catalog,
+    chat::{ChatRepository, Message},
+    inference::InferenceMedia,
+    portable_root::PortableRootManager,
     speech_runtime::{self, TranscriptionResult},
-    AppState,
+    AppState, StreamStartedEvent,
 };
 
 const MAX_INLINE_MEDIA_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_PERSISTED_MEDIA_BYTES: usize = 5 * 1024 * 1024;
+const MAX_PERSISTED_MEDIA_ITEMS: usize = 4;
 const SOUNDSCAPE_SAMPLE_RATE: u32 = 44_100;
 const DEFAULT_SOUNDSCAPE_SECONDS: f32 = 8.0;
 const MAX_SOUNDSCAPE_SECONDS: f32 = 30.0;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedMediaRef {
+    sha256: String,
+    name: String,
+    mime_type: String,
+}
 
 #[tauri::command]
 pub(crate) async fn transcribe_audio(
@@ -43,6 +59,341 @@ pub(crate) async fn transcribe_audio(
         source_name.trim(),
     )
     .await
+}
+
+#[tauri::command]
+pub(crate) async fn send_multimodal_chat_message(
+    app: AppHandle,
+    conversation_id: String,
+    content: String,
+    mode: String,
+    media: Vec<InferenceMedia>,
+    state: State<'_, AppState>,
+) -> Result<Message, AppError> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::InferenceFailed("message cannot be empty".to_string()));
+    }
+    if !mode.eq_ignore_ascii_case("vision") {
+        return Err(AppError::InferenceFailed(
+            "multimodal media must be sent through vision mode".to_string(),
+        ));
+    }
+    if media.is_empty() {
+        return Err(AppError::InferenceFailed(
+            "vision mode requires visual evidence".to_string(),
+        ));
+    }
+
+    let persisted = persist_inference_media(&state.root, &media)?;
+    let routing = crate::resolve_conversation_model(&state, &conversation_id, &mode, trimmed)?;
+    let model = routing.model;
+
+    let (user, assistant) = {
+        let db = state
+            .database
+            .lock()
+            .map_err(|_| AppError::internal("database lock poisoned"))?;
+        let repo = ChatRepository::new(&db);
+        let user = repo.add_message(
+            &conversation_id,
+            "user",
+            trimmed,
+            "completed",
+            Some(&model.id),
+        )?;
+        let assistant = repo.add_message(
+            &conversation_id,
+            "assistant",
+            "",
+            "streaming",
+            Some(&model.id),
+        )?;
+        (user, assistant)
+    };
+
+    if let Err(error) = save_media_index(&state.root, &user.id, &persisted) {
+        let db = state
+            .database
+            .lock()
+            .map_err(|_| AppError::internal("database lock poisoned"))?;
+        let repo = ChatRepository::new(&db);
+        let _ = repo.delete_message(&assistant.id);
+        let _ = repo.delete_message(&user.id);
+        return Err(error);
+    }
+
+    crate::sync_project_context(&state, &conversation_id)?;
+    app.emit(
+        "inference:started",
+        StreamStartedEvent {
+            conversation_id: conversation_id.clone(),
+            user,
+            assistant: assistant.clone(),
+            routed_model_name: model.name.clone(),
+            routing_reason: routing.reason,
+        },
+    )
+    .map_err(|error| AppError::StreamFailed(error.to_string()))?;
+
+    crate::run_streaming_completion(
+        &app,
+        &state,
+        &conversation_id,
+        &model,
+        &assistant,
+        &mode,
+        &media,
+    )
+    .await?;
+
+    completed_assistant(&state, &conversation_id, &assistant.id)
+}
+
+#[tauri::command]
+pub(crate) async fn regenerate_multimodal_message(
+    app: AppHandle,
+    conversation_id: String,
+    assistant_message_id: String,
+    state: State<'_, AppState>,
+) -> Result<Message, AppError> {
+    let user = {
+        let db = state
+            .database
+            .lock()
+            .map_err(|_| AppError::internal("database lock poisoned"))?;
+        let repo = ChatRepository::new(&db);
+        let history = repo.list_messages(&conversation_id)?;
+        let target_index = history
+            .iter()
+            .position(|message| message.id == assistant_message_id)
+            .ok_or_else(|| AppError::internal("assistant message not found"))?;
+        history[..target_index]
+            .iter()
+            .rev()
+            .find(|message| message.role == "user")
+            .cloned()
+            .ok_or_else(|| AppError::internal("no preceding user message to regenerate from"))?
+    };
+
+    let media = load_media_index(&state.root, &user.id)?;
+    if media.is_empty() {
+        return Err(AppError::InferenceFailed(
+            "The original visual evidence is unavailable. Reattach the image, PDF, or video and send it again."
+                .to_string(),
+        ));
+    }
+
+    {
+        let db = state
+            .database
+            .lock()
+            .map_err(|_| AppError::internal("database lock poisoned"))?;
+        ChatRepository::new(&db).delete_message(&assistant_message_id)?;
+    }
+
+    let mode = "vision";
+    let routing = crate::resolve_conversation_model(&state, &conversation_id, mode, &user.content)?;
+    let model = routing.model;
+    crate::sync_project_context(&state, &conversation_id)?;
+    let assistant = {
+        let db = state
+            .database
+            .lock()
+            .map_err(|_| AppError::internal("database lock poisoned"))?;
+        ChatRepository::new(&db).add_message(
+            &conversation_id,
+            "assistant",
+            "",
+            "streaming",
+            Some(&model.id),
+        )?
+    };
+
+    app.emit(
+        "inference:started",
+        StreamStartedEvent {
+            conversation_id: conversation_id.clone(),
+            user,
+            assistant: assistant.clone(),
+            routed_model_name: model.name.clone(),
+            routing_reason: routing.reason,
+        },
+    )
+    .map_err(|error| AppError::StreamFailed(error.to_string()))?;
+
+    crate::run_streaming_completion(
+        &app,
+        &state,
+        &conversation_id,
+        &model,
+        &assistant,
+        mode,
+        &media,
+    )
+    .await?;
+
+    completed_assistant(&state, &conversation_id, &assistant.id)
+}
+
+fn completed_assistant(
+    state: &State<'_, AppState>,
+    conversation_id: &str,
+    assistant_id: &str,
+) -> Result<Message, AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| AppError::internal("database lock poisoned"))?;
+    ChatRepository::new(&db)
+        .list_messages(conversation_id)?
+        .into_iter()
+        .find(|message| message.id == assistant_id)
+        .ok_or_else(|| AppError::internal("completed assistant message disappeared"))
+}
+
+fn persist_inference_media(
+    root: &PortableRootManager,
+    media: &[InferenceMedia],
+) -> Result<Vec<PersistedMediaRef>, AppError> {
+    if media.len() > MAX_PERSISTED_MEDIA_ITEMS {
+        return Err(AppError::InferenceFailed(format!(
+            "local vision supports at most {MAX_PERSISTED_MEDIA_ITEMS} images in one request"
+        )));
+    }
+    root.validate_root()?;
+    let media_dir = root.resolve_relative("data/media")?;
+    fs::create_dir_all(&media_dir)?;
+
+    media
+        .iter()
+        .map(|item| {
+            if item.kind != "image" || !matches!(item.mime_type.as_str(), "image/png" | "image/jpeg") {
+                return Err(AppError::InferenceFailed(
+                    "persisted vision media must be PNG or JPEG images".to_string(),
+                ));
+            }
+            let expected_prefix = format!("data:{};base64,", item.mime_type);
+            let encoded = item.data_url.strip_prefix(&expected_prefix).ok_or_else(|| {
+                AppError::InferenceFailed("vision media data URL is invalid".to_string())
+            })?;
+            let bytes = STANDARD.decode(encoded).map_err(|error| {
+                AppError::InferenceFailed(format!("vision media could not be decoded: {error}"))
+            })?;
+            if bytes.is_empty() || bytes.len() > MAX_PERSISTED_MEDIA_BYTES {
+                return Err(AppError::InferenceFailed(format!(
+                    "each persisted vision image must be smaller than {} MB",
+                    MAX_PERSISTED_MEDIA_BYTES / (1024 * 1024)
+                )));
+            }
+            validate_image_signature(&bytes, &item.mime_type)?;
+
+            let sha256 = format!("{:x}", Sha256::digest(&bytes));
+            let extension = if item.mime_type == "image/png" { "png" } else { "jpg" };
+            let path = media_dir.join(format!("{sha256}.{extension}"));
+            match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut file) => {
+                    file.write_all(&bytes)?;
+                    file.flush()?;
+                }
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(AppError::from(error)),
+            }
+
+            Ok(PersistedMediaRef {
+                sha256,
+                name: item.name.chars().take(240).collect(),
+                mime_type: item.mime_type.clone(),
+            })
+        })
+        .collect()
+}
+
+fn save_media_index(
+    root: &PortableRootManager,
+    message_id: &str,
+    media: &[PersistedMediaRef],
+) -> Result<(), AppError> {
+    if media.is_empty() {
+        return Ok(());
+    }
+    let index_dir = root.resolve_relative("data/media-index")?;
+    fs::create_dir_all(&index_dir)?;
+    let index_path = index_dir.join(format!("{message_id}.json"));
+    let bytes = serde_json::to_vec(media).map_err(|error| AppError::internal(error.to_string()))?;
+    fs::write(index_path, bytes)?;
+    Ok(())
+}
+
+fn load_media_index(
+    root: &PortableRootManager,
+    message_id: &str,
+) -> Result<Vec<InferenceMedia>, AppError> {
+    let index_path = root
+        .resolve_relative("data/media-index")?
+        .join(format!("{message_id}.json"));
+    if !index_path.is_file() {
+        return Ok(Vec::new());
+    }
+    let refs: Vec<PersistedMediaRef> = serde_json::from_slice(&fs::read(index_path)?)
+        .map_err(|error| AppError::InferenceFailed(format!("stored media index is invalid: {error}")))?;
+    let media_dir = root.resolve_relative("data/media")?;
+    refs.into_iter()
+        .take(MAX_PERSISTED_MEDIA_ITEMS)
+        .map(|item| {
+            if item.sha256.len() != 64 || !item.sha256.chars().all(|value| value.is_ascii_hexdigit()) {
+                return Err(AppError::InferenceFailed(
+                    "stored media reference failed integrity validation".to_string(),
+                ));
+            }
+            let extension = match item.mime_type.as_str() {
+                "image/png" => "png",
+                "image/jpeg" => "jpg",
+                _ => {
+                    return Err(AppError::InferenceFailed(
+                        "stored media has an unsupported MIME type".to_string(),
+                    ))
+                }
+            };
+            let path = media_dir.join(format!("{}.{}", item.sha256, extension));
+            let bytes = fs::read(&path).map_err(|error| {
+                AppError::InferenceFailed(format!("stored visual evidence is unavailable: {error}"))
+            })?;
+            if bytes.len() > MAX_PERSISTED_MEDIA_BYTES {
+                return Err(AppError::InferenceFailed(
+                    "stored visual evidence exceeds the safe local size limit".to_string(),
+                ));
+            }
+            validate_image_signature(&bytes, &item.mime_type)?;
+            let actual = format!("{:x}", Sha256::digest(&bytes));
+            if actual != item.sha256 {
+                return Err(AppError::InferenceFailed(
+                    "stored visual evidence failed checksum validation".to_string(),
+                ));
+            }
+            Ok(InferenceMedia {
+                kind: "image".to_string(),
+                name: item.name,
+                mime_type: item.mime_type.clone(),
+                data_url: format!("data:{};base64,{}", item.mime_type, STANDARD.encode(bytes)),
+            })
+        })
+        .collect()
+}
+
+fn validate_image_signature(bytes: &[u8], mime_type: &str) -> Result<(), AppError> {
+    let valid = match mime_type {
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(AppError::InferenceFailed(
+            "vision image bytes do not match their declared MIME type".to_string(),
+        ))
+    }
 }
 
 #[tauri::command]
@@ -93,14 +444,12 @@ pub(crate) async fn create_soundscape_artifact(
     }
     state.root.validate_root()?;
 
-    // Stable Audio Open currently requires gated Hugging Face access. Keep the
-    // catalog model discoverable as an optional quality engine, but never make
-    // basic local Music/SFX generation fail simply because a gated model token
-    // is unavailable. The built-in deterministic synthesizer is the reliable
-    // offline fallback and produces a standard PCM WAV on every supported OS.
     let stable_audio_installed = crate::installed_catalog_entry_by_id(&state, "stable-audio-open")?
         .is_some();
-    tracing::info!(stable_audio_installed, "preparing OpenMindAI Soundscape generation");
+    tracing::info!(
+        stable_audio_installed,
+        "preparing OpenMindAI Soundscape generation"
+    );
 
     let (artifact, path) = {
         let db = state
@@ -186,7 +535,10 @@ fn generate_soundscape_wav(prompt: &str, output: &Path) -> Result<(), AppError> 
         let noise = rng.next_f32() * 2.0 - 1.0;
         let mut sample = if normalized.contains("rain") {
             rain_sample(t, noise, &mut rng)
-        } else if normalized.contains("ocean") || normalized.contains("wave") || normalized.contains("sea") {
+        } else if normalized.contains("ocean")
+            || normalized.contains("wave")
+            || normalized.contains("sea")
+        {
             ocean_sample(t, noise)
         } else if normalized.contains("wind") {
             wind_sample(t, noise)
@@ -245,13 +597,21 @@ fn notification_sample(t: f32) -> f32 {
         1567.98
     };
     let local = t % 0.75;
-    let envelope = if local < 0.5 { (1.0 - local / 0.5).powf(2.0) } else { 0.0 };
+    let envelope = if local < 0.5 {
+        (1.0 - local / 0.5).powf(2.0)
+    } else {
+        0.0
+    };
     (2.0 * std::f32::consts::PI * note * t).sin() * envelope * 0.32
 }
 
 fn music_sample(t: f32, beat_seconds: f32, prompt: &str, noise: f32) -> f32 {
     let minor = prompt.contains("dark") || prompt.contains("lofi") || prompt.contains("cinematic");
-    let root = if prompt.contains("bright") { 261.63 } else { 220.0 };
+    let root = if prompt.contains("bright") {
+        261.63
+    } else {
+        220.0
+    };
     let thirds = if minor { 1.1892 } else { 1.2599 };
     let chord = [root, root * thirds, root * 1.4983];
     let bar = ((t / beat_seconds) as usize / 4) % 4;
@@ -310,7 +670,10 @@ fn requested_bpm(prompt: &str) -> Option<f32> {
     let tokens = prompt.split_whitespace().collect::<Vec<_>>();
     for (index, token) in tokens.iter().enumerate() {
         if token.eq_ignore_ascii_case("bpm") && index > 0 {
-            if let Ok(value) = tokens[index - 1].trim_matches(|c: char| !c.is_ascii_digit()).parse() {
+            if let Ok(value) = tokens[index - 1]
+                .trim_matches(|c: char| !c.is_ascii_digit())
+                .parse()
+            {
                 return Some(value);
             }
         }
@@ -369,5 +732,12 @@ mod tests {
     fn parses_duration_and_bpm() {
         assert_eq!(requested_duration("make 6 seconds of rain"), 6.0);
         assert_eq!(requested_bpm("ambient 128 BPM loop"), Some(128.0));
+    }
+
+    #[test]
+    fn validates_image_signatures() {
+        assert!(validate_image_signature(b"\x89PNG\r\n\x1a\nrest", "image/png").is_ok());
+        assert!(validate_image_signature(&[0xff, 0xd8, 0xff, 0x00], "image/jpeg").is_ok());
+        assert!(validate_image_signature(b"not-an-image", "image/png").is_err());
     }
 }
