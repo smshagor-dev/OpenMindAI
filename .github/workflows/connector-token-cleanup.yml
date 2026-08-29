@@ -1,0 +1,60 @@
+name: Connector Token Cleanup
+
+on:
+  push:
+    branches:
+      - connector-ecosystem-stabilization
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: connector-ecosystem-stabilization
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Remove failed MCP token
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('src-tauri/src/connector_ecosystem.rs')
+          text = path.read_text()
+          old = '''        "mcp" => {
+              secret_store::set_secret(&access_slot(provider), token)?;
+              mcp_rpc(state, "tools/list", json!({}), None).await?;
+              load_record(state, provider)?
+                  .and_then(|record| config_str(&record.config, "name").map(ToOwned::to_owned))
+                  .unwrap_or_else(|| "MCP server".to_string())
+          }
+          '''
+          new = '''        "mcp" => {
+              let slot = access_slot(provider);
+              secret_store::set_secret(&slot, token)?;
+              if let Err(error) = mcp_rpc(state, "tools/list", json!({}), None).await {
+                  let _ = secret_store::delete_secret(&slot);
+                  return Err(error);
+              }
+              load_record(state, provider)?
+                  .and_then(|record| config_str(&record.config, "name").map(ToOwned::to_owned))
+                  .unwrap_or_else(|| "MCP server".to_string())
+          }
+          '''
+          assert old in text, 'MCP token block not found'
+          path.write_text(text.replace(old, new, 1))
+      - name: Rustfmt
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+      - name: Remove temporary workflow and commit
+        shell: bash
+        run: |
+          rm .github/workflows/connector-token-cleanup.yml
+          git config user.name "openmindai-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(connectors): clear rejected MCP credentials"
+          git push origin HEAD:connector-ecosystem-stabilization
