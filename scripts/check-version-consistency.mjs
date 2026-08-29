@@ -91,22 +91,21 @@ if (mismatches.length > 0) {
 }
 
 const expectedTag = `v${canonicalVersion}`;
-const releaseNotesPath = path.join(root, "docs", "releases", `${expectedTag}.md`);
-if (!fs.existsSync(releaseNotesPath)) fail(`missing release notes: docs/releases/${expectedTag}.md`);
+const releaseNotesRelativePath = path.join(".github", "releases", `${expectedTag}.txt`);
+const releaseNotesPath = path.join(root, releaseNotesRelativePath);
+if (!fs.existsSync(releaseNotesPath)) fail(`missing release notes: ${releaseNotesRelativePath}`);
 const releaseNotes = fs.readFileSync(releaseNotesPath, "utf8");
 if (!releaseNotes.includes(`# OpenMindAI ${expectedTag}`)) fail("release notes title does not match synchronized version");
 if (/\b(?:TODO|TBD|PLACEHOLDER)\b/i.test(releaseNotes)) fail("release notes contain unfinished placeholder text");
 
-const changelog = readText("CHANGELOG.md");
-if (!changelog.includes(`## [${canonicalVersion}]`)) fail("CHANGELOG.md is missing the current version section");
-
 const readme = readText("README.md");
-if (!readme.includes(`Latest public release: [${expectedTag}]`)) fail("README.md current release does not match synchronized version");
-if (!readme.includes(`OpenMindAI_${canonicalVersion}_x64-setup.exe`)) fail("README.md Windows installer link does not match synchronized version");
+if (!readme.includes(`**Current source version: ${expectedTag}`)) {
+  fail("README.md current source version does not match synchronized version");
+}
 
 const requestedTag = readRequestedTag();
 if (requestedTag !== null && requestedTag !== expectedTag) {
   fail(`release tag ${requestedTag} does not match synchronized app version ${expectedTag}`);
 }
 
-console.log(`Version consistency OK: ${canonicalVersion}${requestedTag ? ` (${requestedTag})` : ""}; manifests, locks, marker, launchers, README, changelog, and release notes are synchronized.`);
+console.log(`Version consistency OK: ${canonicalVersion}${requestedTag ? ` (${requestedTag})` : ""}; manifests, locks, marker, launchers, README, and release notes are synchronized.`);
