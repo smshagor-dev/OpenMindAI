@@ -2,13 +2,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::{
-    allocate_local_port,
-    app_error::AppError,
-    inference::InferenceMedia,
-    installed_catalog_entry_by_id,
-    model_registry::ModelRegistry,
-    vision_batch,
-    AppState,
+    allocate_local_port, app_error::AppError, inference::InferenceMedia,
+    installed_catalog_entry_by_id, model_registry::ModelRegistry, vision_batch, AppState,
     ModelLaunchPlanner,
 };
 
@@ -80,7 +75,9 @@ pub(crate) async fn ocr_pdf_pages(
             .map_err(|_| AppError::internal("runtime lock poisoned"))?;
         runtime.ensure_model_server(&hardware, &plan.config)?;
         runtime.status(&hardware)?.endpoint.ok_or_else(|| {
-            AppError::InferenceServerUnavailable("OpenMindAI Lens runtime endpoint is missing".to_string())
+            AppError::InferenceServerUnavailable(
+                "OpenMindAI Lens runtime endpoint is missing".to_string(),
+            )
         })?
     };
 
