@@ -34,6 +34,9 @@ jobs:
       - name: Version consistency
         run: npm run check:version
 
+      - name: Release and updater configuration
+        run: npm run check:release
+
       - name: Lint
         run: npm run lint
 
