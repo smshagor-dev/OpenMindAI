@@ -1,0 +1,80 @@
+name: Local Agent Context Cancel
+
+on:
+  push:
+    branches:
+      - project-local-agent-e2e
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: project-local-agent-e2e
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Add recent chat context and responsive cancellation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src-tauri/src/local_agent.rs')
+          text = path.read_text()
+
+          old = "struct AgentContext {\n    project: Project,\n    workspace: AgentWorkspaceConfig,\n    workspace_context: String,\n}"
+          new = "struct AgentContext {\n    project: Project,\n    workspace: AgentWorkspaceConfig,\n    workspace_context: String,\n    conversation_context: String,\n}"
+          if old not in text:
+              raise SystemExit('AgentContext anchor missing')
+          text = text.replace(old, new, 1)
+
+          old = "    let workspace_context = local_workspace::workspace_context_for_project(&db, &project.id)?\n        .unwrap_or_else(|| \"No workspace snapshot is available yet.\".to_string());\n    Ok(AgentContext {\n        project,\n        workspace,\n        workspace_context,\n    })"
+          new = "    let workspace_context = local_workspace::workspace_context_for_project(&db, &project.id)?\n        .unwrap_or_else(|| \"No workspace snapshot is available yet.\".to_string());\n    let conversation_context = recent_conversation_context(&db, conversation_id)?;\n    Ok(AgentContext {\n        project,\n        workspace,\n        workspace_context,\n        conversation_context,\n    })"
+          if old not in text:
+              raise SystemExit('load context anchor missing')
+          text = text.replace(old, new, 1)
+
+          marker = "\nfn create_agent_messages(\n"
+          pos = text.index(marker, text.index('fn load_agent_context'))
+          helper = "\nfn recent_conversation_context(\n    database: &Database,\n    conversation_id: &str,\n) -> Result<String, AppError> {\n    let messages = ChatRepository::new(database).list_messages(conversation_id)?;\n    let mut recent = messages\n        .into_iter()\n        .filter(|message| message.role == \"user\" || message.role == \"assistant\")\n        .rev()\n        .take(8)\n        .collect::<Vec<_>>();\n    recent.reverse();\n    Ok(recent\n        .into_iter()\n        .map(|message| {\n            let role = if message.role == \"user\" { \"User\" } else { \"Assistant\" };\n            format!(\"{role}: {}\", bounded(message.content.trim(), 1_000))\n        })\n        .collect::<Vec<_>>()\n        .join(\"\\n\\n\"))\n}\n"
+          text = text[:pos] + helper + text[pos:]
+
+          decision_start = text.index('            let decision = request_agent_decision(')
+          decision_end_marker = '            .await?;\n\n            let decision_type'
+          decision_end = text.index(decision_end_marker, decision_start)
+          call = text[decision_start:decision_end + len('            .await?;')]
+          call_expr = call.strip().removeprefix('let decision = ').removesuffix(';')
+          replacement = "            let decision = tokio::select! {\n                result = " + call_expr.replace('\n            .await?', '.await') + " => result?,\n                _ = cancellation.cancelled() => {\n                    status = \"cancelled\";\n                    emit_agent_chunk(app, state, conversation_id, &assistant.id, \"Agent run cancelled.\")?;\n                    return Ok::<(), AppError>(());\n                }\n            };"
+          text = text[:decision_start] + replacement + text[decision_end + len('            .await?;'):]
+
+          old = "            let result = execute_tool(tool, &decision, &agent_context.workspace).await;"
+          new = "            let result = tokio::select! {\n                result = execute_tool(tool, &decision, &agent_context.workspace) => result,\n                _ = cancellation.cancelled() => {\n                    status = \"cancelled\";\n                    emit_agent_chunk(app, state, conversation_id, &assistant.id, \"Agent run cancelled.\")?;\n                    return Ok::<(), AppError>(());\n                }\n            };"
+          if old not in text:
+              raise SystemExit('execute_tool anchor missing')
+          text = text.replace(old, new, 1)
+
+          old = "        workspace,\n        bounded(goal, 8_000),\n        if history.is_empty() { \"(none)\" } else { &history },"
+          new = "        workspace,\n        bounded(&context.conversation_context, 7_000),\n        bounded(goal, 6_000),\n        if history.is_empty() { \"(none)\" } else { &history },"
+          if old not in text:
+              raise SystemExit('prompt args anchor missing')
+          text = text.replace(old, new, 1)
+          old = "Project: {}\\nStep: {}/{}\\nProject instructions:\\n{}\\n\\nWorkspace snapshot:\\n{}\\n\\nUser goal:\\n{}\\n\\nRecent tool history:\\n{}\\n\\nReturn the next single JSON action."
+          new = "Project: {}\\nStep: {}/{}\\nProject instructions:\\n{}\\n\\nWorkspace snapshot:\\n{}\\n\\nRecent project chat:\\n{}\\n\\nUser goal:\\n{}\\n\\nRecent tool history:\\n{}\\n\\nReturn the next single JSON action."
+          if old not in text:
+              raise SystemExit('prompt format anchor missing')
+          text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
+          cargo fmt --manifest-path src-tauri/Cargo.toml
+      - name: Commit hardening
+        run: |
+          git config user.name "openmindai-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git add src-tauri/src/local_agent.rs
+          git diff --cached --check
+          git commit -m "feat(agent): preserve project chat context and responsive stop"
+          git push
