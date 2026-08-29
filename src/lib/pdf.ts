@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
+import type { PDFPageProxy } from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -95,7 +96,7 @@ export async function extractPdfText(file: File): Promise<PdfExtractionResult> {
       const page = await document.getPage(pageNumber);
       visionPages.push({
         pageNumber,
-        dataUrl: renderPageToJpeg(page),
+        dataUrl: await renderPdfPage(page),
         mimeType: "image/jpeg",
       });
     }
@@ -113,27 +114,7 @@ export async function extractPdfText(file: File): Promise<PdfExtractionResult> {
   }
 }
 
-function renderPageToJpeg(page: Awaited<ReturnType<Awaited<ReturnType<typeof getDocument>["promise"]>["getPage"]>>) {
-  const base = page.getViewport({ scale: 1 });
-  const scale = Math.min(2, MAX_RENDER_DIMENSION / Math.max(base.width, base.height));
-  const viewport = page.getViewport({ scale: Math.max(0.5, scale) });
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(viewport.width));
-  canvas.height = Math.max(1, Math.round(viewport.height));
-  const context = canvas.getContext("2d", { alpha: false });
-  if (!context) {
-    throw new Error("Could not render a scanned PDF page for local vision.");
-  }
-  context.fillStyle = "#ffffff";
-  context.fillRect(0, 0, canvas.width, canvas.height);
-  // pdf.js render is async, but the canvas must be returned after the task has
-  // completed. This helper is deliberately wrapped by renderPdfPage below.
-  throw new Error("unreachable");
-}
-
-async function renderPdfPage(
-  page: Awaited<ReturnType<Awaited<ReturnType<typeof getDocument>["promise"]>["getPage"]>>,
-) {
+async function renderPdfPage(page: PDFPageProxy) {
   const base = page.getViewport({ scale: 1 });
   const scale = Math.min(2, MAX_RENDER_DIMENSION / Math.max(base.width, base.height));
   const viewport = page.getViewport({ scale: Math.max(0.5, scale) });
