@@ -1,0 +1,86 @@
+name: Projects Final Polish
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/projects-final-polish.yml
+
+permissions:
+  contents: write
+
+jobs:
+  polish:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - name: Apply final project polish and remove helper
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("src/components/ProjectsWorkspace.tsx")
+          text = path.read_text()
+
+          replacements = [
+              (
+                  '''    await refreshProjects(project.id).catch((caught) => setError(formatError(caught)));
+              setDraftName("");''',
+                  '''    await refreshProjects(project.id).catch((caught) => setError(formatError(caught)));
+              setSavedAt(null);
+              setDraftName("");''',
+              ),
+              (
+                  '''                  setActiveId(project.id);
+                  setLinkSearch("");
+                  setError(null);''',
+                  '''                  setActiveId(project.id);
+                  setLinkSearch("");
+                  setSavedAt(null);
+                  setError(null);''',
+              ),
+              (
+                  '''    if (deleted) setDeleteTarget(null);''',
+                  '''    if (deleted) {
+              setSavedAt(null);
+              setDeleteTarget(null);
+            }''',
+              ),
+              (
+                  '''    const text = await file.text();
+              const trimmed = Array.from(text).slice(0, MAX_PROJECT_FILE_TEXT_CHARS).join("");
+              return {
+                contentText: trimmed,
+                status: "ready",
+                error: text.length > trimmed.length ? "Ready for context. Stored preview was truncated." : null,
+              };''',
+                  '''    const text = await file.text();
+              const characters = Array.from(text);
+              const truncated = characters.length > MAX_PROJECT_FILE_TEXT_CHARS;
+              const trimmed = characters.slice(0, MAX_PROJECT_FILE_TEXT_CHARS).join("");
+              return {
+                contentText: trimmed,
+                status: "ready",
+                error: truncated ? "Ready for context. Stored preview was truncated." : null,
+              };''',
+              ),
+          ]
+
+          for old, new in replacements:
+              if old not in text:
+                  raise SystemExit(f"expected Project workspace pattern missing: {old[:100]!r}")
+              text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          Path(".github/workflows/projects-final-polish.yml").unlink()
+      - name: Commit final project polish
+        shell: bash
+        run: |
+          git config user.name openmindai-ci
+          git config user.email actions@users.noreply.github.com
+          git add -A
+          git diff --cached --quiet || git commit -m "fix(projects): finish workspace polish"
+          git push origin HEAD:main
