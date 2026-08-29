@@ -25,6 +25,7 @@ mod tauri {
     pub use crate::tauri_crate::*;
 }
 
+mod connector_input_guard;
 mod connector_stabilization;
 mod github_workspace;
 mod google_workspace;
@@ -33,7 +34,7 @@ mod pdf_ocr;
 mod speech_runtime;
 mod vision_batch;
 
-pub(crate) use connector_stabilization::{
+pub(crate) use connector_input_guard::{
     execute_github_workspace_action, execute_google_workspace_action,
 };
 pub(crate) use google_workspace::{
