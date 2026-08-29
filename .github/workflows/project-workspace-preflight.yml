@@ -1,3 +1,4 @@
+# Validation rerun after local workspace lint and TypeScript compatibility fixes.
 name: Project Workspace Preflight
 
 on:
