@@ -88,6 +88,14 @@ impl WarmStartCoordinator {
         self.notify.notify_waiters();
     }
 
+    pub fn mark_runtime_stopped(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.phase = WarmPhase::Idle;
+            state.model_id = None;
+        }
+        self.notify.notify_waiters();
+    }
+
     fn begin_background_load(&self, model_id: &str) -> bool {
         let Ok(mut state) = self.state.lock() else {
             return false;
@@ -104,6 +112,7 @@ impl WarmStartCoordinator {
         if let Ok(mut state) = self.state.lock() {
             if state.model_id.as_deref() == Some(model_id) {
                 state.phase = if success {
+                    state.last_foreground_use.get_or_insert_with(Instant::now);
                     WarmPhase::Ready
                 } else {
                     WarmPhase::Failed
@@ -125,7 +134,9 @@ impl WarmStartCoordinator {
             return None;
         }
         let last_use = state.last_foreground_use?;
-        (last_use.elapsed() >= minimum_idle).then(|| state.model_id.clone()).flatten()
+        (last_use.elapsed() >= minimum_idle)
+            .then(|| state.model_id.clone())
+            .flatten()
     }
 
     fn mark_unloaded(&self, model_id: &str) {
@@ -150,13 +161,17 @@ fn spawn_startup_warmup(app: AppHandle) {
         let model = {
             let state = app.state::<AppState>();
             if state.warm_start.foreground_requested() {
-                tracing::debug!("startup model warmup skipped because foreground chat already started");
+                tracing::debug!(
+                    "startup model warmup skipped because foreground chat already started"
+                );
                 return;
             }
             match select_startup_model(&state) {
                 Ok(Some(model)) => model,
                 Ok(None) => {
-                    tracing::debug!("startup model warmup skipped because OpenMindAI Core is not installed");
+                    tracing::debug!(
+                        "startup model warmup skipped because OpenMindAI Core is not installed"
+                    );
                     return;
                 }
                 Err(error) => {
@@ -265,8 +280,7 @@ fn select_startup_model(state: &AppState) -> Result<Option<ModelRecord>, AppErro
 }
 
 fn is_core_model(model: &ModelRecord) -> bool {
-    model.enabled
-        && model.source_repository.as_deref() == Some(CORE_MODEL_REPOSITORY)
+    model.enabled && model.source_repository.as_deref() == Some(CORE_MODEL_REPOSITORY)
 }
 
 async fn prime_local_server(client: &Client, endpoint: &str) {
@@ -289,7 +303,9 @@ async fn prime_local_server(client: &Client, endpoint: &str) {
         Ok(response) if response.status().is_success() => {
             tracing::debug!("local model warmup inference completed")
         }
-        Ok(response) => tracing::debug!(status = %response.status(), "local warmup inference was not accepted"),
+        Ok(response) => {
+            tracing::debug!(status = %response.status(), "local warmup inference was not accepted")
+        }
         Err(error) => tracing::debug!(%error, "local warmup inference skipped after preload"),
     }
 }
@@ -315,8 +331,8 @@ fn spawn_memory_pressure_monitor(app: AppHandle) {
             system.refresh_memory();
             let available = system.available_memory();
             let total = system.total_memory();
-            let low_percent = total > 0
-                && available.saturating_mul(100) / total <= LOW_MEMORY_AVAILABLE_PERCENT;
+            let low_percent =
+                total > 0 && available.saturating_mul(100) / total <= LOW_MEMORY_AVAILABLE_PERCENT;
             if available > LOW_MEMORY_MIN_AVAILABLE_BYTES && !low_percent {
                 continue;
             }

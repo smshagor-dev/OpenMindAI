@@ -76,6 +76,7 @@ struct AppState {
     downloads: ModelDownloadManager,
     runtime_installer: RuntimeInstaller,
     active_generations: ActiveGenerations,
+    warm_start: warm_start::WarmStartCoordinator,
     http: Client,
 }
 
@@ -1090,7 +1091,9 @@ async fn activate_model(
             .runtime
             .lock()
             .map_err(|_| app_error::AppError::internal("runtime lock poisoned"))?;
-        runtime.ensure_model_server(&hardware, &plan.config)?
+        let status = runtime.ensure_model_server(&hardware, &plan.config)?;
+        state.warm_start.mark_runtime_ready(&model.id);
+        status
     };
 
     let db = state
@@ -1308,7 +1311,9 @@ fn stop_llama_runtime(state: State<AppState>) -> Result<(), app_error::AppError>
         .runtime
         .lock()
         .map_err(|_| app_error::AppError::internal("runtime lock poisoned"))?;
-    runtime.stop()
+    runtime.stop()?;
+    state.warm_start.mark_runtime_stopped();
+    Ok(())
 }
 
 fn resolve_conversation_model(
@@ -1375,6 +1380,7 @@ async fn run_streaming_completion(
             .lock()
             .map_err(|_| app_error::AppError::internal("runtime lock poisoned"))?;
         let status = runtime.ensure_model_server(&hardware, &plan.config)?;
+        state.warm_start.mark_runtime_ready(&model.id);
         status.endpoint.ok_or_else(|| {
             app_error::AppError::InferenceServerUnavailable("runtime endpoint missing".to_string())
         })?
@@ -1441,6 +1447,7 @@ async fn send_chat_message(
 
     let routing = resolve_conversation_model(&state, &conversation_id, &mode, trimmed)?;
     let model = routing.model;
+    state.warm_start.note_foreground_request(&model.id);
     sync_project_context(&state, &conversation_id)?;
 
     let (user, assistant) = {
@@ -1477,6 +1484,7 @@ async fn send_chat_message(
     )
     .map_err(|error| app_error::AppError::StreamFailed(error.to_string()))?;
 
+    state.warm_start.wait_if_loading(&model.id).await;
     run_streaming_completion(
         &app,
         &state,
@@ -1538,6 +1546,7 @@ async fn regenerate_message(
     };
     let routing = resolve_conversation_model(&state, &conversation_id, &mode, &user.content)?;
     let model = routing.model;
+    state.warm_start.note_foreground_request(&model.id);
     sync_project_context(&state, &conversation_id)?;
     let assistant = {
         let db = state
@@ -1564,6 +1573,7 @@ async fn regenerate_message(
     )
     .map_err(|error| app_error::AppError::StreamFailed(error.to_string()))?;
 
+    state.warm_start.wait_if_loading(&model.id).await;
     run_streaming_completion(
         &app,
         &state,
@@ -1935,7 +1945,14 @@ pub fn run() {
             downloads,
             runtime_installer,
             active_generations: ActiveGenerations::default(),
+            warm_start: warm_start::WarmStartCoordinator::default(),
             http: Client::new(),
+        })
+        .setup(|app| {
+            // Window creation stays non-blocking. Only OpenMindAI Core is
+            // preloaded; heavier reasoning, vision and media models stay on-demand.
+            warm_start::spawn_background_services(app.handle().clone());
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_portable_root,
