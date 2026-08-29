@@ -1,6 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import {
-  AlertTriangle,
   ArrowLeft,
   CheckCircle2,
   ChevronRight,
