@@ -1,0 +1,13 @@
+# Keep native C/C++ dependencies on the same MSVC runtime as whisper.cpp.
+#
+# esaxx-rs (transitive through tokenizers/any-tts) hardcodes static_crt(true),
+# which selects /MT. whisper.cpp is built with /MD. MSVC refuses to link the
+# two CRT variants into the same executable (LNK2038/LNK1169).
+#
+# cc-rs reads target-specific *FLAGS variables after its builder defaults, so
+# /MD here wins only for MSVC targets without changing Linux/macOS builds.
+[env]
+CFLAGS_x86_64_pc_windows_msvc = { value = "/MD", force = true }
+CXXFLAGS_x86_64_pc_windows_msvc = { value = "/MD", force = true }
+CFLAGS_aarch64_pc_windows_msvc = { value = "/MD", force = true }
+CXXFLAGS_aarch64_pc_windows_msvc = { value = "/MD", force = true }
