@@ -1,0 +1,37 @@
+name: Dependencies Once
+
+on:
+  push:
+    paths:
+      - .github/deps-now.trigger
+
+permissions:
+  contents: write
+
+jobs:
+  media-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install pinned media dependencies
+        run: |
+          npm install --save-exact mediabunny@1.55.3
+          npm install --save-dev --save-exact typescript@5.9.3
+      - name: Commit dependency lock
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            echo "No dependency changes required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          git commit -m "build(media): pin Mediabunny and TypeScript"
+          git push origin HEAD:main
