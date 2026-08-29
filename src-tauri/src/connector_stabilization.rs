@@ -12,8 +12,9 @@ use uuid::Uuid;
 use crate::{
     app_error::AppError,
     github::{secret_store, GithubRepository},
+    github_workspace,
     google::GoogleRepository,
-    github_workspace, google_workspace, AppState,
+    google_workspace, AppState,
 };
 
 const GOOGLE_TOKEN_SLOT: &str = "google-workspace-oauth";
@@ -95,9 +96,9 @@ fn validate_repo(repo: &str) -> Result<(), AppError> {
             part.is_empty()
                 || *part == "."
                 || *part == ".."
-                || !part
-                    .chars()
-                    .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_'))
+                || !part.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
+                })
         })
     {
         return Err(github_error("repository must be in owner/name form"));
@@ -156,7 +157,9 @@ async fn github_default_branch(
         .await
         .map_err(|error| github_error(error.to_string()))?;
     if !status.is_success() {
-        return Err(github_error(format!("repository lookup failed ({status}): {value}")));
+        return Err(github_error(format!(
+            "repository lookup failed ({status}): {value}"
+        )));
     }
     value
         .get("default_branch")
@@ -174,8 +177,10 @@ async fn github_existing_file_sha(
 ) -> Result<Option<String>, AppError> {
     validate_repo(repo)?;
     let encoded_path = encode_repo_path(path)?;
-    let mut url = Url::parse(&format!("{GITHUB_API_ROOT}/repos/{repo}/contents/{encoded_path}"))
-        .map_err(|error| github_error(error.to_string()))?;
+    let mut url = Url::parse(&format!(
+        "{GITHUB_API_ROOT}/repos/{repo}/contents/{encoded_path}"
+    ))
+    .map_err(|error| github_error(error.to_string()))?;
     url.query_pairs_mut().append_pair("ref", branch);
     let response = state
         .http
@@ -194,12 +199,17 @@ async fn github_existing_file_sha(
         .await
         .map_err(|error| github_error(error.to_string()))?;
     if !status.is_success() {
-        return Err(github_error(format!("file lookup failed ({status}): {value}")));
+        return Err(github_error(format!(
+            "file lookup failed ({status}): {value}"
+        )));
     }
     if value.get("type").and_then(Value::as_str) != Some("file") {
         return Err(github_error("repository path is not a file"));
     }
-    Ok(value.get("sha").and_then(Value::as_str).map(ToOwned::to_owned))
+    Ok(value
+        .get("sha")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned))
 }
 
 async fn stabilize_github_file_params(
@@ -294,7 +304,9 @@ async fn google_access_token(state: &State<'_, AppState>) -> Result<String, AppE
         .await
         .map_err(|error| google_error(error.to_string()))?;
     if !status.is_success() {
-        return Err(google_error(format!("token refresh failed ({status}): {value}")));
+        return Err(google_error(format!(
+            "token refresh failed ({status}): {value}"
+        )));
     }
     let refreshed: GoogleRefreshResponse = serde_json::from_value(value)
         .map_err(|error| google_error(format!("invalid refresh response: {error}")))?;
@@ -330,9 +342,7 @@ fn multipart_related_body(metadata: &Value, content: &[u8], mime_type: &str) -> 
         )
         .as_bytes(),
     );
-    body.extend_from_slice(
-        format!("--{boundary}\r\nContent-Type: {mime_type}\r\n\r\n").as_bytes(),
-    );
+    body.extend_from_slice(format!("--{boundary}\r\nContent-Type: {mime_type}\r\n\r\n").as_bytes());
     body.extend_from_slice(content);
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
     (boundary, body)
@@ -356,7 +366,9 @@ async fn stable_drive_write(
         )));
     }
     if content.len() > MAX_DRIVE_UPLOAD_BYTES {
-        return Err(google_error("Drive upload exceeds the 8 MB interactive action limit"));
+        return Err(google_error(
+            "Drive upload exceeds the 8 MB interactive action limit",
+        ));
     }
     let mut metadata = params.get("metadata").cloned().unwrap_or_else(|| json!({}));
     if action == "drive.create" && metadata.get("name").and_then(Value::as_str).is_none() {
@@ -401,7 +413,9 @@ async fn stable_drive_write(
         .await
         .map_err(|error| google_error(error.to_string()))?;
     if !status.is_success() {
-        return Err(google_error(format!("Drive write failed ({status}): {value}")));
+        return Err(google_error(format!(
+            "Drive write failed ({status}): {value}"
+        )));
     }
     Ok(Some(value))
 }
@@ -424,7 +438,10 @@ mod tests {
 
     #[test]
     fn repo_paths_are_encoded_by_segment() {
-        assert_eq!(encode_repo_path(".github/workflows/ci.yml").unwrap(), ".github/workflows/ci.yml");
+        assert_eq!(
+            encode_repo_path(".github/workflows/ci.yml").unwrap(),
+            ".github/workflows/ci.yml"
+        );
         assert!(encode_repo_path("../secret").is_err());
     }
 

@@ -19,12 +19,7 @@ use tokio::{
 use url::Url;
 use uuid::Uuid;
 
-use crate::{
-    app_error::AppError,
-    github::secret_store,
-    google::GoogleRepository,
-    AppState,
-};
+use crate::{app_error::AppError, github::secret_store, google::GoogleRepository, AppState};
 
 const CLIENT_SECRET_SLOT: &str = "google-client-secret";
 const TOKEN_SLOT: &str = "google-workspace-oauth";
@@ -133,7 +128,9 @@ fn optional_str<'a>(params: &'a Value, key: &str) -> Option<&'a str> {
 
 fn safe_header(value: &str, label: &str) -> Result<String, AppError> {
     if value.contains('\r') || value.contains('\n') {
-        return Err(connector_error(format!("{label} contains an invalid newline")));
+        return Err(connector_error(format!(
+            "{label} contains an invalid newline"
+        )));
     }
     Ok(value.trim().to_string())
 }
@@ -233,7 +230,8 @@ async fn refresh_access_token(
 
 async fn access_token(state: &State<'_, AppState>) -> Result<String, AppError> {
     let (client_id, client_secret) = client_credentials(state)?;
-    let bundle = load_tokens()?.ok_or_else(|| connector_error("Google account is not connected"))?;
+    let bundle =
+        load_tokens()?.ok_or_else(|| connector_error("Google account is not connected"))?;
     let bundle = if bundle.expires_at <= Utc::now().timestamp() + 60 {
         refresh_access_token(&state.http, &client_id, &client_secret, bundle).await?
     } else {
@@ -290,7 +288,12 @@ fn open_browser(url: &str) -> Result<(), AppError> {
 }
 
 fn pkce_verifier() -> String {
-    format!("{}{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple(), Uuid::new_v4().simple())
+    format!(
+        "{}{}{}",
+        Uuid::new_v4().simple(),
+        Uuid::new_v4().simple(),
+        Uuid::new_v4().simple()
+    )
 }
 
 fn pkce_challenge(verifier: &str) -> String {
@@ -327,7 +330,8 @@ async fn receive_oauth_callback(
                 _ => {}
             }
         }
-        let success = oauth_error.is_none() && state.as_deref() == Some(expected_state) && code.is_some();
+        let success =
+            oauth_error.is_none() && state.as_deref() == Some(expected_state) && code.is_some();
         let message = if success {
             "Google account connected. You can return to OpenMindAI."
         } else {
@@ -342,7 +346,9 @@ async fn receive_oauth_callback(
         );
         socket.write_all(response.as_bytes()).await?;
         if let Some(error) = oauth_error {
-            return Err(connector_error(format!("Google authorization returned '{error}'")));
+            return Err(connector_error(format!(
+                "Google authorization returned '{error}'"
+            )));
         }
         if state.as_deref() != Some(expected_state) {
             return Err(connector_error("OAuth state validation failed"));
@@ -401,9 +407,11 @@ pub async fn connect_google_workspace(
     let value = json_response(response).await?;
     let token: GoogleTokenResponse = serde_json::from_value(value)
         .map_err(|error| connector_error(format!("invalid token response: {error}")))?;
-    let refresh_token = token
-        .refresh_token
-        .ok_or_else(|| connector_error("Google did not return a refresh token; revoke prior consent and connect again"))?;
+    let refresh_token = token.refresh_token.ok_or_else(|| {
+        connector_error(
+            "Google did not return a refresh token; revoke prior consent and connect again",
+        )
+    })?;
 
     let userinfo_response = state
         .http
@@ -412,7 +420,9 @@ pub async fn connect_google_workspace(
         .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS))
         .send()
         .await
-        .map_err(|error| connector_error(format!("could not read Google account profile: {error}")))?;
+        .map_err(|error| {
+            connector_error(format!("could not read Google account profile: {error}"))
+        })?;
     let userinfo_value = json_response(userinfo_response).await?;
     let userinfo: GoogleUserInfo = serde_json::from_value(userinfo_value)
         .map_err(|error| connector_error(format!("invalid Google profile response: {error}")))?;
@@ -449,7 +459,12 @@ pub fn google_workspace_status(
         expires_at: tokens.as_ref().map(|item| item.expires_at),
         scopes: tokens
             .as_ref()
-            .map(|item| item.scope.split_whitespace().map(ToString::to_string).collect())
+            .map(|item| {
+                item.scope
+                    .split_whitespace()
+                    .map(ToString::to_string)
+                    .collect()
+            })
             .unwrap_or_default(),
     })
 }
@@ -487,8 +502,13 @@ pub async fn execute_google_workspace_action(
         "gmail.search" => {
             let mut url = Url::parse("https://gmail.googleapis.com/gmail/v1/users/me/messages")
                 .map_err(|error| connector_error(error.to_string()))?;
-            let max_results = params.get("maxResults").and_then(Value::as_u64).unwrap_or(25).clamp(1, 100);
-            url.query_pairs_mut().append_pair("maxResults", &max_results.to_string());
+            let max_results = params
+                .get("maxResults")
+                .and_then(Value::as_u64)
+                .unwrap_or(25)
+                .clamp(1, 100);
+            url.query_pairs_mut()
+                .append_pair("maxResults", &max_results.to_string());
             if let Some(query) = optional_str(&params, "query") {
                 url.query_pairs_mut().append_pair("q", query);
             }
@@ -496,7 +516,8 @@ pub async fn execute_google_workspace_action(
         }
         "gmail.get" => {
             let id = required_str(&params, "messageId")?;
-            let url = format!("https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}?format=full");
+            let url =
+                format!("https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}?format=full");
             google_request(&state, Method::GET, &url, None).await
         }
         "gmail.labels" => {
@@ -516,12 +537,14 @@ pub async fn execute_google_workspace_action(
                 "addLabelIds": params.get("addLabelIds").cloned().unwrap_or_else(|| json!([])),
                 "removeLabelIds": params.get("removeLabelIds").cloned().unwrap_or_else(|| json!([]))
             });
-            let url = format!("https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}/modify");
+            let url =
+                format!("https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}/modify");
             google_request(&state, Method::POST, &url, Some(body)).await
         }
         "gmail.archive" => {
             let id = required_str(&params, "messageId")?;
-            let url = format!("https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}/modify");
+            let url =
+                format!("https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}/modify");
             google_request(
                 &state,
                 Method::POST,
@@ -572,10 +595,15 @@ pub async fn execute_google_workspace_action(
         }
         "calendar.events" => {
             let calendar_id = optional_str(&params, "calendarId").unwrap_or("primary");
-            let encoded = url::form_urlencoded::byte_serialize(calendar_id.as_bytes()).collect::<String>();
-            let mut url = Url::parse(&format!("https://www.googleapis.com/calendar/v3/calendars/{encoded}/events"))
-                .map_err(|error| connector_error(error.to_string()))?;
-            url.query_pairs_mut().append_pair("singleEvents", "true").append_pair("orderBy", "startTime");
+            let encoded =
+                url::form_urlencoded::byte_serialize(calendar_id.as_bytes()).collect::<String>();
+            let mut url = Url::parse(&format!(
+                "https://www.googleapis.com/calendar/v3/calendars/{encoded}/events"
+            ))
+            .map_err(|error| connector_error(error.to_string()))?;
+            url.query_pairs_mut()
+                .append_pair("singleEvents", "true")
+                .append_pair("orderBy", "startTime");
             for key in ["timeMin", "timeMax", "q"] {
                 if let Some(value) = optional_str(&params, key) {
                     url.query_pairs_mut().append_pair(key, value);
@@ -585,14 +613,21 @@ pub async fn execute_google_workspace_action(
         }
         "calendar.create" | "calendar.update" => {
             let calendar_id = optional_str(&params, "calendarId").unwrap_or("primary");
-            let encoded_calendar = url::form_urlencoded::byte_serialize(calendar_id.as_bytes()).collect::<String>();
-            let event = params.get("event").cloned().ok_or_else(|| connector_error("missing required parameter 'event'"))?;
+            let encoded_calendar =
+                url::form_urlencoded::byte_serialize(calendar_id.as_bytes()).collect::<String>();
+            let event = params
+                .get("event")
+                .cloned()
+                .ok_or_else(|| connector_error("missing required parameter 'event'"))?;
             if action == "calendar.create" {
-                let url = format!("https://www.googleapis.com/calendar/v3/calendars/{encoded_calendar}/events");
+                let url = format!(
+                    "https://www.googleapis.com/calendar/v3/calendars/{encoded_calendar}/events"
+                );
                 google_request(&state, Method::POST, &url, Some(event)).await
             } else {
                 let event_id = required_str(&params, "eventId")?;
-                let encoded_event = url::form_urlencoded::byte_serialize(event_id.as_bytes()).collect::<String>();
+                let encoded_event =
+                    url::form_urlencoded::byte_serialize(event_id.as_bytes()).collect::<String>();
                 let url = format!("https://www.googleapis.com/calendar/v3/calendars/{encoded_calendar}/events/{encoded_event}");
                 google_request(&state, Method::PATCH, &url, Some(event)).await
             }
@@ -600,8 +635,10 @@ pub async fn execute_google_workspace_action(
         "calendar.delete" => {
             let calendar_id = optional_str(&params, "calendarId").unwrap_or("primary");
             let event_id = required_str(&params, "eventId")?;
-            let encoded_calendar = url::form_urlencoded::byte_serialize(calendar_id.as_bytes()).collect::<String>();
-            let encoded_event = url::form_urlencoded::byte_serialize(event_id.as_bytes()).collect::<String>();
+            let encoded_calendar =
+                url::form_urlencoded::byte_serialize(calendar_id.as_bytes()).collect::<String>();
+            let encoded_event =
+                url::form_urlencoded::byte_serialize(event_id.as_bytes()).collect::<String>();
             let url = format!("https://www.googleapis.com/calendar/v3/calendars/{encoded_calendar}/events/{encoded_event}");
             google_request(&state, Method::DELETE, &url, None).await
         }
@@ -609,8 +646,19 @@ pub async fn execute_google_workspace_action(
             let mut url = Url::parse("https://people.googleapis.com/v1/people/me/connections")
                 .map_err(|error| connector_error(error.to_string()))?;
             url.query_pairs_mut()
-                .append_pair("personFields", "names,emailAddresses,phoneNumbers,organizations,photos")
-                .append_pair("pageSize", &params.get("pageSize").and_then(Value::as_u64).unwrap_or(100).clamp(1, 1000).to_string());
+                .append_pair(
+                    "personFields",
+                    "names,emailAddresses,phoneNumbers,organizations,photos",
+                )
+                .append_pair(
+                    "pageSize",
+                    &params
+                        .get("pageSize")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(100)
+                        .clamp(1, 1000)
+                        .to_string(),
+                );
             google_request(&state, Method::GET, url.as_str(), None).await
         }
         "contacts.search" => {
@@ -619,7 +667,10 @@ pub async fn execute_google_workspace_action(
                 .map_err(|error| connector_error(error.to_string()))?;
             url.query_pairs_mut()
                 .append_pair("query", query)
-                .append_pair("readMask", "names,emailAddresses,phoneNumbers,organizations,photos")
+                .append_pair(
+                    "readMask",
+                    "names,emailAddresses,phoneNumbers,organizations,photos",
+                )
                 .append_pair("pageSize", "30");
             google_request(&state, Method::GET, url.as_str(), None).await
         }
@@ -643,8 +694,12 @@ async fn gmail_send(
     let to = safe_header(required_str(params, "to")?, "recipient")?;
     let subject = safe_header(required_str(params, "subject")?, "subject")?;
     let body = required_str(params, "body")?;
-    let cc = optional_str(params, "cc").map(|value| safe_header(value, "cc")).transpose()?;
-    let bcc = optional_str(params, "bcc").map(|value| safe_header(value, "bcc")).transpose()?;
+    let cc = optional_str(params, "cc")
+        .map(|value| safe_header(value, "cc"))
+        .transpose()?;
+    let bcc = optional_str(params, "bcc")
+        .map(|value| safe_header(value, "bcc"))
+        .transpose()?;
     let mut headers = vec![
         format!("To: {to}"),
         format!("Subject: {subject}"),
@@ -697,7 +752,8 @@ fn gmail_header<'a>(message: &'a Value, name: &str) -> Option<&'a str> {
 async fn gmail_reply(state: &State<'_, AppState>, params: &Value) -> Result<Value, AppError> {
     let message_id = required_str(params, "messageId")?;
     let body = required_str(params, "body")?;
-    let url = format!("https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}?format=full");
+    let url =
+        format!("https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}?format=full");
     let original = google_request(state, Method::GET, &url, None).await?;
     let to = gmail_header(&original, "Reply-To")
         .or_else(|| gmail_header(&original, "From"))
@@ -712,13 +768,20 @@ async fn gmail_reply(state: &State<'_, AppState>, params: &Value) -> Result<Valu
         .or_else(|| gmail_header(&original, "Message-Id"))
         .unwrap_or(message_id);
     let existing_references = gmail_header(&original, "References").unwrap_or("");
-    let references = format!("{} {}", existing_references, rfc_message_id).trim().to_string();
+    let references = format!("{} {}", existing_references, rfc_message_id)
+        .trim()
+        .to_string();
     let thread_id = original
         .get("threadId")
         .and_then(Value::as_str)
         .ok_or_else(|| connector_error("original message has no thread ID"))?;
     let send_params = json!({"to": to, "subject": subject, "body": body});
-    gmail_send(state, &send_params, Some((rfc_message_id, &references, thread_id))).await
+    gmail_send(
+        state,
+        &send_params,
+        Some((rfc_message_id, &references, thread_id)),
+    )
+    .await
 }
 
 async fn drive_download(
@@ -730,8 +793,10 @@ async fn drive_download(
     let token = access_token(state).await?;
     let url = if export {
         let mime_type = optional_str(params, "mimeType").unwrap_or("application/pdf");
-        let mut url = Url::parse(&format!("https://www.googleapis.com/drive/v3/files/{file_id}/export"))
-            .map_err(|error| connector_error(error.to_string()))?;
+        let mut url = Url::parse(&format!(
+            "https://www.googleapis.com/drive/v3/files/{file_id}/export"
+        ))
+        .map_err(|error| connector_error(error.to_string()))?;
         url.query_pairs_mut().append_pair("mimeType", mime_type);
         url.to_string()
     } else {
@@ -781,7 +846,9 @@ async fn drive_write(
     };
     if let Some(bytes) = content {
         if bytes.len() > MAX_BINARY_BYTES {
-            return Err(connector_error("Drive upload exceeds the 8 MB interactive action limit"));
+            return Err(connector_error(
+                "Drive upload exceeds the 8 MB interactive action limit",
+            ));
         }
         let mime_type = optional_str(params, "mimeType").unwrap_or("application/octet-stream");
         let metadata_part = multipart::Part::text(metadata.to_string())
@@ -790,7 +857,9 @@ async fn drive_write(
         let media_part = multipart::Part::bytes(bytes)
             .mime_str(mime_type)
             .map_err(|error| connector_error(error.to_string()))?;
-        let form = multipart::Form::new().part("metadata", metadata_part).part("media", media_part);
+        let form = multipart::Form::new()
+            .part("metadata", metadata_part)
+            .part("media", media_part);
         let url = if let Some(file_id) = file_id {
             format!("https://www.googleapis.com/upload/drive/v3/files/{file_id}?uploadType=multipart&fields=id,name,mimeType,size,modifiedTime,webViewLink")
         } else {
@@ -828,7 +897,8 @@ mod tests {
 
     #[test]
     fn pkce_challenge_is_url_safe() {
-        let challenge = pkce_challenge("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~");
+        let challenge =
+            pkce_challenge("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~");
         assert!(!challenge.contains('='));
         assert!(!challenge.contains('+'));
         assert!(!challenge.contains('/'));
