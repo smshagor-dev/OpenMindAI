@@ -22,6 +22,9 @@ macro_rules! openmind_generate_handler {
             connect_integration,
             disconnect_integration,
             execute_integration_action,
+            connected_app_agent_status_for_conversation,
+            send_connected_app_message,
+            regenerate_connected_app_message,
             project_local_access_status,
             attach_project_workspace_folder,
             detach_project_workspace_folder,
@@ -45,6 +48,7 @@ mod tauri {
     pub use crate::tauri_crate::*;
 }
 
+mod connected_agent;
 mod connector_ecosystem;
 mod connector_input_guard;
 mod connector_stabilization;
@@ -57,6 +61,10 @@ mod pdf_ocr;
 mod speech_runtime;
 mod vision_batch;
 
+pub(crate) use connected_agent::{
+    connected_app_agent_status_for_conversation, regenerate_connected_app_message,
+    send_connected_app_message,
+};
 pub(crate) use connector_ecosystem::{
     clear_integration_config, connect_integration, disconnect_integration,
     execute_integration_action, integration_status, save_integration_config,
