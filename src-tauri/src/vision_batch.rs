@@ -53,10 +53,9 @@ pub async fn analyze_image(
             .map_err(|error| AppError::InferenceFailed(error.to_string()))?;
     };
 
-    let value: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|error| AppError::InferenceFailed(format!("Lens response was invalid: {error}")))?;
+    let value: serde_json::Value = response.json().await.map_err(|error| {
+        AppError::InferenceFailed(format!("Lens response was invalid: {error}"))
+    })?;
     let content = value
         .get("choices")
         .and_then(|choices| choices.get(0))
