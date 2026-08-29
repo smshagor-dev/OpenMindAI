@@ -1,0 +1,915 @@
+name: ChatGPT-style Work UI Finalizer
+
+on:
+  push:
+    branches:
+      - fix/chatgpt-style-work-apps
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: fix/chatgpt-style-work-apps
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply Work and Apps UX
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          apps = r'''import { useEffect, useMemo, useState } from "react";
+          import {
+            Boxes,
+            CheckCircle2,
+            Cloud,
+            Github,
+            Loader2,
+            Mail,
+            MessageSquare,
+            PlugZap,
+            Unplug,
+          } from "lucide-react";
+          import { api } from "../api";
+          import type { GithubAccount, GoogleCredentialsStatus } from "../types";
+          import type { ConnectedProvider, GoogleWorkspaceStatus, IntegrationStatus } from "../lib/connectedActions";
+          import { formatError } from "../lib/format";
+
+          type EcosystemProvider = Exclude<ConnectedProvider, "google" | "github">;
+          type FormState = Record<string, string>;
+
+          const providerOrder: EcosystemProvider[] = ["microsoft", "slack", "notion", "dropbox", "mcp"];
+
+          const providerMeta: Record<EcosystemProvider, {
+            title: string;
+            description: string;
+            fields: Array<{ key: string; label: string; placeholder?: string }>;
+            defaults: FormState;
+            secret: boolean;
+          }> = {
+            microsoft: {
+              title: "Microsoft 365",
+              description: "Mail, OneDrive, calendar, and contacts.",
+              fields: [
+                { key: "clientId", label: "Application (client) ID" },
+                { key: "tenant", label: "Tenant", placeholder: "common" },
+                { key: "redirectUri", label: "Desktop redirect URI" },
+              ],
+              defaults: { clientId: "", tenant: "common", redirectUri: "http://localhost:17894/oauth/microsoft" },
+              secret: false,
+            },
+            slack: {
+              title: "Slack",
+              description: "Channels, threads, search, and messages.",
+              fields: [
+                { key: "clientId", label: "Slack app Client ID" },
+                { key: "redirectUri", label: "OAuth redirect URI" },
+                { key: "botScopes", label: "Bot scopes" },
+                { key: "userScopes", label: "User scopes" },
+              ],
+              defaults: {
+                clientId: "",
+                redirectUri: "http://localhost:17895/oauth/slack",
+                botScopes: "channels:read,channels:history,groups:read,groups:history,im:read,im:history,mpim:read,mpim:history,chat:write,reactions:write,users:read",
+                userScopes: "search:read",
+              },
+              secret: true,
+            },
+            notion: {
+              title: "Notion",
+              description: "Search, read, create, and update workspace content.",
+              fields: [
+                { key: "clientId", label: "Notion OAuth Client ID" },
+                { key: "redirectUri", label: "OAuth redirect URI" },
+              ],
+              defaults: { clientId: "", redirectUri: "http://localhost:17896/oauth/notion" },
+              secret: true,
+            },
+            dropbox: {
+              title: "Dropbox",
+              description: "Search, download, upload, move, and delete files.",
+              fields: [
+                { key: "appKey", label: "Dropbox App key" },
+                { key: "redirectUri", label: "OAuth redirect URI" },
+              ],
+              defaults: { appKey: "", redirectUri: "http://localhost:17897/oauth/dropbox" },
+              secret: false,
+            },
+            mcp: {
+              title: "MCP Server",
+              description: "Use tools and resources from a compatible MCP server.",
+              fields: [
+                { key: "name", label: "Display name", placeholder: "Company MCP" },
+                { key: "endpoint", label: "Streamable HTTP endpoint", placeholder: "https://mcp.example.com/mcp" },
+              ],
+              defaults: { name: "My MCP server", endpoint: "" },
+              secret: false,
+            },
+          };
+
+          function ProviderIcon({ provider }: { provider: EcosystemProvider }) {
+            if (provider === "microsoft") return <Mail size={19} />;
+            if (provider === "slack") return <MessageSquare size={19} />;
+            if (provider === "notion") return <Boxes size={19} />;
+            if (provider === "dropbox") return <Cloud size={19} />;
+            return <PlugZap size={19} />;
+          }
+
+          function statusLabel(connected: boolean, configured: boolean, account?: string | null) {
+            if (connected) return account ? `Connected · ${account}` : "Connected";
+            if (configured) return "Ready to connect";
+            return "Not connected";
+          }
+
+          export function AppsSettings() {
+            const [github, setGithub] = useState<GithubAccount | null | undefined>(undefined);
+            const [githubToken, setGithubToken] = useState("");
+            const [githubSetup, setGithubSetup] = useState(false);
+            const [googleCredentials, setGoogleCredentials] = useState<GoogleCredentialsStatus | null | undefined>(undefined);
+            const [googleWorkspace, setGoogleWorkspace] = useState<GoogleWorkspaceStatus | null>(null);
+            const [googleSetup, setGoogleSetup] = useState(false);
+            const [googleClientId, setGoogleClientId] = useState("");
+            const [googleClientSecret, setGoogleClientSecret] = useState("");
+            const [statuses, setStatuses] = useState<Partial<Record<EcosystemProvider, IntegrationStatus | null>>>({});
+            const [expandedProvider, setExpandedProvider] = useState<EcosystemProvider | null>(null);
+            const [forms, setForms] = useState<Record<EcosystemProvider, FormState>>(() => ({
+              microsoft: { ...providerMeta.microsoft.defaults },
+              slack: { ...providerMeta.slack.defaults },
+              notion: { ...providerMeta.notion.defaults },
+              dropbox: { ...providerMeta.dropbox.defaults },
+              mcp: { ...providerMeta.mcp.defaults },
+            }));
+            const [secrets, setSecrets] = useState<Partial<Record<EcosystemProvider, string>>>({});
+            const [busy, setBusy] = useState<string | null>(null);
+            const [error, setError] = useState<string | null>(null);
+
+            const refresh = async () => {
+              const [githubResult, credentialsResult, workspaceResult, ...integrationResults] = await Promise.allSettled([
+                api.githubAccount(),
+                api.googleCredentials(),
+                api.googleWorkspaceStatus(),
+                ...providerOrder.map((provider) => api.integrationStatus(provider)),
+              ]);
+              setGithub(githubResult.status === "fulfilled" ? githubResult.value : null);
+              const credentials = credentialsResult.status === "fulfilled" ? credentialsResult.value : null;
+              setGoogleCredentials(credentials);
+              setGoogleClientId(credentials?.clientId ?? "");
+              setGoogleWorkspace(workspaceResult.status === "fulfilled" ? workspaceResult.value : null);
+              integrationResults.forEach((result, index) => {
+                const provider = providerOrder[index];
+                if (result.status !== "fulfilled") {
+                  setStatuses((current) => ({ ...current, [provider]: null }));
+                  return;
+                }
+                setStatuses((current) => ({ ...current, [provider]: result.value }));
+                setForms((current) => {
+                  const next = { ...current[provider] };
+                  for (const [key, value] of Object.entries(result.value.config ?? {})) {
+                    if (typeof value === "string") next[key] = value;
+                  }
+                  return { ...current, [provider]: next };
+                });
+              });
+            };
+
+            useEffect(() => {
+              void refresh();
+            }, []);
+
+            const connectedCount = useMemo(
+              () => Number(Boolean(github)) + Number(Boolean(googleWorkspace?.connected)) + providerOrder.filter((provider) => statuses[provider]?.connected).length,
+              [github, googleWorkspace?.connected, statuses],
+            );
+
+            const run = async (key: string, action: () => Promise<void>) => {
+              if (busy) return;
+              setBusy(key);
+              setError(null);
+              try {
+                await action();
+              } catch (caught) {
+                setError(formatError(caught));
+              } finally {
+                setBusy(null);
+              }
+            };
+
+            const connectGithub = () => run("github", async () => {
+              if (!githubToken.trim()) {
+                setGithubSetup(true);
+                return;
+              }
+              setGithub(await api.saveGithubToken(githubToken.trim()));
+              setGithubToken("");
+              setGithubSetup(false);
+            });
+
+            const connectGoogle = () => run("google", async () => {
+              if (!googleCredentials?.hasSecret) {
+                setGoogleSetup(true);
+                return;
+              }
+              setGoogleWorkspace(await api.connectGoogleWorkspace());
+            });
+
+            const saveGoogleSetup = () => run("google-setup", async () => {
+              if (!googleClientId.trim() || !googleClientSecret.trim()) return;
+              const credentials = await api.saveGoogleCredentials(googleClientId.trim(), googleClientSecret.trim());
+              setGoogleCredentials(credentials);
+              setGoogleClientSecret("");
+              setGoogleWorkspace(await api.connectGoogleWorkspace());
+              setGoogleSetup(false);
+            });
+
+            const connectProvider = (provider: EcosystemProvider) => run(`${provider}:connect`, async () => {
+              const status = statuses[provider];
+              if (!status?.configured) {
+                setExpandedProvider(provider);
+                return;
+              }
+              setStatuses((current) => ({ ...current, [provider]: await api.connectIntegration(provider) }));
+            });
+
+            const saveProvider = (provider: EcosystemProvider) => run(`${provider}:save`, async () => {
+              const status = await api.saveIntegrationConfig(
+                provider,
+                forms[provider],
+                providerMeta[provider].secret && secrets[provider]?.trim() ? secrets[provider]?.trim() : undefined,
+              );
+              setStatuses((current) => ({ ...current, [provider]: status }));
+              setSecrets((current) => ({ ...current, [provider]: "" }));
+              setExpandedProvider(null);
+            });
+
+            return (
+              <div className="apps-settings">
+                <div className="apps-settings-intro">
+                  <div>
+                    <span className="tools-eyebrow">Connected apps</span>
+                    <h3>Apps work inside your conversations</h3>
+                    <p>
+                      Connect once, then ask naturally in Chat or Project Work. OpenMindAI chooses the relevant app and action internally—there is no provider picker, raw action console, or JSON form in Work.
+                    </p>
+                  </div>
+                  <span className="apps-connected-count"><CheckCircle2 size={14} /> {connectedCount} connected</span>
+                </div>
+
+                {error ? <button type="button" className="error-banner apps-error" onClick={() => setError(null)}>{error}</button> : null}
+
+                <div className="apps-grid">
+                  <article className="app-card">
+                    <div className="app-card-main">
+                      <span className="app-card-icon"><Github size={19} /></span>
+                      <div><strong>GitHub</strong><p>Repositories, issues, pull requests, Actions, and releases.</p></div>
+                    </div>
+                    <div className="app-card-actions">
+                      <span className={github ? "app-status connected" : "app-status"}>{github === undefined ? "Checking…" : github ? `Connected · ${github.login}` : "Not connected"}</span>
+                      {github ? (
+                        <button type="button" className="ghost-button" disabled={Boolean(busy)} onClick={() => void run("github-disconnect", async () => { await api.disconnectGithub(); setGithub(null); })}><Unplug size={14} /> Disconnect</button>
+                      ) : (
+                        <button type="button" className="primary-button" disabled={Boolean(busy)} onClick={() => { setGithubSetup(true); }}><PlugZap size={14} /> Connect</button>
+                      )}
+                    </div>
+                    {githubSetup && !github ? (
+                      <div className="app-setup-panel">
+                        <p>OpenMindAI currently uses a GitHub token stored in your operating-system credential store. This setup is only for connecting the app; repository actions stay internal to Chat/Work.</p>
+                        <input type="password" value={githubToken} onChange={(event) => setGithubToken(event.target.value)} placeholder="Fine-grained GitHub token" />
+                        <div className="button-row"><button type="button" className="primary-button" disabled={!githubToken.trim() || Boolean(busy)} onClick={() => void connectGithub()}>{busy === "github" ? <Loader2 size={14} className="spin" /> : "Connect GitHub"}</button><button type="button" className="ghost-button" onClick={() => setGithubSetup(false)}>Cancel</button></div>
+                      </div>
+                    ) : null}
+                  </article>
+
+                  <article className="app-card">
+                    <div className="app-card-main">
+                      <span className="app-card-icon"><Mail size={19} /></span>
+                      <div><strong>Google Workspace</strong><p>Gmail, Drive, Calendar, and Contacts.</p></div>
+                    </div>
+                    <div className="app-card-actions">
+                      <span className={googleWorkspace?.connected ? "app-status connected" : "app-status"}>{statusLabel(Boolean(googleWorkspace?.connected), Boolean(googleCredentials), googleWorkspace?.email)}</span>
+                      {googleWorkspace?.connected ? (
+                        <button type="button" className="ghost-button" disabled={Boolean(busy)} onClick={() => void run("google-disconnect", async () => { await api.disconnectGoogleWorkspace(); setGoogleWorkspace(null); })}><Unplug size={14} /> Disconnect</button>
+                      ) : (
+                        <button type="button" className="primary-button" disabled={Boolean(busy)} onClick={() => void connectGoogle()}><PlugZap size={14} /> Connect</button>
+                      )}
+                    </div>
+                    {googleSetup && !googleWorkspace?.connected ? (
+                      <div className="app-setup-panel">
+                        <p>This self-hosted desktop build needs a one-time Google Desktop OAuth client. Credentials are stored in the operating-system credential store and are never shown in Work.</p>
+                        <input type="text" value={googleClientId} onChange={(event) => setGoogleClientId(event.target.value)} placeholder="Desktop OAuth Client ID" />
+                        <input type="password" value={googleClientSecret} onChange={(event) => setGoogleClientSecret(event.target.value)} placeholder={googleCredentials?.hasSecret ? "Saved — enter only to replace" : "Client Secret"} />
+                        <div className="button-row"><button type="button" className="primary-button" disabled={!googleClientId.trim() || !googleClientSecret.trim() || Boolean(busy)} onClick={() => void saveGoogleSetup()}>{busy === "google-setup" ? <Loader2 size={14} className="spin" /> : "Save & connect"}</button><button type="button" className="ghost-button" onClick={() => setGoogleSetup(false)}>Cancel</button></div>
+                      </div>
+                    ) : null}
+                  </article>
+
+                  {providerOrder.map((provider) => {
+                    const meta = providerMeta[provider];
+                    const status = statuses[provider];
+                    const expanded = expandedProvider === provider;
+                    return (
+                      <article className="app-card" key={provider}>
+                        <div className="app-card-main"><span className="app-card-icon"><ProviderIcon provider={provider} /></span><div><strong>{meta.title}</strong><p>{meta.description}</p></div></div>
+                        <div className="app-card-actions">
+                          <span className={status?.connected ? "app-status connected" : "app-status"}>{statusLabel(Boolean(status?.connected), Boolean(status?.configured), status?.accountLabel)}</span>
+                          {status?.connected ? (
+                            <button type="button" className="ghost-button" disabled={Boolean(busy)} onClick={() => void run(`${provider}:disconnect`, async () => { await api.disconnectIntegration(provider); setStatuses((current) => ({ ...current, [provider]: { ...status, connected: false } })); })}><Unplug size={14} /> Disconnect</button>
+                          ) : (
+                            <button type="button" className="primary-button" disabled={Boolean(busy)} onClick={() => void connectProvider(provider)}><PlugZap size={14} /> {status?.configured ? "Connect" : "Set up"}</button>
+                          )}
+                        </div>
+                        {expanded ? (
+                          <div className="app-setup-panel">
+                            <p>Provider setup is kept here in Settings. Once connected, OpenMindAI uses it internally from natural-language requests.</p>
+                            {meta.fields.map((field) => <label key={field.key}><span>{field.label}</span><input type="text" placeholder={field.placeholder} value={forms[provider][field.key] ?? ""} onChange={(event) => setForms((current) => ({ ...current, [provider]: { ...current[provider], [field.key]: event.target.value } }))} /></label>)}
+                            {meta.secret ? <label><span>OAuth Client Secret</span><input type="password" value={secrets[provider] ?? ""} onChange={(event) => setSecrets((current) => ({ ...current, [provider]: event.target.value }))} placeholder={status?.hasSecret ? "Saved — enter only to replace" : "Client secret"} /></label> : null}
+                            <div className="button-row"><button type="button" className="primary-button" disabled={Boolean(busy)} onClick={() => void saveProvider(provider)}>{busy === `${provider}:save` ? <Loader2 size={14} className="spin" /> : "Save setup"}</button><button type="button" className="ghost-button" onClick={() => setExpandedProvider(null)}>Cancel</button></div>
+                          </div>
+                        ) : null}
+                      </article>
+                    );
+                  })}
+                </div>
+
+                <p className="apps-privacy-note">Read actions may run as part of a request when the app is connected. Remote changes remain subject to the backend approval and permission guards. Credentials stay out of chat history.</p>
+              </div>
+            );
+          }
+          '''
+          # Dedent the TS source that is indented only for this workflow heredoc.
+          import textwrap
+          Path("src/components/AppsSettings.tsx").write_text(textwrap.dedent(apps), encoding="utf-8")
+
+          settings = Path("src/components/SettingsDialog.tsx")
+          text = settings.read_text(encoding="utf-8")
+          text = text.replace('import { Connectors } from "./Connectors";', 'import { AppsSettings } from "./AppsSettings";')
+          text = text.replace('{ id: "connectors", label: "Connectors", icon: Plug },', '{ id: "connectors", label: "Apps", icon: Plug },')
+          text = text.replace('<SettingsGroup title="Connectors">\n            <Connectors />\n          </SettingsGroup>', '<SettingsGroup title="Apps">\n            <AppsSettings />\n          </SettingsGroup>')
+          if 'Connectors />' in text or 'label: "Connectors"' in text:
+              raise SystemExit("Settings connector replacement incomplete")
+          settings.write_text(text, encoding="utf-8")
+
+          projects = Path("src/components/ProjectsWorkspace.tsx")
+          text = projects.read_text(encoding="utf-8")
+          text = text.replace('onOpenConversation: (id: string) => void;', 'onOpenConversation: (id: string, draft?: string) => void;')
+          text = text.replace('const [activePane, setActivePane] = useState<"overview" | "work">("overview");', 'const [activePane, setActivePane] = useState<"overview" | "work">("overview");\n  const [workDraft, setWorkDraft] = useState("");')
+          text = text.replace('const createChat = async () => {', 'const createChat = async (draft?: string) => {')
+          text = text.replace('if (conversation) props.onOpenConversation(conversation.id);', 'if (conversation) props.onOpenConversation(conversation.id, draft);\n    return conversation;')
+          old_open = '''  const openAgentChat = async () => {
+            const existing = projectConversations[0];
+            if (existing) {
+              props.onOpenConversation(existing.id);
+              return;
+            }
+            await createChat();
+          };'''
+          old_open = textwrap.dedent(old_open)
+          new_open = '''  const openAgentChat = async (draft?: string) => {
+            const existing = projectConversations[0];
+            if (existing) {
+              props.onOpenConversation(existing.id, draft);
+              return;
+            }
+            await createChat(draft);
+          };'''
+          new_open = textwrap.dedent(new_open)
+          if old_open not in text:
+              raise SystemExit("openAgentChat source block not found")
+          text = text.replace(old_open, new_open)
+          text = text.replace('setActivePane("overview");\n                  setError(null);', 'setActivePane("overview");\n                  setWorkDraft("");\n                  setError(null);')
+
+          start = '            ) : (\n              <div className="project-work-pane">'
+          end = '                <ProjectLocalWorkspace projectId={activeProject.id} projectName={activeProject.name} />\n              </div>\n            )}'
+          start_index = text.find(start)
+          end_index = text.find(end, start_index)
+          if start_index < 0 or end_index < 0:
+              raise SystemExit("Project Work pane block not found")
+          end_index += len(end)
+          replacement = r'''            ) : (
+              <div className="project-work-pane project-work-chatgpt">
+                <section className="project-work-start">
+                  <div className="project-work-start-copy">
+                    <span className="project-work-orb"><Bot size={22} /></span>
+                    <span className="tools-eyebrow">Project Work</span>
+                    <h2>What should I work on?</h2>
+                    <p>Describe the outcome. OpenMindAI can inspect the attached project, edit files, run permitted commands, recover from errors, and validate its changes.</p>
+                  </div>
+
+                  <form
+                    className="project-work-composer"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const draft = workDraft.trim();
+                      if (!draft || busy) return;
+                      setWorkDraft("");
+                      void openAgentChat(draft);
+                    }}
+                  >
+                    <textarea
+                      value={workDraft}
+                      rows={3}
+                      placeholder="Ask OpenMindAI to build, fix, audit, test, or review this project…"
+                      onChange={(event) => setWorkDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && workDraft.trim()) {
+                          event.preventDefault();
+                          const draft = workDraft.trim();
+                          setWorkDraft("");
+                          void openAgentChat(draft);
+                        }
+                      }}
+                    />
+                    <div className="project-work-composer-footer">
+                      <div className="project-work-suggestions" aria-label="Suggested project tasks">
+                        {["Audit this project", "Fix failing tests", "Review recent changes", "Find and fix bugs"].map((suggestion) => (
+                          <button type="button" key={suggestion} onClick={() => setWorkDraft(suggestion)}>{suggestion}</button>
+                        ))}
+                      </div>
+                      <button type="submit" className="primary-button project-work-submit" disabled={busy || !workDraft.trim()}>
+                        <Sparkles size={15} /> Continue in chat
+                      </button>
+                    </div>
+                  </form>
+
+                  <div className="project-work-trust-row">
+                    <span><CheckCircle2 size={13} /> Uses this project's files and instructions</span>
+                    <span><CheckCircle2 size={13} /> Validates workspace changes before completion</span>
+                    <span><CheckCircle2 size={13} /> Connected apps stay internal</span>
+                  </div>
+                </section>
+
+                {projectConversations.length ? (
+                  <section className="project-card project-work-recent">
+                    <div className="project-card-heading">
+                      <div><h3><MessagesSquare size={15} /> Recent work</h3><p>Continue a project conversation without leaving the project context.</p></div>
+                    </div>
+                    <div className="project-work-chat-list">
+                      {projectConversations.slice(0, 5).map((conversation) => (
+                        <button type="button" key={conversation.id} onClick={() => props.onOpenConversation(conversation.id)}>
+                          <span><strong>{conversation.title}</strong><small>{formatTime(conversation.updatedAt)}</small></span>
+                          <MessageSquarePlus size={15} />
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
+
+                <details className="project-card project-work-access">
+                  <summary>
+                    <span><FolderKanban size={15} /><strong>Workspace access</strong></span>
+                    <small>Folders, file access, and optional terminal permissions</small>
+                  </summary>
+                  <div className="project-work-access-body">
+                    <ProjectLocalWorkspace projectId={activeProject.id} projectName={activeProject.name} />
+                  </div>
+                </details>
+              </div>
+            )}'''
+          replacement = textwrap.dedent(replacement).rstrip()
+          # Restore the indentation expected at this position.
+          replacement = '\n'.join(('            ' + line if line else '') for line in replacement.splitlines())
+          text = text[:start_index] + replacement + text[end_index:]
+          projects.write_text(text, encoding="utf-8")
+
+          app = Path("src/App.tsx")
+          text = app.read_text(encoding="utf-8")
+          old = '''              onOpenConversation={(id) => {
+                setView("chat");
+                setActiveId(id);
+                setEditingMessageId(null);
+              }}'''
+          new = '''              onOpenConversation={(id, draft) => {
+                setView("chat");
+                setActiveId(id);
+                setEditingMessageId(null);
+                setAttachments([]);
+                if (draft?.trim()) {
+                  setPrompt(draft.trim());
+                  window.setTimeout(() => {
+                    const node = composerRef.current;
+                    if (!node) return;
+                    node.focus();
+                    node.setSelectionRange(node.value.length, node.value.length);
+                  }, 0);
+                }
+              }}'''
+          if old not in text:
+              raise SystemExit("ProjectsWorkspace onOpenConversation handler not found")
+          text = text.replace(old, new)
+          app.write_text(text, encoding="utf-8")
+
+          css = Path("src/projects.css")
+          css_text = css.read_text(encoding="utf-8")
+          css_text += r'''
+
+          /* ChatGPT-style Project Work surface */
+          .project-work-chatgpt {
+            display: grid;
+            gap: 16px;
+            padding-bottom: 24px;
+          }
+
+          .project-work-start {
+            display: grid;
+            gap: 18px;
+            padding: clamp(26px, 5vw, 58px) clamp(18px, 6vw, 72px) 30px;
+            border-bottom: 1px solid var(--border);
+          }
+
+          .project-work-start-copy {
+            display: grid;
+            justify-items: center;
+            gap: 8px;
+            max-width: 720px;
+            margin: 0 auto;
+            text-align: center;
+          }
+
+          .project-work-orb {
+            display: grid;
+            place-items: center;
+            width: 48px;
+            height: 48px;
+            margin-bottom: 3px;
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            background: var(--surface-2);
+            color: var(--text);
+            box-shadow: 0 10px 30px rgb(0 0 0 / 8%);
+          }
+
+          .project-work-start-copy h2 {
+            margin: 2px 0 0;
+            font-size: clamp(24px, 4vw, 34px);
+            line-height: 1.12;
+            letter-spacing: -0.025em;
+          }
+
+          .project-work-start-copy p {
+            max-width: 650px;
+            margin: 0;
+            color: var(--muted);
+            line-height: 1.65;
+          }
+
+          .project-work-composer {
+            width: min(820px, 100%);
+            margin: 0 auto;
+            padding: 10px;
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            background: var(--surface);
+            box-shadow: 0 12px 38px rgb(0 0 0 / 8%);
+          }
+
+          .project-work-composer textarea {
+            width: 100%;
+            min-height: 92px;
+            resize: vertical;
+            padding: 12px 13px;
+            border: 0;
+            outline: 0;
+            background: transparent;
+            color: var(--text);
+            font: inherit;
+            line-height: 1.55;
+          }
+
+          .project-work-composer textarea:focus {
+            box-shadow: none;
+          }
+
+          .project-work-composer-footer {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 6px 4px 2px;
+          }
+
+          .project-work-suggestions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+          }
+
+          .project-work-suggestions button {
+            padding: 6px 9px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: var(--surface-2);
+            color: var(--muted);
+            font-size: 11px;
+          }
+
+          .project-work-suggestions button:hover {
+            color: var(--text);
+            border-color: color-mix(in srgb, var(--text) 24%, var(--border));
+          }
+
+          .project-work-submit {
+            flex: 0 0 auto;
+            border-radius: 999px;
+          }
+
+          .project-work-trust-row {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 10px 18px;
+            color: var(--muted);
+            font-size: 11px;
+          }
+
+          .project-work-trust-row span {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+          }
+
+          .project-work-recent,
+          .project-work-access {
+            margin: 0 18px;
+          }
+
+          .project-work-chat-list {
+            display: grid;
+            gap: 6px;
+          }
+
+          .project-work-chat-list > button {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid transparent;
+            border-radius: 12px;
+            background: transparent;
+            text-align: left;
+          }
+
+          .project-work-chat-list > button:hover {
+            border-color: var(--border);
+            background: var(--surface-2);
+          }
+
+          .project-work-chat-list > button span {
+            display: grid;
+            gap: 3px;
+          }
+
+          .project-work-chat-list small {
+            color: var(--muted);
+          }
+
+          .project-work-access > summary {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            cursor: pointer;
+            list-style: none;
+          }
+
+          .project-work-access > summary::-webkit-details-marker {
+            display: none;
+          }
+
+          .project-work-access > summary > span {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+          }
+
+          .project-work-access > summary small {
+            color: var(--muted);
+            font-weight: 500;
+          }
+
+          .project-work-access-body {
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border);
+          }
+
+          @media (max-width: 760px) {
+            .project-work-start {
+              padding: 28px 14px 22px;
+            }
+
+            .project-work-composer-footer,
+            .project-work-access > summary {
+              align-items: stretch;
+              flex-direction: column;
+            }
+
+            .project-work-submit {
+              width: 100%;
+              justify-content: center;
+            }
+
+            .project-work-recent,
+            .project-work-access {
+              margin-inline: 10px;
+            }
+          }
+          '''
+          css.write_text(textwrap.dedent(css_text), encoding="utf-8")
+
+          styles = Path("src/styles.css")
+          style_text = styles.read_text(encoding="utf-8")
+          style_text += r'''
+
+          /* ChatGPT-style connected Apps settings */
+          .apps-settings {
+            display: grid;
+            gap: 16px;
+          }
+
+          .apps-settings-intro {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 18px;
+            padding: 18px;
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            background: var(--surface-2);
+          }
+
+          .apps-settings-intro h3 {
+            margin: 5px 0 6px;
+            font-size: 19px;
+          }
+
+          .apps-settings-intro p,
+          .app-card p,
+          .app-setup-panel p {
+            margin: 0;
+            color: var(--muted);
+            line-height: 1.5;
+          }
+
+          .apps-connected-count,
+          .app-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            flex: 0 0 auto;
+            padding: 5px 8px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: var(--surface);
+            color: var(--muted);
+            font-size: 11px;
+            white-space: nowrap;
+          }
+
+          .app-status.connected {
+            color: var(--text);
+          }
+
+          .apps-grid {
+            display: grid;
+            gap: 10px;
+          }
+
+          .app-card {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 16px;
+            padding: 15px 16px;
+            border: 1px solid var(--border);
+            border-radius: 15px;
+            background: var(--surface);
+          }
+
+          .app-card-main {
+            display: grid;
+            grid-template-columns: 38px minmax(0, 1fr);
+            align-items: center;
+            gap: 11px;
+          }
+
+          .app-card-icon {
+            display: grid;
+            place-items: center;
+            width: 38px;
+            height: 38px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: var(--surface-2);
+          }
+
+          .app-card-main strong {
+            display: block;
+            margin-bottom: 2px;
+          }
+
+          .app-card-main p {
+            font-size: 12px;
+          }
+
+          .app-card-actions {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 8px;
+          }
+
+          .app-setup-panel {
+            grid-column: 1 / -1;
+            display: grid;
+            gap: 9px;
+            padding: 13px;
+            border-top: 1px solid var(--border);
+          }
+
+          .app-setup-panel label {
+            display: grid;
+            gap: 5px;
+            color: var(--muted);
+            font-size: 11px;
+          }
+
+          .app-setup-panel input {
+            width: 100%;
+          }
+
+          .apps-error {
+            text-align: left;
+          }
+
+          .apps-privacy-note {
+            margin: 0;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.55;
+          }
+
+          @media (max-width: 760px) {
+            .apps-settings-intro,
+            .app-card {
+              grid-template-columns: 1fr;
+              flex-direction: column;
+            }
+
+            .app-card-actions {
+              justify-content: flex-start;
+              flex-wrap: wrap;
+            }
+          }
+          '''
+          styles.write_text(textwrap.dedent(style_text), encoding="utf-8")
+
+          docs = Path("docs/CONNECTED_APPS.md")
+          docs.write_text('''# Connected apps\n\nOpenMindAI treats connected services as internal assistant tools. Users connect or disconnect apps in **Settings → Apps**, then use normal language in Chat or Project Work.\n\nThere is no user-facing provider/action picker, raw JSON action console, or separate “Connected Work” surface. The assistant chooses an appropriate connected capability when relevant and returns the useful result in the conversation.\n\n## UX contract\n\n- **Settings → Apps** is only for connection state and one-time provider setup.\n- **Chat and Project Work** are the interaction surfaces. Users ask for the outcome, not an API action.\n- Connection secrets and OAuth tokens stay in the operating-system credential store and are never written into chat history.\n- Remote mutating actions remain protected by backend approval and provider-permission guards.\n- Provider data and tool output are treated as untrusted external data, not instructions.\n\n## Supported app families\n\n- Google Workspace: Gmail, Drive, Calendar, Contacts\n- GitHub: repositories, files, issues, pull requests, Actions, releases\n- Microsoft 365: Outlook, OneDrive, Calendar, Contacts\n- Slack\n- Notion\n- Dropbox\n- MCP servers\n\nProvider-specific OAuth/client configuration may still be required by this self-hosted desktop application, but that setup stays inside **Settings → Apps** and never appears in Work.\n''', encoding="utf-8")
+
+          for obsolete in ["src/components/ConnectedWorkspace.tsx", "src/components/Connectors.tsx", "src/components/AdditionalConnectors.tsx"]:
+              path = Path(obsolete)
+              if path.exists():
+                  path.unlink()
+          PY
+
+      - name: Validate frontend
+        run: |
+          npm run lint
+          npm run build
+
+      - name: Verify obsolete Work console is gone
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -R "Connected Work" -n src docs
+          ! grep -R "Work → GitHub\|Work → Google Workspace" -n src docs
+          ! grep -R "Parameters (JSON)\|Run action" -n src/components
+          test ! -e src/components/ConnectedWorkspace.tsx
+
+      - name: Commit production changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/chatgpt-work-ui-finalize.yml
+          git config user.name "openmindai-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "fix(work): make apps internal and simplify project work"
+          git push origin HEAD:fix/chatgpt-style-work-apps
