@@ -109,6 +109,7 @@ export function App() {
   const [modelSwitching, setModelSwitching] = useState(false);
   const [modelSwitchError, setModelSwitchError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [workThreadId, setWorkThreadId] = useState<string | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
   const showError = useCallback((caught: unknown) => {
@@ -540,6 +541,47 @@ export function App() {
     submitting,
   ]);
 
+  const sendWorkTask = useCallback(
+    async (conversationId: string, content: string) => {
+      const task = content.trim();
+      if (!task || streamingId || submitting) return;
+
+      const inferredMode = inferChatMode(task, []);
+      const messageContent = buildMessageContent(task, [], inferredMode);
+      setSubmitting(true);
+      setPrompt("");
+      setAttachments([]);
+      setEditingMessageId(null);
+      setActiveId(conversationId);
+      setWorkThreadId(conversationId);
+
+      try {
+        const generatedTitle = titleFromPrompt(task);
+        if (generatedTitle) {
+          await api.renameConversation(conversationId, generatedTitle);
+          setConversations((items) =>
+            items.map((conversation) =>
+              conversation.id === conversationId
+                ? { ...conversation, title: generatedTitle }
+                : conversation,
+            ),
+          );
+        }
+        await api.sendChatMessage(conversationId, messageContent, inferredMode, []);
+        setStreamingId(null);
+        await refreshMessages(conversationId, setMessages, showError);
+        await refreshApp();
+      } catch (caught) {
+        setStreamingId(null);
+        showError(caught);
+        await refreshMessages(conversationId, setMessages, showError);
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [refreshApp, showError, streamingId, submitting],
+  );
+
   const stopGeneration = useCallback(async () => {
     if (!streamingId || !activeId) return;
     try {
@@ -553,7 +595,7 @@ export function App() {
     setEditingMessageId(messageId);
     setPrompt(content);
     setAttachments([]);
-    setView("chat");
+    setView((current) => (current === "work" ? "work" : "chat"));
     window.setTimeout(() => {
       const node = composerRef.current;
       if (!node) return;
@@ -1005,8 +1047,18 @@ export function App() {
           <div className="topbar-center">
             <ChatModeSwitcher
               active={view === "work" ? "work" : "chat"}
-              onChat={() => setView("chat")}
-              onWork={() => setView("work")}
+              onChat={() => {
+                setWorkThreadId(null);
+                setView("chat");
+              }}
+              onWork={() => {
+                setWorkThreadId(null);
+                setActiveId(null);
+                setMessages([]);
+                setPrompt("");
+                setAttachments([]);
+                setView("work");
+              }}
             />
           </div>
           <div className="topbar-actions">
@@ -1101,25 +1153,58 @@ export function App() {
             }}
           />
         ) : view === "work" ? (
-          <WorkWorkspace
-            conversations={conversations}
-            onOpenConversation={(id, draft) => {
-              setView("chat");
-              setActiveId(id);
-              setEditingMessageId(null);
-              setAttachments([]);
-              if (draft?.trim()) {
-                setPrompt(draft.trim());
-                window.setTimeout(() => {
-                  const node = composerRef.current;
-                  if (!node) return;
-                  node.focus();
-                  node.setSelectionRange(node.value.length, node.value.length);
-                }, 0);
+          workThreadId ? (
+            <ChatView
+              conversation={activeConversation}
+              messages={messages}
+              prompt={prompt}
+              setPrompt={setPrompt}
+              attachments={attachments}
+              preferences={preferences}
+              activity={activity}
+              enterToSend={preferences?.enterToSend ?? true}
+              addFiles={addFiles}
+              removeAttachment={(id) =>
+                setAttachments((items) => items.filter((item) => item.id !== id))
               }
-            }}
-            onCreateProjectChat={createProjectConversation}
-          />
+              sendMessage={sendMessage}
+              stopGeneration={stopGeneration}
+              regenerate={regenerate}
+              retry={regenerate}
+              editUserMessage={editUserMessage}
+              composerRef={composerRef}
+              streaming={Boolean(streamingId)}
+              submitting={submitting}
+              models={models}
+              activeModelId={activeModelId}
+              runtime={runtime}
+              modelSwitching={modelSwitching}
+              modelSwitchError={modelSwitchError}
+              onSelectModel={selectModel}
+              artifactsByMessage={artifactsByMessage}
+              onCreateArtifact={createArtifact}
+              onOpenArtifact={openArtifactHandler}
+              onRevealArtifact={revealArtifactHandler}
+              onRetryArtifact={retryArtifact}
+              onPreview={setPreviewTarget}
+            />
+          ) : (
+            <WorkWorkspace
+              conversations={conversations}
+              onOpenConversation={(id, draft) => {
+                setView("work");
+                setWorkThreadId(id);
+                setActiveId(id);
+                setEditingMessageId(null);
+                setAttachments([]);
+                setPrompt("");
+                if (draft?.trim()) {
+                  void sendWorkTask(id, draft.trim());
+                }
+              }}
+              onCreateProjectChat={createProjectConversation}
+            />
+          )
         ) : view === "projects" ? (
           <ProjectsWorkspace
             conversations={conversations}
