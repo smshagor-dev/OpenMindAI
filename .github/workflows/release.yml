@@ -68,10 +68,10 @@ jobs:
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
       - name: Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 
       - name: Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --all-features
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --all-features
 
       - name: Validate signing secrets
         shell: pwsh
