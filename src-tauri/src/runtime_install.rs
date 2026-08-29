@@ -244,13 +244,28 @@ impl RuntimeInstaller {
 
         let os = target_os();
         let arch = target_arch();
+        let releases = match fetch_recent_releases(&self.client).await {
+            Ok(releases) => releases,
+            Err(error) => {
+                *self
+                    .cancel_token
+                    .lock()
+                    .map_err(|_| AppError::internal("runtime install cancel lock poisoned"))? = None;
+                let message = error.to_string();
+                self.set_state(RuntimeInstallState::Failed, Some(message))?;
+                return Err(error);
+            }
+        };
         let mut last_error: Option<AppError> = None;
         for backend in preferred_backend_order(hardware) {
             let Some(pattern) = catalog_pattern(os, arch, &backend) else {
                 continue;
             };
             tracing::info!(?backend, "installing AI runtime");
-            match self.install_backend(&backend, pattern, &token).await {
+            match self
+                .install_backend(&backend, pattern, &releases, &token)
+                .await
+            {
                 Ok(status) => {
                     *self.cancel_token.lock().map_err(|_| {
                         AppError::internal("runtime install cancel lock poisoned")
@@ -282,6 +297,7 @@ impl RuntimeInstaller {
         &self,
         backend: &BackendKind,
         pattern: &str,
+        releases: &[GithubRelease],
         token: &CancellationToken,
     ) -> Result<RuntimeInstallStatus, AppError> {
         self.update_status(|status| {
@@ -295,8 +311,7 @@ impl RuntimeInstaller {
             status.error = None;
         })?;
 
-        let releases = fetch_recent_releases(&self.client).await?;
-        let (release, asset) = resolve_release_asset(&releases, pattern).ok_or_else(|| {
+        let (release, asset) = resolve_release_asset(releases, pattern).ok_or_else(|| {
             AppError::RuntimeInstallFailed(format!(
                 "no recent llama.cpp release contains an asset matching {pattern}"
             ))

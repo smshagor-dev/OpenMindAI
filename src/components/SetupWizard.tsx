@@ -303,12 +303,10 @@ function PreparingFlow(props: {
       .catch((caught) => setRuntimeInstallError(formatError(caught)));
   }, []);
 
-  useEffect(() => {
-    if (modelReady && runtimeReady) return;
-    const interval = window.setInterval(() => void props.refresh?.(), 3000);
-    return () => window.clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modelReady, runtimeReady]);
+  // Runtime installation and model downloads already trigger one explicit
+  // refresh when they complete. Avoid refreshing the entire application every
+  // three seconds while setup is running: that refresh recursively scans model
+  // and storage directories and creates unnecessary disk I/O on Windows.
 
   // Persists the setup-state bookkeeping in install.json once each stage's
   // own live readiness check (above) actually confirms it — best-effort,
