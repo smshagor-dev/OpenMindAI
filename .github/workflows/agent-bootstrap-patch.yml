@@ -1,0 +1,47 @@
+name: Agent Bootstrap Patch
+
+on:
+  push:
+    branches:
+      - project-local-agent-e2e
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: project-local-agent-e2e
+      - name: Wire Open Folder as Project
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/components/ProjectsWorkspace.tsx')
+          text = path.read_text()
+          old_import = 'import { ProjectLocalWorkspace } from "./ProjectLocalWorkspace";\n'
+          new_import = old_import + 'import { OpenFolderProjectButton } from "./OpenFolderProjectButton";\n'
+          if 'OpenFolderProjectButton' not in text:
+              if old_import not in text:
+                  raise SystemExit('ProjectLocalWorkspace import anchor missing')
+              text = text.replace(old_import, new_import, 1)
+
+          anchor = '''        </div>\n\n        <div className="projects-list">'''
+          insertion = '''        </div>\n\n        <OpenFolderProjectButton\n          disabled={busy}\n          onCreateProjectChat={props.onCreateProjectChat}\n          onCreated={async (project, conversation) => {\n            await refreshProjects(project.id);\n            props.onOpenConversation(conversation.id);\n          }}\n          onError={setError}\n        />\n\n        <div className="projects-list">'''
+          if '<OpenFolderProjectButton' not in text:
+              if anchor not in text:
+                  raise SystemExit('projects-list anchor missing')
+              text = text.replace(anchor, insertion, 1)
+          path.write_text(text)
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name "openmindai-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git add src/components/ProjectsWorkspace.tsx
+          git diff --cached --check
+          git commit -m "feat(projects): wire open-folder project bootstrap"
+          git push
