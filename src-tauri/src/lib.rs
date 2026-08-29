@@ -15,7 +15,13 @@ macro_rules! openmind_generate_handler {
             google_workspace_status,
             disconnect_google_workspace,
             execute_google_workspace_action,
-            execute_github_workspace_action
+            execute_github_workspace_action,
+            integration_status,
+            save_integration_config,
+            clear_integration_config,
+            connect_integration,
+            disconnect_integration,
+            execute_integration_action
         ]
     };
 }
@@ -25,6 +31,7 @@ mod tauri {
     pub use crate::tauri_crate::*;
 }
 
+mod connector_ecosystem;
 mod connector_input_guard;
 mod connector_stabilization;
 mod github_workspace;
@@ -34,6 +41,10 @@ mod pdf_ocr;
 mod speech_runtime;
 mod vision_batch;
 
+pub(crate) use connector_ecosystem::{
+    clear_integration_config, connect_integration, disconnect_integration,
+    execute_integration_action, integration_status, save_integration_config,
+};
 pub(crate) use connector_input_guard::{
     execute_github_workspace_action, execute_google_workspace_action,
 };

@@ -4,6 +4,7 @@ import { api } from "../api";
 import type { GithubAccount, GithubIssue, GithubRepo, GoogleCredentialsStatus } from "../types";
 import type { GoogleWorkspaceStatus } from "../lib/connectedActions";
 import { formatError } from "../lib/format";
+import { AdditionalConnectors } from "./AdditionalConnectors";
 
 export function Connectors() {
   const [account, setAccount] = useState<GithubAccount | null | undefined>(undefined);
@@ -338,6 +339,8 @@ export function Connectors() {
           Gmail, Drive, Calendar and Contacts actions.
         </p>
       </div>
+
+      <AdditionalConnectors />
     </>
   );
 }
