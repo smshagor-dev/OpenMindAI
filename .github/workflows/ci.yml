@@ -8,123 +8,13 @@ on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  finalize-chat:
-    name: Finalize chat integrity patch
-    if: github.event_name == 'pull_request' && github.head_ref == 'chat-production-readiness'
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout PR head
-        uses: actions/checkout@v4
-        with:
-          ref: chat-production-readiness
-          fetch-depth: 0
-
-      - name: Install Rust formatter
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-
-      - name: Apply final chat patches
-        shell: python
-        run: |
-          from pathlib import Path
-
-          app = Path("src/App.tsx")
-          text = app.read_text(encoding="utf-8")
-          old = '''        const branch = messages.slice(targetIndex);
-          editedBranchChanged = branch.length > 0;
-          for (const message of branch.slice().reverse()) {
-            await api.deleteMessage(message.id);
-          }
-          setMessages((items) => {
-'''
-          new = '''        const branch = messages.slice(targetIndex);
-          editedBranchChanged = branch.length > 0;
-          // Deleting the edited user turn performs one repository-level branch
-          // truncation. Multiple deletes could leave partial history on crash.
-          await api.deleteMessage(editTargetId);
-          setMessages((items) => {
-'''
-          if old not in text:
-              raise SystemExit("App.tsx edit/resend snippet not found")
-          app.write_text(text.replace(old, new, 1), encoding="utf-8")
-
-          lib = Path("src-tauri/src/lib.rs")
-          text = lib.read_text(encoding="utf-8")
-          old = '''#[tauri::command]
-fn delete_conversation(id: String, state: State<AppState>) -> Result<(), app_error::AppError> {
-    let db = state
-        .database
-        .lock()
-        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-    ChatRepository::new(&db).delete_conversation(&id)
-}
-'''
-          new = '''#[tauri::command]
-fn delete_conversation(id: String, state: State<AppState>) -> Result<(), app_error::AppError> {
-    // SQLite cascades relational rows, while generated artifact files live on
-    // disk. Capture their guarded relative paths before the cascade, delete
-    // the conversation, then remove those files so Library data cannot leave
-    // unreferenced generated output behind.
-    let artifact_paths = {
-        let db = state
-            .database
-            .lock()
-            .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-        let artifact_paths = ArtifactRepository::new(&db)
-            .list_for_conversation(&id)?
-            .into_iter()
-            .map(|artifact| artifact.path)
-            .collect::<Vec<_>>();
-        ChatRepository::new(&db).delete_conversation(&id)?;
-        artifact_paths
-    };
-
-    for relative in artifact_paths {
-        match state.root.resolve_relative(&relative) {
-            Ok(path) if path.is_file() => {
-                if let Err(error) = std::fs::remove_file(&path) {
-                    tracing::warn!(path = %path.display(), %error, "could not remove deleted chat artifact file");
-                }
-            }
-            Ok(_) => {}
-            Err(error) => {
-                tracing::warn!(path = %relative, %error, "ignored invalid deleted chat artifact path");
-            }
-        }
-    }
-    Ok(())
-}
-'''
-          if old not in text:
-              raise SystemExit("lib.rs delete_conversation snippet not found")
-          lib.write_text(text.replace(old, new, 1), encoding="utf-8")
-
-      - name: Format and validate
-        run: |
-          cargo fmt --manifest-path src-tauri/Cargo.toml
-          git diff --check
-          grep -q "await api.deleteMessage(editTargetId);" src/App.tsx
-          grep -q "could not remove deleted chat artifact file" src-tauri/src/lib.rs
-
-      - name: Restore workflows and push finalized source
-        run: |
-          git config user.name "OpenMindAI CI"
-          git config user.email "actions@users.noreply.github.com"
-          git fetch origin main
-          git checkout origin/main -- .github/workflows/ci.yml
-          git rm -f .github/workflows/chat-finalize.yml || true
-          git add src/App.tsx src-tauri/src/lib.rs src-tauri/src/chat.rs .github/workflows/ci.yml
-          git commit -m "fix(chat): finalize atomic edit and artifact cleanup"
-          git push origin HEAD:chat-production-readiness
-
   frontend:
     name: Frontend validation
     runs-on: ubuntu-latest
