@@ -880,3 +880,125 @@
     grid-row: 1;
   }
 }
+
+
+/* v3 Project Work content area */
+.project-content-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+  margin: 0 0 14px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface-2);
+}
+
+.project-content-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.project-content-tabs button:hover {
+  color: var(--text);
+}
+
+.project-content-tabs button.active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 12%);
+}
+
+.project-work-pane {
+  display: grid;
+  gap: 14px;
+}
+
+.project-work-agent-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 15px 16px;
+}
+
+.project-work-agent-copy {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.project-work-agent-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  color: var(--accent);
+}
+
+.project-work-agent-card h3 {
+  margin: 2px 0 4px;
+  font-size: 15px;
+}
+
+.project-work-agent-card p {
+  max-width: 720px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.project-work-agent-actions {
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.project-work-agent-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.project-work-ready,
+.project-work-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.project-work-ready {
+  color: var(--success, #35a269);
+}
+
+@media (max-width: 820px) {
+  .project-work-agent-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .project-work-agent-actions {
+    align-items: flex-start;
+  }
+}

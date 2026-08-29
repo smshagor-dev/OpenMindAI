@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Bot,
+  BriefcaseBusiness,
   CheckCircle2,
   Clock3,
   FilePlus2,
@@ -33,6 +35,7 @@ export function ProjectsWorkspace(props: {
 }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [activePane, setActivePane] = useState<"overview" | "work">("overview");
   const [draftName, setDraftName] = useState("");
   const [linkSearch, setLinkSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -161,6 +164,15 @@ export function ProjectsWorkspace(props: {
       return created;
     });
     if (conversation) props.onOpenConversation(conversation.id);
+  };
+
+  const openAgentChat = async () => {
+    const existing = projectConversations[0];
+    if (existing) {
+      props.onOpenConversation(existing.id);
+      return;
+    }
+    await createChat();
   };
 
   const linkConversation = async (conversationId: string) => {
@@ -299,9 +311,9 @@ export function ProjectsWorkspace(props: {
         <OpenFolderProjectButton
           disabled={busy}
           onCreateProjectChat={props.onCreateProjectChat}
-          onCreated={async (project, conversation) => {
+          onCreated={async (project) => {
             await refreshProjects(project.id);
-            props.onOpenConversation(conversation.id);
+            setActivePane("work");
           }}
           onError={setError}
         />
@@ -326,6 +338,7 @@ export function ProjectsWorkspace(props: {
                   setActiveId(project.id);
                   setLinkSearch("");
                   setSavedAt(null);
+                  setActivePane("overview");
                   setError(null);
                 }}
               >
@@ -418,6 +431,29 @@ export function ProjectsWorkspace(props: {
               </div>
             </header>
 
+            <div className="project-content-tabs" role="tablist" aria-label="Project content">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activePane === "overview"}
+                className={activePane === "overview" ? "active" : ""}
+                onClick={() => setActivePane("overview")}
+              >
+                <FolderKanban size={15} /> Overview
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activePane === "work"}
+                className={activePane === "work" ? "active" : ""}
+                onClick={() => setActivePane("work")}
+              >
+                <BriefcaseBusiness size={15} /> Work
+              </button>
+            </div>
+
+            {activePane === "overview" ? (
+              <>
             <section className="project-card project-instructions-card">
               <div className="project-card-heading">
                 <div>
@@ -595,8 +631,33 @@ export function ProjectsWorkspace(props: {
                 </div>
               </section>
             </div>
+              </>
+            ) : (
+              <div className="project-work-pane">
+                <section className="project-card project-work-agent-card">
+                  <div className="project-work-agent-copy">
+                    <span className="project-work-agent-icon"><Bot size={19} /></span>
+                    <div>
+                      <span className="tools-eyebrow">Autonomous project agent</span>
+                      <h3>Work on the attached project</h3>
+                      <p>Ask OpenMindAI to inspect code, edit files, run permitted terminal commands, recover from failures, and validate the result before it reports completion.</p>
+                    </div>
+                  </div>
+                  <div className="project-work-agent-actions">
+                    <span className={projectConversations.length ? "project-work-ready" : "project-work-pending"}>
+                      {projectConversations.length ? <CheckCircle2 size={13} /> : <Sparkles size={13} />}
+                      {projectConversations.length ? `${projectConversations.length} linked chat${projectConversations.length === 1 ? "" : "s"}` : "Agent chat will be created"}
+                    </span>
+                    <button type="button" className="primary-button" disabled={busy} onClick={() => void openAgentChat()}>
+                      {busyAction === "create-chat" ? <LoaderCircle className="spin" size={15} /> : <MessageSquarePlus size={15} />}
+                      {projectConversations.length ? "Open agent chat" : "Start agent chat"}
+                    </button>
+                  </div>
+                </section>
 
-            <ProjectLocalWorkspace projectId={activeProject.id} projectName={activeProject.name} />
+                <ProjectLocalWorkspace projectId={activeProject.id} projectName={activeProject.name} />
+              </div>
+            )}
           </>
         ) : (
           <div className="project-empty project-empty-v2">

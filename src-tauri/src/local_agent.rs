@@ -235,6 +235,7 @@ async fn run_agent_message(
     let mut identical_action_repeats = 0usize;
     let mut validation_required = false;
     let mut validation_deferrals = 0usize;
+    let mut last_validation_command: Option<String> = None;
     let mut status = "completed";
     let intro = format!(
         "Project Agent started for **{}**. I can inspect and change the attached workspace{}.",
@@ -298,12 +299,18 @@ async fn run_agent_message(
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .filter(|value| !value.is_empty());
+                let validation_skip_allowed = validation_skip_reason.is_some()
+                    && !workspace_has_validation_targets(&agent_context.workspace);
                 if validation_required
                     && agent_context.workspace.full_pc_access
-                    && validation_skip_reason.is_none()
+                    && !validation_skip_allowed
                 {
                     validation_deferrals += 1;
-                    let requirement = "HOST REQUIREMENT: workspace files changed after the last successful validation. Run an appropriate test/build/lint/check command before finalizing. If no meaningful validation exists for this task, return final with a concise validationSkippedReason.";
+                    let requirement = if workspace_has_validation_targets(&agent_context.workspace) {
+                        "HOST REQUIREMENT: workspace files changed after the last successful validation and this project contains a recognized build/test manifest. Run an appropriate test/build/lint/check command before finalizing; validationSkippedReason is not accepted for this workspace."
+                    } else {
+                        "HOST REQUIREMENT: workspace files changed after the last successful validation. Run an appropriate test/build/lint/check command before finalizing. Only when no meaningful automated validation exists may final include a concise validationSkippedReason."
+                    };
                     emit_agent_chunk(
                         app,
                         state,
@@ -327,12 +334,23 @@ async fn run_agent_message(
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                     .unwrap_or("Task completed.");
+                let mut completion = message.to_string();
+                if let Some(command) = last_validation_command.as_deref() {
+                    completion.push_str(&format!("\n\nValidation: `{}` passed.", one_line(command, 240)));
+                } else if validation_required && validation_skip_allowed {
+                    if let Some(reason) = validation_skip_reason {
+                        completion.push_str(&format!(
+                            "\n\nValidation: skipped because {}",
+                            one_line(reason, 320)
+                        ));
+                    }
+                }
                 emit_agent_chunk(
                     app,
                     state,
                     conversation_id,
                     &assistant.id,
-                    &format!("\n{message}"),
+                    &format!("\n{completion}"),
                 )?;
                 return Ok(());
             }
@@ -391,26 +409,49 @@ async fn run_agent_message(
             match result {
                 Ok(outcome) => {
                     consecutive_failures = 0;
-                    if tool_mutates_workspace(tool) {
-                        validation_required = true;
-                        validation_deferrals = 0;
+                    let mut workspace_changed = tool_mutates_workspace(tool);
+                    let mut successful_validation: Option<String> = None;
+
+                    if tool == "terminal" {
+                        if let Some(command) = optional_string(&decision, "command") {
+                            if is_validation_command(&command) {
+                                successful_validation = Some(command);
+                            } else if terminal_command_may_mutate_workspace(&command) {
+                                workspace_changed = true;
+                            }
+                        }
                         if let Err(error) = refresh_agent_workspace_context(state, &mut agent_context) {
                             push_transcript(
                                 &mut transcript,
                                 format!(
-                                    "HOST WARNING: workspace changed successfully, but the automatic workspace snapshot refresh failed: {}",
+                                    "HOST WARNING: terminal action completed, but the automatic workspace snapshot refresh failed: {}",
                                     one_line(&error.to_string(), 700)
                                 ),
                             );
                         }
                     }
-                    if tool == "terminal" {
-                        if let Some(command) = optional_string(&decision, "command") {
-                            if is_validation_command(&command) {
-                                validation_required = false;
-                                validation_deferrals = 0;
+
+                    if workspace_changed {
+                        validation_required = true;
+                        validation_deferrals = 0;
+                        last_validation_command = None;
+                        if tool != "terminal" {
+                            if let Err(error) = refresh_agent_workspace_context(state, &mut agent_context) {
+                                push_transcript(
+                                    &mut transcript,
+                                    format!(
+                                        "HOST WARNING: workspace changed successfully, but the automatic workspace snapshot refresh failed: {}",
+                                        one_line(&error.to_string(), 700)
+                                    ),
+                                );
                             }
                         }
+                    }
+
+                    if let Some(command) = successful_validation {
+                        validation_required = false;
+                        validation_deferrals = 0;
+                        last_validation_command = Some(command);
                     }
                     emit_agent_chunk(
                         app,
@@ -618,6 +659,7 @@ Rules:\n\
 - A terminal timeout or non-zero exit is a failed tool action even when stdout/stderr is available; use that output to recover.\n\
 - Do not repeat an identical failed tool action. Inspect more context or choose a different recovery action.\n\
 - For dependency installs or heavy builds, set timeoutSec as needed up to 600 seconds. Avoid interactive prompts, pagers, editors, sudo/password prompts, and commands that wait for user input.\n\
+- Terminal actions that can change files (dependency installs, code generation, formatters without a check flag, migration/build scripts, Git checkout/apply operations) make earlier validation stale; validate again after them.\n\
 - Follow the host shell syntax described below; do not assume Bash on Windows or PowerShell on macOS/Linux.\n\
 - After changing workspace files, do not finalize before a successful applicable validation. Only use validationSkippedReason when no meaningful automated validation exists for the change.\n\
 - Never claim a command/test passed unless a tool result showed it.\n\
@@ -1622,6 +1664,101 @@ fn tool_mutates_workspace(tool: &str) -> bool {
     )
 }
 
+fn terminal_command_may_mutate_workspace(command: &str) -> bool {
+    let command = command.trim().to_ascii_lowercase();
+    if command.is_empty() {
+        return false;
+    }
+    let mutation_markers = [">", "out-file", "set-content", "add-content", "tee "];
+    if mutation_markers
+        .iter()
+        .any(|marker| command.contains(marker))
+    {
+        return true;
+    }
+    let read_only_prefixes = [
+        "pwd",
+        "ls",
+        "dir",
+        "get-childitem",
+        "cat ",
+        "type ",
+        "get-content",
+        "rg ",
+        "grep ",
+        "findstr ",
+        "where ",
+        "which ",
+        "git status",
+        "git diff",
+        "git log",
+        "git show",
+        "git branch --show-current",
+        "node --version",
+        "npm --version",
+        "pnpm --version",
+        "yarn --version",
+        "cargo --version",
+        "rustc --version",
+        "python --version",
+        "python3 --version",
+        "go version",
+    ];
+    !read_only_prefixes
+        .iter()
+        .any(|prefix| command == *prefix || command.starts_with(prefix))
+}
+
+fn workspace_has_validation_targets(config: &AgentWorkspaceConfig) -> bool {
+    config
+        .roots
+        .iter()
+        .any(|root| validation_target_in_directory(Path::new(&root.path), 0))
+}
+
+fn validation_target_in_directory(path: &Path, depth: usize) -> bool {
+    if depth > 2 {
+        return false;
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return false;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let path = entry.path();
+        if path.is_file() && is_validation_manifest_name(&name) {
+            return true;
+        }
+        if depth < 2
+            && path.is_dir()
+            && !should_skip_name(&name)
+            && validation_target_in_directory(&path, depth + 1)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_validation_manifest_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "package.json"
+            | "cargo.toml"
+            | "pyproject.toml"
+            | "pytest.ini"
+            | "tox.ini"
+            | "go.mod"
+            | "pom.xml"
+            | "build.gradle"
+            | "build.gradle.kts"
+            | "composer.json"
+            | "gemfile"
+    ) || name.ends_with(".csproj")
+        || name.ends_with(".sln")
+}
+
 fn is_validation_command(command: &str) -> bool {
     let command = command.to_ascii_lowercase();
     if command.contains("&&")
@@ -1762,6 +1899,27 @@ mod tests {
         assert!(!is_validation_command("npm run lint && npm run build"));
         assert!(!is_validation_command("npm test; exit 0"));
         assert!(!is_validation_command("npm install"));
+    }
+
+    #[test]
+    fn classifies_terminal_workspace_mutation_conservatively() {
+        assert!(!terminal_command_may_mutate_workspace("git status --short"));
+        assert!(!terminal_command_may_mutate_workspace("rg TODO src"));
+        assert!(terminal_command_may_mutate_workspace("npm install"));
+        assert!(terminal_command_may_mutate_workspace(
+            "python scripts/codegen.py"
+        ));
+        assert!(terminal_command_may_mutate_workspace(
+            "git diff > patch.txt"
+        ));
+    }
+
+    #[test]
+    fn recognizes_validation_manifests() {
+        assert!(is_validation_manifest_name("package.json"));
+        assert!(is_validation_manifest_name("Cargo.toml"));
+        assert!(is_validation_manifest_name("OpenMindAI.csproj"));
+        assert!(!is_validation_manifest_name("README.md"));
     }
 
     #[test]
