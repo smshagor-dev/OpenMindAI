@@ -233,16 +233,20 @@ async fn run_connected_message(
                     bounded(&result.to_string(), MAX_TOOL_RESULT_CHARS)
                 ),
             );
+            let recent_chat = conversation_context(state, conversation_id)?;
+            let project = project_context(state, conversation_id)?;
             let decision = request_agent_decision(
                 &state.http,
-                &endpoint,
-                content,
-                action_catalog,
-                &conversation_context(state, conversation_id)?,
-                &project_context(state, conversation_id)?,
-                &transcript,
-                0,
-                false,
+                AgentDecisionRequest {
+                    endpoint: &endpoint,
+                    goal: content,
+                    action_catalog,
+                    recent_chat: &recent_chat,
+                    project_context: &project,
+                    transcript: &transcript,
+                    step: 0,
+                    allow_tools: false,
+                },
             )
             .await?;
             let message = final_message(&decision).unwrap_or_else(|| {
@@ -273,14 +277,16 @@ async fn run_connected_message(
             let decision = tokio::select! {
                 result = request_agent_decision(
                     &state.http,
-                    &endpoint,
-                    content,
-                    action_catalog,
-                    &recent_chat,
-                    &project,
-                    &transcript,
-                    step,
-                    true,
+                    AgentDecisionRequest {
+                        endpoint: &endpoint,
+                        goal: content,
+                        action_catalog,
+                        recent_chat: &recent_chat,
+                        project_context: &project,
+                        transcript: &transcript,
+                        step,
+                        allow_tools: true,
+                    },
                 ) => result?,
                 _ = cancellation.cancelled() => {
                     emit_agent_chunk(app, state, conversation_id, &assistant.id, "Connected-app request cancelled.")?;
@@ -406,7 +412,7 @@ async fn run_connected_message(
 
 fn ensure_model_endpoint(
     state: &State<'_, AppState>,
-    model: &crate::models::ModelRecord,
+    model: &crate::model_registry::ModelRecord,
 ) -> Result<String, AppError> {
     let hardware = state.hardware.clone();
     let plan = ModelLaunchPlanner::plan(model, &hardware, allocate_local_port()?);
@@ -461,17 +467,31 @@ fn ensure_catalog_action(
     }
 }
 
-async fn request_agent_decision(
-    client: &reqwest::Client,
-    endpoint: &str,
-    goal: &str,
-    action_catalog: &[ConnectedActionDefinition],
-    recent_chat: &str,
-    project_context: &str,
-    transcript: &VecDeque<String>,
+struct AgentDecisionRequest<'a> {
+    endpoint: &'a str,
+    goal: &'a str,
+    action_catalog: &'a [ConnectedActionDefinition],
+    recent_chat: &'a str,
+    project_context: &'a str,
+    transcript: &'a VecDeque<String>,
     step: usize,
     allow_tools: bool,
+}
+
+async fn request_agent_decision(
+    client: &reqwest::Client,
+    request: AgentDecisionRequest<'_>,
 ) -> Result<Value, AppError> {
+    let AgentDecisionRequest {
+        endpoint,
+        goal,
+        action_catalog,
+        recent_chat,
+        project_context,
+        transcript,
+        step,
+        allow_tools,
+    } = request;
     let catalog = action_catalog
         .iter()
         .map(|item| {
