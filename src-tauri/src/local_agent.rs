@@ -2,10 +2,9 @@ use std::{
     collections::VecDeque,
     fs,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
-use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -91,7 +90,8 @@ pub fn project_agent_status_for_conversation(
         .database
         .lock()
         .map_err(|_| AppError::internal("database lock poisoned"))?;
-    let Some(project) = ProjectRepository::new(&db).project_for_conversation(&conversation_id)? else {
+    let Some(project) = ProjectRepository::new(&db).project_for_conversation(&conversation_id)?
+    else {
         return Ok(ProjectAgentStatus {
             available: false,
             project_id: None,
@@ -201,19 +201,14 @@ async fn run_agent_message(
     };
 
     let cancellation = state.active_generations.start(conversation_id)?;
-    let (user, assistant) = match create_agent_messages(
-        state,
-        conversation_id,
-        content,
-        &model.id,
-        existing_user,
-    ) {
-        Ok(messages) => messages,
-        Err(error) => {
-            state.active_generations.finish(conversation_id);
-            return Err(error);
-        }
-    };
+    let (user, assistant) =
+        match create_agent_messages(state, conversation_id, content, &model.id, existing_user) {
+            Ok(messages) => messages,
+            Err(error) => {
+                state.active_generations.finish(conversation_id);
+                return Err(error);
+            }
+        };
 
     if let Err(error) = app.emit(
         "inference:started",
@@ -241,7 +236,13 @@ async fn run_agent_message(
             "; terminal commands stay disabled until Full PC + Terminal access is enabled"
         }
     );
-    emit_agent_chunk(app, state, conversation_id, &assistant.id, &format!("{intro}\n\n"))?;
+    emit_agent_chunk(
+        app,
+        state,
+        conversation_id,
+        &assistant.id,
+        &format!("{intro}\n\n"),
+    )?;
 
     let loop_result = async {
         for step in 0..MAX_AGENT_STEPS {
@@ -494,12 +495,13 @@ Attached roots:\n{root_summary}"
         .json(&body)
         .send()
         .await
-        .map_err(|error| AppError::InferenceFailed(format!("agent model request failed: {error}")))?;
+        .map_err(|error| {
+            AppError::InferenceFailed(format!("agent model request failed: {error}"))
+        })?;
     let status = response.status();
-    let payload: Value = response
-        .json()
-        .await
-        .map_err(|error| AppError::InferenceFailed(format!("invalid agent model response: {error}")))?;
+    let payload: Value = response.json().await.map_err(|error| {
+        AppError::InferenceFailed(format!("invalid agent model response: {error}"))
+    })?;
     if !status.is_success() {
         return Err(AppError::InferenceFailed(format!(
             "agent model returned HTTP {status}: {}",
@@ -509,7 +511,9 @@ Attached roots:\n{root_summary}"
     let content = payload
         .pointer("/choices/0/message/content")
         .and_then(Value::as_str)
-        .ok_or_else(|| AppError::InferenceFailed("agent model returned no message content".to_string()))?;
+        .ok_or_else(|| {
+            AppError::InferenceFailed("agent model returned no message content".to_string())
+        })?;
     if content.chars().count() > MAX_MODEL_RESPONSE_CHARS {
         return Err(AppError::InferenceFailed(
             "agent model response exceeded the safety limit".to_string(),
@@ -565,7 +569,10 @@ async fn execute_tool(
             });
             Ok(AgentTurnResult {
                 trace_label: format!("Listed {}", display_path(&directory)),
-                transcript_result: bounded(&Value::Array(entries).to_string(), MAX_TOOL_RESULT_CHARS),
+                transcript_result: bounded(
+                    &Value::Array(entries).to_string(),
+                    MAX_TOOL_RESULT_CHARS,
+                ),
             })
         }
         "read_file" => {
@@ -577,7 +584,9 @@ async fn execute_tool(
             }
             let metadata = fs::metadata(&file)?;
             if metadata.len() > MAX_READ_FILE_BYTES {
-                return Err(AppError::internal("file exceeds the Project Agent read limit"));
+                return Err(AppError::internal(
+                    "file exceeds the Project Agent read limit",
+                ));
             }
             let content = fs::read_to_string(&file)
                 .map_err(|_| AppError::internal("read_file supports UTF-8 text files only"))?;
@@ -628,7 +637,9 @@ async fn execute_tool(
             let path = required_string(action, "path")?;
             let content = required_string(action, "content")?;
             if content.chars().count() > MAX_WRITE_CHARS {
-                return Err(AppError::internal("write_file content exceeds the safety limit"));
+                return Err(AppError::internal(
+                    "write_file content exceeds the safety limit",
+                ));
             }
             let file = resolve_agent_path(config, root_id.as_deref(), &path, false)?;
             if file.exists() && file.is_dir() {
@@ -640,7 +651,11 @@ async fn execute_tool(
             fs::write(&file, content.as_bytes())?;
             Ok(AgentTurnResult {
                 trace_label: format!("Wrote {}", display_path(&file)),
-                transcript_result: format!("ok path={} chars={}", display_path(&file), content.chars().count()),
+                transcript_result: format!(
+                    "ok path={} chars={}",
+                    display_path(&file),
+                    content.chars().count()
+                ),
             })
         }
         "replace_text" => {
@@ -701,7 +716,11 @@ async fn execute_tool(
             }
             fs::rename(&source, &target)?;
             Ok(AgentTurnResult {
-                trace_label: format!("Moved {} → {}", display_path(&source), display_path(&target)),
+                trace_label: format!(
+                    "Moved {} → {}",
+                    display_path(&source),
+                    display_path(&target)
+                ),
                 transcript_result: format!("ok target={}", display_path(&target)),
             })
         }
@@ -750,7 +769,9 @@ async fn execute_tool(
                 ),
             })
         }
-        other => Err(AppError::internal(format!("unknown Project Agent tool: {other}"))),
+        other => Err(AppError::internal(format!(
+            "unknown Project Agent tool: {other}"
+        ))),
     }
 }
 
@@ -774,7 +795,9 @@ async fn run_terminal(
         return Err(AppError::internal("terminal command cannot be empty"));
     }
     if command.chars().count() > MAX_TERMINAL_COMMAND_CHARS {
-        return Err(AppError::internal("terminal command exceeds the safety limit"));
+        return Err(AppError::internal(
+            "terminal command exceeds the safety limit",
+        ));
     }
     reject_catastrophic_command(command)?;
 
@@ -784,28 +807,28 @@ async fn run_terminal(
         resolve_agent_path(config, root_id, cwd, true)?
     };
     if !start_dir.is_dir() {
-        return Err(AppError::internal("terminal working directory is not a directory"));
+        return Err(AppError::internal(
+            "terminal working directory is not a directory",
+        ));
     }
 
     let mut process = terminal_process(command, &start_dir);
     process.kill_on_drop(true);
-    let output = match tokio::time::timeout(
-        Duration::from_secs(TERMINAL_TIMEOUT_SECS),
-        process.output(),
-    )
-    .await
-    {
-        Ok(result) => result?,
-        Err(_) => {
-            return Ok(AgentTerminalResult {
-                cwd: display_path(&start_dir),
-                exit_code: -1,
-                stdout: String::new(),
-                stderr: format!("Command timed out after {TERMINAL_TIMEOUT_SECS} seconds."),
-                timed_out: true,
-            });
-        }
-    };
+    let output =
+        match tokio::time::timeout(Duration::from_secs(TERMINAL_TIMEOUT_SECS), process.output())
+            .await
+        {
+            Ok(result) => result?,
+            Err(_) => {
+                return Ok(AgentTerminalResult {
+                    cwd: display_path(&start_dir),
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: format!("Command timed out after {TERMINAL_TIMEOUT_SECS} seconds."),
+                    timed_out: true,
+                });
+            }
+        };
     let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     let resolved_cwd = take_terminal_cwd(&mut stdout).unwrap_or_else(|| display_path(&start_dir));
@@ -842,7 +865,9 @@ fn search_workspace(
         }
     }
     if roots.is_empty() {
-        return Err(AppError::internal("no searchable workspace root is available"));
+        return Err(AppError::internal(
+            "no searchable workspace root is available",
+        ));
     }
 
     let needle = query.to_lowercase();
@@ -881,11 +906,15 @@ fn search_path_recursive(
     }
     if path.is_file() {
         *files_seen += 1;
-        let Ok(metadata) = fs::metadata(path) else { return };
+        let Ok(metadata) = fs::metadata(path) else {
+            return;
+        };
         if metadata.len() > 1_000_000 {
             return;
         }
-        let Ok(content) = fs::read_to_string(path) else { return };
+        let Ok(content) = fs::read_to_string(path) else {
+            return;
+        };
         for (index, line) in content.lines().enumerate() {
             if line.to_lowercase().contains(needle) {
                 matches.push(format!(
@@ -904,7 +933,9 @@ fn search_path_recursive(
     if !path.is_dir() {
         return;
     }
-    let Ok(entries) = fs::read_dir(path) else { return };
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
     for entry in entries.filter_map(Result::ok) {
         if *files_seen >= max_files || matches.len() >= max_matches {
             break;
@@ -1003,7 +1034,11 @@ fn resolve_agent_path(
     if raw.contains('\0') {
         return Err(AppError::internal("path contains a null character"));
     }
-    let supplied = if raw.is_empty() { Path::new(".") } else { Path::new(raw) };
+    let supplied = if raw.is_empty() {
+        Path::new(".")
+    } else {
+        Path::new(raw)
+    };
     let (candidate, scoped_root) = if supplied.is_absolute() {
         if !config.full_pc_access {
             return Err(AppError::internal(
@@ -1031,7 +1066,9 @@ fn resolve_agent_path(
             canonical_existing_parent(&resolved)?
         };
         if !security_path.starts_with(&root) {
-            return Err(AppError::internal("Project Agent path escaped the attached folder"));
+            return Err(AppError::internal(
+                "Project Agent path escaped the attached folder",
+            ));
         }
     }
     Ok(resolved)
@@ -1241,9 +1278,8 @@ fn parse_agent_json(content: &str) -> Result<Value, AppError> {
             one_line(content, 600)
         ))
     })?;
-    serde_json::from_str::<Value>(&object).map_err(|error| {
-        AppError::InferenceFailed(format!("invalid Project Agent JSON: {error}"))
-    })
+    serde_json::from_str::<Value>(&object)
+        .map_err(|error| AppError::InferenceFailed(format!("invalid Project Agent JSON: {error}")))
 }
 
 fn extract_first_json_object(input: &str) -> Option<String> {
@@ -1302,7 +1338,10 @@ fn compact_json(value: &Value) -> String {
 fn push_transcript(transcript: &mut VecDeque<String>, entry: String) {
     transcript.push_back(bounded(&entry, MAX_TOOL_RESULT_CHARS + 4_000));
     while transcript.len() > 6
-        || transcript.iter().map(|item| item.chars().count()).sum::<usize>()
+        || transcript
+            .iter()
+            .map(|item| item.chars().count())
+            .sum::<usize>()
             > MAX_TRANSCRIPT_CHARS
     {
         transcript.pop_front();
@@ -1334,8 +1373,10 @@ mod tests {
 
     #[test]
     fn extracts_json_after_model_noise() {
-        let value = extract_first_json_object("<think>hidden</think>\n{\"type\":\"final\",\"message\":\"ok\"}")
-            .unwrap();
+        let value = extract_first_json_object(
+            "<think>hidden</think>\n{\"type\":\"final\",\"message\":\"ok\"}",
+        )
+        .unwrap();
         assert_eq!(value, "{\"type\":\"final\",\"message\":\"ok\"}");
     }
 
