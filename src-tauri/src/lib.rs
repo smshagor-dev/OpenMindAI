@@ -15,7 +15,8 @@ macro_rules! openmind_generate_handler {
             google_workspace_status,
             disconnect_google_workspace,
             execute_google_workspace_action,
-            execute_github_workspace_action
+            execute_github_workspace_action,
+            plan_connected_action
         ]
     };
 }
@@ -25,6 +26,7 @@ mod tauri {
     pub use crate::tauri_crate::*;
 }
 
+mod connected_agent;
 mod github_workspace;
 mod google_workspace;
 mod multimodal;
@@ -32,6 +34,7 @@ mod pdf_ocr;
 mod speech_runtime;
 mod vision_batch;
 
+pub(crate) use connected_agent::plan_connected_action;
 pub(crate) use github_workspace::execute_github_workspace_action;
 pub(crate) use google_workspace::{
     connect_google_workspace, disconnect_google_workspace, execute_google_workspace_action,
