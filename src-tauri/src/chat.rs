@@ -108,17 +108,23 @@ impl<'a> ChatRepository<'a> {
 
     pub fn archive_conversation(&self, id: &str) -> Result<(), AppError> {
         let now = Utc::now().to_rfc3339();
-        self.database.connection().execute(
+        self.touch_conversation_with(
+            id,
             "UPDATE conversations SET archived_at = ?1, updated_at = ?1 WHERE id = ?2",
             params![now, id],
-        )?;
-        Ok(())
+        )
     }
 
     pub fn delete_conversation(&self, id: &str) -> Result<(), AppError> {
-        self.database
+        let changed = self
+            .database
             .connection()
             .execute("DELETE FROM conversations WHERE id = ?1", params![id])?;
+        if changed == 0 {
+            return Err(AppError::internal(format!(
+                "conversation not found: {id}"
+            )));
+        }
         Ok(())
     }
 
@@ -141,6 +147,9 @@ impl<'a> ChatRepository<'a> {
         status: &str,
         model_id: Option<&str>,
     ) -> Result<Message, AppError> {
+        validate_message_role(role)?;
+        validate_message_status(status)?;
+
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         self.database.connection().execute(
@@ -203,24 +212,29 @@ impl<'a> ChatRepository<'a> {
 
     pub fn append_message_chunk(&self, message_id: &str, chunk: &str) -> Result<(), AppError> {
         let now = Utc::now().to_rfc3339();
-        self.database.connection().execute(
+        let changed = self.database.connection().execute(
             "UPDATE messages SET content = content || ?1, updated_at = ?2 WHERE id = ?3",
             params![chunk, now, message_id],
         )?;
+        if changed == 0 {
+            return Err(AppError::internal(format!(
+                "message not found: {message_id}"
+            )));
+        }
         Ok(())
     }
 
     pub fn set_message_status(&self, message_id: &str, status: &str) -> Result<(), AppError> {
-        if !matches!(
-            status,
-            "completed" | "cancelled" | "failed" | "streaming" | "pending"
-        ) {
-            return Err(AppError::internal("invalid message status"));
-        }
-        self.database.connection().execute(
+        validate_message_status(status)?;
+        let changed = self.database.connection().execute(
             "UPDATE messages SET status = ?1, updated_at = ?2 WHERE id = ?3",
             params![status, Utc::now().to_rfc3339(), message_id],
         )?;
+        if changed == 0 {
+            return Err(AppError::internal(format!(
+                "message not found: {message_id}"
+            )));
+        }
         Ok(())
     }
 
@@ -238,12 +252,15 @@ impl<'a> ChatRepository<'a> {
     }
 
     fn find_message(&self, id: &str) -> Result<Message, AppError> {
-        self.database.connection().query_row(
-            "SELECT id, conversation_id, role, content, status, model_id, created_at, updated_at
+        self.database
+            .connection()
+            .query_row(
+                "SELECT id, conversation_id, role, content, status, model_id, created_at, updated_at
              FROM messages WHERE id = ?1",
-            params![id],
-            map_message,
-        ).map_err(AppError::from)
+                params![id],
+                map_message,
+            )
+            .map_err(AppError::from)
     }
 
     fn touch_conversation_with<P: rusqlite::Params>(
@@ -257,6 +274,25 @@ impl<'a> ChatRepository<'a> {
             return Err(AppError::internal(format!("conversation not found: {id}")));
         }
         Ok(())
+    }
+}
+
+fn validate_message_role(role: &str) -> Result<(), AppError> {
+    if matches!(role, "system" | "user" | "assistant" | "tool") {
+        Ok(())
+    } else {
+        Err(AppError::internal("invalid message role"))
+    }
+}
+
+fn validate_message_status(status: &str) -> Result<(), AppError> {
+    if matches!(
+        status,
+        "completed" | "cancelled" | "failed" | "streaming" | "pending"
+    ) {
+        Ok(())
+    } else {
+        Err(AppError::internal("invalid message status"))
     }
 }
 
@@ -322,6 +358,24 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_message_role_and_status() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let conversation = repo.create_conversation(Some("Validation")).unwrap();
+
+        assert!(matches!(
+            repo.add_message(&conversation.id, "invalid", "hello", "completed", None)
+                .unwrap_err(),
+            AppError::Internal(_)
+        ));
+        assert!(matches!(
+            repo.add_message(&conversation.id, "user", "hello", "unknown", None)
+                .unwrap_err(),
+            AppError::Internal(_)
+        ));
+    }
+
+    #[test]
     fn reloads_history_from_file_database() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("openmind_ai.db");
@@ -377,6 +431,21 @@ mod tests {
     }
 
     #[test]
+    fn missing_message_mutations_fail() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+
+        assert!(matches!(
+            repo.append_message_chunk("missing", "chunk").unwrap_err(),
+            AppError::Internal(_)
+        ));
+        assert!(matches!(
+            repo.set_message_status("missing", "failed").unwrap_err(),
+            AppError::Internal(_)
+        ));
+    }
+
+    #[test]
     fn delete_message_removes_row() {
         let database = Database::in_memory().unwrap();
         let repo = ChatRepository::new(&database);
@@ -411,5 +480,20 @@ mod tests {
 
         repo.delete_conversation(&conversation.id).unwrap();
         assert!(repo.list_messages(&conversation.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn missing_conversation_mutations_fail() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+
+        assert!(matches!(
+            repo.archive_conversation("missing").unwrap_err(),
+            AppError::Internal(_)
+        ));
+        assert!(matches!(
+            repo.delete_conversation("missing").unwrap_err(),
+            AppError::Internal(_)
+        ));
     }
 }
