@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
-import { Code2, FileSearch, FileText, HardDrive, Image, Video, Volume2 } from "lucide-react";
+import { Code2, FileSearch, FileText, HardDrive, Image, Music2, Video, Volume2 } from "lucide-react";
 import type {
   AppPreferences,
   Artifact,
@@ -20,6 +20,7 @@ const SUGGESTIONS = [
   { id: "image", label: "Generate an image", icon: Image, prompt: "Generate an image of: " },
   { id: "video", label: "Generate a video", icon: Video, prompt: "Generate a video of: " },
   { id: "voice", label: "Generate voice", icon: Volume2, prompt: "Generate a voice narration for: " },
+  { id: "sound", label: "Generate music or SFX", icon: Music2, prompt: "Generate music or sound effects: " },
   { id: "document", label: "Create a document or PDF", icon: FileText, prompt: "Create a document about: " },
   { id: "file", label: "Analyze a local file", icon: FileSearch, prompt: "Analyze this file: " },
 ];
@@ -141,8 +142,7 @@ export function ChatView(props: {
                 })}
               </div>
               <p className="chat-empty-footer">
-                <HardDrive size={13} /> Local-first workspace - chats, models and artifacts remain under the
-                portable root
+                <HardDrive size={13} /> Local-first workspace - chats, models and artifacts remain under the portable root
               </p>
             </div>
           </div>
@@ -157,27 +157,17 @@ export function ChatView(props: {
               onRegenerate={() => props.regenerate(message.id)}
               onRetry={() => props.retry(message.id)}
               artifacts={props.artifactsByMessage.get(message.id) ?? []}
-              onCreateArtifact={(kind, content, filenameHint) =>
-                props.onCreateArtifact(message.id, kind, content, filenameHint)
-              }
+              onCreateArtifact={(kind, content, filenameHint) => props.onCreateArtifact(message.id, kind, content, filenameHint)}
               onOpenArtifact={props.onOpenArtifact}
               onRevealArtifact={props.onRevealArtifact}
               onRetryArtifact={props.onRetryArtifact}
               onPreview={props.onPreview}
-              onEditUser={
-                message.role === "user"
-                  ? (content) => props.editUserMessage(message.id, content)
-                  : undefined
-              }
+              onEditUser={message.role === "user" ? (content) => props.editUserMessage(message.id, content) : undefined}
             />
           ))
         )}
         {!isEmpty &&
-        (props.submitting ||
-          props.streaming ||
-          props.activity.typing ||
-          props.activity.searching ||
-          props.activity.researching) &&
+        (props.submitting || props.streaming || props.activity.typing || props.activity.searching || props.activity.researching) &&
         props.preferences?.typingIndicatorEnabled ? (
           <div className="activity-row">
             <span className="pulse-dot" />
