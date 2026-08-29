@@ -24,14 +24,20 @@ fn agent_error(message: impl Into<String>) -> AppError {
 
 fn bounded(value: &str, max_chars: usize, label: &str) -> Result<String, AppError> {
     if value.chars().count() > max_chars {
-        return Err(agent_error(format!("{label} exceeds the {max_chars} character limit")));
+        return Err(agent_error(format!(
+            "{label} exceeds the {max_chars} character limit"
+        )));
     }
     Ok(value.to_string())
 }
 
 fn select_planner_model(models: &[ModelRecord]) -> Option<ModelRecord> {
     let ready = |model: &&ModelRecord| {
-        model.enabled && matches!(model.state, ModelLifecycleState::Ready | ModelLifecycleState::Loaded)
+        model.enabled
+            && matches!(
+                model.state,
+                ModelLifecycleState::Ready | ModelLifecycleState::Loaded
+            )
     };
     models
         .iter()
@@ -62,7 +68,10 @@ fn extract_json_object(content: &str) -> Result<Value, AppError> {
             .or_else(|| trimmed.strip_prefix("```"))
             .unwrap_or(trimmed)
             .trim_start();
-        without_open.strip_suffix("```").unwrap_or(without_open).trim()
+        without_open
+            .strip_suffix("```")
+            .unwrap_or(without_open)
+            .trim()
     } else {
         trimmed
     };
@@ -118,10 +127,16 @@ fn validate_plan(value: Value) -> Result<Value, AppError> {
                 return Err(agent_error("action planner response is missing 'action'"));
             }
             if !object.get("params").is_some_and(Value::is_object) {
-                return Err(agent_error("action planner response must include object 'params'"));
+                return Err(agent_error(
+                    "action planner response must include object 'params'",
+                ));
             }
         }
-        _ => return Err(agent_error("planner response type must be 'action' or 'final'")),
+        _ => {
+            return Err(agent_error(
+                "planner response type must be 'action' or 'final'",
+            ))
+        }
     }
     Ok(value)
 }
@@ -202,7 +217,9 @@ Do not use Markdown fences. Do not return multiple actions. Write operations wil
         .await
         .map_err(|error| agent_error(format!("local planner request failed: {error}")))?;
     if response.status() == StatusCode::SERVICE_UNAVAILABLE {
-        return Err(agent_error("local model server is busy; try the Work request again"));
+        return Err(agent_error(
+            "local model server is busy; try the Work request again",
+        ));
     }
     let response = response
         .error_for_status()
@@ -211,14 +228,18 @@ Do not use Markdown fences. Do not return multiple actions. Write operations wil
         .content_length()
         .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
     {
-        return Err(agent_error("local planner response exceeded the safety limit"));
+        return Err(agent_error(
+            "local planner response exceeded the safety limit",
+        ));
     }
     let bytes = response
         .bytes()
         .await
         .map_err(|error| agent_error(format!("could not read local planner response: {error}")))?;
     if bytes.len() > MAX_RESPONSE_BYTES {
-        return Err(agent_error("local planner response exceeded the safety limit"));
+        return Err(agent_error(
+            "local planner response exceeded the safety limit",
+        ));
     }
     let response_json: Value = serde_json::from_slice(&bytes)
         .map_err(|error| agent_error(format!("invalid local planner response: {error}")))?;
@@ -235,10 +256,8 @@ mod tests {
 
     #[test]
     fn planner_json_extraction_accepts_fenced_json() {
-        let value = extract_json_object(
-            "```json\n{\"type\":\"final\",\"message\":\"done\"}\n```",
-        )
-        .unwrap();
+        let value =
+            extract_json_object("```json\n{\"type\":\"final\",\"message\":\"done\"}\n```").unwrap();
         assert_eq!(value["type"], "final");
     }
 
