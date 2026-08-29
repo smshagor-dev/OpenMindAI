@@ -13,6 +13,19 @@ type VisualMedia = {
   dataUrl: string;
 };
 
+export type ConnectedAgentPlan =
+  | {
+      type: "action";
+      provider: "google" | "github";
+      action: string;
+      params: Record<string, unknown>;
+      reason?: string;
+    }
+  | {
+      type: "final";
+      message: string;
+    };
+
 function connectedInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri) {
     return Promise.reject(new Error("Connected Google/GitHub actions require the desktop app."));
@@ -143,5 +156,11 @@ export const api = {
       action,
       params,
       approved,
+    }),
+  planConnectedAction: (goal: string, transcript: string, actionCatalog: string) =>
+    connectedInvoke<ConnectedAgentPlan>("plan_connected_action", {
+      goal,
+      transcript,
+      actionCatalog,
     }),
 };
