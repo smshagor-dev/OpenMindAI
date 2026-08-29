@@ -25,6 +25,7 @@ export function Composer(props: {
   attachments: AttachmentDraft[];
   enterToSend: boolean;
   streaming: boolean;
+  submitting: boolean;
   addFiles: (files: FileList | null) => void;
   removeAttachment: (id: string) => void;
   sendMessage: () => void;
@@ -65,7 +66,7 @@ export function Composer(props: {
       className="composer"
       onSubmit={(event) => {
         event.preventDefault();
-        if (!canSend || props.streaming) return;
+        if (!canSend || props.streaming || props.submitting) return;
         void props.sendMessage();
       }}
     >
@@ -122,6 +123,7 @@ export function Composer(props: {
                 event.key === "Enter" &&
                 !event.shiftKey &&
                 !props.streaming &&
+                !props.submitting &&
                 canSend
               ) {
                 event.preventDefault();
@@ -145,7 +147,12 @@ export function Composer(props: {
                 <Square size={18} />
               </button>
             ) : (
-              <button type="submit" title="Send" className="composer-send" disabled={!canSend}>
+              <button
+                type="submit"
+                title={props.submitting ? "Preparing request" : "Send"}
+                className="composer-send"
+                disabled={!canSend || props.submitting}
+              >
                 <Send size={18} />
               </button>
             )}
