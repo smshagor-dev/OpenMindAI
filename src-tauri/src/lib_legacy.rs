@@ -412,6 +412,7 @@ fn delete_project(project_id: String, state: State<AppState>) -> Result<(), app_
     let repo = ProjectRepository::new(&db);
     let project = repo.find_project(&project_id)?;
     repo.delete_project(&project_id)?;
+    local_workspace::clear_project_workspace_config(&db, &project_id)?;
     let chats = ChatRepository::new(&db);
     for conversation_id in project.conversation_ids {
         chats.upsert_profile_context(&conversation_id, None)?;

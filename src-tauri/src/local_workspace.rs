@@ -26,11 +26,11 @@ const MAX_WRITE_CHARS: usize = 2_000_000;
 const MAX_TERMINAL_COMMAND_CHARS: usize = 12_000;
 const MAX_TERMINAL_OUTPUT_CHARS: usize = 200_000;
 const TERMINAL_TIMEOUT_SECS: u64 = 120;
-const WORKSPACE_CONTEXT_PATHS: usize = 120;
+const WORKSPACE_CONTEXT_PATHS: usize = 80;
 const WORKSPACE_CONTEXT_DEPTH: usize = 4;
 const WORKSPACE_CONTEXT_FILES: usize = 6;
-const WORKSPACE_CONTEXT_FILE_CHARS: usize = 3_000;
-const WORKSPACE_CONTEXT_TOTAL_CHARS: usize = 18_000;
+const WORKSPACE_CONTEXT_FILE_CHARS: usize = 1_200;
+const WORKSPACE_CONTEXT_TOTAL_CHARS: usize = 7_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -529,6 +529,17 @@ pub(crate) fn workspace_context_for_project(
     }
 
     Ok(Some(sections.join("\n\n")))
+}
+
+pub(crate) fn clear_project_workspace_config(
+    database: &Database,
+    project_id: &str,
+) -> Result<(), AppError> {
+    database.connection().execute(
+        "DELETE FROM app_settings WHERE key = ?1",
+        params![config_key(project_id)],
+    )?;
+    Ok(())
 }
 
 fn lock_database(state: &State<AppState>) -> Result<std::sync::MutexGuard<'_, Database>, AppError> {
