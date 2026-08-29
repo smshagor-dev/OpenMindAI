@@ -107,6 +107,10 @@ impl ActiveGenerations {
             tokens.remove(conversation_id);
         }
     }
+
+    pub fn is_idle(&self) -> bool {
+        self.tokens.lock().map_or(true, |tokens| tokens.is_empty())
+    }
 }
 
 pub struct StreamRequest<'a> {
@@ -183,6 +187,10 @@ pub async fn stream_chat_completion(
         "min_p": config.min_p,
         "max_tokens": config.max_tokens,
         "presence_penalty": config.presence_penalty,
+        // Keep llama-server's KV prompt cache enabled so the shared prefix of
+        // an ongoing conversation can be reused instead of fully prefilling
+        // it on every turn.
+        "cache_prompt": true,
         "chat_template_kwargs": {
             "enable_thinking": matches!(request.mode, InferenceMode::Thinking)
         }

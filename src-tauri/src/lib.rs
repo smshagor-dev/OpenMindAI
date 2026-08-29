@@ -60,6 +60,7 @@ mod multimodal;
 mod pdf_ocr;
 mod speech_runtime;
 mod vision_batch;
+mod warm_start;
 
 pub(crate) use connected_agent::{
     connected_app_agent_status_for_conversation, regenerate_connected_app_message,
