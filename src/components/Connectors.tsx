@@ -1,7 +1,8 @@
+import { Check, ChevronDown, ChevronRight, Chrome, Github, Loader2, Unplug } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Chrome, Github, Loader2 } from "lucide-react";
 import { api } from "../api";
 import type { GithubAccount, GithubIssue, GithubRepo, GoogleCredentialsStatus } from "../types";
+import type { GoogleWorkspaceStatus } from "../lib/connectedActions";
 import { formatError } from "../lib/format";
 
 export function Connectors() {
@@ -16,24 +17,31 @@ export function Connectors() {
   const [issuesLoading, setIssuesLoading] = useState<string | null>(null);
 
   const [googleStatus, setGoogleStatus] = useState<GoogleCredentialsStatus | null | undefined>(undefined);
+  const [googleWorkspace, setGoogleWorkspace] = useState<GoogleWorkspaceStatus | null>(null);
   const [clientIdInput, setClientIdInput] = useState("");
   const [clientSecretInput, setClientSecretInput] = useState("");
   const [googleSaving, setGoogleSaving] = useState(false);
+  const [googleConnecting, setGoogleConnecting] = useState(false);
   const [googleSaved, setGoogleSaved] = useState(false);
   const [googleError, setGoogleError] = useState<string | null>(null);
+
+  const refreshGoogle = async () => {
+    const [credentials, workspace] = await Promise.allSettled([
+      api.googleCredentials(),
+      api.googleWorkspaceStatus(),
+    ]);
+    const credentialStatus = credentials.status === "fulfilled" ? credentials.value : null;
+    setGoogleStatus(credentialStatus);
+    if (credentialStatus) setClientIdInput(credentialStatus.clientId);
+    setGoogleWorkspace(workspace.status === "fulfilled" ? workspace.value : null);
+  };
 
   useEffect(() => {
     api
       .githubAccount()
       .then(setAccount)
       .catch(() => setAccount(null));
-    api
-      .googleCredentials()
-      .then((status) => {
-        setGoogleStatus(status);
-        if (status) setClientIdInput(status.clientId);
-      })
-      .catch(() => setGoogleStatus(null));
+    void refreshGoogle();
   }, []);
 
   const saveGoogleCredentials = async () => {
@@ -46,6 +54,7 @@ export function Connectors() {
       setGoogleStatus(status);
       setClientSecretInput("");
       setGoogleSaved(true);
+      await refreshGoogle();
     } catch (caught) {
       setGoogleError(formatError(caught));
     } finally {
@@ -53,9 +62,33 @@ export function Connectors() {
     }
   };
 
+  const connectGoogle = async () => {
+    setGoogleConnecting(true);
+    setGoogleError(null);
+    try {
+      setGoogleWorkspace(await api.connectGoogleWorkspace());
+    } catch (caught) {
+      setGoogleError(formatError(caught));
+    } finally {
+      setGoogleConnecting(false);
+    }
+  };
+
+  const disconnectGoogle = async () => {
+    setGoogleError(null);
+    try {
+      await api.disconnectGoogleWorkspace();
+      await refreshGoogle();
+    } catch (caught) {
+      setGoogleError(formatError(caught));
+    }
+  };
+
   const clearGoogleCredentials = async () => {
+    if (googleWorkspace?.connected) await api.disconnectGoogleWorkspace();
     await api.clearGoogleCredentials();
     setGoogleStatus(null);
+    setGoogleWorkspace(null);
     setClientIdInput("");
     setClientSecretInput("");
     setGoogleSaved(false);
@@ -158,10 +191,18 @@ export function Connectors() {
 
         {!account ? (
           <p className="muted connector-hint">
-            Create a token at github.com &rarr; Settings &rarr; Developer settings &rarr; Personal access tokens,
-            with <code>repo</code> read access. It&rsquo;s stored locally on this device only.
+            Prefer a fine-grained token restricted to the repositories OpenMindAI should manage. Grant Contents,
+            Pull requests, Issues, Actions/Workflows and Releases permissions only when you want those features.
+            The token is stored in the operating system credential store; remote writes still require explicit
+            approval inside Work mode.
           </p>
-        ) : null}
+        ) : (
+          <p className="muted connector-hint">
+            Open <strong>Work → GitHub</strong> to read or modify repository files, create branches and multi-file
+            commits, manage issues and pull requests, inspect or control Actions, and manage tags/releases. GitHub
+            will reject any action that exceeds the saved token&apos;s permissions.
+          </p>
+        )}
 
         {error ? <p className="connector-error">{error}</p> : null}
 
@@ -219,16 +260,22 @@ export function Connectors() {
             <Chrome size={18} />
           </span>
           <div className="connector-card-title">
-            <strong>Google</strong>
+            <strong>Google Workspace</strong>
             <span className="muted">
               {googleStatus === undefined
                 ? "Checking..."
-                : googleStatus
-                  ? `Client ID saved · ${googleStatus.hasSecret ? "Secret saved" : "No secret saved"}`
-                  : "No credentials saved"}
+                : googleWorkspace?.connected
+                  ? `Connected${googleWorkspace.email ? ` as ${googleWorkspace.email}` : ""}`
+                  : googleStatus
+                    ? `OAuth configured · ${googleStatus.hasSecret ? "Secret saved" : "No secret saved"}`
+                    : "Not configured"}
             </span>
           </div>
-          {googleStatus ? (
+          {googleWorkspace?.connected ? (
+            <button type="button" className="ghost-button" onClick={() => void disconnectGoogle()}>
+              <Unplug size={14} /> Disconnect
+            </button>
+          ) : googleStatus ? (
             <button type="button" className="ghost-button" onClick={clearGoogleCredentials}>
               Clear
             </button>
@@ -236,7 +283,7 @@ export function Connectors() {
         </div>
 
         <label className="connector-field">
-          <span className="muted">Client ID</span>
+          <span className="muted">Desktop OAuth Client ID</span>
           <input
             type="text"
             placeholder="xxxxxxxx.apps.googleusercontent.com"
@@ -267,17 +314,28 @@ export function Connectors() {
             onClick={saveGoogleCredentials}
             disabled={googleSaving || !clientIdInput.trim() || !clientSecretInput.trim()}
           >
-            {googleSaving ? <Loader2 size={14} className="spin" /> : googleSaved ? <Check size={14} /> : "Save"}
+            {googleSaving ? <Loader2 size={14} className="spin" /> : googleSaved ? <Check size={14} /> : "Save OAuth app"}
           </button>
+          {!googleWorkspace?.connected ? (
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={() => void connectGoogle()}
+              disabled={!googleStatus?.hasSecret || googleConnecting}
+            >
+              {googleConnecting ? <Loader2 size={14} className="spin" /> : "Connect Google account"}
+            </button>
+          ) : null}
         </div>
 
         {googleError ? <p className="connector-error">{googleError}</p> : null}
 
         <p className="muted connector-hint">
-          Create these at console.cloud.google.com &rarr; APIs &amp; Services &rarr; Credentials. Saved locally in
-          this app&rsquo;s database on this device. This stores the credentials for a future Google sign-in flow —
-          it does not yet grant live access to Drive, Gmail, or Calendar, since the OAuth sign-in step itself isn&rsquo;t
-          built yet.
+          Create a <strong>Desktop app</strong> OAuth client in Google Cloud, enable Gmail, Drive, Calendar and People
+          APIs, then save the client credentials here. Connect opens Google&apos;s consent page with PKCE/state
+          protection and a localhost callback. OAuth access/refresh tokens and the client secret are stored in the
+          operating system credential store, not chat history. Use <strong>Work → Google Workspace</strong> for
+          Gmail, Drive, Calendar and Contacts actions.
         </p>
       </div>
     </>
