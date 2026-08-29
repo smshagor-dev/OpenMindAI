@@ -1321,14 +1321,14 @@ async fn mcp_rpc(
         .unwrap_or_default()
         .to_ascii_lowercase();
     let body = read_bounded("mcp", response, MAX_JSON_BYTES).await?;
-    let value = if content_type.contains("text/event-stream") {
+    let value: Value = if content_type.contains("text/event-stream") {
         let text = String::from_utf8_lossy(&body);
         let data = text
             .lines()
             .filter_map(|line| line.strip_prefix("data:"))
             .map(str::trim)
             .filter(|line| !line.is_empty())
-            .last()
+            .next_back()
             .ok_or_else(|| connector_error("mcp", "SSE response did not contain JSON data"))?;
         serde_json::from_str(data).map_err(|error| {
             connector_error("mcp", format!("invalid SSE JSON response: {error}"))
