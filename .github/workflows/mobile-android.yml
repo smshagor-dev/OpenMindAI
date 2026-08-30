@@ -1,0 +1,89 @@
+name: Android Mobile Validation
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/mobile-android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-mobile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-debug:
+    name: Android ARM64 debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+
+      - name: Resolve Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "ANDROID_HOME=${ANDROID_HOME}"
+          if [[ -n "${ANDROID_NDK_HOME:-}" && -d "${ANDROID_NDK_HOME}" ]]; then
+            resolved_ndk="${ANDROID_NDK_HOME}"
+          else
+            resolved_ndk="$(find "${ANDROID_HOME}/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          fi
+          test -n "${resolved_ndk}"
+          test -d "${resolved_ndk}"
+          echo "NDK_HOME=${resolved_ndk}" >> "${GITHUB_ENV}"
+          echo "ANDROID_NDK_HOME=${resolved_ndk}" >> "${GITHUB_ENV}"
+          echo "Using NDK: ${resolved_ndk}"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Validate shared frontend
+        run: npm run build
+
+      - name: Initialize Android target
+        env:
+          CI: "true"
+        run: npm run android:init -- --ci --skip-targets-install
+
+      - name: Build Android ARM64 debug APK
+        env:
+          CI: "true"
+        run: npm run android:build -- --debug --target aarch64 --apk --ci
+
+      - name: List Android outputs
+        if: always()
+        shell: bash
+        run: find src-tauri/gen/android -maxdepth 8 -type f \( -name "*.apk" -o -name "*.aab" \) -print 2>/dev/null || true
+
+      - name: Upload debug APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openmindai-android-arm64-debug
+          path: src-tauri/gen/android/app/build/outputs/**/*.apk
+          if-no-files-found: error
