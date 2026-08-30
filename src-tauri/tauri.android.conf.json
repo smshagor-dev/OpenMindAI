@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "identifier": "ai.openmind.mobile",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "OpenMindAI"
+      }
+    ]
+  },
+  "bundle": {
+    "targets": "all",
+    "createUpdaterArtifacts": false,
+    "android": {
+      "minSdkVersion": 24
+    }
+  }
+}
