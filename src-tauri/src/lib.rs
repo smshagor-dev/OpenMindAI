@@ -65,6 +65,11 @@ mod local_workspace;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 #[path = "local_workspace_mobile.rs"]
 mod local_workspace;
+#[cfg(target_os = "android")]
+mod mobile_inference;
+#[cfg(target_os = "ios")]
+#[path = "mobile_inference_ios.rs"]
+mod mobile_inference;
 mod multimodal;
 mod pdf_ocr;
 mod platform;
@@ -101,6 +106,8 @@ pub(crate) use local_workspace::{
     read_project_workspace_file, run_project_terminal_command, set_project_full_local_access,
     write_project_workspace_file,
 };
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub(crate) use mobile_inference::{mobile_native_inference_probe, MobileInferenceState};
 pub(crate) use multimodal::{
     artifact_media_data_url, create_soundscape_artifact, regenerate_multimodal_message,
     send_multimodal_chat_message, transcribe_audio,
@@ -140,6 +147,7 @@ fn run_mobile() {
                 warm_start: warm_start::WarmStartCoordinator::default(),
                 http: Client::new(),
             });
+            app.manage(MobileInferenceState::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -223,7 +231,8 @@ fn run_mobile() {
             list_github_issues,
             get_google_credentials,
             save_google_credentials,
-            clear_google_credentials
+            clear_google_credentials,
+            mobile_native_inference_probe
         ])
         .run(tauri_crate::generate_context!())
         .expect("error while running OpenMindAI mobile");
