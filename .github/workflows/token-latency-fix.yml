@@ -28,6 +28,7 @@ jobs:
           python3 scripts/apply_token_latency_fix.py
           python3 - <<'PY'
           from pathlib import Path
+
           path = Path("src/App.tsx")
           text = path.read_text(encoding="utf-8")
           old = """        await refreshMessages(conversationId, setMessages, showError);\n        await refreshApp();\n"""
@@ -35,6 +36,19 @@ jobs:
           if text.count(old) != 1:
               raise SystemExit(f"expected one Work refresh match, found {text.count(old)}")
           path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          path = Path("src-tauri/src/lib_legacy.rs")
+          text = path.read_text(encoding="utf-8")
+          marker = '    let normalized_mode = mode.to_ascii_lowercase();\n\n    if normalized_mode == "vision" {'
+          marker_index = text.find(marker)
+          if marker_index < 0:
+              raise SystemExit("model routing marker not found")
+          parameter = "    content: &str,"
+          parameter_index = text.rfind(parameter, 0, marker_index)
+          if parameter_index < 0 or marker_index - parameter_index > 2_000:
+              raise SystemExit("model routing content parameter not found near routing marker")
+          text = text[:parameter_index] + "    _content: &str," + text[parameter_index + len(parameter):]
+          path.write_text(text, encoding="utf-8")
           PY
 
       - name: Install Linux system dependencies
