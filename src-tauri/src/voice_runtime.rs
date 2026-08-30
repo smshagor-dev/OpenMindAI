@@ -1,22 +1,45 @@
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::{
     fs,
     io::{Read, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
+use std::path::Path;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use any_tts::{
     models::kokoro::KokoroModel, traits::TtsModel, ModelType, SynthesisRequest, TtsConfig,
 };
 
-use crate::{
-    app_error::AppError, model_download::ensure_contained, portable_root::PortableRootManager,
-};
+use crate::{app_error::AppError, portable_root::PortableRootManager};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use crate::model_download::ensure_contained;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const SAMPLE_RATE: u32 = 24_000;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const DEFAULT_VOICE: &str = "af_heart";
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const MAX_TTS_CHARS: usize = 12_000;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const WAV_HEADER_BYTES: u64 = 44;
 
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub async fn generate_voice(
+    root: &PortableRootManager,
+    model_path: &Path,
+    voices_dir: &Path,
+    text: &str,
+    output_path: &Path,
+) -> Result<(), AppError> {
+    let _ = (root, model_path, voices_dir, text, output_path);
+    Err(AppError::ArtifactGenerationFailed(
+        "Local OpenMindAI Speak is not enabled in the Android/iOS app shell yet. Mobile voice synthesis is planned for the mobile inference phase."
+            .to_string(),
+    ))
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub async fn generate_voice(
     root: &PortableRootManager,
     model_path: &Path,
@@ -110,6 +133,7 @@ pub async fn generate_voice(
     Ok(())
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn canonical_file_under_root(
     root: &PortableRootManager,
     path: &Path,
@@ -127,6 +151,7 @@ fn canonical_file_under_root(
     Ok(canonical)
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn canonical_dir_under_root(
     root: &PortableRootManager,
     path: &Path,
@@ -144,6 +169,7 @@ fn canonical_dir_under_root(
     Ok(canonical)
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn write_pcm16_wav(path: &Path, samples: &[f32]) -> Result<(), AppError> {
     let data_bytes = samples
         .len()
@@ -178,6 +204,7 @@ fn write_pcm16_wav(path: &Path, samples: &[f32]) -> Result<(), AppError> {
     Ok(())
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn validate_wav(path: &Path) -> Result<(), AppError> {
     let metadata = fs::metadata(path).map_err(|error| {
         AppError::ArtifactGenerationFailed(format!("voice output was not created: {error}"))
@@ -207,7 +234,7 @@ fn validate_wav(path: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
 mod tests {
     use super::*;
 
