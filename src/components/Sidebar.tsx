@@ -175,7 +175,7 @@ export function Sidebar(props: {
             {!props.collapsed ? (
               <div>
                 <strong>OpenMindAI</strong>
-                <small>Your local AI workspace</small>
+                <small>Your AI. Your Models. Your Way.</small>
               </div>
             ) : null}
           </div>
@@ -215,7 +215,27 @@ export function Sidebar(props: {
           <SquarePen size={18} /> {!props.collapsed ? "New Chat" : null}
         </button>
 
-        <nav className="sidebar-nav mobile-primary-nav">
+        <nav className="sidebar-nav desktop-sidebar-nav">
+          <button className="nav-button" onClick={() => runMobileAction(props.onOpenLibrary)} title="Library">
+            <LibraryBig size={18} /> {!props.collapsed ? "Library" : null}
+          </button>
+          <button className="nav-button" onClick={() => runMobileAction(props.onOpenModels)} title="Models">
+            <Database size={18} /> {!props.collapsed ? "Models" : null}
+          </button>
+          <button
+            className={props.view === "tools" ? "nav-button active" : "nav-button"}
+            onClick={() => runMobileAction(props.onOpenTools)}
+            title="Tools"
+          >
+            <Wrench size={18} /> {!props.collapsed ? "Tools" : null}
+          </button>
+          <button
+            className="nav-button"
+            onClick={() => runMobileAction(props.onOpenLibrary)}
+            title="Files & Artifacts"
+          >
+            <FolderOpen size={18} /> {!props.collapsed ? "Files & Artifacts" : null}
+          </button>
           <button
             className={props.view === "projects" ? "nav-button active" : "nav-button"}
             onClick={() => runMobileAction(props.onOpenProjects)}
@@ -223,72 +243,42 @@ export function Sidebar(props: {
           >
             <FolderKanban size={18} /> {!props.collapsed ? "Projects" : null}
           </button>
-          <button className="nav-button" onClick={() => runMobileAction(props.onOpenModels)} title="Models">
-            <Bot size={18} /> {!props.collapsed ? "Models" : null}
-          </button>
-          <button
-            className="nav-button mobile-connected-apps-nav"
-            onClick={() => runMobileAction(() => props.onOpenSettings("apps"))}
-            title="Connected Apps"
-          >
-            <PlugZap size={18} /> {!props.collapsed ? "Connected Apps" : null}
-          </button>
-          <button
-            className="nav-button"
-            onClick={() => runMobileAction(props.onOpenLibrary)}
-            title="Files & Artifacts"
-          >
-            <FileBox size={18} /> {!props.collapsed ? "Artifacts" : null}
-          </button>
           <button
             className={props.view === "settings" ? "nav-button active" : "nav-button"}
-            onClick={() => runMobileAction(() => props.onOpenSettings())}
-            title="Settings"
-          >
-            <Settings size={18} /> {!props.collapsed ? "Settings" : null}
-          </button>
-          <button
-            className="nav-button mobile-help-nav"
-            onClick={() => runMobileAction(() => props.onOpenSettings("about"))}
-            title="Help & Docs"
-          >
-            <CircleHelp size={18} /> {!props.collapsed ? "Help & Docs" : null}
-          </button>
-          <button
-            className="nav-button mobile-about-nav"
-            onClick={() => runMobileAction(() => props.onOpenSettings("about"))}
-            title="About OpenMindAI"
-          >
-            <Info size={18} /> {!props.collapsed ? "About OpenMindAI" : null}
-          </button>
-
-          <button
-            className="nav-button desktop-secondary-nav"
-            onClick={() => runMobileAction(props.onOpenLibrary)}
-            title="Library"
-          >
-            <LibraryBig size={18} /> {!props.collapsed ? "Library" : null}
-          </button>
-          <button
-            className="nav-button desktop-secondary-nav"
-            onClick={() => runMobileAction(props.onOpenTools)}
-            title="Tools"
-          >
-            <Wrench size={18} /> {!props.collapsed ? "Tools" : null}
-          </button>
-          <button
-            className="nav-button desktop-secondary-nav"
-            onClick={() => runMobileAction(props.onOpenLibrary)}
-            title="Files & Artifacts"
-          >
-            <FolderOpen size={18} /> {!props.collapsed ? "Files & Artifacts" : null}
-          </button>
-          <button
-            className="nav-button desktop-secondary-nav"
             onClick={() => runMobileAction(() => props.onOpenSettings())}
             title="More"
           >
             <MoreHorizontal size={18} /> {!props.collapsed ? "More" : null}
+          </button>
+        </nav>
+
+        <nav className="sidebar-nav mobile-drawer-nav">
+          <button
+            className={props.view === "projects" ? "nav-button active" : "nav-button"}
+            onClick={() => runMobileAction(props.onOpenProjects)}
+          >
+            <FolderKanban size={18} /> <span>Projects</span>
+          </button>
+          <button className="nav-button" onClick={() => runMobileAction(props.onOpenModels)}>
+            <Bot size={18} /> <span>Models</span>
+          </button>
+          <button className="nav-button" onClick={() => runMobileAction(() => props.onOpenSettings("apps"))}>
+            <PlugZap size={18} /> <span>Connected Apps</span>
+          </button>
+          <button className="nav-button" onClick={() => runMobileAction(props.onOpenLibrary)}>
+            <FileBox size={18} /> <span>Artifacts</span>
+          </button>
+          <button
+            className={props.view === "settings" ? "nav-button active" : "nav-button"}
+            onClick={() => runMobileAction(() => props.onOpenSettings())}
+          >
+            <Settings size={18} /> <span>Settings</span>
+          </button>
+          <button className="nav-button" onClick={() => runMobileAction(() => props.onOpenSettings("about"))}>
+            <CircleHelp size={18} /> <span>Help & Docs</span>
+          </button>
+          <button className="nav-button" onClick={() => runMobileAction(() => props.onOpenSettings("about"))}>
+            <Info size={18} /> <span>About OpenMindAI</span>
           </button>
         </nav>
 
@@ -325,7 +315,7 @@ export function Sidebar(props: {
               {!props.collapsed ? (
                 <span className="profile-text">
                   <span className="profile-name">{displayName}</span>
-                  <span className="profile-role">Local Profile · v{packageJson.version}</span>
+                  <span className="profile-role">v{packageJson.version}</span>
                 </span>
               ) : null}
             </button>
