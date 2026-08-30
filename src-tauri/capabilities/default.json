@@ -3,6 +3,7 @@
   "identifier": "default",
   "description": "Default desktop capability for OpenMindAI",
   "windows": ["main"],
+  "platforms": ["linux", "macOS", "windows"],
   "permissions": [
     "core:default",
     "core:window:allow-minimize",
