@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { isLikelyNativeMobile } from "./platform";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
 
@@ -48,6 +49,13 @@ export interface TerminalCommandResult {
 function desktopInvoke<T>(command: string, args: Record<string, unknown>): Promise<T> {
   if (!isTauri) {
     return Promise.reject(new Error("Local workspace access requires the OpenMindAI desktop app."));
+  }
+  if (isLikelyNativeMobile()) {
+    return Promise.reject(
+      new Error(
+        "Local machine workspace, Full PC access, and terminal execution are desktop-only. Mobile Projects use scoped app files and connected services instead.",
+      ),
+    );
   }
   return invoke<T>(command, args);
 }
