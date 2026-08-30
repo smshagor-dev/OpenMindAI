@@ -59,6 +59,16 @@ jobs:
           echo "ANDROID_NDK_HOME=${resolved_ndk}" >> "${GITHUB_ENV}"
           echo "Using NDK: ${resolved_ndk}"
 
+      - name: Resolve Rust dependency lock
+        run: cargo generate-lockfile --manifest-path src-tauri/Cargo.toml
+
+      - name: Upload resolved Cargo.lock
+        uses: actions/upload-artifact@v4
+        with:
+          name: openmindai-resolved-cargo-lock
+          path: src-tauri/Cargo.lock
+          if-no-files-found: error
+
       - name: Install frontend dependencies
         run: npm ci
 
