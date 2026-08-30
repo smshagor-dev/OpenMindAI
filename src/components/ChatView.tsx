@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import {
   Code2,
@@ -11,6 +11,7 @@ import {
   Video,
   Volume2,
 } from "lucide-react";
+import { api } from "../api";
 import type {
   AppPreferences,
   Artifact,
@@ -45,7 +46,7 @@ interface RealtimeActivity {
 
 export function ChatView(props: {
   conversation: Conversation | null;
-  conversations: Conversation[];
+  conversations?: Conversation[];
   messages: Message[];
   prompt: string;
   setPrompt: (value: string) => void;
@@ -69,9 +70,9 @@ export function ChatView(props: {
   modelSwitching: boolean;
   modelSwitchError: string | null;
   onSelectModel: (modelId: string) => void;
-  onOpenConversation: (id: string) => void;
-  onOpenModels: () => void;
-  onOpenSearch: () => void;
+  onOpenConversation?: (id: string) => void;
+  onOpenModels?: () => void;
+  onOpenSearch?: () => void;
   artifactsByMessage: Map<string, Artifact[]>;
   onCreateArtifact: (messageId: string, kind: ArtifactKind, content: string, filenameHint?: string) => void;
   onOpenArtifact: (artifact: Artifact) => void;
@@ -82,7 +83,26 @@ export function ChatView(props: {
   const latestMessageRef = useRef<globalThis.HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(true);
+  const [mobileConversations, setMobileConversations] = useState<Conversation[]>(props.conversations ?? []);
   const isEmpty = props.messages.length === 0;
+
+  useEffect(() => {
+    if (props.conversations) {
+      setMobileConversations(props.conversations);
+      return;
+    }
+    if (!isEmpty) return;
+    let cancelled = false;
+    void api
+      .conversations()
+      .then((items) => {
+        if (!cancelled) setMobileConversations(items);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [isEmpty, props.conversations]);
 
   useEffect(() => {
     if (stickToBottom.current) {
@@ -116,7 +136,7 @@ export function ChatView(props: {
       modelSwitching={props.modelSwitching}
       modelSwitchError={props.modelSwitchError}
       onSelectModel={props.onSelectModel}
-      placeholder={isEmpty ? "Message OpenMindAI..." : "Message OpenMindAI..."}
+      placeholder="Message OpenMindAI..."
       note={isEmpty ? undefined : "Responses are generated locally on your machine."}
     />
   );
@@ -127,6 +147,30 @@ export function ChatView(props: {
     props.activity.typing ||
     props.activity.searching ||
     props.activity.researching;
+
+  const openConversation = (id: string) => {
+    if (props.onOpenConversation) {
+      props.onOpenConversation(id);
+      return;
+    }
+    window.dispatchEvent(new CustomEvent("openmindai:open-conversation", { detail: id }));
+  };
+
+  const openModels = () => {
+    if (props.onOpenModels) {
+      props.onOpenModels();
+      return;
+    }
+    window.dispatchEvent(new Event("openmindai:open-models"));
+  };
+
+  const openSearch = () => {
+    if (props.onOpenSearch) {
+      props.onOpenSearch();
+      return;
+    }
+    window.dispatchEvent(new Event("openmindai:open-search"));
+  };
 
   return (
     <>
@@ -142,13 +186,13 @@ export function ChatView(props: {
         {isEmpty ? (
           <div className="chat-empty-state">
             <MobileHome
-              conversations={props.conversations}
+              conversations={mobileConversations}
               models={props.models}
               activeModelId={props.activeModelId}
               runtime={props.runtime}
-              onOpenConversation={props.onOpenConversation}
-              onOpenModels={props.onOpenModels}
-              onOpenSearch={props.onOpenSearch}
+              onOpenConversation={openConversation}
+              onOpenModels={openModels}
+              onOpenSearch={openSearch}
             />
 
             <div className="chat-empty-inner desktop-empty-state">
