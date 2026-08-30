@@ -23,7 +23,19 @@ jobs:
           fetch-depth: 0
 
       - name: Apply P0-P3 performance patch
-        run: python3 scripts/apply_token_latency_fix.py
+        run: |
+          sed -i 's/    2,$/    1,/' scripts/apply_token_latency_fix.py
+          python3 scripts/apply_token_latency_fix.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("src/App.tsx")
+          text = path.read_text(encoding="utf-8")
+          old = """        await refreshMessages(conversationId, setMessages, showError);\n        await refreshApp();\n"""
+          new = """        await refreshMessages(conversationId, setMessages, showError);\n        setConversations(await api.conversations());\n"""
+          if text.count(old) != 1:
+              raise SystemExit(f"expected one Work refresh match, found {text.count(old)}")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
 
       - name: Install Linux system dependencies
         run: |
