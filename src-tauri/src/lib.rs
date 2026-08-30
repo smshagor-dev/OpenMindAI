@@ -55,7 +55,15 @@ mod connector_input_guard;
 mod connector_stabilization;
 mod github_workspace;
 mod google_workspace;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod local_agent;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[path = "local_agent_mobile.rs"]
+mod local_agent;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod local_workspace;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[path = "local_workspace_mobile.rs"]
 mod local_workspace;
 mod multimodal;
 mod pdf_ocr;
