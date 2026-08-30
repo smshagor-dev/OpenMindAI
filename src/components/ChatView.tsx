@@ -153,7 +153,9 @@ export function ChatView(props: {
       props.onOpenConversation(id);
       return;
     }
-    window.dispatchEvent(new CustomEvent("openmindai:open-conversation", { detail: id }));
+    window.dispatchEvent(
+      new globalThis.CustomEvent("openmindai:open-conversation", { detail: id }),
+    );
   };
 
   const openModels = () => {
@@ -161,7 +163,7 @@ export function ChatView(props: {
       props.onOpenModels();
       return;
     }
-    window.dispatchEvent(new Event("openmindai:open-models"));
+    window.dispatchEvent(new globalThis.Event("openmindai:open-models"));
   };
 
   const openSearch = () => {
@@ -169,7 +171,7 @@ export function ChatView(props: {
       props.onOpenSearch();
       return;
     }
-    window.dispatchEvent(new Event("openmindai:open-search"));
+    window.dispatchEvent(new globalThis.Event("openmindai:open-search"));
   };
 
   return (
