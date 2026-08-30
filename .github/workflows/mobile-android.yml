@@ -64,7 +64,7 @@ jobs:
         run: cargo generate-lockfile --manifest-path src-tauri/Cargo.toml
 
       - name: Persist resolved Cargo.lock
-        if: github.event_name == 'pull_request' && github.head_ref == 'feat/android-local-inference'
+        if: github.event_name == 'pull_request' && github.head_ref == 'fix/android-inference-lock'
         shell: bash
         run: |
           set -euo pipefail
