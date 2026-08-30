@@ -60,6 +60,10 @@ mod local_workspace;
 mod multimodal;
 mod pdf_ocr;
 mod platform;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod speech_runtime;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[path = "speech_runtime_mobile.rs"]
 mod speech_runtime;
 mod vision_batch;
 mod warm_start;
