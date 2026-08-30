@@ -1,0 +1,95 @@
+name: Publish Verified Release
+
+on:
+  workflow_run:
+    workflows:
+      - Release
+    types:
+      - completed
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-release-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish verified updater release
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify release assets and publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Unexpected release tag: $TAG" >&2
+            exit 1
+          fi
+
+          release_json="$(gh release view "$TAG" --repo "$REPO" --json isDraft,isPrerelease,assets)"
+          if [[ "$(jq -r '.isDraft' <<<"$release_json")" != "true" ]]; then
+            echo "Refusing to publish: $TAG is not a verified draft release." >&2
+            exit 1
+          fi
+          if [[ "$(jq -r '.isPrerelease' <<<"$release_json")" != "false" ]]; then
+            echo "Refusing to publish prerelease $TAG through the stable updater channel." >&2
+            exit 1
+          fi
+
+          mapfile -t assets < <(jq -r '.assets[].name' <<<"$release_json")
+          mapfile -t installers < <(printf '%s\n' "${assets[@]}" | grep -E -- '-setup\.exe$' || true)
+          if [[ "${#installers[@]}" -ne 1 ]]; then
+            echo "Expected exactly one Windows NSIS updater installer, found ${#installers[@]}." >&2
+            exit 1
+          fi
+
+          installer="${installers[0]}"
+          required=(
+            "$installer"
+            "$installer.sig"
+            "latest.json"
+            "SHA256SUMS.txt"
+            "OpenMindAI-Setup.bat"
+            "OpenMindAI-Setup.command"
+            "openmindai-setup.sh"
+            "openmindai.marker"
+          )
+
+          for asset in "${required[@]}"; do
+            if ! printf '%s\n' "${assets[@]}" | grep -Fxq "$asset"; then
+              echo "Refusing to publish incomplete release: missing $asset" >&2
+              exit 1
+            fi
+          done
+
+          tmp_dir="$(mktemp -d)"
+          trap 'rm -rf "$tmp_dir"' EXIT
+          gh release download "$TAG" --repo "$REPO" --pattern latest.json --dir "$tmp_dir"
+
+          version="${TAG#v}"
+          if [[ "$(jq -r '.version' "$tmp_dir/latest.json")" != "$version" ]]; then
+            echo "latest.json version does not match $TAG." >&2
+            exit 1
+          fi
+
+          updater_url="$(jq -r '.platforms["windows-x86_64"].url // empty' "$tmp_dir/latest.json")"
+          updater_signature="$(jq -r '.platforms["windows-x86_64"].signature // empty' "$tmp_dir/latest.json")"
+          if [[ -z "$updater_signature" ]]; then
+            echo "latest.json Windows updater signature is empty." >&2
+            exit 1
+          fi
+          if [[ "$updater_url" != "https://github.com/$REPO/releases/download/$TAG/$installer" ]]; then
+            echo "latest.json Windows updater URL does not match the verified installer." >&2
+            exit 1
+          fi
+
+          gh release edit "$TAG" --repo "$REPO" --draft=false --latest
+          echo "Published verified updater release $TAG with latest.json and signed Windows updater assets."
