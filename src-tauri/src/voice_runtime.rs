@@ -1,19 +1,19 @@
+use std::path::Path;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::{
     fs,
     io::{Read, Write},
     path::PathBuf,
 };
-use std::path::Path;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use any_tts::{
     models::kokoro::KokoroModel, traits::TtsModel, ModelType, SynthesisRequest, TtsConfig,
 };
 
-use crate::{app_error::AppError, portable_root::PortableRootManager};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::model_download::ensure_contained;
+use crate::{app_error::AppError, portable_root::PortableRootManager};
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 const SAMPLE_RATE: u32 = 24_000;
