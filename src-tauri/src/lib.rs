@@ -110,11 +110,130 @@ pub(crate) use platform::platform_capabilities;
 
 include!("lib_legacy.rs");
 
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn run_mobile() {
+    use tauri_crate::Manager as _;
+
+    tauri_crate::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        .setup(|app| {
+            // Mobile never resolves the desktop portable/external-drive root. Keep all
+            // databases, downloaded assets, artifacts, and logs inside the OS-managed,
+            // bundle-scoped app-local data directory.
+            let app_data = app.path().app_local_data_dir()?;
+            let root = PortableRootManager::from_root(app_data.join("OpenMindAI"));
+            root.ensure_directories()?;
+            let database_path = root.database_path();
+            let database = Database::open(database_path.clone())?;
+            let hardware = HardwareProfiler::detect();
+
+            app.manage(AppState {
+                runtime: Mutex::new(LlamaRuntimeManager::new(root.clone())),
+                downloads: ModelDownloadManager::new(root.clone()),
+                runtime_installer: RuntimeInstaller::new(root.clone()),
+                root,
+                hardware,
+                active_database_path: database_path,
+                database: Mutex::new(database),
+                active_generations: ActiveGenerations::default(),
+                warm_start: warm_start::WarmStartCoordinator::default(),
+                http: Client::new(),
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            get_portable_root,
+            installation_status,
+            complete_setup,
+            save_setup_progress,
+            mark_runtime_ready,
+            mark_model_ready,
+            check_storage_location,
+            list_conversations,
+            create_conversation,
+            rename_conversation,
+            set_conversation_pinned,
+            set_conversation_model,
+            archive_conversation,
+            delete_conversation,
+            list_messages,
+            add_user_message,
+            create_streaming_assistant_message,
+            append_message_chunk,
+            complete_message,
+            delete_message,
+            list_projects,
+            create_project,
+            update_project,
+            delete_project,
+            link_project_conversation,
+            unlink_project_conversation,
+            add_project_file,
+            delete_project_file,
+            create_text_artifact,
+            create_document_artifact,
+            create_generation_artifact,
+            list_artifacts,
+            list_library_entries,
+            open_artifact,
+            open_external_url,
+            reveal_artifact_in_folder,
+            detect_hardware,
+            get_performance_profile,
+            discover_models,
+            get_qwen_download_status,
+            get_model_download_status,
+            download_qwen_model,
+            download_catalog_model,
+            cancel_qwen_download,
+            cancel_model_download,
+            pause_model_download,
+            delete_catalog_model,
+            validate_model,
+            plan_model_launch,
+            activate_model,
+            get_storage_summary,
+            clear_cache,
+            run_diagnostics,
+            repair_installation,
+            backup_database,
+            list_backups,
+            check_model_updates,
+            open_maintenance_folder,
+            read_recent_logs,
+            get_llama_runtime_status,
+            get_llama_runtime_inventory,
+            get_runtime_install_status,
+            install_recommended_runtime,
+            cancel_runtime_install,
+            start_llama_runtime,
+            stop_llama_runtime,
+            send_chat_message,
+            regenerate_message,
+            cancel_generation,
+            get_app_preferences,
+            save_app_preferences,
+            get_user_profile,
+            save_user_profile,
+            get_github_account,
+            save_github_token,
+            disconnect_github,
+            list_github_repos,
+            list_github_issues,
+            get_google_credentials,
+            save_google_credentials,
+            clear_google_credentials
+        ])
+        .run(tauri_crate::generate_context!())
+        .expect("error while running OpenMindAI mobile");
+}
+
 // Tauri mobile builds load this crate as a library through the native Android/iOS
-// host instead of executing src/main.rs. Keep the existing desktop run() function
-// untouched and provide the mobile entry wrapper at the crate root.
+// host instead of executing src/main.rs. Mobile startup intentionally uses a
+// separate app-data bootstrap so the desktop portable-root/runtime policy is never run.
 #[cfg(any(target_os = "android", target_os = "ios"))]
 #[tauri_crate::mobile_entry_point]
 pub fn mobile_entry() {
-    run();
+    run_mobile();
 }
