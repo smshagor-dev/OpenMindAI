@@ -1,6 +1,16 @@
 import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
-import { Code2, FileSearch, FileText, HardDrive, Image, Music2, Video, Volume2 } from "lucide-react";
+import {
+  Code2,
+  FileSearch,
+  FileText,
+  HardDrive,
+  Image,
+  LoaderCircle,
+  Music2,
+  Video,
+  Volume2,
+} from "lucide-react";
 import type {
   AppPreferences,
   Artifact,
@@ -13,6 +23,7 @@ import type {
 import type { AttachmentDraft } from "../lib/chat";
 import { MessageItem } from "./MessageItem";
 import { Composer } from "./Composer";
+import { MobileHome } from "./MobileHome";
 import type { PreviewTarget } from "./PreviewPanel";
 
 const SUGGESTIONS = [
@@ -34,6 +45,7 @@ interface RealtimeActivity {
 
 export function ChatView(props: {
   conversation: Conversation | null;
+  conversations: Conversation[];
   messages: Message[];
   prompt: string;
   setPrompt: (value: string) => void;
@@ -57,6 +69,9 @@ export function ChatView(props: {
   modelSwitching: boolean;
   modelSwitchError: string | null;
   onSelectModel: (modelId: string) => void;
+  onOpenConversation: (id: string) => void;
+  onOpenModels: () => void;
+  onOpenSearch: () => void;
   artifactsByMessage: Map<string, Artifact[]>;
   onCreateArtifact: (messageId: string, kind: ArtifactKind, content: string, filenameHint?: string) => void;
   onOpenArtifact: (artifact: Artifact) => void;
@@ -101,10 +116,17 @@ export function ChatView(props: {
       modelSwitching={props.modelSwitching}
       modelSwitchError={props.modelSwitchError}
       onSelectModel={props.onSelectModel}
-      placeholder={isEmpty ? "Ask anything..." : "Message OpenMindAI..."}
+      placeholder={isEmpty ? "Message OpenMindAI..." : "Message OpenMindAI..."}
       note={isEmpty ? undefined : "Responses are generated locally on your machine."}
     />
   );
+
+  const active =
+    props.submitting ||
+    props.streaming ||
+    props.activity.typing ||
+    props.activity.searching ||
+    props.activity.researching;
 
   return (
     <>
@@ -119,7 +141,17 @@ export function ChatView(props: {
       >
         {isEmpty ? (
           <div className="chat-empty-state">
-            <div className="chat-empty-inner">
+            <MobileHome
+              conversations={props.conversations}
+              models={props.models}
+              activeModelId={props.activeModelId}
+              runtime={props.runtime}
+              onOpenConversation={props.onOpenConversation}
+              onOpenModels={props.onOpenModels}
+              onOpenSearch={props.onOpenSearch}
+            />
+
+            <div className="chat-empty-inner desktop-empty-state">
               <h2>Where should we begin?</h2>
               {composer}
               <div className="suggestion-list">
@@ -142,9 +174,12 @@ export function ChatView(props: {
                 })}
               </div>
               <p className="chat-empty-footer">
-                <HardDrive size={13} /> Local-first workspace - chats, models and artifacts remain under the portable root
+                <HardDrive size={13} /> Local-first workspace - chats, models and artifacts remain
+                under the portable root
               </p>
             </div>
+
+            <div className="mobile-home-composer">{composer}</div>
           </div>
         ) : (
           props.messages.map((message) => (
@@ -157,31 +192,60 @@ export function ChatView(props: {
               onRegenerate={() => props.regenerate(message.id)}
               onRetry={() => props.retry(message.id)}
               artifacts={props.artifactsByMessage.get(message.id) ?? []}
-              onCreateArtifact={(kind, content, filenameHint) => props.onCreateArtifact(message.id, kind, content, filenameHint)}
+              onCreateArtifact={(kind, content, filenameHint) =>
+                props.onCreateArtifact(message.id, kind, content, filenameHint)
+              }
               onOpenArtifact={props.onOpenArtifact}
               onRevealArtifact={props.onRevealArtifact}
               onRetryArtifact={props.onRetryArtifact}
               onPreview={props.onPreview}
-              onEditUser={message.role === "user" ? (content) => props.editUserMessage(message.id, content) : undefined}
+              onEditUser={
+                message.role === "user"
+                  ? (content) => props.editUserMessage(message.id, content)
+                  : undefined
+              }
             />
           ))
         )}
-        {!isEmpty &&
-        (props.submitting || props.streaming || props.activity.typing || props.activity.searching || props.activity.researching) &&
-        props.preferences?.typingIndicatorEnabled ? (
-          <div className="activity-row">
-            <span className="pulse-dot" />
-            <span>
-              {props.activity.researching
-                ? "Deep research running"
-                : props.activity.searching
-                  ? "Searching sources"
-                  : props.streaming || props.activity.typing
-                    ? "Assistant is typing"
-                    : "Preparing request"}
-            </span>
-            {props.activity.detail ? <small>{props.activity.detail}</small> : null}
-          </div>
+
+        {!isEmpty && active && props.preferences?.typingIndicatorEnabled ? (
+          <>
+            <div className="mobile-thinking-card">
+              <div className="mobile-thinking-head">
+                <span className="mobile-thinking-orb">
+                  <LoaderCircle size={16} />
+                </span>
+                <div>
+                  <strong>
+                    {props.activity.researching
+                      ? "Researching..."
+                      : props.activity.searching
+                        ? "Searching..."
+                        : "Thinking..."}
+                  </strong>
+                  <small>{props.activity.detail ?? "Local model is working on your request"}</small>
+                </div>
+              </div>
+              <div className="mobile-thinking-progress">
+                <i className="done" />
+                <i className={props.streaming ? "done" : "active"} />
+                <i className={props.streaming ? "active" : ""} />
+              </div>
+            </div>
+            <div className="activity-row desktop-activity-row">
+              <span className="pulse-dot" />
+              <span>
+                {props.activity.researching
+                  ? "Deep research running"
+                  : props.activity.searching
+                    ? "Searching sources"
+                    : props.streaming || props.activity.typing
+                      ? "Assistant is typing"
+                      : "Preparing request"}
+              </span>
+              {props.activity.detail ? <small>{props.activity.detail}</small> : null}
+            </div>
+          </>
         ) : null}
         <div className="latest-message-anchor" ref={latestMessageRef} />
       </div>
