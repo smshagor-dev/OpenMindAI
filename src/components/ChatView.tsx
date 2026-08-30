@@ -8,6 +8,7 @@ import {
   Image,
   LoaderCircle,
   Music2,
+  Plus,
   Video,
   Volume2,
 } from "lucide-react";
@@ -84,7 +85,12 @@ export function ChatView(props: {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(true);
   const [mobileConversations, setMobileConversations] = useState<Conversation[]>(props.conversations ?? []);
+  const [mobileComposeOpen, setMobileComposeOpen] = useState(false);
   const isEmpty = props.messages.length === 0;
+
+  useEffect(() => {
+    if (!isEmpty) setMobileComposeOpen(false);
+  }, [isEmpty]);
 
   useEffect(() => {
     if (props.conversations) {
@@ -187,15 +193,38 @@ export function ChatView(props: {
       >
         {isEmpty ? (
           <div className="chat-empty-state">
-            <MobileHome
-              conversations={mobileConversations}
-              models={props.models}
-              activeModelId={props.activeModelId}
-              runtime={props.runtime}
-              onOpenConversation={openConversation}
-              onOpenModels={openModels}
-              onOpenSearch={openSearch}
-            />
+            <div className={mobileComposeOpen ? "mobile-home-stage compose-open" : "mobile-home-stage"}>
+              <MobileHome
+                conversations={mobileConversations}
+                models={props.models}
+                activeModelId={props.activeModelId}
+                runtime={props.runtime}
+                onOpenConversation={openConversation}
+                onOpenModels={openModels}
+                onOpenSearch={openSearch}
+              />
+
+              <button
+                type="button"
+                className="mobile-new-chat-fab"
+                aria-label="Start a new chat"
+                onClick={() => {
+                  setMobileComposeOpen(true);
+                  window.setTimeout(() => props.composerRef.current?.focus(), 0);
+                }}
+              >
+                <Plus size={22} />
+              </button>
+
+              <div className="mobile-compose-sheet">
+                <div className="mobile-compose-heading">
+                  <span>New Chat</span>
+                  <small>Private · Local-first</small>
+                </div>
+                <div className="mobile-compose-spacer" />
+                {composer}
+              </div>
+            </div>
 
             <div className="chat-empty-inner desktop-empty-state">
               <h2>Where should we begin?</h2>
@@ -224,8 +253,6 @@ export function ChatView(props: {
                 under the portable root
               </p>
             </div>
-
-            <div className="mobile-home-composer">{composer}</div>
           </div>
         ) : (
           props.messages.map((message) => (
