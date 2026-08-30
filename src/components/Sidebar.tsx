@@ -71,8 +71,8 @@ export function Sidebar(props: {
   }, []);
 
   useEffect(() => {
-    const openConversation = (event: Event) => {
-      const id = (event as CustomEvent<string>).detail;
+    const openConversation = (event: globalThis.Event) => {
+      const id = (event as globalThis.CustomEvent<string>).detail;
       if (id) props.onOpenConversation(id);
     };
     const openModels = () => props.onOpenModels();
