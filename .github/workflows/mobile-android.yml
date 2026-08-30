@@ -59,6 +59,9 @@ jobs:
           echo "ANDROID_NDK_HOME=${resolved_ndk}" >> "${GITHUB_ENV}"
           echo "Using NDK: ${resolved_ndk}"
 
+      - name: Verify Rust dependency lock
+        run: cargo metadata --locked --manifest-path src-tauri/Cargo.toml --format-version 1 > /dev/null
+
       - name: Install frontend dependencies
         run: npm ci
 
