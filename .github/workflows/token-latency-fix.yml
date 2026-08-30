@@ -62,6 +62,9 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Refresh Rust lockfile
+        run: cargo check --manifest-path src-tauri/Cargo.toml --all-features
+
       - name: Format Rust changes
         run: cargo fmt --manifest-path src-tauri/Cargo.toml
 
@@ -75,6 +78,7 @@ jobs:
         run: |
           rm scripts/apply_token_latency_fix.py
           rm .github/workflows/token-latency-fix.yml
+          rm -f .github/latency-fix-trigger
 
       - name: Commit validated performance fix
         run: |
