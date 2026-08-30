@@ -18,6 +18,14 @@ pub(crate) fn workspace_context_for_project(
     Ok(None)
 }
 
+pub(crate) fn clear_project_workspace_config(
+    database: &Database,
+    project_id: &str,
+) -> Result<(), AppError> {
+    let _ = (database, project_id);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn project_local_access_status(
     project_id: String,
