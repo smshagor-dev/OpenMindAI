@@ -1,13 +1,21 @@
 use serde_json::{json, Value};
 use tauri::State;
 
-use crate::{app_error::AppError, AppState};
+use crate::{app_error::AppError, database::Database, AppState};
 
 const MOBILE_WORKSPACE_MESSAGE: &str =
     "Local machine workspace, Full PC access, and terminal execution are desktop-only. Mobile Projects use scoped app files and connected services instead.";
 
 fn unavailable<T>() -> Result<T, AppError> {
     Err(AppError::internal(MOBILE_WORKSPACE_MESSAGE))
+}
+
+pub(crate) fn workspace_context_for_project(
+    database: &Database,
+    project_id: &str,
+) -> Result<Option<String>, AppError> {
+    let _ = (database, project_id);
+    Ok(None)
 }
 
 #[tauri::command]
