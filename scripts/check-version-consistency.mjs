@@ -99,8 +99,13 @@ if (!releaseNotes.includes(`# OpenMindAI ${expectedTag}`)) fail("release notes t
 if (/\b(?:TODO|TBD|PLACEHOLDER)\b/i.test(releaseNotes)) fail("release notes contain unfinished placeholder text");
 
 const readme = readText("README.md");
-if (!readme.includes(`**Current source version: ${expectedTag}`)) {
-  fail("README.md current source version does not match synchronized version");
+const readmeVersion = readme.match(
+  /Current source version[^v]*(v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/i,
+)?.[1];
+if (readmeVersion !== expectedTag) {
+  fail(
+    `README.md current source version does not match synchronized version: expected ${expectedTag}, found ${readmeVersion ?? "none"}`,
+  );
 }
 
 const requestedTag = readRequestedTag();
