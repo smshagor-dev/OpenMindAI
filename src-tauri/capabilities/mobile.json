@@ -8,7 +8,6 @@
     "core:default",
     "dialog:default",
     "process:allow-restart",
-    "notification:default",
-    "updater:default"
+    "notification:default"
   ]
 }
