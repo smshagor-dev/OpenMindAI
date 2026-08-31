@@ -3,7 +3,7 @@ name: Token Latency Fix
 on:
   push:
     branches:
-      - fix/resolve-token-generation-slow
+      - fix/chat-latency-complete
 
 permissions:
   contents: write
@@ -19,7 +19,7 @@ jobs:
       - name: Checkout branch
         uses: actions/checkout@v7
         with:
-          ref: fix/resolve-token-generation-slow
+          ref: fix/chat-latency-complete
           fetch-depth: 0
 
       - name: Apply P0-P3 performance patch
@@ -28,13 +28,22 @@ jobs:
           python3 scripts/apply_token_latency_fix.py
           python3 - <<'PY'
           from pathlib import Path
-          path = Path("src/App.tsx")
-          text = path.read_text(encoding="utf-8")
+
+          app = Path("src/App.tsx")
+          text = app.read_text(encoding="utf-8")
           old = """        await refreshMessages(conversationId, setMessages, showError);\n        await refreshApp();\n"""
           new = """        await refreshMessages(conversationId, setMessages, showError);\n        setConversations(await api.conversations());\n"""
           if text.count(old) != 1:
               raise SystemExit(f"expected one Work refresh match, found {text.count(old)}")
-          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          app.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          legacy = Path("src-tauri/src/lib_legacy.rs")
+          text = legacy.read_text(encoding="utf-8")
+          old = """fn select_conversation_model(\n    models: &[ModelRecord],\n    active_model_id: Option<&str>,\n    mode: &str,\n    content: &str,\n) -> Option<ModelRecord> {\n"""
+          new = """fn select_conversation_model(\n    models: &[ModelRecord],\n    active_model_id: Option<&str>,\n    mode: &str,\n    _content: &str,\n) -> Option<ModelRecord> {\n"""
+          if text.count(old) != 1:
+              raise SystemExit(f"expected one router signature match, found {text.count(old)}")
+          legacy.write_text(text.replace(old, new, 1), encoding="utf-8")
           PY
 
       - name: Install Linux system dependencies
@@ -86,4 +95,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "fix: resolve local token generation latency"
-          git push origin HEAD:fix/resolve-token-generation-slow
+          git push origin HEAD:fix/chat-latency-complete
