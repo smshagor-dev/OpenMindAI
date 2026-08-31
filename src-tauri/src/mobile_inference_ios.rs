@@ -16,6 +16,24 @@ pub(crate) struct NativeInferenceProbeResult {
     elapsed_ms: u128,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MobileModelReleaseResult {
+    released: bool,
+    busy: bool,
+}
+
+#[tauri::command]
+pub(crate) fn mobile_release_inference_model(
+    native: State<'_, MobileInferenceState>,
+) -> Result<MobileModelReleaseResult, AppError> {
+    let _ = native;
+    Ok(MobileModelReleaseResult {
+        released: false,
+        busy: false,
+    })
+}
+
 #[tauri::command]
 pub(crate) async fn mobile_native_inference_probe(
     model_id: String,
