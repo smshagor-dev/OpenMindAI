@@ -42,6 +42,8 @@ macro_rules! openmind_generate_handler {
             mobile_local_inference_status,
             mobile_generate_text,
             mobile_model_recommendation,
+            mobile_send_chat_message,
+            mobile_regenerate_message,
             platform_capabilities
         ]
     };
@@ -68,6 +70,7 @@ mod local_workspace;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 #[path = "local_workspace_mobile.rs"]
 mod local_workspace;
+mod mobile_chat;
 mod mobile_inference;
 mod mobile_model_policy;
 mod multimodal;
@@ -106,6 +109,7 @@ pub(crate) use local_workspace::{
     read_project_workspace_file, run_project_terminal_command, set_project_full_local_access,
     write_project_workspace_file,
 };
+pub(crate) use mobile_chat::{mobile_regenerate_message, mobile_send_chat_message};
 pub(crate) use mobile_inference::{mobile_generate_text, mobile_local_inference_status};
 pub(crate) use mobile_model_policy::mobile_model_recommendation;
 pub(crate) use multimodal::{
