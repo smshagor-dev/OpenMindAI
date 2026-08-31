@@ -1,7 +1,7 @@
 use std::{
     num::NonZeroU32,
     path::{Component, Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, TryLockError},
     time::Instant,
 };
 
@@ -66,6 +66,31 @@ pub(crate) struct NativeInferenceProbeResult {
     prompt_tokens: usize,
     generated_tokens: u32,
     elapsed_ms: u128,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MobileModelReleaseResult {
+    released: bool,
+    busy: bool,
+}
+
+impl MobileInferenceState {
+    fn try_release_model(&self) -> Result<MobileModelReleaseResult, AppError> {
+        match self.engine.try_lock() {
+            Ok(mut engine) => Ok(MobileModelReleaseResult {
+                released: engine.loaded_model.take().is_some(),
+                busy: false,
+            }),
+            Err(TryLockError::WouldBlock) => Ok(MobileModelReleaseResult {
+                released: false,
+                busy: true,
+            }),
+            Err(TryLockError::Poisoned(_)) => Err(AppError::internal(
+                "mobile native inference lock poisoned",
+            )),
+        }
+    }
 }
 
 impl NativeEngine {
@@ -400,6 +425,13 @@ pub(crate) fn generate_android_chat(
         Some(&cancellation),
         Some(&mut on_chunk),
     )
+}
+
+#[tauri::command]
+pub(crate) fn mobile_release_inference_model(
+    native: State<'_, MobileInferenceState>,
+) -> Result<MobileModelReleaseResult, AppError> {
+    native.try_release_model()
 }
 
 #[tauri::command]
