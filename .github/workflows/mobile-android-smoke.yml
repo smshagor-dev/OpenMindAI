@@ -102,8 +102,9 @@ jobs:
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
           disable-animations: true
           script: |
-            set -euo pipefail
+            set -eu
             adb install -r "${SMOKE_APK}"
+            adb logcat -c
             adb shell monkey -p ai.openmind.mobile -c android.intent.category.LAUNCHER 1
             sleep 8
 
