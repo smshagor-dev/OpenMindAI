@@ -347,8 +347,7 @@ fn relative_path_below_models(registry_path: &str) -> Result<String, AppError> {
         .strip_prefix("models/")
         .ok_or_else(|| {
             AppError::ModelUnsupported(
-                "mobile local models must stay inside the app-private models directory"
-                    .to_string(),
+                "mobile local models must stay inside the app-private models directory".to_string(),
             )
         })?
         .trim();
