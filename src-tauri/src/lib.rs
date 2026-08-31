@@ -39,6 +39,8 @@ macro_rules! openmind_generate_handler {
             project_agent_status_for_conversation,
             send_project_agent_message,
             regenerate_project_agent_message,
+            mobile_send_chat_message,
+            mobile_regenerate_message,
             platform_capabilities
         ]
     };
@@ -65,6 +67,7 @@ mod local_workspace;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 #[path = "local_workspace_mobile.rs"]
 mod local_workspace;
+mod mobile_chat;
 #[cfg(target_os = "android")]
 mod mobile_inference;
 #[cfg(target_os = "ios")]
@@ -107,6 +110,7 @@ pub(crate) use local_workspace::{
     read_project_workspace_file, run_project_terminal_command, set_project_full_local_access,
     write_project_workspace_file,
 };
+pub(crate) use mobile_chat::{mobile_regenerate_message, mobile_send_chat_message};
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub(crate) use mobile_inference::{mobile_native_inference_probe, MobileInferenceState};
 pub(crate) use mobile_model_policy::mobile_model_recommendation;
@@ -235,7 +239,9 @@ fn run_mobile() {
             save_google_credentials,
             clear_google_credentials,
             mobile_native_inference_probe,
-            mobile_model_recommendation
+            mobile_model_recommendation,
+            mobile_send_chat_message,
+            mobile_regenerate_message
         ])
         .run(tauri_crate::generate_context!())
         .expect("error while running OpenMindAI mobile");
