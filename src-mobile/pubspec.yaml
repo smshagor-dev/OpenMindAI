@@ -9,7 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  archive: ^4.2.0
+  archive: ^4.0.9
   cupertino_icons: ^1.0.8
   crypto: ^3.0.6
   device_info_plus: ^13.2.0
