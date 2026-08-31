@@ -15,6 +15,7 @@ dependencies:
   dio: ^5.11.0
   file_picker: ^12.1.2
   flutter_markdown_plus: ^1.0.12
+  flutter_tts: ^4.2.5
   html: ^0.15.7
   image_picker: ^1.2.3
   lib_llama_cpp: ^0.7.3
