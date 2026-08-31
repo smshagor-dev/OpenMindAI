@@ -13,6 +13,8 @@ pub(crate) const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 128;
 const MAX_OUTPUT_TOKENS: u32 = 512;
 #[cfg(target_os = "android")]
 const MAX_CHAT_HISTORY_MESSAGES: usize = 48;
+#[cfg(target_os = "android")]
+type StreamCallback<'a> = dyn FnMut(&str) -> Result<(), AppError> + 'a;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -178,6 +180,7 @@ pub(crate) fn generate_android_chat(
     messages: Vec<MobileChatMessage>,
     output_limit: u32,
     cancellation: tokio_util::sync::CancellationToken,
+    mut on_chunk: impl FnMut(&str) -> Result<(), AppError>,
 ) -> Result<MobileGenerationResult, AppError> {
     crate::mobile_model_cache::with_cached_model(&model_path, |backend, model| {
         let prompt = build_android_chat_prompt(model, messages, output_limit)?;
@@ -188,6 +191,7 @@ pub(crate) fn generate_android_chat(
             prompt,
             output_limit,
             Some(&cancellation),
+            Some(&mut on_chunk),
         )
     })
 }
@@ -208,6 +212,7 @@ fn generate_android_prompt(
             prompt,
             output_limit,
             cancellation,
+            None,
         )
     })
 }
@@ -303,6 +308,7 @@ fn run_loaded_generation(
     prompt: String,
     output_limit: u32,
     cancellation: Option<&tokio_util::sync::CancellationToken>,
+    mut on_chunk: Option<&mut StreamCallback<'_>>,
 ) -> Result<MobileGenerationResult, AppError> {
     use std::num::NonZeroU32;
 
@@ -359,6 +365,7 @@ fn run_loaded_generation(
 
     let mut sampler = LlamaSampler::greedy();
     let mut output = Vec::<u8>::new();
+    let mut stream_decoder = crate::mobile_stream_decoder::Utf8StreamDecoder::default();
     let mut generated = 0_u32;
     let mut stopped_on_eog = false;
     let mut cancelled = false;
@@ -381,6 +388,12 @@ fn run_loaded_generation(
             .token_to_piece_bytes(token, 4096, false, None)
             .map_err(|error| AppError::InferenceFailed(format!("token decode failed: {error}")))?;
         output.extend_from_slice(&piece);
+        let chunk = stream_decoder.push(&piece);
+        if !chunk.is_empty() {
+            if let Some(callback) = on_chunk.as_deref_mut() {
+                callback(&chunk)?;
+            }
+        }
 
         batch.clear();
         batch.add(token, position, &[0], true).map_err(|error| {
@@ -391,6 +404,13 @@ fn run_loaded_generation(
         })?;
         position += 1;
         generated += 1;
+    }
+
+    let tail = stream_decoder.finish();
+    if !tail.is_empty() {
+        if let Some(callback) = on_chunk.as_deref_mut() {
+            callback(&tail)?;
+        }
     }
 
     Ok(MobileGenerationResult {
