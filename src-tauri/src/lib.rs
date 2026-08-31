@@ -67,6 +67,7 @@ mod local_workspace;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 #[path = "local_workspace_mobile.rs"]
 mod local_workspace;
+mod mobile_capabilities;
 mod mobile_chat;
 #[cfg(target_os = "android")]
 mod mobile_inference;
@@ -75,6 +76,8 @@ mod mobile_inference;
 mod mobile_inference;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 mod mobile_model_policy;
+mod mobile_task_router;
+mod mobile_vision;
 mod multimodal;
 mod pdf_ocr;
 mod platform;
@@ -111,6 +114,8 @@ pub(crate) use local_workspace::{
     read_project_workspace_file, run_project_terminal_command, set_project_full_local_access,
     write_project_workspace_file,
 };
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub(crate) use mobile_capabilities::{mobile_capability_report, mobile_route_task};
 pub(crate) use mobile_chat::{mobile_regenerate_message, mobile_send_chat_message};
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub(crate) use mobile_inference::{
@@ -118,6 +123,13 @@ pub(crate) use mobile_inference::{
 };
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub(crate) use mobile_model_policy::mobile_model_recommendation;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub(crate) use mobile_task_router::mobile_prepare_text_route;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub(crate) use mobile_vision::{
+    mobile_regenerate_vision_message, mobile_send_vision_message, mobile_vision_status,
+    MobileVisionState,
+};
 pub(crate) use multimodal::{
     artifact_media_data_url, create_soundscape_artifact, regenerate_multimodal_message,
     send_multimodal_chat_message, transcribe_audio,
@@ -158,6 +170,7 @@ fn run_mobile() {
                 http: Client::new(),
             });
             app.manage(MobileInferenceState::default());
+            app.manage(MobileVisionState::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -244,9 +257,15 @@ fn run_mobile() {
             clear_google_credentials,
             mobile_native_inference_probe,
             mobile_model_recommendation,
+            mobile_route_task,
+            mobile_capability_report,
+            mobile_prepare_text_route,
             mobile_send_chat_message,
             mobile_regenerate_message,
-            mobile_release_inference_model
+            mobile_release_inference_model,
+            mobile_vision_status,
+            mobile_send_vision_message,
+            mobile_regenerate_vision_message
         ])
         .run(tauri_crate::generate_context!())
         .expect("error while running OpenMindAI mobile");
