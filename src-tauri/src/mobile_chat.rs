@@ -1,10 +1,8 @@
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
+#[cfg(target_os = "android")]
+use tauri::Emitter;
 
-use crate::{
-    app_error::AppError,
-    chat::Message,
-    AppState,
-};
+use crate::{app_error::AppError, chat::Message, AppState};
 
 #[tauri::command]
 pub async fn mobile_send_chat_message(
@@ -336,6 +334,8 @@ async fn run_android_completion(
             .ok_or_else(|| AppError::internal("completed mobile assistant message disappeared"))?
     };
 
+    state.active_generations.finish(conversation_id);
+
     if !generation.text.is_empty() {
         app.emit(
             "inference:chunk",
@@ -356,7 +356,6 @@ async fn run_android_completion(
         },
     )
     .map_err(|error| AppError::StreamFailed(error.to_string()))?;
-    state.active_generations.finish(conversation_id);
 
     Ok(completed)
 }
