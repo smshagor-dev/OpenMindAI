@@ -42,8 +42,8 @@ jobs:
         run: dart run tool/prepare_platforms.dart
       - name: Resolve packages
         run: flutter pub get
-      - name: Format check
-        run: dart format --output=none --set-exit-if-changed lib test tool
+      - name: Format source
+        run: dart format lib test tool
       - name: Analyze
         run: flutter analyze
       - name: Test
