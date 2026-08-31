@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
 import { AppUpdateMonitor } from "./components/AppUpdateMonitor";
+import { bootstrapMobileLifecyclePolicy } from "./lib/mobileLifecycle";
 import { bootstrapPlatformDataset } from "./lib/platform";
 import "./styles.css";
 import "./multimodal.css";
@@ -12,6 +13,7 @@ import "./mobile-platform.css";
 import "./mobile-model.css";
 
 bootstrapPlatformDataset();
+bootstrapMobileLifecyclePolicy();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
