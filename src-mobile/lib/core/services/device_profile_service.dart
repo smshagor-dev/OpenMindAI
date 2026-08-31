@@ -1,5 +1,7 @@
 import 'dart:io';
+
 import 'package:device_info_plus/device_info_plus.dart';
+
 import '../constants/model_catalog.dart';
 
 class MobileDeviceProfile {
@@ -30,26 +32,34 @@ class DeviceProfileService {
     if (Platform.isAndroid) {
       final info = await _deviceInfo.androidInfo;
       final ramMb = info.physicalRamSize;
+      final freeDiskBytes = info.freeDiskSize;
       return MobileDeviceProfile(
         deviceName: '${info.manufacturer} ${info.model}'.trim(),
         platform: 'Android',
         osVersion: info.version.release,
         ramMb: ramMb,
-        freeDiskBytes: info.freeDiskSize,
-        recommendedModel: MobileModelCatalog.recommendForRam(_ramGb(ramMb)),
+        freeDiskBytes: freeDiskBytes,
+        recommendedModel: MobileModelCatalog.recommendForDevice(
+          ramGb: _ramGb(ramMb),
+          freeDiskBytes: freeDiskBytes,
+        ),
       );
     }
 
     if (Platform.isIOS) {
       final info = await _deviceInfo.iosInfo;
       final ramMb = info.physicalRamSize;
+      final freeDiskBytes = info.freeDiskSize;
       return MobileDeviceProfile(
         deviceName: info.modelName,
         platform: 'iOS',
         osVersion: info.systemVersion,
         ramMb: ramMb,
-        freeDiskBytes: info.freeDiskSize,
-        recommendedModel: MobileModelCatalog.recommendForRam(_ramGb(ramMb)),
+        freeDiskBytes: freeDiskBytes,
+        recommendedModel: MobileModelCatalog.recommendForDevice(
+          ramGb: _ramGb(ramMb),
+          freeDiskBytes: freeDiskBytes,
+        ),
       );
     }
 
