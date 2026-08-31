@@ -50,10 +50,10 @@ function connectedInvoke<T>(command: string, args?: Record<string, unknown>): Pr
   return invoke<T>(command, args);
 }
 
-async function isAndroidNativeTarget() {
+async function isMobileNativeTarget() {
   if (!isTauri) return false;
   const capabilities = await getPlatformCapabilities();
-  return capabilities.target === "android";
+  return capabilities.target === "android" || capabilities.target === "ios";
 }
 
 async function messageUsesSoundscape(conversationId: string, messageId: string | null) {
@@ -89,14 +89,14 @@ async function shouldUseProjectAgent(conversationId: string, mode: string) {
   return status?.available ?? false;
 }
 
-async function sendAndroidLocalChat(
+async function sendMobileLocalChat(
   conversationId: string,
   content: string,
   mode: string,
 ): Promise<Message> {
   if (mode !== "chat" && mode !== "thinking") {
     throw new Error(
-      `Android on-device AI currently supports Chat and Thinking. ${mode} mode is not enabled on mobile yet.`,
+      `Mobile on-device AI currently supports Chat and Thinking. ${mode} mode is not enabled locally on mobile yet.`,
     );
   }
   return invoke<Message>("mobile_send_chat_message", {
@@ -106,14 +106,14 @@ async function sendAndroidLocalChat(
   });
 }
 
-async function regenerateAndroidLocalChat(
+async function regenerateMobileLocalChat(
   conversationId: string,
   assistantMessageId: string,
   mode: string,
 ): Promise<Message> {
   if (mode !== "chat" && mode !== "thinking") {
     throw new Error(
-      `Android on-device regeneration currently supports Chat and Thinking. ${mode} mode is not enabled on mobile yet.`,
+      `Mobile on-device regeneration currently supports Chat and Thinking. ${mode} mode is not enabled locally on mobile yet.`,
     );
   }
   return invoke<Message>("mobile_regenerate_message", {
@@ -140,13 +140,13 @@ export const api = {
         conversationId,
         content,
       });
-    } else if (await isAndroidNativeTarget()) {
+    } else if (await isMobileNativeTarget()) {
       if (media.length > 0 || mode === "vision") {
         throw new Error(
-          "Android local vision is not enabled yet. Use text Chat/Thinking or a connected provider for this request.",
+          "Mobile local vision is not enabled yet. Use text Chat/Thinking or a connected provider for this request.",
         );
       }
-      assistant = await sendAndroidLocalChat(conversationId, content, mode);
+      assistant = await sendMobileLocalChat(conversationId, content, mode);
     } else if (mode === "vision" && media.length > 0 && isTauri) {
       assistant = await invoke<Message>("send_multimodal_chat_message", {
         conversationId,
@@ -200,13 +200,13 @@ export const api = {
         conversationId,
         assistantMessageId,
       });
-    } else if (await isAndroidNativeTarget()) {
+    } else if (await isMobileNativeTarget()) {
       if (isVisualTurn) {
         throw new Error(
-          "Android local vision responses cannot be regenerated yet. Reattach the image and send it again through a supported provider.",
+          "Mobile local vision responses cannot be regenerated yet. Reattach the image and send it again through a supported provider.",
         );
       }
-      assistant = await regenerateAndroidLocalChat(
+      assistant = await regenerateMobileLocalChat(
         conversationId,
         assistantMessageId,
         resolvedMode,
