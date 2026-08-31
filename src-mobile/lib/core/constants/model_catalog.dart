@@ -31,6 +31,8 @@ class MobileModel {
 /// original model names are internal provisioning details and must never be
 /// rendered by mobile UI widgets.
 class MobileModelCatalog {
+  static const int _installReserveBytes = 1024 * 1024 * 1024;
+
   static const models = <MobileModel>[
     MobileModel(
       id: 'qwen3-06b-q4',
@@ -116,6 +118,25 @@ class MobileModelCatalog {
     if (ramGb >= 16) return byId('qwen3-8b-q4km');
     if (ramGb >= 8) return byId('qwen3-4b-q4km');
     if (ramGb >= 6) return byId('qwen3-17b-q4km');
+    return byId('qwen3-06b-q4');
+  }
+
+  static MobileModel recommendForDevice({
+    required int ramGb,
+    required int freeDiskBytes,
+  }) {
+    final candidates = <MobileModel>[
+      byId('qwen3-8b-q4km'),
+      byId('qwen3-4b-q4km'),
+      byId('qwen3-17b-q4km'),
+      byId('qwen3-06b-q4'),
+    ];
+
+    for (final model in candidates) {
+      if (ramGb < model.minRamGb) continue;
+      final requiredBytes = model.sizeBytes + _installReserveBytes;
+      if (freeDiskBytes <= 0 || freeDiskBytes >= requiredBytes) return model;
+    }
     return byId('qwen3-06b-q4');
   }
 }
