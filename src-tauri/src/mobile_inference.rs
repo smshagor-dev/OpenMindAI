@@ -114,8 +114,7 @@ pub async fn mobile_generate_text(
             ));
         }
 
-        let (model_path, model_display) =
-            resolve_android_model_path(&state, &relative_model_path)?;
+        let (model_path, model_display) = resolve_android_model_path(&state, &relative_model_path)?;
         let output_limit = max_tokens
             .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS)
             .clamp(1, MAX_OUTPUT_TOKENS);
