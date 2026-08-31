@@ -292,6 +292,9 @@ async fn run_android_completion(
             .collect::<Vec<_>>()
     };
 
+    let stream_app = app.clone();
+    let stream_conversation_id = conversation_id.to_string();
+    let stream_message_id = assistant.id.clone();
     let generation = tokio::task::spawn_blocking(move || {
         generate_android_chat(
             model_path,
@@ -299,6 +302,18 @@ async fn run_android_completion(
             history,
             output_limit,
             cancellation,
+            move |chunk| {
+                stream_app
+                    .emit(
+                        "inference:chunk",
+                        StreamChunkEvent {
+                            conversation_id: stream_conversation_id.clone(),
+                            message_id: stream_message_id.clone(),
+                            chunk: chunk.to_string(),
+                        },
+                    )
+                    .map_err(|error| AppError::StreamFailed(error.to_string()))
+            },
         )
     })
     .await
@@ -334,18 +349,6 @@ async fn run_android_completion(
     };
 
     state.active_generations.finish(conversation_id);
-
-    if !generation.text.is_empty() {
-        app.emit(
-            "inference:chunk",
-            StreamChunkEvent {
-                conversation_id: conversation_id.to_string(),
-                message_id: assistant.id.clone(),
-                chunk: generation.text,
-            },
-        )
-        .map_err(|error| AppError::StreamFailed(error.to_string()))?;
-    }
     app.emit(
         "inference:done",
         StreamDoneEvent {
