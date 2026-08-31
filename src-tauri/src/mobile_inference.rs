@@ -89,9 +89,9 @@ pub async fn mobile_generate_text(
     #[cfg(not(target_os = "android"))]
     {
         let _ = (relative_model_path, prompt, max_tokens, state);
-        return Err(AppError::ModelUnsupported(
+        Err(AppError::ModelUnsupported(
             "native mobile inference is currently available on Android only".to_string(),
-        ));
+        ))
     }
 
     #[cfg(target_os = "android")]
