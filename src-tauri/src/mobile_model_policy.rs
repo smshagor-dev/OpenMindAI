@@ -19,6 +19,7 @@ pub struct MobileModelRecommendation {
     pub size_bytes: u64,
     pub total_ram_bytes: u64,
     pub installed: bool,
+    /// Path relative to the app-private `models/` directory.
     pub installed_model_path: Option<String>,
     pub reason: String,
 }
@@ -45,9 +46,8 @@ fn recommended_model_id(total_ram: u64) -> (&'static str, &'static str, &'static
     }
 }
 
-#[tauri::command]
-pub fn mobile_model_recommendation(
-    state: State<'_, AppState>,
+pub(crate) fn recommendation_for_state(
+    state: &AppState,
 ) -> Result<MobileModelRecommendation, AppError> {
     let total_ram = state.hardware.memory.total_bytes;
     let (tier, model_id, reason) = recommended_model_id(total_ram);
@@ -60,7 +60,7 @@ pub fn mobile_model_recommendation(
             &download.filename_pattern,
         )
         .and_then(|path| {
-            path.strip_prefix(state.root.root())
+            path.strip_prefix(state.root.models_dir())
                 .ok()
                 .map(|relative| relative.to_string_lossy().replace('\\', "/"))
         })
@@ -79,6 +79,13 @@ pub fn mobile_model_recommendation(
         installed_model_path,
         reason: reason.to_string(),
     })
+}
+
+#[tauri::command]
+pub fn mobile_model_recommendation(
+    state: State<'_, AppState>,
+) -> Result<MobileModelRecommendation, AppError> {
+    recommendation_for_state(&state)
 }
 
 #[cfg(test)]
