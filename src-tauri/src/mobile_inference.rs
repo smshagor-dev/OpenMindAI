@@ -103,8 +103,6 @@ pub async fn mobile_generate_text(
             ));
         }
 
-        // Only allow models below the app-private models directory. The root manager
-        // rejects absolute paths and parent traversal before the blocking worker starts.
         let relative = PathBuf::from(relative_model_path.replace('\\', "/"));
         let model_relative = Path::new("models").join(relative);
         let model_path = state.root.resolve_relative(&model_relative)?;
@@ -150,8 +148,9 @@ fn generate_android(
     use llama_cpp_2::model::{AddBos, LlamaModel};
     use llama_cpp_2::sampling::LlamaSampler;
 
-    let backend = LlamaBackend::init()
-        .map_err(|error| AppError::ModelLoadFailed(format!("llama backend init failed: {error}")))?;
+    let backend = LlamaBackend::init().map_err(|error| {
+        AppError::ModelLoadFailed(format!("llama backend init failed: {error}"))
+    })?;
     let model = LlamaModel::load_from_file(&backend, &model_path, &LlamaModelParams::default())
         .map_err(|error| AppError::ModelLoadFailed(format!("failed to load GGUF: {error}")))?;
 
@@ -159,7 +158,9 @@ fn generate_android(
         .map(|count| count.get().min(6) as i32)
         .unwrap_or(4);
     let context_params = LlamaContextParams::default()
-        .with_n_ctx(Some(NonZeroU32::new(MOBILE_CONTEXT_TOKENS).expect("context must be non-zero")))
+        .with_n_ctx(Some(
+            NonZeroU32::new(MOBILE_CONTEXT_TOKENS).expect("context must be non-zero"),
+        ))
         .with_n_threads(threads)
         .with_n_threads_batch(threads);
     let mut context = model
@@ -185,8 +186,15 @@ fn generate_android(
     let last_prompt_index = prompt_tokens.len().saturating_sub(1) as i32;
     for (position, token) in prompt_tokens.iter().copied().enumerate() {
         batch
-            .add(token, position as i32, &[0], position as i32 == last_prompt_index)
-            .map_err(|error| AppError::InferenceFailed(format!("batch creation failed: {error}")))?;
+            .add(
+                token,
+                position as i32,
+                &[0],
+                position as i32 == last_prompt_index,
+            )
+            .map_err(|error| {
+                AppError::InferenceFailed(format!("batch creation failed: {error}"))
+            })?;
     }
     context
         .decode(&mut batch)
@@ -212,12 +220,12 @@ fn generate_android(
         output.extend_from_slice(&piece);
 
         batch.clear();
-        batch
-            .add(token, position, &[0], true)
-            .map_err(|error| AppError::InferenceFailed(format!("generation batch failed: {error}")))?;
-        context
-            .decode(&mut batch)
-            .map_err(|error| AppError::InferenceFailed(format!("generation decode failed: {error}")))?;
+        batch.add(token, position, &[0], true).map_err(|error| {
+            AppError::InferenceFailed(format!("generation batch failed: {error}"))
+        })?;
+        context.decode(&mut batch).map_err(|error| {
+            AppError::InferenceFailed(format!("generation decode failed: {error}"))
+        })?;
         position += 1;
         generated += 1;
     }
