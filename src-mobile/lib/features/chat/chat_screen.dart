@@ -426,7 +426,9 @@ class _ChatScreenState extends State<ChatScreen> {
       source: ImageSource.camera,
       imageQuality: 92,
     );
-    if (image != null && mounted) setState(() => _attachmentPaths.add(image.path));
+    if (image != null && mounted) {
+      setState(() => _attachmentPaths.add(image.path));
+    }
   }
 
   Future<void> _pickPhotos() async {
