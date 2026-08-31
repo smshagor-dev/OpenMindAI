@@ -1,7 +1,10 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:archive/archive.dart';
 import 'package:path/path.dart' as p;
 import 'package:pdf_struct_extractor/pdf_struct_extractor.dart';
+import 'package:xml/xml.dart';
 
 class AttachmentContext {
   const AttachmentContext({
@@ -51,6 +54,8 @@ class AttachmentContextService {
   };
   static const _maxTextBytes = 256 * 1024;
   static const _maxPdfCharacters = 120000;
+  static const _maxDocxBytes = 32 * 1024 * 1024;
+  static const _maxDocxCharacters = 120000;
 
   Future<AttachmentContext> prepare(List<String> paths) async {
     final images = <String>[];
@@ -69,6 +74,20 @@ class AttachmentContextService {
           ..writeln('--- End attached PDF ---');
         continue;
       }
+      if (extension == '.docx') {
+        final value = await _extractDocx(path);
+        text
+          ..writeln('\n--- Attached Word document: ${p.basename(path)} ---')
+          ..writeln(value)
+          ..writeln('--- End attached Word document ---');
+        continue;
+      }
+      if (extension == '.doc') {
+        text.writeln(
+          '\nLegacy Word file ${p.basename(path)} cannot be decoded safely on-device. Save it as .docx and attach it again.',
+        );
+        continue;
+      }
       if (_textExtensions.contains(extension)) {
         final file = File(path);
         if (!await file.exists()) {
@@ -80,7 +99,7 @@ class AttachmentContextService {
           <int>[],
           (buffer, chunk) => buffer..addAll(chunk),
         );
-        final value = String.fromCharCodes(bytes);
+        final value = utf8.decode(bytes, allowMalformed: true);
         text
           ..writeln('\n--- Attached file: ${p.basename(path)} ---')
           ..writeln(value)
@@ -150,6 +169,60 @@ class AttachmentContextService {
           : output.toString();
     } catch (_) {
       return 'The PDF could not be parsed locally.';
+    }
+  }
+
+  Future<String> _extractDocx(String path) async {
+    final file = File(path);
+    if (!await file.exists()) {
+      return 'The selected Word document is no longer available.';
+    }
+    try {
+      final size = await file.length();
+      if (size > _maxDocxBytes) {
+        return 'This Word document is too large to expand safely on-device.';
+      }
+      final archive = ZipDecoder().decodeBytes(await file.readAsBytes());
+      ArchiveFile? documentFile;
+      for (final entry in archive) {
+        if (entry.name.replaceAll('\\', '/') == 'word/document.xml') {
+          documentFile = entry;
+          break;
+        }
+      }
+      final bytes = documentFile?.readBytes();
+      if (bytes == null || bytes.isEmpty) {
+        return 'No readable Word document body was found.';
+      }
+      final document = XmlDocument.parse(utf8.decode(bytes, allowMalformed: true));
+      final output = StringBuffer();
+      for (final paragraph in document.descendants.whereType<XmlElement>().where(
+            (element) => element.name.local == 'p',
+          )) {
+        final line = StringBuffer();
+        for (final element in paragraph.descendants.whereType<XmlElement>()) {
+          switch (element.name.local) {
+            case 't':
+              line.write(element.innerText);
+            case 'tab':
+              line.write('\t');
+            case 'br':
+            case 'cr':
+              line.write('\n');
+          }
+        }
+        final value = line.toString().trimRight();
+        if (value.trim().isNotEmpty) output.writeln(value);
+        if (output.length >= _maxDocxCharacters) {
+          return '${output.toString().substring(0, _maxDocxCharacters)}\n'
+              '[Word document text truncated for local context size]';
+        }
+      }
+      return output.isEmpty
+          ? 'No readable Word document text was found.'
+          : output.toString();
+    } catch (_) {
+      return 'The Word document could not be parsed locally.';
     }
   }
 
