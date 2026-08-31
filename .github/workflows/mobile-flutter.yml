@@ -1,0 +1,74 @@
+name: Mobile Flutter
+
+on:
+  pull_request:
+    paths:
+      - "src-mobile/**"
+      - ".github/workflows/mobile-flutter.yml"
+  push:
+    branches:
+      - main
+      - "feature/flutter-mobile-foundation"
+    paths:
+      - "src-mobile/**"
+      - ".github/workflows/mobile-flutter.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-flutter-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze-test-android:
+    name: Analyze, Test, Android
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: src-mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Flutter toolchain
+        run: flutter --version
+      - name: Generate native hosts
+        run: flutter create --platforms=android,ios --org com.openmindai --project-name openmindai_mobile --no-pub .
+      - name: Configure native permissions
+        run: dart run tool/prepare_platforms.dart
+      - name: Resolve packages
+        run: flutter pub get
+      - name: Format check
+        run: dart format --output=none --set-exit-if-changed lib test tool
+      - name: Analyze
+        run: flutter analyze
+      - name: Test
+        run: flutter test
+      - name: Build Android debug APK
+        run: flutter build apk --debug
+
+  ios-build:
+    name: iOS No-Codesign Build
+    runs-on: macos-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: src-mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Generate native hosts
+        run: flutter create --platforms=android,ios --org com.openmindai --project-name openmindai_mobile --no-pub .
+      - name: Configure native permissions
+        run: dart run tool/prepare_platforms.dart
+      - name: Resolve packages
+        run: flutter pub get
+      - name: Build iOS without signing
+        run: flutter build ios --debug --no-codesign
