@@ -5,6 +5,8 @@ import '../../core/services/device_profile_service.dart';
 import '../../core/services/model_storage_service.dart';
 import '../../core/services/permission_service.dart';
 import '../../core/storage/onboarding_store.dart';
+import '../../core/theme/app_theme.dart';
+import '../../core/theme/openmind_ui.dart';
 
 class OnboardingFlow extends StatefulWidget {
   const OnboardingFlow({super.key, required this.onFinished});
@@ -33,26 +35,18 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   }
 
   void _next() {
-    if (_step < 3) {
-      setState(() => _step += 1);
-    }
+    if (_step < 3) setState(() => _step += 1);
   }
 
   void _back() {
-    if (_step > 0) {
-      setState(() => _step -= 1);
-    }
+    if (_step > 0) setState(() => _step -= 1);
   }
 
   Future<void> _continueFromWelcome() async {
-    if (_requestingPermissions) {
-      return;
-    }
+    if (_requestingPermissions) return;
     setState(() => _requestingPermissions = true);
     final result = await _permissions.requestInitialPermissions();
-    if (!mounted) {
-      return;
-    }
+    if (!mounted) return;
     setState(() => _requestingPermissions = false);
 
     if (result.hasPermanentDenial) {
@@ -79,9 +73,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
         ),
       );
     }
-    if (mounted) {
-      _next();
-    }
+    if (mounted) _next();
   }
 
   @override
@@ -102,9 +94,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
         storage: _modelStorage,
         onReady: (profile) async {
           await _store.complete(selectedModelId: profile.recommendedModel.id);
-          if (mounted) {
-            widget.onFinished();
-          }
+          if (mounted) widget.onFinished();
         },
       ),
     ];
@@ -114,7 +104,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
         child: Column(
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 2),
+              padding: const EdgeInsets.fromLTRB(14, 10, 14, 2),
               child: Row(
                 children: [
                   SizedBox(
@@ -122,16 +112,34 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                     child: _step == 0
                         ? null
                         : IconButton(
+                            tooltip: 'Back',
                             onPressed: _back,
                             icon: const Icon(Icons.arrow_back_rounded),
                           ),
                   ),
                   Expanded(child: _ProgressDots(active: _step)),
-                  const SizedBox(width: 48),
+                  SizedBox(
+                    width: 48,
+                    child: Center(
+                      child: Text(
+                        '${_step + 1}/4',
+                        style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            ),
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ),
-            Expanded(child: pages[_step]),
+            Expanded(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 220),
+                switchInCurve: Curves.easeOut,
+                switchOutCurve: Curves.easeIn,
+                child: KeyedSubtree(key: ValueKey(_step), child: pages[_step]),
+              ),
+            ),
           ],
         ),
       ),
@@ -150,16 +158,17 @@ class _ProgressDots extends StatelessWidget {
       mainAxisAlignment: MainAxisAlignment.center,
       children: List.generate(4, (index) {
         final selected = index == active;
+        final complete = index < active;
         return AnimatedContainer(
           duration: const Duration(milliseconds: 180),
-          width: selected ? 22 : 7,
+          width: selected ? 28 : 9,
           height: 7,
           margin: const EdgeInsets.symmetric(horizontal: 3),
           decoration: BoxDecoration(
-            color: selected
-                ? Theme.of(context).colorScheme.onSurface
-                : Theme.of(context).colorScheme.onSurface.withValues(alpha: .2),
-            borderRadius: BorderRadius.circular(10),
+            color: selected || complete
+                ? AppTheme.accent
+                : Theme.of(context).colorScheme.outlineVariant,
+            borderRadius: BorderRadius.circular(99),
           ),
         );
       }),
@@ -174,9 +183,14 @@ class _PageShell extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 14, 24, 24),
-      child: child,
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 620),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(22, 14, 22, 24),
+          child: child,
+        ),
+      ),
     );
   }
 }
@@ -190,99 +204,113 @@ class _WelcomePage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _PageShell(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Container(
-            width: 88,
-            height: 88,
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.onSurface,
-              shape: BoxShape.circle,
+      child: SingleChildScrollView(
+        child: Column(
+          children: [
+            const SizedBox(height: 22),
+            const OpenMindBrandMark(size: 84),
+            const SizedBox(height: 24),
+            Text(
+              'Your AI. Your device.',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.headlineLarge,
             ),
-            child: Icon(
-              Icons.psychology_alt_rounded,
-              size: 46,
-              color: Theme.of(context).colorScheme.surface,
+            const SizedBox(height: 10),
+            Text(
+              'OpenMindAI brings private, local-first chat, vision and voice to your phone. You decide when the app uses files, camera, microphone or the web.',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
             ),
-          ),
-          const SizedBox(height: 28),
-          Text(
-            'Welcome to OpenMindAI',
-            textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'Private, local-first AI on your phone. Models and conversations stay under your control.',
-            textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodyLarge?.copyWith(height: 1.45),
-          ),
-          const SizedBox(height: 28),
-          const _Capability(
-            icon: Icons.camera_alt_outlined,
-            text: 'Camera for image and document input',
-          ),
-          const _Capability(
-            icon: Icons.mic_none_rounded,
-            text: 'Microphone for voice input',
-          ),
-          const _Capability(
-            icon: Icons.notifications_none_rounded,
-            text: 'Notifications for completed tasks',
-          ),
-          const _Capability(
-            icon: Icons.folder_open_rounded,
-            text: 'Files through the system picker',
-          ),
-          const SizedBox(height: 34),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton(
-              onPressed: loading ? null : onContinue,
-              style: FilledButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 16),
+            const SizedBox(height: 28),
+            const OpenMindSectionCard(
+              child: Column(
+                children: [
+                  _Capability(
+                    icon: Icons.camera_alt_outlined,
+                    title: 'Camera & photos',
+                    text: 'Image and document understanding',
+                  ),
+                  Divider(height: 20),
+                  _Capability(
+                    icon: Icons.mic_none_rounded,
+                    title: 'OpenMindAI Hear',
+                    text: 'Local voice dictation',
+                  ),
+                  Divider(height: 20),
+                  _Capability(
+                    icon: Icons.folder_open_rounded,
+                    title: 'Files',
+                    text: 'Attach PDFs, text and code explicitly',
+                  ),
+                  Divider(height: 20),
+                  _Capability(
+                    icon: Icons.notifications_none_rounded,
+                    title: 'Notifications',
+                    text: 'Optional completion updates',
+                  ),
+                ],
               ),
-              child: loading
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Text('Continue'),
             ),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            'Only permissions used by app features are requested. Broad storage permission is not required.',
-            textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-        ],
+            const SizedBox(height: 26),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: loading ? null : onContinue,
+                icon: loading
+                    ? const SizedBox(
+                        width: 19,
+                        height: 19,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.arrow_forward_rounded),
+                label: Text(loading ? 'Checking permissions…' : 'Continue'),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Only feature-specific permissions are requested. Broad storage permission is not required.',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
 class _Capability extends StatelessWidget {
-  const _Capability({required this.icon, required this.text});
+  const _Capability({required this.icon, required this.title, required this.text});
 
   final IconData icon;
+  final String title;
   final String text;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 7),
-      child: Row(
-        children: [
-          Icon(icon, size: 21),
-          const SizedBox(width: 14),
-          Expanded(child: Text(text)),
-        ],
-      ),
+    return Row(
+      children: [
+        OpenMindFeatureIcon(icon),
+        const SizedBox(width: 13),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+              const SizedBox(height: 2),
+              Text(
+                text,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+            ],
+          ),
+        ),
+        const Icon(Icons.check_circle_outline_rounded, color: AppTheme.accent, size: 20),
+      ],
     );
   }
 }
@@ -296,20 +324,24 @@ class _InstructionsPage extends StatelessWidget {
   Widget build(BuildContext context) {
     const items = [
       (
+        Icons.storage_rounded,
         'Models use device storage',
-        'A suitable local model is recommended from available RAM and storage. Larger models stay optional.',
+        'OpenMindAI recommends a local model from available RAM and free space. Larger models remain optional.',
       ),
       (
+        Icons.battery_charging_full_rounded,
         'Local AI uses battery and memory',
-        'Long responses and large models can warm the phone. Keep enough free memory and battery.',
+        'Long responses and larger models can warm the phone. Leave enough memory and battery for smooth use.',
       ),
       (
+        Icons.offline_bolt_outlined,
         'Core chat works offline',
-        'After a model is installed, normal local chat does not require a paid AI subscription. Search still needs internet.',
+        'After a model is installed, standard chat does not need a paid AI subscription. Search still needs internet.',
       ),
       (
+        Icons.tune_rounded,
         'You stay in control',
-        'Camera, microphone, files, downloads, and network features are explicit app actions.',
+        'Camera, microphone, files, downloads and network features happen only through explicit app actions.',
       ),
     ];
 
@@ -317,58 +349,50 @@ class _InstructionsPage extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Before you start',
-            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
-          ),
           const SizedBox(height: 8),
-          const Text('A few things make local AI work better on mobile.'),
-          const SizedBox(height: 26),
-          ...List.generate(items.length, (index) {
-            final item = items[index];
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 20),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  CircleAvatar(radius: 16, child: Text('${index + 1}')),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          item.$1,
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700,
-                          ),
+          const OpenMindPageHeader(
+            title: 'Before you start',
+            subtitle: 'Four things to know about running AI directly on a phone.',
+          ),
+          const SizedBox(height: 22),
+          Expanded(
+            child: ListView.separated(
+              itemCount: items.length,
+              separatorBuilder: (_, _) => const SizedBox(height: 10),
+              itemBuilder: (context, index) {
+                final item = items[index];
+                return OpenMindSectionCard(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      OpenMindFeatureIcon(item.$1),
+                      const SizedBox(width: 13),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(item.$2, style: const TextStyle(fontWeight: FontWeight.w800)),
+                            const SizedBox(height: 5),
+                            Text(
+                              item.$3,
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 5),
-                        Text(
-                          item.$2,
-                          style: TextStyle(
-                            height: 1.4,
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
-                ],
-              ),
-            );
-          }),
-          const Spacer(),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 14),
           SizedBox(
             width: double.infinity,
             child: FilledButton(
               onPressed: onContinue,
-              style: FilledButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-              ),
               child: const Text('I understand'),
             ),
           ),
@@ -395,55 +419,51 @@ class _LicensePage extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'License agreement',
-            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
-          ),
           const SizedBox(height: 8),
-          const Text('Read the OpenMindAI license before continuing.'),
+          const OpenMindPageHeader(
+            title: 'License agreement',
+            subtitle: 'Review the OpenMindAI license before installing a model.',
+          ),
           const SizedBox(height: 16),
           Expanded(
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                border: Border.all(color: Theme.of(context).dividerColor),
-                borderRadius: BorderRadius.circular(18),
-              ),
-              child: FutureBuilder<String>(
-                future: rootBundle.loadString('assets/LICENSE.txt'),
-                builder: (context, snapshot) {
-                  if (!snapshot.hasData) {
-                    return const Center(
-                      child: CircularProgressIndicator(strokeWidth: 2),
+            child: Card(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(20),
+                child: FutureBuilder<String>(
+                  future: rootBundle.loadString('assets/LICENSE.txt'),
+                  builder: (context, snapshot) {
+                    if (!snapshot.hasData) {
+                      return const Center(child: CircularProgressIndicator(strokeWidth: 2));
+                    }
+                    return Scrollbar(
+                      child: SingleChildScrollView(
+                        padding: const EdgeInsets.all(18),
+                        child: SelectableText(
+                          snapshot.data!,
+                          style: const TextStyle(fontSize: 12.5, height: 1.5),
+                        ),
+                      ),
                     );
-                  }
-                  return SingleChildScrollView(
-                    child: SelectableText(
-                      snapshot.data!,
-                      style: const TextStyle(fontSize: 12.5, height: 1.45),
-                    ),
-                  );
-                },
+                  },
+                ),
               ),
             ),
           ),
+          const SizedBox(height: 8),
           CheckboxListTile(
             contentPadding: EdgeInsets.zero,
             value: accepted,
             onChanged: (value) => onChanged(value ?? false),
-            title: const Text('I have read and agree to the license terms.'),
+            title: const Text(
+              'I have read and agree to the license terms.',
+              style: TextStyle(fontWeight: FontWeight.w700),
+            ),
             controlAffinity: ListTileControlAffinity.leading,
           ),
           SizedBox(
             width: double.infinity,
             child: FilledButton(
               onPressed: onContinue,
-              style: FilledButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-              ),
               child: const Text('Agree and continue'),
             ),
           ),
@@ -474,9 +494,7 @@ class _RecommendationPageState extends State<_RecommendationPage> {
   String? _error;
 
   Future<void> _install(MobileDeviceProfile profile) async {
-    if (_installing) {
-      return;
-    }
+    if (_installing) return;
     setState(() {
       _installing = true;
       _error = null;
@@ -485,22 +503,14 @@ class _RecommendationPageState extends State<_RecommendationPage> {
       await widget.storage.install(
         profile.recommendedModel,
         onProgress: (value) {
-          if (mounted) {
-            setState(() => _progress = value);
-          }
+          if (mounted) setState(() => _progress = value);
         },
       );
-      if (mounted) {
-        widget.onReady(profile);
-      }
+      if (mounted) widget.onReady(profile);
     } catch (error) {
-      if (mounted) {
-        setState(() => _error = error.toString());
-      }
+      if (mounted) setState(() => _error = error.toString());
     } finally {
-      if (mounted) {
-        setState(() => _installing = false);
-      }
+      if (mounted) setState(() => _installing = false);
     }
   }
 
@@ -511,23 +521,22 @@ class _RecommendationPageState extends State<_RecommendationPage> {
         future: widget.profileFuture,
         builder: (context, snapshot) {
           if (snapshot.connectionState != ConnectionState.done) {
-            return const Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CircularProgressIndicator(strokeWidth: 2),
-                  SizedBox(height: 16),
-                  Text('Checking this device…'),
-                ],
+            return const OpenMindEmptyState(
+              icon: Icons.memory_rounded,
+              title: 'Checking this device',
+              description: 'Reading available memory and storage to recommend a balanced local model.',
+              action: SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(strokeWidth: 2),
               ),
             );
           }
           if (!snapshot.hasData) {
-            return Center(
-              child: Text(
-                'Could not read device capabilities.\n${snapshot.error}',
-                textAlign: TextAlign.center,
-              ),
+            return OpenMindEmptyState(
+              icon: Icons.error_outline_rounded,
+              title: 'Device check unavailable',
+              description: 'OpenMindAI could not read device capabilities. ${snapshot.error ?? ''}',
             );
           }
 
@@ -537,65 +546,60 @@ class _RecommendationPageState extends State<_RecommendationPage> {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Recommended for this device',
-                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-              ),
               const SizedBox(height: 8),
-              Text(
-                '${profile.deviceName} · ${profile.platform} ${profile.osVersion}',
+              OpenMindPageHeader(
+                title: 'Recommended model',
+                subtitle: '${profile.deviceName} · ${profile.platform} ${profile.osVersion}',
               ),
-              const SizedBox(height: 26),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(22),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(24),
-                ),
+              const SizedBox(height: 18),
+              OpenMindSectionCard(
+                padding: const EdgeInsets.all(18),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Row(
                       children: [
-                        const Icon(Icons.auto_awesome_rounded),
-                        const SizedBox(width: 10),
+                        const OpenMindFeatureIcon(Icons.auto_awesome_rounded),
+                        const SizedBox(width: 12),
                         Expanded(
-                          child: Text(
-                            model.name,
-                            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                                  fontWeight: FontWeight.w700,
-                                ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const OpenMindStatusPill(label: 'Recommended', active: true),
+                              const SizedBox(height: 7),
+                              Text(model.name, style: Theme.of(context).textTheme.titleLarge),
+                            ],
                           ),
                         ),
                       ],
                     ),
                     const SizedBox(height: 12),
-                    Text(model.description, style: const TextStyle(height: 1.45)),
+                    Text(model.description),
                     const SizedBox(height: 16),
                     Wrap(
                       spacing: 8,
                       runSpacing: 8,
                       children: [
-                        Chip(label: Text('${profile.ramGb} GB RAM')),
-                        Chip(
-                          label: Text(
-                            '${profile.freeDiskGb.toStringAsFixed(1)} GB free',
-                          ),
+                        OpenMindStatusPill(
+                          label: '${profile.ramGb} GB RAM',
+                          icon: Icons.memory_rounded,
                         ),
-                        Chip(
-                          label: Text(
-                            '~${model.sizeGb.toStringAsFixed(1)} GB download',
-                          ),
+                        OpenMindStatusPill(
+                          label: '${profile.freeDiskGb.toStringAsFixed(1)} GB free',
+                          icon: Icons.storage_rounded,
+                        ),
+                        OpenMindStatusPill(
+                          label: '~${model.sizeGb.toStringAsFixed(1)} GB download',
+                          icon: Icons.download_rounded,
                         ),
                       ],
                     ),
                     if (progress != null) ...[
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 18),
                       LinearProgressIndicator(
                         value: progress.progress > 0 ? progress.progress : null,
+                        minHeight: 6,
+                        borderRadius: BorderRadius.circular(99),
                       ),
                       const SizedBox(height: 7),
                       Text(progress.stage),
@@ -603,27 +607,30 @@ class _RecommendationPageState extends State<_RecommendationPage> {
                   ],
                 ),
               ),
-              if (_error != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 14),
-                  child: Text(
-                    _error!,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
+              if (_error != null) ...[
+                const SizedBox(height: 12),
+                Material(
+                  color: Theme.of(context).colorScheme.errorContainer,
+                  borderRadius: BorderRadius.circular(16),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.error_outline_rounded),
+                        const SizedBox(width: 9),
+                        Expanded(child: Text(_error!)),
+                      ],
                     ),
                   ),
                 ),
+              ],
               const Spacer(),
               SizedBox(
                 width: double.infinity,
-                child: FilledButton(
+                child: FilledButton.icon(
                   onPressed: _installing ? null : () => _install(profile),
-                  style: FilledButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                  ),
-                  child: _installing
-                      ? const Text('Installing local model…')
-                      : const Text('Install and open chat'),
+                  icon: Icon(_installing ? Icons.downloading_rounded : Icons.download_rounded),
+                  label: Text(_installing ? 'Installing local model…' : 'Install and open chat'),
                 ),
               ),
               if (_installing)
@@ -633,9 +640,9 @@ class _RecommendationPageState extends State<_RecommendationPage> {
                     child: const Text('Cancel download'),
                   ),
                 ),
-              const SizedBox(height: 6),
+              const SizedBox(height: 7),
               Text(
-                'The model is downloaded to app-private storage and verified before use. Only the OpenMindAI product name is shown in the app.',
+                'The model is stored in app-private storage and verified before use.',
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodySmall,
               ),

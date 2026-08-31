@@ -7,7 +7,11 @@ import 'package:image_picker/image_picker.dart';
 import '../../core/constants/model_catalog.dart';
 import '../../core/services/model_storage_service.dart';
 import '../../core/storage/onboarding_store.dart';
+import '../../core/theme/app_theme.dart';
+import '../../core/theme/openmind_ui.dart';
+import '../canvas/canvas_screen.dart';
 import '../models/model_manager_sheet.dart';
+import '../settings/settings_screen.dart';
 import 'models/chat_models.dart';
 import 'services/chat_store.dart';
 import 'services/mobile_inference_service.dart';
@@ -137,9 +141,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _showError(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
-    );
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
   void _applyVoiceText(String transcript) {
@@ -246,6 +248,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _activeConversationId = null;
       _attachmentPaths.clear();
       _composer.clear();
+      _mode = 'chat';
     });
   }
 
@@ -356,9 +359,7 @@ class _ChatScreenState extends State<ChatScreen> {
             if (index < 0) return;
             final current = conversation.messages[index];
             setState(() {
-              conversation.messages[index] = current.copyWith(
-                text: current.text + delta,
-              );
+              conversation.messages[index] = current.copyWith(text: current.text + delta);
             });
             _scrollToBottom();
           },
@@ -367,7 +368,6 @@ class _ChatScreenState extends State<ChatScreen> {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
                   content: Text(error.toString()),
-                  behavior: SnackBarBehavior.floating,
                   action: SnackBarAction(label: 'Models', onPressed: _openModels),
                 ),
               );
@@ -440,10 +440,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _pickFiles() async {
     final files = await FilePicker.pickFiles();
-    if (files.isEmpty || !mounted) return;
-    final paths = files
-        .map((file) => file.xFile.path)
-        .where((path) => path.isNotEmpty);
+    if (files.isEmpty || !mounted) {
+      return;
+    }
+    final paths = files.map((file) => file.xFile.path).where((path) => path.isNotEmpty);
     setState(() => _attachmentPaths.addAll(paths));
   }
 
@@ -453,31 +453,35 @@ class _ChatScreenState extends State<ChatScreen> {
       showDragHandle: true,
       builder: (context) => SafeArea(
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(18, 0, 18, 18),
+          padding: const EdgeInsets.fromLTRB(18, 0, 18, 20),
           child: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              ListTile(
-                leading: const Icon(Icons.camera_alt_outlined),
-                title: const Text('Camera'),
-                subtitle: const Text('Images automatically use OpenMindAI Lens'),
+              Text('Add to chat', style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 12),
+              _AttachTile(
+                icon: Icons.camera_alt_outlined,
+                title: 'Camera',
+                subtitle: 'Capture an image for OpenMindAI Lens',
                 onTap: () {
                   Navigator.pop(context);
                   _pickCamera();
                 },
               ),
-              ListTile(
-                leading: const Icon(Icons.photo_library_outlined),
-                title: const Text('Photos'),
+              _AttachTile(
+                icon: Icons.photo_library_outlined,
+                title: 'Photos',
+                subtitle: 'Choose one or more images',
                 onTap: () {
                   Navigator.pop(context);
                   _pickPhotos();
                 },
               ),
-              ListTile(
-                leading: const Icon(Icons.attach_file_rounded),
-                title: const Text('Files'),
-                subtitle: const Text('PDF, text, code, JSON, Markdown, YAML and CSV'),
+              _AttachTile(
+                icon: Icons.attach_file_rounded,
+                title: 'Files',
+                subtitle: 'PDF, text, code, JSON, Markdown, YAML and CSV',
                 onTap: () {
                   Navigator.pop(context);
                   _pickFiles();
@@ -498,42 +502,46 @@ class _ChatScreenState extends State<ChatScreen> {
       builder: (context) => SafeArea(
         child: ListView(
           shrinkWrap: true,
-          padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 4, 8, 12),
-              child: Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      'Choose model',
-                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
-                    ),
-                  ),
-                  TextButton.icon(
-                    onPressed: () {
-                      Navigator.pop(context);
-                      _openModels();
-                    },
-                    icon: const Icon(Icons.download_rounded),
-                    label: const Text('Manage'),
-                  ),
-                ],
+            OpenMindPageHeader(
+              title: 'Choose model',
+              subtitle: 'Select the local model used for new replies.',
+              trailing: IconButton(
+                tooltip: 'Manage models',
+                onPressed: () {
+                  Navigator.pop(context);
+                  _openModels();
+                },
+                icon: const Icon(Icons.download_rounded),
               ),
             ),
+            const SizedBox(height: 14),
             ...MobileModelCatalog.models.map(
-              (model) => ListTile(
-                title: Text(
-                  model.name,
-                  style: const TextStyle(fontWeight: FontWeight.w600),
+              (model) => Padding(
+                padding: const EdgeInsets.only(bottom: 9),
+                child: Card(
+                  color: model.id == _selectedModelId
+                      ? AppTheme.accent.withValues(alpha: .10)
+                      : null,
+                  child: ListTile(
+                    leading: OpenMindFeatureIcon(
+                      model.kind == 'Vision'
+                          ? Icons.visibility_outlined
+                          : model.kind == 'Reasoning'
+                              ? Icons.psychology_outlined
+                              : Icons.chat_bubble_outline_rounded,
+                    ),
+                    title: Text(model.name, style: const TextStyle(fontWeight: FontWeight.w700)),
+                    subtitle: Text(
+                      '${model.kind} · ${model.minRamGb}+ GB RAM · ~${model.sizeGb.toStringAsFixed(1)} GB',
+                    ),
+                    trailing: model.id == _selectedModelId
+                        ? const Icon(Icons.check_circle_rounded, color: AppTheme.accent)
+                        : const Icon(Icons.chevron_right_rounded),
+                    onTap: () => Navigator.pop(context, model.id),
+                  ),
                 ),
-                subtitle: Text(
-                  '${model.kind} · ${model.minRamGb}+ GB RAM · ~${model.sizeGb.toStringAsFixed(1)} GB',
-                ),
-                trailing: model.id == _selectedModelId
-                    ? const Icon(Icons.check_rounded)
-                    : null,
-                onTap: () => Navigator.pop(context, model.id),
               ),
             ),
           ],
@@ -569,6 +577,24 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToBottom();
   }
 
+  void _openCanvas() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const CanvasScreen()),
+    );
+  }
+
+  void _openSettings() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
+    );
+  }
+
+  void _useStarter(String prompt, String mode) {
+    _composer.text = prompt;
+    _composer.selection = TextSelection.collapsed(offset: prompt.length);
+    setState(() => _mode = mode);
+  }
+
   @override
   Widget build(BuildContext context) {
     final conversation = _activeConversation;
@@ -577,12 +603,13 @@ class _ChatScreenState extends State<ChatScreen> {
       drawer: _buildDrawer(context),
       appBar: AppBar(
         leading: IconButton(
+          tooltip: 'Open navigation',
           icon: const Icon(Icons.menu_rounded),
           onPressed: () => _scaffoldKey.currentState?.openDrawer(),
         ),
         titleSpacing: 2,
         title: InkWell(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(14),
           onTap: _selectModel,
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
@@ -593,10 +620,10 @@ class _ChatScreenState extends State<ChatScreen> {
                   child: Text(
                     _selectedModel.name,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
                   ),
                 ),
-                const SizedBox(width: 3),
+                const SizedBox(width: 4),
                 const Icon(Icons.keyboard_arrow_down_rounded, size: 20),
               ],
             ),
@@ -604,9 +631,9 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         actions: [
           IconButton(
-            onPressed: _openModels,
-            icon: const Icon(Icons.memory_rounded),
-            tooltip: 'Models',
+            onPressed: _openCanvas,
+            icon: const Icon(Icons.auto_awesome_rounded),
+            tooltip: 'OpenMindAI Canvas',
           ),
           IconButton(
             onPressed: _newChat,
@@ -620,9 +647,14 @@ class _ChatScreenState extends State<ChatScreen> {
           ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
           : Column(
               children: [
+                if (_mode != 'chat') _ModeBanner(mode: _mode),
                 Expanded(
                   child: conversation == null || conversation.messages.isEmpty
-                      ? _EmptyChat(modelName: _selectedModel.name, onModels: _openModels)
+                      ? _EmptyChat(
+                          modelName: _selectedModel.name,
+                          onModels: _openModels,
+                          onStarter: _useStarter,
+                        )
                       : ListView.builder(
                           controller: _scrollController,
                           padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
@@ -635,9 +667,7 @@ class _ChatScreenState extends State<ChatScreen> {
                               message: message,
                               speaking: _speakingMessageId == message.id,
                               onSpeak: () => _toggleSpeech(message),
-                              onRegenerate: lastAssistant && !_generating
-                                  ? _regenerate
-                                  : null,
+                              onRegenerate: lastAssistant && !_generating ? _regenerate : null,
                             );
                           },
                         ),
@@ -666,21 +696,27 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget _buildDrawer(BuildContext context) {
     final visibleConversations = _visibleConversations;
     return Drawer(
-      width: MediaQuery.sizeOf(context).width * .86,
+      width: MediaQuery.sizeOf(context).width.clamp(300, 360).toDouble(),
       child: SafeArea(
         child: Column(
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+              padding: const EdgeInsets.fromLTRB(16, 10, 12, 8),
               child: Row(
                 children: [
+                  const OpenMindBrandMark(size: 38, compact: true),
+                  const SizedBox(width: 11),
                   const Expanded(
-                    child: Text(
-                      'OpenMindAI',
-                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('OpenMindAI', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w800)),
+                        Text('Local-first mobile AI', style: TextStyle(fontSize: 12)),
+                      ],
                     ),
                   ),
                   IconButton(
+                    tooltip: 'New chat',
                     onPressed: () {
                       Navigator.pop(context);
                       _newChat();
@@ -689,6 +725,50 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                 ],
               ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 6, 12, 4),
+              child: Column(
+                children: [
+                  _DrawerAction(
+                    icon: Icons.add_comment_outlined,
+                    label: 'New chat',
+                    onTap: () {
+                      Navigator.pop(context);
+                      _newChat();
+                    },
+                  ),
+                  _DrawerAction(
+                    icon: Icons.memory_rounded,
+                    label: 'Models',
+                    onTap: () {
+                      Navigator.pop(context);
+                      _openModels();
+                    },
+                  ),
+                  _DrawerAction(
+                    icon: Icons.auto_awesome_rounded,
+                    label: 'OpenMindAI Canvas',
+                    accent: true,
+                    onTap: () {
+                      Navigator.pop(context);
+                      _openCanvas();
+                    },
+                  ),
+                  _DrawerAction(
+                    icon: Icons.settings_outlined,
+                    label: 'Settings',
+                    onTap: () {
+                      Navigator.pop(context);
+                      _openSettings();
+                    },
+                  ),
+                ],
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+              child: Divider(),
             ),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -711,14 +791,26 @@ class _ChatScreenState extends State<ChatScreen> {
                 onChanged: (value) => setState(() => _chatSearchQuery = value),
               ),
             ),
-            const SizedBox(height: 10),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 14, 18, 7),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'RECENT CHATS',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        letterSpacing: 1.0,
+                        fontWeight: FontWeight.w800,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                ),
+              ),
+            ),
             Expanded(
               child: visibleConversations.isEmpty
                   ? Center(
                       child: Text(
-                        _chatSearchQuery.isEmpty
-                            ? 'No conversations yet'
-                            : 'No matching chats',
+                        _chatSearchQuery.isEmpty ? 'No conversations yet' : 'No matching chats',
+                        style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
                       ),
                     )
                   : ListView.builder(
@@ -726,37 +818,34 @@ class _ChatScreenState extends State<ChatScreen> {
                       itemCount: visibleConversations.length,
                       itemBuilder: (context, index) {
                         final item = visibleConversations[index];
-                        return ListTile(
-                          dense: true,
-                          selected: item.id == _activeConversationId,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(10),
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 2),
+                          child: ListTile(
+                            dense: true,
+                            selected: item.id == _activeConversationId,
+                            selectedTileColor: AppTheme.accent.withValues(alpha: .10),
+                            leading: const Icon(Icons.chat_bubble_outline_rounded, size: 18),
+                            title: Text(
+                              item.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            onTap: () => _openConversation(item),
                           ),
-                          title: Text(
-                            item.title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          onTap: () => _openConversation(item),
                         );
                       },
                     ),
             ),
             const Divider(height: 1),
-            ListTile(
-              leading: const Icon(Icons.memory_rounded),
-              title: const Text('Models'),
-              subtitle: const Text('Download, verify, and remove local models'),
-              onTap: () {
-                Navigator.pop(context);
-                _openModels();
-              },
-            ),
-            const ListTile(
-              leading: CircleAvatar(child: Icon(Icons.person_outline_rounded)),
-              title: Text('OpenMindAI Mobile'),
-              subtitle: Text('Local-first'),
-              trailing: Icon(Icons.more_horiz_rounded),
+            const Padding(
+              padding: EdgeInsets.fromLTRB(12, 8, 12, 12),
+              child: ListTile(
+                leading: CircleAvatar(
+                  child: Icon(Icons.lock_outline_rounded),
+                ),
+                title: Text('Private by design', style: TextStyle(fontWeight: FontWeight.w700)),
+                subtitle: Text('Core chat stays on this device'),
+              ),
             ),
           ],
         ),
@@ -765,51 +854,254 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 }
 
-class _EmptyChat extends StatelessWidget {
-  const _EmptyChat({required this.modelName, required this.onModels});
+class _ModeBanner extends StatelessWidget {
+  const _ModeBanner({required this.mode});
 
-  final String modelName;
-  final VoidCallback onModels;
+  final String mode;
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 54,
-              height: 54,
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.onSurface,
-                shape: BoxShape.circle,
-              ),
-              child: Icon(
-                Icons.psychology_alt_rounded,
-                color: Theme.of(context).colorScheme.surface,
-                size: 31,
-              ),
+    final (icon, title, detail) = switch (mode) {
+      'thinking' => (
+          Icons.psychology_outlined,
+          'Think mode',
+          'More deliberate local reasoning before the response.',
+        ),
+      'web-search' => (
+          Icons.travel_explore_rounded,
+          'Search mode',
+          'Uses web evidence when the current answer needs fresh information.',
+        ),
+      'research' => (
+          Icons.biotech_outlined,
+          'Research mode',
+          'Collects and synthesizes multiple sources for a deeper answer.',
+        ),
+      _ => (Icons.chat_bubble_outline_rounded, 'Chat', 'General conversation.'),
+    };
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(14, 7, 14, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppTheme.accent.withValues(alpha: .08),
+        border: Border.all(color: AppTheme.accent.withValues(alpha: .20)),
+        borderRadius: BorderRadius.circular(15),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 19, color: AppTheme.accent),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+                Text(
+                  detail,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                ),
+              ],
             ),
-            const SizedBox(height: 18),
-            Text(
-              'How can I help?',
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(modelName, style: Theme.of(context).textTheme.bodySmall),
-            const SizedBox(height: 16),
-            TextButton.icon(
-              onPressed: onModels,
-              icon: const Icon(Icons.download_rounded),
-              label: const Text('Manage local models'),
-            ),
-          ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AttachTile extends StatelessWidget {
+  const _AttachTile({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Card(
+        child: ListTile(
+          leading: OpenMindFeatureIcon(icon),
+          title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+          subtitle: Text(subtitle),
+          trailing: const Icon(Icons.chevron_right_rounded),
+          onTap: onTap,
         ),
       ),
+    );
+  }
+}
+
+class _DrawerAction extends StatelessWidget {
+  const _DrawerAction({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.accent = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final bool accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      dense: true,
+      leading: Icon(icon, color: accent ? AppTheme.accent : null),
+      title: Text(
+        label,
+        style: TextStyle(fontWeight: FontWeight.w700, color: accent ? AppTheme.accent : null),
+      ),
+      onTap: onTap,
+    );
+  }
+}
+
+class _EmptyChat extends StatelessWidget {
+  const _EmptyChat({
+    required this.modelName,
+    required this.onModels,
+    required this.onStarter,
+  });
+
+  final String modelName;
+  final VoidCallback onModels;
+  final void Function(String prompt, String mode) onStarter;
+
+  @override
+  Widget build(BuildContext context) {
+    final starters = [
+      (
+        Icons.lightbulb_outline_rounded,
+        'Explain something',
+        'Explain quantum computing in simple terms.',
+        'chat',
+      ),
+      (
+        Icons.code_rounded,
+        'Build with code',
+        'Write a clean Flutter widget for a responsive profile card.',
+        'thinking',
+      ),
+      (
+        Icons.travel_explore_rounded,
+        'Search the web',
+        'Find the latest important AI platform updates.',
+        'web-search',
+      ),
+      (
+        Icons.biotech_outlined,
+        'Research deeply',
+        'Research current approaches to efficient on-device AI inference.',
+        'research',
+      ),
+    ];
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final maxWidth = constraints.maxWidth > 650 ? 620.0 : constraints.maxWidth;
+        return Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 28, 24, 28),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: maxWidth),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const OpenMindBrandMark(size: 64),
+                  const SizedBox(height: 20),
+                  Text(
+                    'How can I help?',
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context).textTheme.headlineMedium,
+                  ),
+                  const SizedBox(height: 7),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.offline_bolt_outlined, size: 15, color: AppTheme.accent),
+                      const SizedBox(width: 5),
+                      Flexible(
+                        child: Text(
+                          '$modelName · Local-first',
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+                  GridView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: constraints.maxWidth > 520 ? 2 : 1,
+                      childAspectRatio: constraints.maxWidth > 520 ? 2.7 : 4.1,
+                      crossAxisSpacing: 10,
+                      mainAxisSpacing: 10,
+                    ),
+                    itemCount: starters.length,
+                    itemBuilder: (context, index) {
+                      final item = starters[index];
+                      return InkWell(
+                        borderRadius: BorderRadius.circular(18),
+                        onTap: () => onStarter(item.$3, item.$4),
+                        child: Card(
+                          child: Padding(
+                            padding: const EdgeInsets.all(13),
+                            child: Row(
+                              children: [
+                                OpenMindFeatureIcon(item.$1, size: 38),
+                                const SizedBox(width: 11),
+                                Expanded(
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(item.$2, style: const TextStyle(fontWeight: FontWeight.w800)),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        item.$3,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: Theme.of(context).textTheme.bodySmall,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 15),
+                  TextButton.icon(
+                    onPressed: onModels,
+                    icon: const Icon(Icons.memory_rounded),
+                    label: const Text('Manage local models'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
