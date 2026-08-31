@@ -33,7 +33,7 @@ jobs:
           cache: npm
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -125,6 +125,8 @@ jobs:
             android-smoke.png
             android-logcat.txt
             android-window-state.txt
+            android-process-state.txt
+            android-package-state.txt
             android-ui.xml
           if-no-files-found: warn
           retention-days: 14
