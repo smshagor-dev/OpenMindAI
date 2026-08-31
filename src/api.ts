@@ -1,12 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Artifact, Message } from "./types";
+import type { Artifact, LlamaRuntimeStatus, Message, RuntimeInventory } from "./types";
 import type {
   ConnectedProvider,
   GoogleWorkspaceStatus,
   IntegrationStatus,
 } from "./lib/connectedActions";
 import { createSoundscapeArtifact } from "./lib/media";
-import { getPlatformCapabilities } from "./lib/platform";
+import { getPlatformCapabilities, type PlatformCapabilities } from "./lib/platform";
 import { api as legacyApi } from "./api_legacy";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
@@ -54,6 +54,59 @@ async function isMobileNativeTarget() {
   if (!isTauri) return false;
   const capabilities = await getPlatformCapabilities();
   return capabilities.target === "android" || capabilities.target === "ios";
+}
+
+function embeddedMobileRuntime(capabilities: PlatformCapabilities): RuntimeInventory {
+  const selected: NonNullable<RuntimeInventory["selected"]> = {
+    manifest: {
+      runtimeName: "OpenMindAI Embedded llama.cpp",
+      version: "native",
+      platform: capabilities.target,
+      architecture: "mobile",
+      backend: "cpu",
+      source: "embedded",
+      installedAt: "bundled",
+      binaries: { server: null, cli: null, bench: null },
+      checksum: null,
+      status: "ready",
+    },
+    serverExists: false,
+    cliExists: false,
+    benchExists: false,
+    versionOutput: "Embedded llama.cpp mobile runtime",
+    deviceOutput: "Native in-process mobile inference; platform acceleration is compiled where supported.",
+    usable: true,
+    message: "Embedded on-device runtime ready",
+  };
+
+  return {
+    runtimes: [selected],
+    selected,
+    serverState: "ready",
+  };
+}
+
+async function mobileAwareRuntimeInventory(): Promise<RuntimeInventory> {
+  const capabilities = await getPlatformCapabilities();
+  if (capabilities.mobile && capabilities.mobileModelRuntimeReady) {
+    return embeddedMobileRuntime(capabilities);
+  }
+  return legacyApi.runtimeInventory();
+}
+
+async function mobileAwareRuntimeStatus(): Promise<LlamaRuntimeStatus> {
+  const capabilities = await getPlatformCapabilities();
+  if (capabilities.mobile && capabilities.mobileModelRuntimeReady) {
+    const inventory = embeddedMobileRuntime(capabilities);
+    return {
+      available: true,
+      backend: inventory.selected?.manifest.backend ?? null,
+      endpoint: null,
+      state: "ready",
+      selectedRuntime: inventory.selected,
+    };
+  }
+  return legacyApi.runtimeStatus();
 }
 
 async function messageUsesSoundscape(conversationId: string, messageId: string | null) {
@@ -125,6 +178,17 @@ async function regenerateMobileLocalChat(
 
 export const api = {
   ...legacyApi,
+  runtimeInventory: mobileAwareRuntimeInventory,
+  runtimeStatus: mobileAwareRuntimeStatus,
+  startRuntime: mobileAwareRuntimeStatus,
+  stopRuntime: mobileAwareRuntimeStatus,
+  activateModel: async (conversationId: string, modelId: string) => {
+    if (await isMobileNativeTarget()) {
+      await legacyApi.setConversationModel(conversationId, modelId);
+      return mobileAwareRuntimeStatus();
+    }
+    return legacyApi.activateModel(conversationId, modelId);
+  },
   projectAgentStatus,
   mobileModelRecommendation: () =>
     connectedInvoke<MobileModelRecommendation>("mobile_model_recommendation"),
