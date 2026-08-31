@@ -1,12 +1,8 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:path/path.dart' as p;
 
 import '../../core/constants/model_catalog.dart';
 import '../../core/services/model_storage_service.dart';
@@ -15,7 +11,10 @@ import '../models/model_manager_sheet.dart';
 import 'models/chat_models.dart';
 import 'services/chat_store.dart';
 import 'services/mobile_inference_service.dart';
+import 'services/speech_output_service.dart';
 import 'services/voice_input_service.dart';
+import 'widgets/chat_composer.dart';
+import 'widgets/chat_message_bubble.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -34,6 +33,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final _modelStorage = ModelStorageService();
   final _imagePicker = ImagePicker();
   final _voice = VoiceInputService();
+  final _speech = SpeechOutputService();
 
   late final NativeMobileInferenceService _inference;
   StreamSubscription<String>? _generationSubscription;
@@ -43,10 +43,12 @@ class _ChatScreenState extends State<ChatScreen> {
   final List<String> _attachmentPaths = [];
   String? _activeConversationId;
   String? _activeAssistantId;
+  String? _speakingMessageId;
   String _selectedModelId = 'qwen3-06b-q4';
   String _mode = 'chat';
   String _chatSearchQuery = '';
   String _voiceBaseText = '';
+  int _speechSession = 0;
   bool _loading = true;
   bool _generating = false;
   bool _voiceListening = false;
@@ -100,6 +102,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _voiceSubscription?.cancel();
     unawaited(_inference.shutdown());
     unawaited(_voice.dispose());
+    unawaited(_speech.dispose());
     _composer.dispose();
     _searchController.dispose();
     _scrollController.dispose();
@@ -196,9 +199,47 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  Future<void> _stopSpeech() async {
+    _speechSession += 1;
+    await _speech.stop();
+    if (mounted && _speakingMessageId != null) {
+      setState(() => _speakingMessageId = null);
+    }
+  }
+
+  Future<void> _toggleSpeech(ChatMessage message) async {
+    if (message.role != 'assistant' || message.text.trim().isEmpty) return;
+    if (_speakingMessageId == message.id) {
+      await _stopSpeech();
+      return;
+    }
+
+    final session = ++_speechSession;
+    await _speech.stop();
+    if (!mounted || session != _speechSession) return;
+    setState(() => _speakingMessageId = message.id);
+
+    try {
+      await _speech.speak(message.text);
+    } on SpeechOutputException catch (error) {
+      if (session == _speechSession) _showError(error.message);
+    } catch (_) {
+      if (session == _speechSession) {
+        _showError(
+          'OpenMindAI Speak is unavailable. Check that a device voice is installed.',
+        );
+      }
+    } finally {
+      if (mounted && session == _speechSession && _speakingMessageId == message.id) {
+        setState(() => _speakingMessageId = null);
+      }
+    }
+  }
+
   Future<void> _newChat() async {
     if (_generating) await _stopGeneration();
     if (_voiceListening) await _voice.cancel();
+    await _stopSpeech();
     if (!mounted) return;
     setState(() {
       _voiceListening = false;
@@ -225,6 +266,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _send() async {
     if (_generating) return;
     await _stopVoiceIfNeeded();
+    await _stopSpeech();
     final text = _composer.text.trim();
     if (text.isEmpty && _attachmentPaths.isEmpty) return;
 
@@ -359,6 +401,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _regenerate() async {
     if (_generating) return;
+    await _stopSpeech();
     final conversation = _activeConversation;
     if (conversation == null || conversation.messages.isEmpty) return;
     if (conversation.messages.last.role == 'assistant') {
@@ -498,6 +541,7 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
     if (selected == null || !mounted) return;
+    await _stopSpeech();
     if (selected != _selectedModelId) await _inference.shutdown();
     await _onboardingStore.setSelectedModelId(selected);
     if (mounted) setState(() => _selectedModelId = selected);
@@ -509,11 +553,20 @@ class _ChatScreenState extends State<ChatScreen> {
       context,
       storage: _modelStorage,
       onModelReady: (modelId) async {
+        await _stopSpeech();
         if (modelId != _selectedModelId) await _inference.shutdown();
         await _onboardingStore.setSelectedModelId(modelId);
         if (mounted) setState(() => _selectedModelId = modelId);
       },
     );
+  }
+
+  Future<void> _openConversation(ChatConversation conversation) async {
+    await _stopSpeech();
+    if (!mounted) return;
+    setState(() => _activeConversationId = conversation.id);
+    Navigator.pop(context);
+    _scrollToBottom();
   }
 
   @override
@@ -578,8 +631,10 @@ class _ChatScreenState extends State<ChatScreen> {
                             final message = conversation.messages[index];
                             final lastAssistant = message.role == 'assistant' &&
                                 index == conversation.messages.length - 1;
-                            return _MessageBubble(
+                            return ChatMessageBubble(
                               message: message,
+                              speaking: _speakingMessageId == message.id,
+                              onSpeak: () => _toggleSpeech(message),
                               onRegenerate: lastAssistant && !_generating
                                   ? _regenerate
                                   : null,
@@ -587,7 +642,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           },
                         ),
                 ),
-                _Composer(
+                ChatComposer(
                   controller: _composer,
                   mode: _mode,
                   attachmentPaths: _attachmentPaths,
@@ -682,11 +737,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
-                          onTap: () {
-                            setState(() => _activeConversationId = item.id);
-                            Navigator.pop(context);
-                            _scrollToBottom();
-                          },
+                          onTap: () => _openConversation(item),
                         );
                       },
                     ),
@@ -758,336 +809,6 @@ class _EmptyChat extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message, this.onRegenerate});
-
-  final ChatMessage message;
-  final VoidCallback? onRegenerate;
-
-  @override
-  Widget build(BuildContext context) {
-    final user = message.role == 'user';
-    return Align(
-      alignment: user ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.sizeOf(context).width * (user ? .84 : .96),
-        ),
-        margin: const EdgeInsets.only(bottom: 18),
-        padding: user
-            ? const EdgeInsets.symmetric(horizontal: 16, vertical: 11)
-            : EdgeInsets.zero,
-        decoration: user
-            ? BoxDecoration(
-                color: Theme.of(context).brightness == Brightness.dark
-                    ? const Color(0xFF303030)
-                    : const Color(0xFFF1F1F1),
-                borderRadius: BorderRadius.circular(20),
-              )
-            : null,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (message.attachmentPaths.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Wrap(
-                  spacing: 7,
-                  runSpacing: 7,
-                  children: message.attachmentPaths
-                      .map((path) => _AttachmentPreview(path: path))
-                      .toList(),
-                ),
-              ),
-            if (message.text.isEmpty && !user)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 4),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    SizedBox(
-                      width: 17,
-                      height: 17,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                    SizedBox(width: 9),
-                    Text('Thinking…'),
-                  ],
-                ),
-              )
-            else if (user)
-              SelectableText(
-                message.text,
-                style: const TextStyle(fontSize: 16, height: 1.45),
-              )
-            else
-              MarkdownBody(
-                data: message.text,
-                selectable: true,
-                styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-                  p: const TextStyle(fontSize: 16, height: 1.45),
-                  code: TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 14,
-                    backgroundColor:
-                        Theme.of(context).colorScheme.surfaceContainerHighest,
-                  ),
-                  codeblockDecoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-              ),
-            if (!user && message.text.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      visualDensity: VisualDensity.compact,
-                      tooltip: 'Copy',
-                      onPressed: () => Clipboard.setData(
-                        ClipboardData(text: message.text),
-                      ),
-                      icon: const Icon(Icons.copy_rounded, size: 18),
-                    ),
-                    if (onRegenerate != null)
-                      IconButton(
-                        visualDensity: VisualDensity.compact,
-                        tooltip: 'Regenerate',
-                        onPressed: onRegenerate,
-                        icon: const Icon(Icons.refresh_rounded, size: 19),
-                      ),
-                  ],
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _AttachmentPreview extends StatelessWidget {
-  const _AttachmentPreview({required this.path});
-
-  final String path;
-
-  bool get _isImage => const {'.png', '.jpg', '.jpeg', '.webp'}.contains(
-        p.extension(path).toLowerCase(),
-      );
-
-  @override
-  Widget build(BuildContext context) {
-    if (_isImage) {
-      return ClipRRect(
-        borderRadius: BorderRadius.circular(14),
-        child: Image.file(
-          File(path),
-          width: 160,
-          height: 120,
-          fit: BoxFit.cover,
-          errorBuilder: (context, error, stackTrace) => _fileChip(),
-        ),
-      );
-    }
-    return _fileChip();
-  }
-
-  Widget _fileChip() => Chip(
-        visualDensity: VisualDensity.compact,
-        avatar: const Icon(Icons.attach_file_rounded, size: 15),
-        label: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 190),
-          child: Text(p.basename(path), overflow: TextOverflow.ellipsis),
-        ),
-      );
-}
-
-class _Composer extends StatelessWidget {
-  const _Composer({
-    required this.controller,
-    required this.mode,
-    required this.attachmentPaths,
-    required this.generating,
-    required this.voiceListening,
-    required this.voicePreparing,
-    required this.onModeChanged,
-    required this.onAdd,
-    required this.onVoice,
-    required this.onSend,
-    required this.onStop,
-    required this.onRemoveAttachment,
-  });
-
-  final TextEditingController controller;
-  final String mode;
-  final List<String> attachmentPaths;
-  final bool generating;
-  final bool voiceListening;
-  final bool voicePreparing;
-  final ValueChanged<String> onModeChanged;
-  final VoidCallback onAdd;
-  final VoidCallback onVoice;
-  final VoidCallback onSend;
-  final VoidCallback onStop;
-  final ValueChanged<String> onRemoveAttachment;
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  _ModeChip(
-                    label: 'Chat',
-                    value: 'chat',
-                    selected: mode == 'chat',
-                    onSelected: onModeChanged,
-                  ),
-                  _ModeChip(
-                    label: 'Think',
-                    value: 'thinking',
-                    selected: mode == 'thinking',
-                    onSelected: onModeChanged,
-                  ),
-                  _ModeChip(
-                    label: 'Search',
-                    value: 'web-search',
-                    selected: mode == 'web-search',
-                    onSelected: onModeChanged,
-                  ),
-                  _ModeChip(
-                    label: 'Research',
-                    value: 'research',
-                    selected: mode == 'research',
-                    onSelected: onModeChanged,
-                  ),
-                ],
-              ),
-            ),
-            if (attachmentPaths.isNotEmpty)
-              Align(
-                alignment: Alignment.centerLeft,
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: attachmentPaths
-                        .map(
-                          (path) => Padding(
-                            padding: const EdgeInsets.only(right: 6, bottom: 6),
-                            child: Chip(
-                              avatar: const Icon(Icons.attach_file_rounded, size: 17),
-                              label: Text(p.basename(path)),
-                              deleteIcon: const Icon(Icons.close_rounded, size: 17),
-                              onDeleted: () => onRemoveAttachment(path),
-                            ),
-                          ),
-                        )
-                        .toList(),
-                  ),
-                ),
-              ),
-            TextField(
-              controller: controller,
-              minLines: 1,
-              maxLines: 6,
-              textInputAction: TextInputAction.newline,
-              decoration: InputDecoration(
-                hintText: voiceListening
-                    ? 'Listening with OpenMindAI Hear…'
-                    : 'Message OpenMindAI',
-                contentPadding: const EdgeInsets.symmetric(vertical: 11),
-                prefixIcon: IconButton(
-                  onPressed: generating ? null : onAdd,
-                  icon: const Icon(Icons.add_rounded),
-                ),
-                suffixIconConstraints: const BoxConstraints(minWidth: 96),
-                suffixIcon: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      tooltip: voiceListening
-                          ? 'Stop OpenMindAI Hear'
-                          : 'Voice input',
-                      onPressed: generating || voicePreparing ? null : onVoice,
-                      icon: voicePreparing
-                          ? const SizedBox(
-                              width: 19,
-                              height: 19,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : Icon(
-                              voiceListening
-                                  ? Icons.stop_circle_outlined
-                                  : Icons.mic_none_rounded,
-                            ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(0, 6, 6, 6),
-                      child: IconButton.filled(
-                        onPressed: generating ? onStop : onSend,
-                        icon: Icon(
-                          generating ? Icons.stop_rounded : Icons.arrow_upward_rounded,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              onSubmitted: (_) {
-                if (!generating) onSend();
-              },
-            ),
-            const SizedBox(height: 5),
-            Text(
-              voiceListening
-                  ? 'Listening locally · OpenMindAI Hear'
-                  : 'OpenMindAI can make mistakes. Check important information.',
-              style: Theme.of(context).textTheme.labelSmall,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ModeChip extends StatelessWidget {
-  const _ModeChip({
-    required this.label,
-    required this.value,
-    required this.selected,
-    required this.onSelected,
-  });
-
-  final String label;
-  final String value;
-  final bool selected;
-  final ValueChanged<String> onSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(right: 7, bottom: 7),
-      child: ChoiceChip(
-        label: Text(label),
-        selected: selected,
-        onSelected: (_) => onSelected(value),
-        visualDensity: VisualDensity.compact,
       ),
     );
   }
