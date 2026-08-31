@@ -22,7 +22,7 @@ async function releaseCachedModel(force = false) {
   if (!force && document.visibilityState !== "hidden") return;
 
   const capabilities = await getPlatformCapabilities();
-  if (capabilities.target !== "android") return;
+  if (capabilities.target !== "android" && capabilities.target !== "ios") return;
   if (!force && document.visibilityState !== "hidden") return;
 
   try {
