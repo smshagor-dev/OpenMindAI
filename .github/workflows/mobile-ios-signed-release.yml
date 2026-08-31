@@ -1,0 +1,171 @@
+name: iOS Signed Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_to_testflight:
+        description: Upload the signed IPA to App Store Connect after build
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-signed-release
+  cancel-in-progress: false
+
+jobs:
+  signed-ipa:
+    name: iOS signed App Store IPA
+    runs-on: macos-latest
+    timeout-minutes: 90
+    env:
+      APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+      IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+      IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+      IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Validate Apple signing secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${APPLE_DEVELOPMENT_TEAM}" || { echo "Missing APPLE_DEVELOPMENT_TEAM"; exit 1; }
+          test -n "${APPLE_API_ISSUER}" || { echo "Missing APPLE_API_ISSUER"; exit 1; }
+          test -n "${APPLE_API_KEY_ID}" || { echo "Missing APPLE_API_KEY_ID"; exit 1; }
+          test -n "${APPLE_API_KEY_BASE64}" || { echo "Missing APPLE_API_KEY_BASE64"; exit 1; }
+          test -n "${IOS_CERTIFICATE}" || { echo "Missing IOS_CERTIFICATE"; exit 1; }
+          test -n "${IOS_CERTIFICATE_PASSWORD}" || { echo "Missing IOS_CERTIFICATE_PASSWORD"; exit 1; }
+          test -n "${IOS_MOBILE_PROVISION}" || { echo "Missing IOS_MOBILE_PROVISION"; exit 1; }
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Verify Xcode and CocoaPods
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          if ! command -v pod >/dev/null 2>&1; then
+            brew install cocoapods
+          fi
+          pod --version
+
+      - name: Install App Store Connect API key
+        shell: bash
+        run: |
+          set -euo pipefail
+          key_dir="${HOME}/.appstoreconnect/private_keys"
+          mkdir -p "${key_dir}"
+          key_path="${key_dir}/AuthKey_${APPLE_API_KEY_ID}.p8"
+          printf '%s' "${APPLE_API_KEY_BASE64}" | base64 --decode > "${key_path}"
+          chmod 600 "${key_path}"
+          test -s "${key_path}"
+          echo "APPLE_API_KEY=${APPLE_API_KEY_ID}" >> "${GITHUB_ENV}"
+          echo "APPLE_API_KEY_PATH=${key_path}" >> "${GITHUB_ENV}"
+
+      - name: Import Apple distribution certificate
+        shell: bash
+        env:
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}-${{ github.run_attempt }}-openmindai
+        run: |
+          set -euo pipefail
+          certificate_path="${RUNNER_TEMP}/openmindai-distribution.p12"
+          keychain_path="${RUNNER_TEMP}/openmindai-signing.keychain-db"
+          printf '%s' "${IOS_CERTIFICATE}" | base64 --decode > "${certificate_path}"
+          test -s "${certificate_path}"
+          security create-keychain -p "${KEYCHAIN_PASSWORD}" "${keychain_path}"
+          security set-keychain-settings -lut 21600 "${keychain_path}"
+          security unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${keychain_path}"
+          security import "${certificate_path}" -P "${IOS_CERTIFICATE_PASSWORD}" -A -t cert -f pkcs12 -k "${keychain_path}"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "${KEYCHAIN_PASSWORD}" "${keychain_path}"
+          security list-keychains -d user -s "${keychain_path}" login.keychain-db
+          echo "IOS_SIGNING_KEYCHAIN=${keychain_path}" >> "${GITHUB_ENV}"
+
+      - name: Install provisioning profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          profile_dir="${HOME}/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "${profile_dir}"
+          profile_path="${profile_dir}/OpenMindAI.mobileprovision"
+          printf '%s' "${IOS_MOBILE_PROVISION}" | base64 --decode > "${profile_path}"
+          test -s "${profile_path}"
+
+      - name: Verify Rust dependency lock
+        run: cargo metadata --locked --manifest-path src-tauri/Cargo.toml --format-version 1 > /dev/null
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Validate shared frontend
+        run: npm run build
+
+      - name: Initialize iOS target
+        env:
+          CI: "true"
+        run: npm run ios:init -- --ci --skip-targets-install
+
+      - name: Build signed App Store IPA
+        env:
+          CI: "true"
+        run: npm run ios:build -- --export-method app-store-connect --ci
+
+      - name: Resolve and verify signed IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          ipa_path="$(find src-tauri/gen -type f -name "*.ipa" | sort | head -n 1)"
+          test -n "${ipa_path}"
+          test -f "${ipa_path}"
+          verify_dir="${RUNNER_TEMP}/openmindai-ipa-verify"
+          mkdir -p "${verify_dir}"
+          unzip -q "${ipa_path}" -d "${verify_dir}"
+          app_path="$(find "${verify_dir}/Payload" -maxdepth 1 -type d -name "*.app" | head -n 1)"
+          test -n "${app_path}"
+          codesign --verify --deep --strict --verbose=2 "${app_path}"
+          codesign -dv --verbose=4 "${app_path}" 2> "${RUNNER_TEMP}/openmindai-codesign.txt"
+          echo "SIGNED_IPA=${GITHUB_WORKSPACE}/${ipa_path}" >> "${GITHUB_ENV}"
+
+      - name: Upload signed IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openmindai-ios-app-store-ipa
+          path: ${{ env.SIGNED_IPA }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload to TestFlight
+        if: ${{ inputs.upload_to_testflight }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcrun altool \
+            --upload-app \
+            --type ios \
+            --file "${SIGNED_IPA}" \
+            --apiKey "${APPLE_API_KEY_ID}" \
+            --apiIssuer "${APPLE_API_ISSUER}"
+
+      - name: Cleanup signing keychain
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${IOS_SIGNING_KEYCHAIN:-}" && -f "${IOS_SIGNING_KEYCHAIN}" ]]; then
+            security delete-keychain "${IOS_SIGNING_KEYCHAIN}" || true
+          fi
