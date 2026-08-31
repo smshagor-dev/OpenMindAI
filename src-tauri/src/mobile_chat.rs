@@ -1,8 +1,19 @@
 #[cfg(any(target_os = "android", target_os = "ios"))]
+use std::path::Path;
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use tauri::Emitter;
 use tauri::{AppHandle, State};
 
 use crate::{app_error::AppError, chat::Message, AppState};
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+struct MobileModelSelection {
+    registry_id: String,
+    name: String,
+    relative_model_path: String,
+    reason: String,
+}
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
 #[tauri::command]
@@ -82,7 +93,6 @@ async fn send_mobile_chat(
         chat::ChatRepository,
         inference::StreamStartedEvent,
         mobile_inference::{resolve_android_model_path, DEFAULT_MAX_OUTPUT_TOKENS},
-        mobile_model_policy::recommendation_for_state,
     };
 
     validate_mobile_mode(&mode)?;
@@ -94,14 +104,9 @@ async fn send_mobile_chat(
     }
 
     crate::sync_project_context(&state, &conversation_id)?;
-    let recommendation = recommendation_for_state(&state)?;
-    let relative_model_path = recommendation.installed_model_path.clone().ok_or_else(|| {
-        AppError::ModelNotFound(format!(
-            "{} is recommended for this mobile device but is not installed. Install it from the mobile setup or Models screen first.",
-            recommendation.name
-        ))
-    })?;
-    let (model_path, model_display) = resolve_android_model_path(&state, &relative_model_path)?;
+    let selection = select_mobile_model(&state, &conversation_id, &mode)?;
+    let (model_path, model_display) =
+        resolve_android_model_path(&state, &selection.relative_model_path)?;
     let output_limit = output_limit_for_mode(&mode, DEFAULT_MAX_OUTPUT_TOKENS);
     let cancellation = state.active_generations.start(&conversation_id)?;
 
@@ -112,20 +117,20 @@ async fn send_mobile_chat(
             .map_err(|_| AppError::internal("database lock poisoned"));
         db.and_then(|db| {
             let repo = ChatRepository::new(&db);
-            repo.set_active_model(&conversation_id, Some(&recommendation.model_id))?;
+            repo.set_active_model(&conversation_id, Some(&selection.registry_id))?;
             let user = repo.add_message(
                 &conversation_id,
                 "user",
                 trimmed,
                 "completed",
-                Some(&recommendation.model_id),
+                Some(&selection.registry_id),
             )?;
             let assistant = repo.add_message(
                 &conversation_id,
                 "assistant",
                 "",
                 "streaming",
-                Some(&recommendation.model_id),
+                Some(&selection.registry_id),
             )?;
             Ok((user, assistant))
         })
@@ -145,11 +150,8 @@ async fn send_mobile_chat(
             conversation_id: conversation_id.clone(),
             user,
             assistant: assistant.clone(),
-            routed_model_name: recommendation.name.clone(),
-            routing_reason: format!(
-                "Mobile on-device {} tier selected from detected RAM. {}",
-                recommendation.tier, recommendation.reason
-            ),
+            routed_model_name: selection.name.clone(),
+            routing_reason: selection.reason.clone(),
         },
     ) {
         mark_mobile_generation_failed(&state, &conversation_id, &assistant.id, &app);
@@ -183,19 +185,13 @@ async fn regenerate_mobile_chat(
         chat::ChatRepository,
         inference::StreamStartedEvent,
         mobile_inference::{resolve_android_model_path, DEFAULT_MAX_OUTPUT_TOKENS},
-        mobile_model_policy::recommendation_for_state,
     };
 
     validate_mobile_mode(&mode)?;
     crate::sync_project_context(&state, &conversation_id)?;
-    let recommendation = recommendation_for_state(&state)?;
-    let relative_model_path = recommendation.installed_model_path.clone().ok_or_else(|| {
-        AppError::ModelNotFound(format!(
-            "{} is recommended for this mobile device but is not installed. Install it before regenerating local responses.",
-            recommendation.name
-        ))
-    })?;
-    let (model_path, model_display) = resolve_android_model_path(&state, &relative_model_path)?;
+    let selection = select_mobile_model(&state, &conversation_id, &mode)?;
+    let (model_path, model_display) =
+        resolve_android_model_path(&state, &selection.relative_model_path)?;
     let output_limit = output_limit_for_mode(&mode, DEFAULT_MAX_OUTPUT_TOKENS);
     let cancellation = state.active_generations.start(&conversation_id)?;
 
@@ -229,13 +225,13 @@ async fn regenerate_mobile_chat(
             }
 
             repo.delete_message(&assistant_message_id)?;
-            repo.set_active_model(&conversation_id, Some(&recommendation.model_id))?;
+            repo.set_active_model(&conversation_id, Some(&selection.registry_id))?;
             let assistant = repo.add_message(
                 &conversation_id,
                 "assistant",
                 "",
                 "streaming",
-                Some(&recommendation.model_id),
+                Some(&selection.registry_id),
             )?;
             Ok((user, assistant))
         })
@@ -255,11 +251,8 @@ async fn regenerate_mobile_chat(
             conversation_id: conversation_id.clone(),
             user,
             assistant: assistant.clone(),
-            routed_model_name: recommendation.name.clone(),
-            routing_reason: format!(
-                "Mobile on-device {} tier selected from detected RAM. {}",
-                recommendation.tier, recommendation.reason
-            ),
+            routed_model_name: selection.name.clone(),
+            routing_reason: selection.reason.clone(),
         },
     ) {
         mark_mobile_generation_failed(&state, &conversation_id, &assistant.id, &app);
@@ -278,6 +271,133 @@ async fn regenerate_mobile_chat(
         cancellation,
     )
     .await
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn select_mobile_model(
+    state: &AppState,
+    conversation_id: &str,
+    mode: &str,
+) -> Result<MobileModelSelection, AppError> {
+    use crate::{
+        chat::ChatRepository, mobile_model_policy::recommendation_for_state,
+        model_registry::ModelRegistry,
+    };
+
+    let recommendation = recommendation_for_state(state)?;
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| AppError::internal("database lock poisoned"))?;
+    let conversation = ChatRepository::new(&db).find_conversation(conversation_id)?;
+    let registry = ModelRegistry::new(&db, &state.root);
+    let discovered = registry.discover_gguf_models()?;
+
+    if let Some(active_id) = conversation.active_model_id.as_deref() {
+        if let Some(selected) = discovered.iter().find(|model| model.id == active_id) {
+            ensure_mobile_model_supports_mode(selected, mode)?;
+            let validated = registry.validate_model(&selected.id)?;
+            return Ok(MobileModelSelection {
+                registry_id: validated.id,
+                name: validated.name,
+                relative_model_path: relative_path_below_models(&validated.path)?,
+                reason: "Using the installed local model selected for this conversation."
+                    .to_string(),
+            });
+        }
+        // Older mobile builds persisted a catalog id instead of the registry
+        // model id. Treat that stale value as no explicit selection so the
+        // device recommendation can repair the conversation automatically.
+    }
+
+    let recommended_relative = recommendation.installed_model_path.clone().ok_or_else(|| {
+        AppError::ModelNotFound(format!(
+            "{} is recommended for this mobile device but is not installed. Install it from the mobile setup or Models screen first.",
+            recommendation.name
+        ))
+    })?;
+    let expected_registry_path = format!("models/{}", recommended_relative.replace('\\', "/"));
+    let selected = discovered
+        .iter()
+        .find(|model| model.path.replace('\\', "/") == expected_registry_path)
+        .ok_or_else(|| {
+            AppError::ModelNotFound(format!(
+                "the installed {} package is not registered yet; reopen Models and retry",
+                recommendation.name
+            ))
+        })?;
+    ensure_mobile_model_supports_mode(selected, mode)?;
+    let validated = registry.validate_model(&selected.id)?;
+
+    Ok(MobileModelSelection {
+        registry_id: validated.id,
+        name: validated.name,
+        relative_model_path: relative_path_below_models(&validated.path)?,
+        reason: format!(
+            "Mobile on-device {} tier selected from detected RAM. {}",
+            recommendation.tier, recommendation.reason
+        ),
+    })
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn relative_path_below_models(registry_path: &str) -> Result<String, AppError> {
+    let normalized = registry_path.trim().replace('\\', "/");
+    let relative = normalized
+        .strip_prefix("models/")
+        .ok_or_else(|| {
+            AppError::ModelUnsupported(
+                "mobile local models must stay inside the app-private models directory"
+                    .to_string(),
+            )
+        })?
+        .trim();
+    if relative.is_empty()
+        || Path::new(relative).is_absolute()
+        || Path::new(relative)
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(AppError::ModelUnsupported(
+            "invalid mobile model path".to_string(),
+        ));
+    }
+    Ok(relative.to_string())
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn ensure_mobile_model_supports_mode(
+    model: &crate::model_registry::ModelRecord,
+    mode: &str,
+) -> Result<(), AppError> {
+    if !model.enabled {
+        return Err(AppError::ModelUnsupported(format!(
+            "{} is disabled and cannot be used for mobile inference",
+            model.name
+        )));
+    }
+    if !model.format.eq_ignore_ascii_case("gguf") {
+        return Err(AppError::ModelUnsupported(format!(
+            "{} is not a GGUF model",
+            model.name
+        )));
+    }
+
+    let capabilities = serde_json::from_str::<Vec<String>>(&model.capabilities).unwrap_or_default();
+    let supports_chat = capabilities.iter().any(|value| value == "chat");
+    let supports_thinking = capabilities.iter().any(|value| value == "thinking");
+    let supported = if mode.eq_ignore_ascii_case("thinking") {
+        supports_thinking || supports_chat
+    } else {
+        supports_chat
+    };
+    if !supported {
+        return Err(AppError::ModelUnsupported(format!(
+            "{} does not support mobile {mode} generation",
+            model.name
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
