@@ -25,6 +25,17 @@ Future<void> _patchAndroidManifest() async {
   if (!value.contains('android.permission.CAMERA')) {
     value = value.replaceFirst('>\n', '>\n$permissions');
   }
+
+  const ttsQueries = '''
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+''';
+  if (!value.contains('android.intent.action.TTS_SERVICE')) {
+    value = value.replaceFirst('\n    <application', '$ttsQueries\n    <application');
+  }
   await file.writeAsString(value);
 }
 
