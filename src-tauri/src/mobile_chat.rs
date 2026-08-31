@@ -1,6 +1,6 @@
-use tauri::{AppHandle, State};
 #[cfg(target_os = "android")]
 use tauri::Emitter;
+use tauri::{AppHandle, State};
 
 use crate::{app_error::AppError, chat::Message, AppState};
 
