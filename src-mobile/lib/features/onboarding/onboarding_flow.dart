@@ -33,18 +33,26 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   }
 
   void _next() {
-    if (_step < 3) setState(() => _step += 1);
+    if (_step < 3) {
+      setState(() => _step += 1);
+    }
   }
 
   void _back() {
-    if (_step > 0) setState(() => _step -= 1);
+    if (_step > 0) {
+      setState(() => _step -= 1);
+    }
   }
 
   Future<void> _continueFromWelcome() async {
-    if (_requestingPermissions) return;
+    if (_requestingPermissions) {
+      return;
+    }
     setState(() => _requestingPermissions = true);
     final result = await _permissions.requestInitialPermissions();
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
     setState(() => _requestingPermissions = false);
 
     if (result.hasPermanentDenial) {
@@ -56,7 +64,10 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
             'One or more optional capabilities were permanently denied. Text chat still works and you can enable them later in system settings.',
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Continue')),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Continue'),
+            ),
             FilledButton(
               onPressed: () {
                 Navigator.pop(dialogContext);
@@ -68,13 +79,18 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
         ),
       );
     }
-    if (mounted) _next();
+    if (mounted) {
+      _next();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final pages = <Widget>[
-      _WelcomePage(loading: _requestingPermissions, onContinue: _continueFromWelcome),
+      _WelcomePage(
+        loading: _requestingPermissions,
+        onContinue: _continueFromWelcome,
+      ),
       _InstructionsPage(onContinue: _next),
       _LicensePage(
         accepted: _licenseAccepted,
@@ -86,7 +102,9 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
         storage: _modelStorage,
         onReady: (profile) async {
           await _store.complete(selectedModelId: profile.recommendedModel.id);
-          if (mounted) widget.onFinished();
+          if (mounted) {
+            widget.onFinished();
+          }
         },
       ),
     ];
@@ -101,7 +119,12 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                 children: [
                   SizedBox(
                     width: 48,
-                    child: _step == 0 ? null : IconButton(onPressed: _back, icon: const Icon(Icons.arrow_back_rounded)),
+                    child: _step == 0
+                        ? null
+                        : IconButton(
+                            onPressed: _back,
+                            icon: const Icon(Icons.arrow_back_rounded),
+                          ),
                   ),
                   Expanded(child: _ProgressDots(active: _step)),
                   const SizedBox(width: 48),
@@ -118,6 +141,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
 
 class _ProgressDots extends StatelessWidget {
   const _ProgressDots({required this.active});
+
   final int active;
 
   @override
@@ -145,17 +169,21 @@ class _ProgressDots extends StatelessWidget {
 
 class _PageShell extends StatelessWidget {
   const _PageShell({required this.child});
+
   final Widget child;
 
   @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.fromLTRB(24, 14, 24, 24),
-        child: child,
-      );
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 14, 24, 24),
+      child: child,
+    );
+  }
 }
 
 class _WelcomePage extends StatelessWidget {
   const _WelcomePage({required this.loading, required this.onContinue});
+
   final bool loading;
   final VoidCallback onContinue;
 
@@ -168,14 +196,23 @@ class _WelcomePage extends StatelessWidget {
           Container(
             width: 88,
             height: 88,
-            decoration: BoxDecoration(color: Theme.of(context).colorScheme.onSurface, shape: BoxShape.circle),
-            child: Icon(Icons.psychology_alt_rounded, size: 46, color: Theme.of(context).colorScheme.surface),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.onSurface,
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              Icons.psychology_alt_rounded,
+              size: 46,
+              color: Theme.of(context).colorScheme.surface,
+            ),
           ),
           const SizedBox(height: 28),
           Text(
             'Welcome to OpenMindAI',
             textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w700),
+            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
           ),
           const SizedBox(height: 12),
           Text(
@@ -184,18 +221,36 @@ class _WelcomePage extends StatelessWidget {
             style: Theme.of(context).textTheme.bodyLarge?.copyWith(height: 1.45),
           ),
           const SizedBox(height: 28),
-          const _Capability(icon: Icons.camera_alt_outlined, text: 'Camera for image and document input'),
-          const _Capability(icon: Icons.mic_none_rounded, text: 'Microphone for voice input'),
-          const _Capability(icon: Icons.notifications_none_rounded, text: 'Notifications for completed tasks'),
-          const _Capability(icon: Icons.folder_open_rounded, text: 'Files through the system picker'),
+          const _Capability(
+            icon: Icons.camera_alt_outlined,
+            text: 'Camera for image and document input',
+          ),
+          const _Capability(
+            icon: Icons.mic_none_rounded,
+            text: 'Microphone for voice input',
+          ),
+          const _Capability(
+            icon: Icons.notifications_none_rounded,
+            text: 'Notifications for completed tasks',
+          ),
+          const _Capability(
+            icon: Icons.folder_open_rounded,
+            text: 'Files through the system picker',
+          ),
           const SizedBox(height: 34),
           SizedBox(
             width: double.infinity,
             child: FilledButton(
               onPressed: loading ? null : onContinue,
-              style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)),
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
               child: loading
-                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
                   : const Text('Continue'),
             ),
           ),
@@ -213,33 +268,61 @@ class _WelcomePage extends StatelessWidget {
 
 class _Capability extends StatelessWidget {
   const _Capability({required this.icon, required this.text});
+
   final IconData icon;
   final String text;
 
   @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 7),
-        child: Row(children: [Icon(icon, size: 21), const SizedBox(width: 14), Expanded(child: Text(text))]),
-      );
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 7),
+      child: Row(
+        children: [
+          Icon(icon, size: 21),
+          const SizedBox(width: 14),
+          Expanded(child: Text(text)),
+        ],
+      ),
+    );
+  }
 }
 
 class _InstructionsPage extends StatelessWidget {
   const _InstructionsPage({required this.onContinue});
+
   final VoidCallback onContinue;
 
   @override
   Widget build(BuildContext context) {
     const items = [
-      ('Models use device storage', 'A suitable local model is recommended from available RAM and storage. Larger models stay optional.'),
-      ('Local AI uses battery and memory', 'Long responses and large models can warm the phone. Keep enough free memory and battery.'),
-      ('Core chat works offline', 'After a model is installed, normal local chat does not require a paid AI subscription. Search still needs internet.'),
-      ('You stay in control', 'Camera, microphone, files, downloads, and network features are explicit app actions.'),
+      (
+        'Models use device storage',
+        'A suitable local model is recommended from available RAM and storage. Larger models stay optional.',
+      ),
+      (
+        'Local AI uses battery and memory',
+        'Long responses and large models can warm the phone. Keep enough free memory and battery.',
+      ),
+      (
+        'Core chat works offline',
+        'After a model is installed, normal local chat does not require a paid AI subscription. Search still needs internet.',
+      ),
+      (
+        'You stay in control',
+        'Camera, microphone, files, downloads, and network features are explicit app actions.',
+      ),
     ];
+
     return _PageShell(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Before you start', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w700)),
+          Text(
+            'Before you start',
+            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
           const SizedBox(height: 8),
           const Text('A few things make local AI work better on mobile.'),
           const SizedBox(height: 26),
@@ -256,9 +339,21 @@ class _InstructionsPage extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(item.$1, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                        Text(
+                          item.$1,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
                         const SizedBox(height: 5),
-                        Text(item.$2, style: TextStyle(height: 1.4, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                        Text(
+                          item.$2,
+                          style: TextStyle(
+                            height: 1.4,
+                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -271,7 +366,9 @@ class _InstructionsPage extends StatelessWidget {
             width: double.infinity,
             child: FilledButton(
               onPressed: onContinue,
-              style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)),
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
               child: const Text('I understand'),
             ),
           ),
@@ -282,7 +379,12 @@ class _InstructionsPage extends StatelessWidget {
 }
 
 class _LicensePage extends StatelessWidget {
-  const _LicensePage({required this.accepted, required this.onChanged, required this.onContinue});
+  const _LicensePage({
+    required this.accepted,
+    required this.onChanged,
+    required this.onContinue,
+  });
+
   final bool accepted;
   final ValueChanged<bool> onChanged;
   final VoidCallback? onContinue;
@@ -293,7 +395,12 @@ class _LicensePage extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('License agreement', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w700)),
+          Text(
+            'License agreement',
+            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
           const SizedBox(height: 8),
           const Text('Read the OpenMindAI license before continuing.'),
           const SizedBox(height: 16),
@@ -301,12 +408,24 @@ class _LicensePage extends StatelessWidget {
             child: Container(
               width: double.infinity,
               padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(border: Border.all(color: Theme.of(context).dividerColor), borderRadius: BorderRadius.circular(18)),
+              decoration: BoxDecoration(
+                border: Border.all(color: Theme.of(context).dividerColor),
+                borderRadius: BorderRadius.circular(18),
+              ),
               child: FutureBuilder<String>(
                 future: rootBundle.loadString('assets/LICENSE.txt'),
                 builder: (context, snapshot) {
-                  if (!snapshot.hasData) return const Center(child: CircularProgressIndicator(strokeWidth: 2));
-                  return SingleChildScrollView(child: SelectableText(snapshot.data!, style: const TextStyle(fontSize: 12.5, height: 1.45)));
+                  if (!snapshot.hasData) {
+                    return const Center(
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    );
+                  }
+                  return SingleChildScrollView(
+                    child: SelectableText(
+                      snapshot.data!,
+                      style: const TextStyle(fontSize: 12.5, height: 1.45),
+                    ),
+                  );
                 },
               ),
             ),
@@ -322,7 +441,9 @@ class _LicensePage extends StatelessWidget {
             width: double.infinity,
             child: FilledButton(
               onPressed: onContinue,
-              style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)),
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
               child: const Text('Agree and continue'),
             ),
           ),
@@ -333,7 +454,12 @@ class _LicensePage extends StatelessWidget {
 }
 
 class _RecommendationPage extends StatefulWidget {
-  const _RecommendationPage({required this.profileFuture, required this.storage, required this.onReady});
+  const _RecommendationPage({
+    required this.profileFuture,
+    required this.storage,
+    required this.onReady,
+  });
+
   final Future<MobileDeviceProfile> profileFuture;
   final ModelStorageService storage;
   final ValueChanged<MobileDeviceProfile> onReady;
@@ -348,7 +474,9 @@ class _RecommendationPageState extends State<_RecommendationPage> {
   String? _error;
 
   Future<void> _install(MobileDeviceProfile profile) async {
-    if (_installing) return;
+    if (_installing) {
+      return;
+    }
     setState(() {
       _installing = true;
       _error = null;
@@ -357,14 +485,22 @@ class _RecommendationPageState extends State<_RecommendationPage> {
       await widget.storage.install(
         profile.recommendedModel,
         onProgress: (value) {
-          if (mounted) setState(() => _progress = value);
+          if (mounted) {
+            setState(() => _progress = value);
+          }
         },
       );
-      if (mounted) widget.onReady(profile);
+      if (mounted) {
+        widget.onReady(profile);
+      }
     } catch (error) {
-      if (mounted) setState(() => _error = error.toString());
+      if (mounted) {
+        setState(() => _error = error.toString());
+      }
     } finally {
-      if (mounted) setState(() => _installing = false);
+      if (mounted) {
+        setState(() => _installing = false);
+      }
     }
   }
 
@@ -375,10 +511,24 @@ class _RecommendationPageState extends State<_RecommendationPage> {
         future: widget.profileFuture,
         builder: (context, snapshot) {
           if (snapshot.connectionState != ConnectionState.done) {
-            return const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [CircularProgressIndicator(strokeWidth: 2), SizedBox(height: 16), Text('Checking this device…')]));
+            return const Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(strokeWidth: 2),
+                  SizedBox(height: 16),
+                  Text('Checking this device…'),
+                ],
+              ),
+            );
           }
           if (!snapshot.hasData) {
-            return Center(child: Text('Could not read device capabilities.\n${snapshot.error}', textAlign: TextAlign.center));
+            return Center(
+              child: Text(
+                'Could not read device capabilities.\n${snapshot.error}',
+                textAlign: TextAlign.center,
+              ),
+            );
           }
 
           final profile = snapshot.data!;
@@ -387,33 +537,66 @@ class _RecommendationPageState extends State<_RecommendationPage> {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Recommended for this device', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w700)),
+              Text(
+                'Recommended for this device',
+                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
               const SizedBox(height: 8),
-              Text('${profile.deviceName} · ${profile.platform} ${profile.osVersion}'),
+              Text(
+                '${profile.deviceName} · ${profile.platform} ${profile.osVersion}',
+              ),
               const SizedBox(height: 26),
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(22),
-                decoration: BoxDecoration(color: Theme.of(context).colorScheme.surfaceContainerHighest, borderRadius: BorderRadius.circular(24)),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(24),
+                ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(children: [
-                      const Icon(Icons.auto_awesome_rounded),
-                      const SizedBox(width: 10),
-                      Expanded(child: Text(model.name, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700))),
-                    ]),
+                    Row(
+                      children: [
+                        const Icon(Icons.auto_awesome_rounded),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            model.name,
+                            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                          ),
+                        ),
+                      ],
+                    ),
                     const SizedBox(height: 12),
                     Text(model.description, style: const TextStyle(height: 1.45)),
                     const SizedBox(height: 16),
-                    Wrap(spacing: 8, runSpacing: 8, children: [
-                      Chip(label: Text('${profile.ramGb} GB RAM')),
-                      Chip(label: Text('${profile.freeDiskGb.toStringAsFixed(1)} GB free')),
-                      Chip(label: Text('~${model.sizeGb.toStringAsFixed(1)} GB download')),
-                    ]),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        Chip(label: Text('${profile.ramGb} GB RAM')),
+                        Chip(
+                          label: Text(
+                            '${profile.freeDiskGb.toStringAsFixed(1)} GB free',
+                          ),
+                        ),
+                        Chip(
+                          label: Text(
+                            '~${model.sizeGb.toStringAsFixed(1)} GB download',
+                          ),
+                        ),
+                      ],
+                    ),
                     if (progress != null) ...[
                       const SizedBox(height: 16),
-                      LinearProgressIndicator(value: progress.progress > 0 ? progress.progress : null),
+                      LinearProgressIndicator(
+                        value: progress.progress > 0 ? progress.progress : null,
+                      ),
                       const SizedBox(height: 7),
                       Text(progress.stage),
                     ],
@@ -423,15 +606,24 @@ class _RecommendationPageState extends State<_RecommendationPage> {
               if (_error != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 14),
-                  child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                  child: Text(
+                    _error!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
                 ),
               const Spacer(),
               SizedBox(
                 width: double.infinity,
                 child: FilledButton(
                   onPressed: _installing ? null : () => _install(profile),
-                  style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)),
-                  child: _installing ? const Text('Installing local model…') : const Text('Install and open chat'),
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                  ),
+                  child: _installing
+                      ? const Text('Installing local model…')
+                      : const Text('Install and open chat'),
                 ),
               ),
               if (_installing)

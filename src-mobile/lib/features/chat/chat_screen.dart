@@ -15,6 +15,7 @@ import '../models/model_manager_sheet.dart';
 import 'models/chat_models.dart';
 import 'services/chat_store.dart';
 import 'services/mobile_inference_service.dart';
+import 'services/voice_input_service.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -32,19 +33,24 @@ class _ChatScreenState extends State<ChatScreen> {
   final _onboardingStore = OnboardingStore();
   final _modelStorage = ModelStorageService();
   final _imagePicker = ImagePicker();
+  final _voice = VoiceInputService();
 
   late final NativeMobileInferenceService _inference;
   StreamSubscription<String>? _generationSubscription;
+  StreamSubscription<VoiceTranscriptEvent>? _voiceSubscription;
 
   List<ChatConversation> _conversations = [];
+  final List<String> _attachmentPaths = [];
   String? _activeConversationId;
   String? _activeAssistantId;
   String _selectedModelId = 'qwen3-06b-q4';
   String _mode = 'chat';
   String _chatSearchQuery = '';
+  String _voiceBaseText = '';
   bool _loading = true;
   bool _generating = false;
-  final List<String> _attachmentPaths = [];
+  bool _voiceListening = false;
+  bool _voicePreparing = false;
 
   ChatConversation? get _activeConversation {
     for (final conversation in _conversations) {
@@ -60,7 +66,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (query.isEmpty) return _conversations;
     return _conversations.where((conversation) {
       if (conversation.title.toLowerCase().contains(query)) return true;
-      return conversation.messages.any((message) => message.text.toLowerCase().contains(query));
+      return conversation.messages.any(
+        (message) => message.text.toLowerCase().contains(query),
+      );
     }).toList();
   }
 
@@ -68,13 +76,30 @@ class _ChatScreenState extends State<ChatScreen> {
   void initState() {
     super.initState();
     _inference = NativeMobileInferenceService(storage: _modelStorage);
+    _voiceSubscription = _voice.events.listen(
+      (event) {
+        if (!mounted) return;
+        _applyVoiceText(event.text);
+        if (event.isFinal) setState(() => _voiceListening = false);
+      },
+      onError: (Object error) {
+        if (!mounted) return;
+        setState(() {
+          _voiceListening = false;
+          _voicePreparing = false;
+        });
+        _showError('OpenMindAI Hear could not continue. Please try again.');
+      },
+    );
     _load();
   }
 
   @override
   void dispose() {
     _generationSubscription?.cancel();
-    unawaited(_inference.cancel());
+    _voiceSubscription?.cancel();
+    unawaited(_inference.shutdown());
+    unawaited(_voice.dispose());
     _composer.dispose();
     _searchController.dispose();
     _scrollController.dispose();
@@ -107,10 +132,76 @@ class _ChatScreenState extends State<ChatScreen> {
 
   String _id(String prefix) => '$prefix-${DateTime.now().microsecondsSinceEpoch}';
 
+  void _showError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
+    );
+  }
+
+  void _applyVoiceText(String transcript) {
+    final normalized = transcript.trim();
+    if (normalized.isEmpty) return;
+    final prefix = _voiceBaseText.trimRight();
+    final value = prefix.isEmpty ? normalized : '$prefix $normalized';
+    _composer.value = TextEditingValue(
+      text: value,
+      selection: TextSelection.collapsed(offset: value.length),
+    );
+  }
+
+  Future<void> _toggleVoice() async {
+    if (_generating || _voicePreparing) return;
+    if (_voiceListening) {
+      setState(() => _voicePreparing = true);
+      try {
+        final finalText = await _voice.stop();
+        if (mounted && finalText.trim().isNotEmpty) _applyVoiceText(finalText);
+      } catch (_) {
+        _showError('OpenMindAI Hear could not finish the dictation.');
+      } finally {
+        if (mounted) {
+          setState(() {
+            _voiceListening = false;
+            _voicePreparing = false;
+          });
+        }
+      }
+      return;
+    }
+
+    _voiceBaseText = _composer.text;
+    setState(() => _voicePreparing = true);
+    try {
+      await _voice.start();
+      if (mounted) setState(() => _voiceListening = true);
+    } on VoiceInputException catch (error) {
+      _showError(error.message);
+    } catch (_) {
+      _showError(
+        'OpenMindAI Hear could not start. Check microphone permission and try again.',
+      );
+    } finally {
+      if (mounted) setState(() => _voicePreparing = false);
+    }
+  }
+
+  Future<void> _stopVoiceIfNeeded() async {
+    if (!_voiceListening) return;
+    try {
+      final finalText = await _voice.stop();
+      if (mounted && finalText.trim().isNotEmpty) _applyVoiceText(finalText);
+    } finally {
+      if (mounted) setState(() => _voiceListening = false);
+    }
+  }
+
   Future<void> _newChat() async {
     if (_generating) await _stopGeneration();
+    if (_voiceListening) await _voice.cancel();
     if (!mounted) return;
     setState(() {
+      _voiceListening = false;
       _activeConversationId = null;
       _attachmentPaths.clear();
       _composer.clear();
@@ -132,8 +223,10 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _send() async {
+    if (_generating) return;
+    await _stopVoiceIfNeeded();
     final text = _composer.text.trim();
-    if (_generating || (text.isEmpty && _attachmentPaths.isEmpty)) return;
+    if (text.isEmpty && _attachmentPaths.isEmpty) return;
 
     final conversation = _ensureConversation();
     final attachments = List<String>.from(_attachmentPaths);
@@ -150,7 +243,9 @@ class _ChatScreenState extends State<ChatScreen> {
       conversation.messages.add(userMessage);
       conversation.updatedAt = DateTime.now();
       if (conversation.title == 'New chat') {
-        conversation.title = userText.length > 42 ? '${userText.substring(0, 42)}…' : userText;
+        conversation.title = userText.length > 42
+            ? '${userText.substring(0, 42)}…'
+            : userText;
       }
       _composer.clear();
       _attachmentPaths.clear();
@@ -189,7 +284,9 @@ class _ChatScreenState extends State<ChatScreen> {
       finished = true;
       _generationSubscription = null;
       if (_activeAssistantId == assistantId) _activeAssistantId = null;
-      final index = conversation.messages.indexWhere((message) => message.id == assistantId);
+      final index = conversation.messages.indexWhere(
+        (message) => message.id == assistantId,
+      );
       if (index >= 0 && conversation.messages[index].text.trim().isEmpty) {
         conversation.messages.removeAt(index);
       }
@@ -199,39 +296,45 @@ class _ChatScreenState extends State<ChatScreen> {
       _scrollToBottom();
     }
 
-    final stream = _inference.stream(
-      MobileInferenceRequest(
-        modelId: _selectedModelId,
-        mode: _mode,
-        messages: requestMessages,
-        attachmentPaths: attachments,
-      ),
-    );
-
-    _generationSubscription = stream.listen(
-      (delta) {
-        if (!mounted) return;
-        final index = conversation.messages.indexWhere((message) => message.id == assistantId);
-        if (index < 0) return;
-        final current = conversation.messages[index];
-        setState(() => conversation.messages[index] = current.copyWith(text: current.text + delta));
-        _scrollToBottom();
-      },
-      onError: (Object error) async {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(error.toString()),
-              behavior: SnackBarBehavior.floating,
-              action: SnackBarAction(label: 'Models', onPressed: _openModels),
-            ),
-          );
-        }
-        await finish();
-      },
-      onDone: finish,
-      cancelOnError: true,
-    );
+    _generationSubscription = _inference
+        .stream(
+          MobileInferenceRequest(
+            modelId: _selectedModelId,
+            mode: _mode,
+            messages: requestMessages,
+            attachmentPaths: attachments,
+          ),
+        )
+        .listen(
+          (delta) {
+            if (!mounted) return;
+            final index = conversation.messages.indexWhere(
+              (message) => message.id == assistantId,
+            );
+            if (index < 0) return;
+            final current = conversation.messages[index];
+            setState(() {
+              conversation.messages[index] = current.copyWith(
+                text: current.text + delta,
+              );
+            });
+            _scrollToBottom();
+          },
+          onError: (Object error) async {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(error.toString()),
+                  behavior: SnackBarBehavior.floating,
+                  action: SnackBarAction(label: 'Models', onPressed: _openModels),
+                ),
+              );
+            }
+            await finish();
+          },
+          onDone: finish,
+          cancelOnError: true,
+        );
   }
 
   Future<void> _stopGeneration() async {
@@ -242,7 +345,9 @@ class _ChatScreenState extends State<ChatScreen> {
     final assistantId = _activeAssistantId;
     _activeAssistantId = null;
     if (conversation != null && assistantId != null) {
-      final index = conversation.messages.indexWhere((message) => message.id == assistantId);
+      final index = conversation.messages.indexWhere(
+        (message) => message.id == assistantId,
+      );
       if (index >= 0 && conversation.messages[index].text.trim().isEmpty) {
         conversation.messages.removeAt(index);
       }
@@ -261,7 +366,12 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     final lastUser = conversation.messages.lastWhere(
       (message) => message.role == 'user',
-      orElse: () => ChatMessage(id: '', role: 'user', text: '', createdAt: DateTime.now()),
+      orElse: () => ChatMessage(
+        id: '',
+        role: 'user',
+        text: '',
+        createdAt: DateTime.now(),
+      ),
     );
     if (lastUser.id.isEmpty) return;
     await _chatStore.save(_conversations);
@@ -269,8 +379,13 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _pickCamera() async {
-    final image = await _imagePicker.pickImage(source: ImageSource.camera, imageQuality: 92);
-    if (image != null && mounted) setState(() => _attachmentPaths.add(image.path));
+    final image = await _imagePicker.pickImage(
+      source: ImageSource.camera,
+      imageQuality: 92,
+    );
+    if (image != null && mounted) {
+      setState(() => _attachmentPaths.add(image.path));
+    }
   }
 
   Future<void> _pickPhotos() async {
@@ -281,9 +396,11 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _pickFiles() async {
-    final result = await FilePicker.platform.pickFiles(allowMultiple: true);
-    if (result == null || !mounted) return;
-    final paths = result.files.map((file) => file.path).whereType<String>();
+    final files = await FilePicker.pickFiles();
+    if (files.isEmpty || !mounted) return;
+    final paths = files
+        .map((file) => file.xFile.path)
+        .where((path) => path.isNotEmpty);
     setState(() => _attachmentPaths.addAll(paths));
   }
 
@@ -344,7 +461,12 @@ class _ChatScreenState extends State<ChatScreen> {
               padding: const EdgeInsets.fromLTRB(12, 4, 8, 12),
               child: Row(
                 children: [
-                  const Expanded(child: Text('Choose model', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700))),
+                  const Expanded(
+                    child: Text(
+                      'Choose model',
+                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                    ),
+                  ),
                   TextButton.icon(
                     onPressed: () {
                       Navigator.pop(context);
@@ -356,17 +478,27 @@ class _ChatScreenState extends State<ChatScreen> {
                 ],
               ),
             ),
-            ...MobileModelCatalog.models.map((model) => ListTile(
-                  title: Text(model.name, style: const TextStyle(fontWeight: FontWeight.w600)),
-                  subtitle: Text('${model.kind} · ${model.minRamGb}+ GB RAM · ~${model.sizeGb.toStringAsFixed(1)} GB'),
-                  trailing: model.id == _selectedModelId ? const Icon(Icons.check_rounded) : null,
-                  onTap: () => Navigator.pop(context, model.id),
-                )),
+            ...MobileModelCatalog.models.map(
+              (model) => ListTile(
+                title: Text(
+                  model.name,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+                subtitle: Text(
+                  '${model.kind} · ${model.minRamGb}+ GB RAM · ~${model.sizeGb.toStringAsFixed(1)} GB',
+                ),
+                trailing: model.id == _selectedModelId
+                    ? const Icon(Icons.check_rounded)
+                    : null,
+                onTap: () => Navigator.pop(context, model.id),
+              ),
+            ),
           ],
         ),
       ),
     );
     if (selected == null || !mounted) return;
+    if (selected != _selectedModelId) await _inference.shutdown();
     await _onboardingStore.setSelectedModelId(selected);
     if (mounted) setState(() => _selectedModelId = selected);
   }
@@ -377,6 +509,7 @@ class _ChatScreenState extends State<ChatScreen> {
       context,
       storage: _modelStorage,
       onModelReady: (modelId) async {
+        if (modelId != _selectedModelId) await _inference.shutdown();
         await _onboardingStore.setSelectedModelId(modelId);
         if (mounted) setState(() => _selectedModelId = modelId);
       },
@@ -400,16 +533,33 @@ class _ChatScreenState extends State<ChatScreen> {
           onTap: _selectModel,
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Flexible(child: Text(_selectedModel.name, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600))),
-              const SizedBox(width: 3),
-              const Icon(Icons.keyboard_arrow_down_rounded, size: 20),
-            ]),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: Text(
+                    _selectedModel.name,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+                  ),
+                ),
+                const SizedBox(width: 3),
+                const Icon(Icons.keyboard_arrow_down_rounded, size: 20),
+              ],
+            ),
           ),
         ),
         actions: [
-          IconButton(onPressed: _openModels, icon: const Icon(Icons.memory_rounded), tooltip: 'Models'),
-          IconButton(onPressed: _newChat, icon: const Icon(Icons.edit_square), tooltip: 'New chat'),
+          IconButton(
+            onPressed: _openModels,
+            icon: const Icon(Icons.memory_rounded),
+            tooltip: 'Models',
+          ),
+          IconButton(
+            onPressed: _newChat,
+            icon: const Icon(Icons.edit_square),
+            tooltip: 'New chat',
+          ),
           const SizedBox(width: 4),
         ],
       ),
@@ -426,10 +576,13 @@ class _ChatScreenState extends State<ChatScreen> {
                           itemCount: conversation.messages.length,
                           itemBuilder: (context, index) {
                             final message = conversation.messages[index];
-                            final isLastAssistant = message.role == 'assistant' && index == conversation.messages.length - 1;
+                            final lastAssistant = message.role == 'assistant' &&
+                                index == conversation.messages.length - 1;
                             return _MessageBubble(
                               message: message,
-                              onRegenerate: isLastAssistant && !_generating ? _regenerate : null,
+                              onRegenerate: lastAssistant && !_generating
+                                  ? _regenerate
+                                  : null,
                             );
                           },
                         ),
@@ -439,11 +592,16 @@ class _ChatScreenState extends State<ChatScreen> {
                   mode: _mode,
                   attachmentPaths: _attachmentPaths,
                   generating: _generating,
+                  voiceListening: _voiceListening,
+                  voicePreparing: _voicePreparing,
                   onModeChanged: (value) => setState(() => _mode = value),
                   onAdd: _openAttachmentMenu,
+                  onVoice: _toggleVoice,
                   onSend: _send,
                   onStop: _stopGeneration,
-                  onRemoveAttachment: (path) => setState(() => _attachmentPaths.remove(path)),
+                  onRemoveAttachment: (path) {
+                    setState(() => _attachmentPaths.remove(path));
+                  },
                 ),
               ],
             ),
@@ -459,16 +617,23 @@ class _ChatScreenState extends State<ChatScreen> {
           children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-              child: Row(children: [
-                const Expanded(child: Text('OpenMindAI', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700))),
-                IconButton(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    _newChat();
-                  },
-                  icon: const Icon(Icons.edit_square),
-                ),
-              ]),
+              child: Row(
+                children: [
+                  const Expanded(
+                    child: Text(
+                      'OpenMindAI',
+                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      _newChat();
+                    },
+                    icon: const Icon(Icons.edit_square),
+                  ),
+                ],
+              ),
             ),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -494,7 +659,13 @@ class _ChatScreenState extends State<ChatScreen> {
             const SizedBox(height: 10),
             Expanded(
               child: visibleConversations.isEmpty
-                  ? Center(child: Text(_chatSearchQuery.isEmpty ? 'No conversations yet' : 'No matching chats'))
+                  ? Center(
+                      child: Text(
+                        _chatSearchQuery.isEmpty
+                            ? 'No conversations yet'
+                            : 'No matching chats',
+                      ),
+                    )
                   : ListView.builder(
                       padding: const EdgeInsets.symmetric(horizontal: 8),
                       itemCount: visibleConversations.length,
@@ -503,8 +674,14 @@ class _ChatScreenState extends State<ChatScreen> {
                         return ListTile(
                           dense: true,
                           selected: item.id == _activeConversationId,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                          title: Text(item.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          title: Text(
+                            item.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                           onTap: () {
                             setState(() => _activeConversationId = item.id);
                             Navigator.pop(context);
@@ -524,12 +701,11 @@ class _ChatScreenState extends State<ChatScreen> {
                 _openModels();
               },
             ),
-            ListTile(
-              leading: const CircleAvatar(child: Icon(Icons.person_outline_rounded)),
-              title: const Text('OpenMindAI Mobile'),
-              subtitle: const Text('Local-first'),
-              trailing: const Icon(Icons.more_horiz_rounded),
-              onTap: () {},
+            const ListTile(
+              leading: CircleAvatar(child: Icon(Icons.person_outline_rounded)),
+              title: Text('OpenMindAI Mobile'),
+              subtitle: Text('Local-first'),
+              trailing: Icon(Icons.more_horiz_rounded),
             ),
           ],
         ),
@@ -540,6 +716,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
 class _EmptyChat extends StatelessWidget {
   const _EmptyChat({required this.modelName, required this.onModels});
+
   final String modelName;
   final VoidCallback onModels;
 
@@ -548,20 +725,39 @@ class _EmptyChat extends StatelessWidget {
     return Center(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 32),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Container(
-            width: 54,
-            height: 54,
-            decoration: BoxDecoration(color: Theme.of(context).colorScheme.onSurface, shape: BoxShape.circle),
-            child: Icon(Icons.psychology_alt_rounded, color: Theme.of(context).colorScheme.surface, size: 31),
-          ),
-          const SizedBox(height: 18),
-          Text('How can I help?', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700)),
-          const SizedBox(height: 8),
-          Text(modelName, style: Theme.of(context).textTheme.bodySmall),
-          const SizedBox(height: 16),
-          TextButton.icon(onPressed: onModels, icon: const Icon(Icons.download_rounded), label: const Text('Manage local models')),
-        ]),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 54,
+              height: 54,
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.onSurface,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                Icons.psychology_alt_rounded,
+                color: Theme.of(context).colorScheme.surface,
+                size: 31,
+              ),
+            ),
+            const SizedBox(height: 18),
+            Text(
+              'How can I help?',
+              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(modelName, style: Theme.of(context).textTheme.bodySmall),
+            const SizedBox(height: 16),
+            TextButton.icon(
+              onPressed: onModels,
+              icon: const Icon(Icons.download_rounded),
+              label: const Text('Manage local models'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -569,6 +765,7 @@ class _EmptyChat extends StatelessWidget {
 
 class _MessageBubble extends StatelessWidget {
   const _MessageBubble({required this.message, this.onRegenerate});
+
   final ChatMessage message;
   final VoidCallback? onRegenerate;
 
@@ -578,12 +775,18 @@ class _MessageBubble extends StatelessWidget {
     return Align(
       alignment: user ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
-        constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * (user ? .84 : .96)),
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.sizeOf(context).width * (user ? .84 : .96),
+        ),
         margin: const EdgeInsets.only(bottom: 18),
-        padding: user ? const EdgeInsets.symmetric(horizontal: 16, vertical: 11) : EdgeInsets.zero,
+        padding: user
+            ? const EdgeInsets.symmetric(horizontal: 16, vertical: 11)
+            : EdgeInsets.zero,
         decoration: user
             ? BoxDecoration(
-                color: Theme.of(context).brightness == Brightness.dark ? const Color(0xFF303030) : const Color(0xFFF1F1F1),
+                color: Theme.of(context).brightness == Brightness.dark
+                    ? const Color(0xFF303030)
+                    : const Color(0xFFF1F1F1),
                 borderRadius: BorderRadius.circular(20),
               )
             : null,
@@ -596,20 +799,32 @@ class _MessageBubble extends StatelessWidget {
                 child: Wrap(
                   spacing: 7,
                   runSpacing: 7,
-                  children: message.attachmentPaths.map((path) => _AttachmentPreview(path: path)).toList(),
+                  children: message.attachmentPaths
+                      .map((path) => _AttachmentPreview(path: path))
+                      .toList(),
                 ),
               ),
             if (message.text.isEmpty && !user)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 4),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  SizedBox(width: 17, height: 17, child: CircularProgressIndicator(strokeWidth: 2)),
-                  SizedBox(width: 9),
-                  Text('Thinking…'),
-                ]),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      width: 17,
+                      height: 17,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    SizedBox(width: 9),
+                    Text('Thinking…'),
+                  ],
+                ),
               )
             else if (user)
-              SelectableText(message.text, style: const TextStyle(fontSize: 16, height: 1.45))
+              SelectableText(
+                message.text,
+                style: const TextStyle(fontSize: 16, height: 1.45),
+              )
             else
               MarkdownBody(
                 data: message.text,
@@ -619,7 +834,8 @@ class _MessageBubble extends StatelessWidget {
                   code: TextStyle(
                     fontFamily: 'monospace',
                     fontSize: 14,
-                    backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    backgroundColor:
+                        Theme.of(context).colorScheme.surfaceContainerHighest,
                   ),
                   codeblockDecoration: BoxDecoration(
                     color: Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -636,7 +852,9 @@ class _MessageBubble extends StatelessWidget {
                     IconButton(
                       visualDensity: VisualDensity.compact,
                       tooltip: 'Copy',
-                      onPressed: () => Clipboard.setData(ClipboardData(text: message.text)),
+                      onPressed: () => Clipboard.setData(
+                        ClipboardData(text: message.text),
+                      ),
                       icon: const Icon(Icons.copy_rounded, size: 18),
                     ),
                     if (onRegenerate != null)
@@ -658,9 +876,12 @@ class _MessageBubble extends StatelessWidget {
 
 class _AttachmentPreview extends StatelessWidget {
   const _AttachmentPreview({required this.path});
+
   final String path;
 
-  bool get _isImage => const {'.png', '.jpg', '.jpeg', '.webp'}.contains(p.extension(path).toLowerCase());
+  bool get _isImage => const {'.png', '.jpg', '.jpeg', '.webp'}.contains(
+        p.extension(path).toLowerCase(),
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -672,7 +893,7 @@ class _AttachmentPreview extends StatelessWidget {
           width: 160,
           height: 120,
           fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => _fileChip(),
+          errorBuilder: (context, error, stackTrace) => _fileChip(),
         ),
       );
     }
@@ -695,8 +916,11 @@ class _Composer extends StatelessWidget {
     required this.mode,
     required this.attachmentPaths,
     required this.generating,
+    required this.voiceListening,
+    required this.voicePreparing,
     required this.onModeChanged,
     required this.onAdd,
+    required this.onVoice,
     required this.onSend,
     required this.onStop,
     required this.onRemoveAttachment,
@@ -706,8 +930,11 @@ class _Composer extends StatelessWidget {
   final String mode;
   final List<String> attachmentPaths;
   final bool generating;
+  final bool voiceListening;
+  final bool voicePreparing;
   final ValueChanged<String> onModeChanged;
   final VoidCallback onAdd;
+  final VoidCallback onVoice;
   final VoidCallback onSend;
   final VoidCallback onStop;
   final ValueChanged<String> onRemoveAttachment;
@@ -718,24 +945,49 @@ class _Composer extends StatelessWidget {
       top: false,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(10, 4, 10, 10),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(children: [
-              _ModeChip(label: 'Chat', value: 'chat', selected: mode == 'chat', onSelected: onModeChanged),
-              _ModeChip(label: 'Think', value: 'thinking', selected: mode == 'thinking', onSelected: onModeChanged),
-              _ModeChip(label: 'Search', value: 'web-search', selected: mode == 'web-search', onSelected: onModeChanged),
-              _ModeChip(label: 'Research', value: 'research', selected: mode == 'research', onSelected: onModeChanged),
-            ]),
-          ),
-          if (attachmentPaths.isNotEmpty)
-            Align(
-              alignment: Alignment.centerLeft,
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
-                  children: attachmentPaths
-                      .map((path) => Padding(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                children: [
+                  _ModeChip(
+                    label: 'Chat',
+                    value: 'chat',
+                    selected: mode == 'chat',
+                    onSelected: onModeChanged,
+                  ),
+                  _ModeChip(
+                    label: 'Think',
+                    value: 'thinking',
+                    selected: mode == 'thinking',
+                    onSelected: onModeChanged,
+                  ),
+                  _ModeChip(
+                    label: 'Search',
+                    value: 'web-search',
+                    selected: mode == 'web-search',
+                    onSelected: onModeChanged,
+                  ),
+                  _ModeChip(
+                    label: 'Research',
+                    value: 'research',
+                    selected: mode == 'research',
+                    onSelected: onModeChanged,
+                  ),
+                ],
+              ),
+            ),
+            if (attachmentPaths.isNotEmpty)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: attachmentPaths
+                        .map(
+                          (path) => Padding(
                             padding: const EdgeInsets.only(right: 6, bottom: 6),
                             child: Chip(
                               avatar: const Icon(Icons.attach_file_rounded, size: 17),
@@ -743,42 +995,85 @@ class _Composer extends StatelessWidget {
                               deleteIcon: const Icon(Icons.close_rounded, size: 17),
                               onDeleted: () => onRemoveAttachment(path),
                             ),
-                          ))
-                      .toList(),
+                          ),
+                        )
+                        .toList(),
+                  ),
                 ),
               ),
-            ),
-          TextField(
-            controller: controller,
-            minLines: 1,
-            maxLines: 6,
-            textInputAction: TextInputAction.newline,
-            decoration: InputDecoration(
-              hintText: 'Message OpenMindAI',
-              contentPadding: const EdgeInsets.symmetric(vertical: 11),
-              prefixIcon: IconButton(onPressed: generating ? null : onAdd, icon: const Icon(Icons.add_rounded)),
-              suffixIcon: Padding(
-                padding: const EdgeInsets.all(6),
-                child: IconButton.filled(
-                  onPressed: generating ? onStop : onSend,
-                  icon: Icon(generating ? Icons.stop_rounded : Icons.arrow_upward_rounded),
+            TextField(
+              controller: controller,
+              minLines: 1,
+              maxLines: 6,
+              textInputAction: TextInputAction.newline,
+              decoration: InputDecoration(
+                hintText: voiceListening
+                    ? 'Listening with OpenMindAI Hear…'
+                    : 'Message OpenMindAI',
+                contentPadding: const EdgeInsets.symmetric(vertical: 11),
+                prefixIcon: IconButton(
+                  onPressed: generating ? null : onAdd,
+                  icon: const Icon(Icons.add_rounded),
+                ),
+                suffixIconConstraints: const BoxConstraints(minWidth: 96),
+                suffixIcon: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      tooltip: voiceListening
+                          ? 'Stop OpenMindAI Hear'
+                          : 'Voice input',
+                      onPressed: generating || voicePreparing ? null : onVoice,
+                      icon: voicePreparing
+                          ? const SizedBox(
+                              width: 19,
+                              height: 19,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : Icon(
+                              voiceListening
+                                  ? Icons.stop_circle_outlined
+                                  : Icons.mic_none_rounded,
+                            ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(0, 6, 6, 6),
+                      child: IconButton.filled(
+                        onPressed: generating ? onStop : onSend,
+                        icon: Icon(
+                          generating ? Icons.stop_rounded : Icons.arrow_upward_rounded,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
+              onSubmitted: (_) {
+                if (!generating) onSend();
+              },
             ),
-            onSubmitted: (_) {
-              if (!generating) onSend();
-            },
-          ),
-          const SizedBox(height: 5),
-          Text('OpenMindAI can make mistakes. Check important information.', style: Theme.of(context).textTheme.labelSmall),
-        ]),
+            const SizedBox(height: 5),
+            Text(
+              voiceListening
+                  ? 'Listening locally · OpenMindAI Hear'
+                  : 'OpenMindAI can make mistakes. Check important information.',
+              style: Theme.of(context).textTheme.labelSmall,
+            ),
+          ],
+        ),
       ),
     );
   }
 }
 
 class _ModeChip extends StatelessWidget {
-  const _ModeChip({required this.label, required this.value, required this.selected, required this.onSelected});
+  const _ModeChip({
+    required this.label,
+    required this.value,
+    required this.selected,
+    required this.onSelected,
+  });
+
   final String label;
   final String value;
   final bool selected;
