@@ -33,7 +33,7 @@ jobs:
           cache: npm
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -108,22 +108,30 @@ jobs:
             adb shell monkey -p ai.openmind.mobile -c android.intent.category.LAUNCHER 1
             sleep 8
 
-            package_pid="$(adb shell pidof ai.openmind.mobile | tr -d '\r')"
-            test -n "${package_pid}"
+            # Capture diagnostics before any assertion so a startup crash does
+            # not discard the evidence needed to fix it.
+            adb logcat -d > android-logcat.txt || true
+            adb shell dumpsys window windows > android-window-state.txt || true
+            adb shell dumpsys activity processes > android-process-state.txt || true
+            adb shell dumpsys package ai.openmind.mobile > android-package-state.txt || true
+            adb exec-out screencap -p > android-smoke.png || true
+            adb shell uiautomator dump /sdcard/openmindai-window.xml || true
+            adb pull /sdcard/openmindai-window.xml android-ui.xml || true
+
+            package_pid="$(adb shell pidof ai.openmind.mobile | tr -d '\r' || true)"
+            if [ -z "${package_pid}" ]; then
+              echo "OpenMindAI process exited during startup"
+              grep -E -i "ai\.openmind\.mobile|AndroidRuntime|FATAL EXCEPTION|Fatal signal|UnsatisfiedLinkError|panic|error while running OpenMindAI" android-logcat.txt | tail -n 250 || true
+              exit 1
+            fi
             echo "OpenMindAI PID: ${package_pid}"
 
-            adb shell dumpsys window windows > android-window-state.txt
             grep -q "ai.openmind.mobile" android-window-state.txt
 
-            adb logcat -d > android-logcat.txt
             if grep -E "FATAL EXCEPTION|Process: ai\.openmind\.mobile.*(FATAL|fatal)|Fatal signal" android-logcat.txt; then
               echo "Fatal Android runtime error detected"
               exit 1
             fi
-
-            adb exec-out screencap -p > android-smoke.png
-            adb shell uiautomator dump /sdcard/openmindai-window.xml || true
-            adb pull /sdcard/openmindai-window.xml android-ui.xml || true
 
       - name: Upload emulator diagnostics
         if: always()
@@ -134,6 +142,8 @@ jobs:
             android-smoke.png
             android-logcat.txt
             android-window-state.txt
+            android-process-state.txt
+            android-package-state.txt
             android-ui.xml
           if-no-files-found: warn
           retention-days: 14
