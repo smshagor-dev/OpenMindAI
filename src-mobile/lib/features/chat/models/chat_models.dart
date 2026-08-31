@@ -4,18 +4,21 @@ class ChatMessage {
     required this.role,
     required this.text,
     required this.createdAt,
+    this.attachmentPaths = const [],
   });
 
   final String id;
   final String role;
   final String text;
   final DateTime createdAt;
+  final List<String> attachmentPaths;
 
   ChatMessage copyWith({String? text}) => ChatMessage(
         id: id,
         role: role,
         text: text ?? this.text,
         createdAt: createdAt,
+        attachmentPaths: attachmentPaths,
       );
 
   Map<String, dynamic> toJson() => {
@@ -23,6 +26,7 @@ class ChatMessage {
         'role': role,
         'text': text,
         'createdAt': createdAt.toIso8601String(),
+        'attachmentPaths': attachmentPaths,
       };
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
@@ -30,6 +34,9 @@ class ChatMessage {
         role: json['role'] as String,
         text: json['text'] as String,
         createdAt: DateTime.parse(json['createdAt'] as String),
+        attachmentPaths: (json['attachmentPaths'] as List<dynamic>? ?? const [])
+            .map((value) => value.toString())
+            .toList(),
       );
 }
 
