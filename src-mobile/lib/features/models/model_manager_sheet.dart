@@ -15,13 +15,17 @@ Future<void> showModelManagerSheet(
     showDragHandle: true,
     builder: (_) => FractionallySizedBox(
       heightFactor: .92,
-      child: _ModelManagerSheet(storage: storage, onModelReady: onModelReady),
+      child: _ModelManagerSheet(
+        storage: storage,
+        onModelReady: onModelReady,
+      ),
     ),
   );
 }
 
 class _ModelManagerSheet extends StatefulWidget {
   const _ModelManagerSheet({required this.storage, this.onModelReady});
+
   final ModelStorageService storage;
   final ValueChanged<String>? onModelReady;
 
@@ -46,7 +50,9 @@ class _ModelManagerSheetState extends State<_ModelManagerSheet> {
     for (final model in MobileModelCatalog.models) {
       values[model.id] = await widget.storage.isInstalled(model);
     }
-    if (!mounted) return;
+    if (!mounted) {
+      return;
+    }
     setState(() {
       _installed
         ..clear()
@@ -55,7 +61,9 @@ class _ModelManagerSheetState extends State<_ModelManagerSheet> {
   }
 
   Future<void> _install(MobileModel model) async {
-    if (_busy.contains(model.id)) return;
+    if (_busy.contains(model.id)) {
+      return;
+    }
     setState(() {
       _busy.add(model.id);
       _error = null;
@@ -64,30 +72,44 @@ class _ModelManagerSheetState extends State<_ModelManagerSheet> {
       await widget.storage.install(
         model,
         onProgress: (value) {
-          if (mounted) setState(() => _progress[model.id] = value);
+          if (mounted) {
+            setState(() => _progress[model.id] = value);
+          }
         },
       );
-      if (!mounted) return;
+      if (!mounted) {
+        return;
+      }
       setState(() {
         _installed[model.id] = true;
         _progress.remove(model.id);
       });
       widget.onModelReady?.call(model.id);
     } catch (error) {
-      if (mounted) setState(() => _error = error.toString());
+      if (mounted) {
+        setState(() => _error = error.toString());
+      }
     } finally {
-      if (mounted) setState(() => _busy.remove(model.id));
+      if (mounted) {
+        setState(() => _busy.remove(model.id));
+      }
     }
   }
 
   Future<void> _delete(MobileModel model) async {
-    if (_busy.contains(model.id)) return;
+    if (_busy.contains(model.id)) {
+      return;
+    }
     setState(() => _busy.add(model.id));
     try {
       await widget.storage.delete(model);
-      if (mounted) setState(() => _installed[model.id] = false);
+      if (mounted) {
+        setState(() => _installed[model.id] = false);
+      }
     } finally {
-      if (mounted) setState(() => _busy.remove(model.id));
+      if (mounted) {
+        setState(() => _busy.remove(model.id));
+      }
     }
   }
 
@@ -103,13 +125,22 @@ class _ModelManagerSheetState extends State<_ModelManagerSheet> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Models', style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700)),
+                    Text(
+                      'Models',
+                      style: TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
                     SizedBox(height: 3),
                     Text('Download once, then run locally on this device.'),
                   ],
                 ),
               ),
-              IconButton(onPressed: _refresh, icon: const Icon(Icons.refresh_rounded)),
+              IconButton(
+                onPressed: _refresh,
+                icon: const Icon(Icons.refresh_rounded),
+              ),
             ],
           ),
         ),
@@ -126,7 +157,10 @@ class _ModelManagerSheetState extends State<_ModelManagerSheet> {
                     const Icon(Icons.error_outline_rounded),
                     const SizedBox(width: 10),
                     Expanded(child: Text(_error!)),
-                    IconButton(onPressed: () => setState(() => _error = null), icon: const Icon(Icons.close_rounded)),
+                    IconButton(
+                      onPressed: () => setState(() => _error = null),
+                      icon: const Icon(Icons.close_rounded),
+                    ),
                   ],
                 ),
               ),
@@ -136,7 +170,7 @@ class _ModelManagerSheetState extends State<_ModelManagerSheet> {
           child: ListView.separated(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
             itemCount: MobileModelCatalog.models.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
+            separatorBuilder: (context, index) => const Divider(height: 1),
             itemBuilder: (context, index) {
               final model = MobileModelCatalog.models[index];
               final installed = _installed[model.id] ?? false;
@@ -148,8 +182,14 @@ class _ModelManagerSheetState extends State<_ModelManagerSheet> {
                   contentPadding: const EdgeInsets.symmetric(horizontal: 8),
                   title: Row(
                     children: [
-                      Expanded(child: Text(model.name, style: const TextStyle(fontWeight: FontWeight.w700))),
-                      if (installed) const Icon(Icons.check_circle_rounded, size: 19),
+                      Expanded(
+                        child: Text(
+                          model.name,
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                      if (installed)
+                        const Icon(Icons.check_circle_rounded, size: 19),
                     ],
                   ),
                   subtitle: Column(
@@ -158,31 +198,42 @@ class _ModelManagerSheetState extends State<_ModelManagerSheet> {
                       const SizedBox(height: 4),
                       Text(model.description),
                       const SizedBox(height: 7),
-                      Text('${model.kind} · ${model.minRamGb}+ GB RAM · ~${model.sizeGb.toStringAsFixed(1)} GB'),
+                      Text(
+                        '${model.kind} · ${model.minRamGb}+ GB RAM · '
+                        '~${model.sizeGb.toStringAsFixed(1)} GB',
+                      ),
                       if (progress != null) ...[
                         const SizedBox(height: 10),
-                        LinearProgressIndicator(value: progress.progress > 0 ? progress.progress : null),
+                        LinearProgressIndicator(
+                          value: progress.progress > 0
+                              ? progress.progress
+                              : null,
+                        ),
                         const SizedBox(height: 5),
-                        Text(progress.stage, style: Theme.of(context).textTheme.bodySmall),
+                        Text(
+                          progress.stage,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
                       ],
                     ],
                   ),
                   trailing: busy
                       ? IconButton(
                           tooltip: 'Cancel',
-                          onPressed: () => widget.storage.cancelInstall(model.id),
+                          onPressed: () =>
+                              widget.storage.cancelInstall(model.id),
                           icon: const Icon(Icons.stop_circle_outlined),
                         )
                       : installed
-                          ? IconButton(
-                              tooltip: 'Delete',
-                              onPressed: () => _delete(model),
-                              icon: const Icon(Icons.delete_outline_rounded),
-                            )
-                          : FilledButton.tonal(
-                              onPressed: () => _install(model),
-                              child: const Text('Install'),
-                            ),
+                      ? IconButton(
+                          tooltip: 'Delete',
+                          onPressed: () => _delete(model),
+                          icon: const Icon(Icons.delete_outline_rounded),
+                        )
+                      : FilledButton.tonal(
+                          onPressed: () => _install(model),
+                          child: const Text('Install'),
+                        ),
                 ),
               );
             },
