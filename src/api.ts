@@ -43,6 +43,14 @@ export type MobileModelRecommendation = {
   reason: string;
 };
 
+export type MobileVisionStatus = {
+  supported: boolean;
+  installed: boolean;
+  modelId: string;
+  modelName: string;
+  reason: string;
+};
+
 function connectedInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri) {
     return Promise.reject(new Error("Connected app actions require the OpenMindAI native app."));
@@ -63,7 +71,7 @@ function embeddedMobileRuntime(capabilities: PlatformCapabilities): RuntimeInven
       version: "native",
       platform: capabilities.target,
       architecture: "mobile",
-      backend: "cpu",
+      backend: capabilities.target === "ios" ? "metal" : "cpu",
       source: "embedded",
       installedAt: "bundled",
       binaries: { server: null, cli: null, bench: null },
@@ -74,7 +82,8 @@ function embeddedMobileRuntime(capabilities: PlatformCapabilities): RuntimeInven
     cliExists: false,
     benchExists: false,
     versionOutput: "Embedded llama.cpp mobile runtime",
-    deviceOutput: "Native in-process mobile inference; platform acceleration is compiled where supported.",
+    deviceOutput:
+      "Native in-process mobile inference with task-aware text and multimodal routing.",
     usable: true,
     message: "Embedded on-device runtime ready",
   };
@@ -142,20 +151,26 @@ async function shouldUseProjectAgent(conversationId: string, mode: string) {
   return status?.available ?? false;
 }
 
+function mobileTextMode(mode: string) {
+  if (mode === "document" || mode === "pdf") return "chat";
+  return mode;
+}
+
 async function sendMobileLocalChat(
   conversationId: string,
   content: string,
   mode: string,
 ): Promise<Message> {
-  if (mode !== "chat" && mode !== "thinking") {
+  const resolvedMode = mobileTextMode(mode);
+  if (resolvedMode !== "chat" && resolvedMode !== "thinking") {
     throw new Error(
-      `Mobile on-device AI currently supports Chat and Thinking. ${mode} mode is not enabled locally on mobile yet.`,
+      `Mobile local ${mode} needs a specialized route. Install/enable the matching capability or use a connected provider.`,
     );
   }
   return invoke<Message>("mobile_send_chat_message", {
     conversationId,
     content,
-    mode,
+    mode: resolvedMode,
   });
 }
 
@@ -164,15 +179,14 @@ async function regenerateMobileLocalChat(
   assistantMessageId: string,
   mode: string,
 ): Promise<Message> {
-  if (mode !== "chat" && mode !== "thinking") {
-    throw new Error(
-      `Mobile on-device regeneration currently supports Chat and Thinking. ${mode} mode is not enabled locally on mobile yet.`,
-    );
+  const resolvedMode = mobileTextMode(mode);
+  if (resolvedMode !== "chat" && resolvedMode !== "thinking") {
+    throw new Error(`Mobile local regeneration for ${mode} needs a specialized route.`);
   }
   return invoke<Message>("mobile_regenerate_message", {
     conversationId,
     assistantMessageId,
-    mode,
+    mode: resolvedMode,
   });
 }
 
@@ -192,6 +206,7 @@ export const api = {
   projectAgentStatus,
   mobileModelRecommendation: () =>
     connectedInvoke<MobileModelRecommendation>("mobile_model_recommendation"),
+  mobileVisionStatus: () => connectedInvoke<MobileVisionStatus>("mobile_vision_status"),
   sendChatMessage: async (
     conversationId: string,
     content: string,
@@ -206,11 +221,17 @@ export const api = {
       });
     } else if (await isMobileNativeTarget()) {
       if (media.length > 0 || mode === "vision") {
-        throw new Error(
-          "Mobile local vision is not enabled yet. Use text Chat/Thinking or a connected provider for this request.",
-        );
+        if (media.length === 0) {
+          throw new Error("Attach at least one image, PDF page, or video frame for Vision mode.");
+        }
+        assistant = await invoke<Message>("mobile_send_vision_message", {
+          conversationId,
+          content,
+          media,
+        });
+      } else {
+        assistant = await sendMobileLocalChat(conversationId, content, mode);
       }
-      assistant = await sendMobileLocalChat(conversationId, content, mode);
     } else if (mode === "vision" && media.length > 0 && isTauri) {
       assistant = await invoke<Message>("send_multimodal_chat_message", {
         conversationId,
@@ -250,7 +271,10 @@ export const api = {
     if (source?.content.startsWith("[Mode: Music/SFX Creation]")) resolvedMode = "sound";
     const isVisualTurn = Boolean(
       source?.content.startsWith("[Mode: Multimodal Vision Review]") ||
-        source?.content.startsWith("[Mode: Image/Vision Review]"),
+        source?.content.startsWith("[Mode: Image/Vision Review]") ||
+        source?.content.includes("[Image attached:") ||
+        source?.content.includes("[PDF processed locally:") ||
+        source?.content.includes("[Video processed locally:"),
     );
     if (isVisualTurn) resolvedMode = "vision";
 
@@ -266,15 +290,17 @@ export const api = {
       });
     } else if (await isMobileNativeTarget()) {
       if (isVisualTurn) {
-        throw new Error(
-          "Mobile local vision responses cannot be regenerated yet. Reattach the image and send it again through a supported provider.",
+        assistant = await invoke<Message>("mobile_regenerate_vision_message", {
+          conversationId,
+          assistantMessageId,
+        });
+      } else {
+        assistant = await regenerateMobileLocalChat(
+          conversationId,
+          assistantMessageId,
+          resolvedMode,
         );
       }
-      assistant = await regenerateMobileLocalChat(
-        conversationId,
-        assistantMessageId,
-        resolvedMode,
-      );
     } else if (isVisualTurn && isTauri) {
       assistant = await invoke<Message>("regenerate_multimodal_message", {
         conversationId,
