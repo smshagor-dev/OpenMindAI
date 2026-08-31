@@ -11,6 +11,13 @@ class ChatMessage {
   final String text;
   final DateTime createdAt;
 
+  ChatMessage copyWith({String? text}) => ChatMessage(
+        id: id,
+        role: role,
+        text: text ?? this.text,
+        createdAt: createdAt,
+      );
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'role': role,
