@@ -1,10 +1,10 @@
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 use tauri::Emitter;
 use tauri::{AppHandle, State};
 
 use crate::{app_error::AppError, chat::Message, AppState};
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn mobile_send_chat_message(
     app: AppHandle,
@@ -14,10 +14,10 @@ pub async fn mobile_send_chat_message(
     state: State<'_, AppState>,
     native: State<'_, crate::mobile_inference::MobileInferenceState>,
 ) -> Result<Message, AppError> {
-    send_android_chat(app, conversation_id, content, mode, state, native).await
+    send_mobile_chat(app, conversation_id, content, mode, state, native).await
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn mobile_send_chat_message(
     app: AppHandle,
@@ -28,11 +28,11 @@ pub async fn mobile_send_chat_message(
 ) -> Result<Message, AppError> {
     let _ = (app, conversation_id, content, mode, state);
     Err(AppError::ModelUnsupported(
-        "on-device mobile chat is currently available on Android only".to_string(),
+        "on-device mobile chat is only available in OpenMindAI mobile builds".to_string(),
     ))
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn mobile_regenerate_message(
     app: AppHandle,
@@ -42,7 +42,7 @@ pub async fn mobile_regenerate_message(
     state: State<'_, AppState>,
     native: State<'_, crate::mobile_inference::MobileInferenceState>,
 ) -> Result<Message, AppError> {
-    regenerate_android_chat(
+    regenerate_mobile_chat(
         app,
         conversation_id,
         assistant_message_id,
@@ -53,7 +53,7 @@ pub async fn mobile_regenerate_message(
     .await
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn mobile_regenerate_message(
     app: AppHandle,
@@ -64,12 +64,13 @@ pub async fn mobile_regenerate_message(
 ) -> Result<Message, AppError> {
     let _ = (app, conversation_id, assistant_message_id, mode, state);
     Err(AppError::ModelUnsupported(
-        "on-device mobile chat regeneration is currently available on Android only".to_string(),
+        "on-device mobile chat regeneration is only available in OpenMindAI mobile builds"
+            .to_string(),
     ))
 }
 
-#[cfg(target_os = "android")]
-async fn send_android_chat(
+#[cfg(any(target_os = "android", target_os = "ios"))]
+async fn send_mobile_chat(
     app: AppHandle,
     conversation_id: String,
     content: String,
@@ -96,7 +97,7 @@ async fn send_android_chat(
     let recommendation = recommendation_for_state(&state)?;
     let relative_model_path = recommendation.installed_model_path.clone().ok_or_else(|| {
         AppError::ModelNotFound(format!(
-            "{} is recommended for this Android device but is not installed. Install it from the mobile setup or Models screen first.",
+            "{} is recommended for this mobile device but is not installed. Install it from the mobile setup or Models screen first.",
             recommendation.name
         ))
     })?;
@@ -146,7 +147,7 @@ async fn send_android_chat(
             assistant: assistant.clone(),
             routed_model_name: recommendation.name.clone(),
             routing_reason: format!(
-                "Android on-device {} tier selected from detected RAM. {}",
+                "Mobile on-device {} tier selected from detected RAM. {}",
                 recommendation.tier, recommendation.reason
             ),
         },
@@ -155,7 +156,7 @@ async fn send_android_chat(
         return Err(AppError::StreamFailed(error.to_string()));
     }
 
-    run_android_completion(
+    run_mobile_completion(
         &app,
         &state,
         native.inner().clone(),
@@ -169,8 +170,8 @@ async fn send_android_chat(
     .await
 }
 
-#[cfg(target_os = "android")]
-async fn regenerate_android_chat(
+#[cfg(any(target_os = "android", target_os = "ios"))]
+async fn regenerate_mobile_chat(
     app: AppHandle,
     conversation_id: String,
     assistant_message_id: String,
@@ -190,7 +191,7 @@ async fn regenerate_android_chat(
     let recommendation = recommendation_for_state(&state)?;
     let relative_model_path = recommendation.installed_model_path.clone().ok_or_else(|| {
         AppError::ModelNotFound(format!(
-            "{} is recommended for this Android device but is not installed. Install it before regenerating local responses.",
+            "{} is recommended for this mobile device but is not installed. Install it before regenerating local responses.",
             recommendation.name
         ))
     })?;
@@ -222,7 +223,7 @@ async fn regenerate_android_chat(
                 || user.content.contains("[Mode: Multimodal Vision Review]")
             {
                 return Err(AppError::InferenceFailed(
-                    "Vision responses cannot be regenerated by the Android text-only local runtime. Reattach the image and send it again."
+                    "Vision responses cannot be regenerated by the mobile text-only local runtime. Reattach the image and send it again."
                         .to_string(),
                 ));
             }
@@ -256,7 +257,7 @@ async fn regenerate_android_chat(
             assistant: assistant.clone(),
             routed_model_name: recommendation.name.clone(),
             routing_reason: format!(
-                "Android on-device {} tier selected from detected RAM. {}",
+                "Mobile on-device {} tier selected from detected RAM. {}",
                 recommendation.tier, recommendation.reason
             ),
         },
@@ -265,7 +266,7 @@ async fn regenerate_android_chat(
         return Err(AppError::StreamFailed(error.to_string()));
     }
 
-    run_android_completion(
+    run_mobile_completion(
         &app,
         &state,
         native.inner().clone(),
@@ -279,9 +280,9 @@ async fn regenerate_android_chat(
     .await
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 #[allow(clippy::too_many_arguments)]
-async fn run_android_completion(
+async fn run_mobile_completion(
     app: &AppHandle,
     state: &State<'_, AppState>,
     native: crate::mobile_inference::MobileInferenceState,
@@ -388,7 +389,7 @@ async fn run_android_completion(
     Ok(completed)
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn mark_mobile_generation_failed(
     state: &State<'_, AppState>,
     conversation_id: &str,
@@ -411,18 +412,18 @@ fn mark_mobile_generation_failed(
     );
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn validate_mobile_mode(mode: &str) -> Result<(), AppError> {
     if matches!(mode.to_ascii_lowercase().as_str(), "chat" | "thinking") {
         Ok(())
     } else {
         Err(AppError::ModelUnsupported(format!(
-            "Android on-device inference currently supports chat and thinking modes, not {mode}"
+            "Mobile on-device inference currently supports chat and thinking modes, not {mode}"
         )))
     }
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ios"))]
 fn output_limit_for_mode(mode: &str, default_limit: u32) -> u32 {
     if mode.eq_ignore_ascii_case("thinking") {
         default_limit.saturating_mul(2)
