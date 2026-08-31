@@ -3,7 +3,7 @@ name: Token Latency Fix
 on:
   push:
     branches:
-      - fix/resolve-token-generation-slow
+      - fix/chat-latency-complete
 
 permissions:
   contents: write
@@ -19,7 +19,7 @@ jobs:
       - name: Checkout branch
         uses: actions/checkout@v7
         with:
-          ref: fix/resolve-token-generation-slow
+          ref: fix/chat-latency-complete
           fetch-depth: 0
 
       - name: Apply P0-P3 performance patch
@@ -86,4 +86,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "fix: resolve local token generation latency"
-          git push origin HEAD:fix/resolve-token-generation-slow
+          git push origin HEAD:fix/chat-latency-complete
