@@ -24,5 +24,7 @@ class PermissionService {
     return PermissionRequestResult(statuses);
   }
 
-  Future<void> openSettings() => openAppSettings();
+  Future<void> openSettings() async {
+    await openAppSettings();
+  }
 }
