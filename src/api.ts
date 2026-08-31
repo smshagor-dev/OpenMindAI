@@ -6,6 +6,7 @@ import type {
   IntegrationStatus,
 } from "./lib/connectedActions";
 import { createSoundscapeArtifact } from "./lib/media";
+import { getPlatformCapabilities } from "./lib/platform";
 import { api as legacyApi } from "./api_legacy";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
@@ -42,6 +43,7 @@ export type MobileGenerationResult = {
   promptTokens: number;
   generatedTokens: number;
   stoppedOnEog: boolean;
+  cancelled: boolean;
   modelPath: string;
 };
 
@@ -64,6 +66,12 @@ function connectedInvoke<T>(command: string, args?: Record<string, unknown>): Pr
     return Promise.reject(new Error("Connected app actions require the OpenMindAI native app."));
   }
   return invoke<T>(command, args);
+}
+
+async function isAndroidNativeTarget() {
+  if (!isTauri) return false;
+  const capabilities = await getPlatformCapabilities();
+  return capabilities.target === "android";
 }
 
 async function messageUsesSoundscape(conversationId: string, messageId: string | null) {
@@ -99,6 +107,40 @@ async function shouldUseProjectAgent(conversationId: string, mode: string) {
   return status?.available ?? false;
 }
 
+async function sendAndroidLocalChat(
+  conversationId: string,
+  content: string,
+  mode: string,
+): Promise<Message> {
+  if (mode !== "chat" && mode !== "thinking") {
+    throw new Error(
+      `Android on-device AI currently supports Chat and Thinking. ${mode} mode is not enabled on mobile yet.`,
+    );
+  }
+  return invoke<Message>("mobile_send_chat_message", {
+    conversationId,
+    content,
+    mode,
+  });
+}
+
+async function regenerateAndroidLocalChat(
+  conversationId: string,
+  assistantMessageId: string,
+  mode: string,
+): Promise<Message> {
+  if (mode !== "chat" && mode !== "thinking") {
+    throw new Error(
+      `Android on-device regeneration currently supports Chat and Thinking. ${mode} mode is not enabled on mobile yet.`,
+    );
+  }
+  return invoke<Message>("mobile_regenerate_message", {
+    conversationId,
+    assistantMessageId,
+    mode,
+  });
+}
+
 export const api = {
   ...legacyApi,
   projectAgentStatus,
@@ -127,6 +169,13 @@ export const api = {
         conversationId,
         content,
       });
+    } else if (await isAndroidNativeTarget()) {
+      if (media.length > 0 || mode === "vision") {
+        throw new Error(
+          "Android local vision is not enabled yet. Use text Chat/Thinking or a connected provider for this request.",
+        );
+      }
+      assistant = await sendAndroidLocalChat(conversationId, content, mode);
     } else if (mode === "vision" && media.length > 0 && isTauri) {
       assistant = await invoke<Message>("send_multimodal_chat_message", {
         conversationId,
@@ -180,6 +229,17 @@ export const api = {
         conversationId,
         assistantMessageId,
       });
+    } else if (await isAndroidNativeTarget()) {
+      if (isVisualTurn) {
+        throw new Error(
+          "Android local vision responses cannot be regenerated yet. Reattach the image and send it again through a supported provider.",
+        );
+      }
+      assistant = await regenerateAndroidLocalChat(
+        conversationId,
+        assistantMessageId,
+        resolvedMode,
+      );
     } else if (isVisualTurn && isTauri) {
       assistant = await invoke<Message>("regenerate_multimodal_message", {
         conversationId,
