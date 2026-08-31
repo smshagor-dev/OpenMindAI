@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../../core/constants/model_catalog.dart';
 import '../../core/services/model_storage_service.dart';
-import '../../core/theme/app_theme.dart';
 import '../../core/theme/openmind_ui.dart';
 
 Future<void> showModelManagerSheet(
@@ -193,6 +192,7 @@ class _ModelCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final installProgress = progress;
     return OpenMindSectionCard(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -249,15 +249,18 @@ class _ModelCard extends StatelessWidget {
                 ),
             ],
           ),
-          if (progress != null) ...[
+          if (installProgress != null) ...[
             const SizedBox(height: 16),
             LinearProgressIndicator(
-              value: progress.progress > 0 ? progress.progress : null,
+              value: installProgress.progress > 0 ? installProgress.progress : null,
               minHeight: 6,
               borderRadius: BorderRadius.circular(99),
             ),
             const SizedBox(height: 7),
-            Text(progress.stage, style: Theme.of(context).textTheme.bodySmall),
+            Text(
+              installProgress.stage,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
           ],
           const SizedBox(height: 14),
           Row(
