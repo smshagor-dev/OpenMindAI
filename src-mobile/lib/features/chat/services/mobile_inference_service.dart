@@ -1,5 +1,11 @@
-import 'package:flutter/services.dart';
+import 'dart:async';
+
+import 'package:lib_llama_cpp/lib_llama_cpp.dart';
+
+import '../../../core/constants/model_catalog.dart';
+import '../../../core/services/model_storage_service.dart';
 import '../models/chat_models.dart';
+import 'attachment_context_service.dart';
 
 class MobileInferenceRequest {
   const MobileInferenceRequest({
@@ -16,40 +22,184 @@ class MobileInferenceRequest {
 }
 
 abstract class MobileInferenceService {
-  Future<String> generate(MobileInferenceRequest request);
+  Stream<String> stream(MobileInferenceRequest request);
+  Future<void> cancel();
+
+  Future<String> generate(MobileInferenceRequest request) async {
+    final buffer = StringBuffer();
+    await for (final delta in stream(request)) {
+      buffer.write(delta);
+    }
+    final text = buffer.toString().trim();
+    if (text.isEmpty) {
+      throw const MobileInferenceUnavailable('Local runtime returned no text.');
+    }
+    return text;
+  }
 }
 
-/// Flutter-facing contract for the Android/iOS local runtime bridge.
-///
-/// Native hosts implement `openmindai.mobile/inference -> generate` and return
-/// final assistant text. Dart passes only the stable OpenMindAI catalog id, so
-/// upstream repository/model names never need to appear in the mobile UI.
-class NativeMobileInferenceService implements MobileInferenceService {
-  static const _channel = MethodChannel('openmindai.mobile/inference');
+/// Direct Android/iOS llama.cpp runtime. Model files are downloaded and
+/// verified by [ModelStorageService], then mounted from app-private storage.
+/// Image requests automatically route to the OpenMindAI vision model and its
+/// matching mmproj file without exposing upstream model names in the UI.
+class NativeMobileInferenceService extends MobileInferenceService {
+  NativeMobileInferenceService({
+    ModelStorageService? storage,
+    AttachmentContextService? attachments,
+  })  : _storage = storage ?? ModelStorageService(),
+        _attachments = attachments ?? AttachmentContextService();
+
+  final ModelStorageService _storage;
+  final AttachmentContextService _attachments;
+
+  StreamSubscription<LlamaResponseStreamEvent>? _activeSubscription;
+  StreamController<String>? _activeController;
 
   @override
-  Future<String> generate(MobileInferenceRequest request) async {
-    try {
-      final response = await _channel.invokeMethod<String>('generate', {
-        'modelId': request.modelId,
-        'mode': request.mode,
-        'attachments': request.attachmentPaths,
-        'messages': request.messages
-            .map((message) => {'role': message.role, 'content': message.text})
-            .toList(),
-      });
-      if (response == null || response.trim().isEmpty) {
-        throw PlatformException(
-          code: 'EMPTY_RESPONSE',
-          message: 'Local runtime returned no text.',
-        );
+  Stream<String> stream(MobileInferenceRequest request) {
+    final controller = StreamController<String>();
+    unawaited(_start(request, controller));
+    controller.onCancel = () async {
+      if (identical(_activeController, controller)) {
+        await cancel();
       }
-      return response.trim();
-    } on MissingPluginException {
-      throw const MobileInferenceUnavailable(
-        'The Flutter UI is ready, but the Android/iOS local inference bridge has not been installed in this build yet.',
+    };
+    return controller.stream;
+  }
+
+  Future<void> _start(
+    MobileInferenceRequest request,
+    StreamController<String> controller,
+  ) async {
+    await cancel();
+    _activeController = controller;
+
+    try {
+      final prepared = await _attachments.prepare(request.attachmentPaths);
+      final selected = MobileModelCatalog.byId(request.modelId);
+      final runtimeModel = prepared.imagePaths.isNotEmpty ? MobileModelCatalog.vision : selected;
+      final installed = await _storage.installed(runtimeModel);
+      if (installed == null) {
+        final suffix = prepared.imagePaths.isNotEmpty
+            ? ' Install ${runtimeModel.name} to use image understanding.'
+            : ' Install it from Models before chatting.';
+        throw MobileInferenceUnavailable('${runtimeModel.name} is not installed.$suffix');
+      }
+
+      final client = LlamaOpenAIClient(
+        models: {
+          runtimeModel.id: LlamaModelConfig(
+            modelPath: installed.modelPath,
+            mmprojPath: installed.mmprojPath,
+          ),
+        },
+      );
+
+      final input = <LlamaResponseInputItem>[
+        LlamaResponseInputItem(
+          role: 'system',
+          content: [LlamaTextPart(_systemPrompt(request.mode))],
+        ),
+      ];
+
+      for (var index = 0; index < request.messages.length; index++) {
+        final message = request.messages[index];
+        final isLast = index == request.messages.length - 1;
+        final includeAttachments = isLast && message.role == 'user';
+        final text = includeAttachments && prepared.textContext.isNotEmpty
+            ? '${message.text}\n${prepared.textContext}'
+            : message.text;
+
+        if (includeAttachments && prepared.imagePaths.isNotEmpty) {
+          input.add(LlamaResponseInputItem(
+            role: message.role,
+            content: [
+              LlamaTextPart(text),
+              ...prepared.imagePaths.map((path) => LlamaImageFilePart(path: path)),
+            ],
+          ));
+        } else {
+          input.add(LlamaResponseInputItem(
+            role: message.role,
+            content: [LlamaTextPart(text)],
+          ));
+        }
+      }
+
+      var emitted = false;
+      final events = client.responses.stream(model: runtimeModel.id, input: input);
+      final subscription = events.listen(
+        (event) {
+          if (!identical(_activeController, controller) || controller.isClosed) return;
+          if (event is LlamaResponseOutputTextDelta) {
+            emitted = true;
+            controller.add(event.delta);
+          }
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          if (!controller.isClosed) controller.addError(_friendlyRuntimeError(error), stackTrace);
+        },
+        onDone: () {
+          if (!controller.isClosed) {
+            if (!emitted) {
+              controller.addError(const MobileInferenceUnavailable('Local runtime returned no text.'));
+            }
+            controller.close();
+          }
+          if (identical(_activeController, controller)) {
+            _activeController = null;
+            _activeSubscription = null;
+          }
+        },
+        cancelOnError: true,
+      );
+      _activeSubscription = subscription;
+    } catch (error, stackTrace) {
+      if (!controller.isClosed) {
+        controller.addError(_friendlyRuntimeError(error), stackTrace);
+        await controller.close();
+      }
+      if (identical(_activeController, controller)) {
+        _activeController = null;
+        _activeSubscription = null;
+      }
+    }
+  }
+
+  @override
+  Future<void> cancel() async {
+    final subscription = _activeSubscription;
+    _activeSubscription = null;
+    if (subscription != null) await subscription.cancel();
+    final controller = _activeController;
+    _activeController = null;
+    if (controller != null && !controller.isClosed) await controller.close();
+  }
+
+  String _systemPrompt(String mode) {
+    const base = 'You are OpenMindAI, a private local-first assistant. Be accurate, concise, and useful. '
+        'Never reveal internal upstream model repository names or raw model filenames to the user.';
+    switch (mode) {
+      case 'thinking':
+        return '$base Reason carefully before answering. Give the final answer without exposing private chain-of-thought.';
+      case 'web-search':
+        return '$base This build has no external evidence attached unless the user supplied it. Do not invent current web facts.';
+      case 'research':
+        return '$base Analyze the available conversation and attachments deeply, separate facts from uncertainty, and avoid fabricated citations.';
+      default:
+        return base;
+    }
+  }
+
+  Object _friendlyRuntimeError(Object error) {
+    if (error is MobileInferenceUnavailable) return error;
+    final text = error.toString();
+    if (text.contains('library') || text.contains('native')) {
+      return const MobileInferenceUnavailable(
+        'The local AI runtime could not start on this device. Check device compatibility and reinstall the app if the problem continues.',
       );
     }
+    return MobileInferenceUnavailable('Local inference failed: $text');
   }
 }
 
