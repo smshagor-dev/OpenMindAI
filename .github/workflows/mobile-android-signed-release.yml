@@ -1,0 +1,130 @@
+name: Android Signed Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-signed-release
+  cancel-in-progress: false
+
+jobs:
+  signed-aab:
+    name: Android ARM64 signed release AAB
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      ANDROID_KEY_BASE64: ${{ secrets.ANDROID_KEY_BASE64 }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Validate signing secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ANDROID_KEY_BASE64}" || { echo "Missing ANDROID_KEY_BASE64"; exit 1; }
+          test -n "${ANDROID_KEY_ALIAS}" || { echo "Missing ANDROID_KEY_ALIAS"; exit 1; }
+          test -n "${ANDROID_KEY_PASSWORD}" || { echo "Missing ANDROID_KEY_PASSWORD"; exit 1; }
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Resolve Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${ANDROID_NDK_HOME:-}" && -d "${ANDROID_NDK_HOME}" ]]; then
+            resolved_ndk="${ANDROID_NDK_HOME}"
+          else
+            resolved_ndk="$(find "${ANDROID_HOME}/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          fi
+          test -n "${resolved_ndk}"
+          test -d "${resolved_ndk}"
+          echo "NDK_HOME=${resolved_ndk}" >> "${GITHUB_ENV}"
+          echo "ANDROID_NDK_HOME=${resolved_ndk}" >> "${GITHUB_ENV}"
+
+      - name: Verify Rust dependency lock
+        run: cargo metadata --locked --manifest-path src-tauri/Cargo.toml --format-version 1 > /dev/null
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Validate shared frontend
+        run: npm run build
+
+      - name: Initialize Android target
+        env:
+          CI: "true"
+        run: npm run android:init -- --ci --skip-targets-install
+
+      - name: Build unsigned Android ARM64 release AAB
+        env:
+          CI: "true"
+        run: npm run android:build -- --target aarch64 --aab --ci
+
+      - name: Resolve release bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle_path="$(find src-tauri/gen/android/app/build/outputs -type f -name "*.aab" | sort | head -n 1)"
+          test -n "${bundle_path}"
+          test -f "${bundle_path}"
+          echo "UNSIGNED_AAB=${GITHUB_WORKSPACE}/${bundle_path}" >> "${GITHUB_ENV}"
+          echo "Using unsigned bundle: ${bundle_path}"
+
+      - name: Decode upload keystore
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "${ANDROID_KEY_BASE64}" | base64 --decode > "${RUNNER_TEMP}/openmindai-upload.jks"
+          test -s "${RUNNER_TEMP}/openmindai-upload.jks"
+
+      - name: Sign Android App Bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          signed_aab="${RUNNER_TEMP}/OpenMindAI-android-arm64-release-signed.aab"
+          jarsigner \
+            -verbose \
+            -sigalg SHA256withRSA \
+            -digestalg SHA-256 \
+            -keystore "${RUNNER_TEMP}/openmindai-upload.jks" \
+            -storepass "${ANDROID_KEY_PASSWORD}" \
+            -keypass "${ANDROID_KEY_PASSWORD}" \
+            -signedjar "${signed_aab}" \
+            "${UNSIGNED_AAB}" \
+            "${ANDROID_KEY_ALIAS}"
+          echo "SIGNED_AAB=${signed_aab}" >> "${GITHUB_ENV}"
+
+      - name: Verify signed App Bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          jarsigner -verify -verbose -certs "${SIGNED_AAB}"
+
+      - name: Upload signed release AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: openmindai-android-arm64-signed-release-aab
+          path: ${{ env.SIGNED_AAB }}
+          if-no-files-found: error
+          retention-days: 14
