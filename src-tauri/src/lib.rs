@@ -73,6 +73,7 @@ mod mobile_inference;
 #[cfg(target_os = "ios")]
 #[path = "mobile_inference_ios.rs"]
 mod mobile_inference;
+#[cfg(any(target_os = "android", target_os = "ios"))]
 mod mobile_model_policy;
 mod multimodal;
 mod pdf_ocr;
@@ -115,6 +116,7 @@ pub(crate) use mobile_chat::{mobile_regenerate_message, mobile_send_chat_message
 pub(crate) use mobile_inference::{
     mobile_native_inference_probe, mobile_release_inference_model, MobileInferenceState,
 };
+#[cfg(any(target_os = "android", target_os = "ios"))]
 pub(crate) use mobile_model_policy::mobile_model_recommendation;
 pub(crate) use multimodal::{
     artifact_media_data_url, create_soundscape_artifact, regenerate_multimodal_message,
