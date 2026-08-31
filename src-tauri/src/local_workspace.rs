@@ -1,6 +1,8 @@
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
     time::{Duration, Instant, SystemTime},
 };
 
@@ -31,6 +33,47 @@ const WORKSPACE_CONTEXT_DEPTH: usize = 4;
 const WORKSPACE_CONTEXT_FILES: usize = 6;
 const WORKSPACE_CONTEXT_FILE_CHARS: usize = 1_200;
 const WORKSPACE_CONTEXT_TOTAL_CHARS: usize = 7_000;
+const WORKSPACE_CONTEXT_CACHE_TTL_SECS: u64 = 30;
+
+#[derive(Clone)]
+struct CachedWorkspaceContext {
+    created_at: Instant,
+    value: Option<String>,
+}
+
+static WORKSPACE_CONTEXT_CACHE: OnceLock<Mutex<HashMap<String, CachedWorkspaceContext>>> =
+    OnceLock::new();
+
+fn cached_workspace_context(project_id: &str) -> Option<Option<String>> {
+    let cache = WORKSPACE_CONTEXT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache.lock().ok()?;
+    let cached = cache.get(project_id)?.clone();
+    if cached.created_at.elapsed() > Duration::from_secs(WORKSPACE_CONTEXT_CACHE_TTL_SECS) {
+        cache.remove(project_id);
+        return None;
+    }
+    Some(cached.value)
+}
+
+fn store_workspace_context(project_id: &str, value: Option<String>) {
+    let cache = WORKSPACE_CONTEXT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(
+            project_id.to_string(),
+            CachedWorkspaceContext {
+                created_at: Instant::now(),
+                value,
+            },
+        );
+    }
+}
+
+pub(crate) fn invalidate_project_workspace_context(project_id: &str) {
+    let cache = WORKSPACE_CONTEXT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut cache) = cache.lock() {
+        cache.remove(project_id);
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -304,6 +347,7 @@ pub fn write_project_workspace_file(
         fs::create_dir_all(parent)?;
     }
     fs::write(&file_path, content.as_bytes())?;
+    invalidate_project_workspace_context(&project_id);
     Ok(WorkspaceMutationResult {
         path: display_path(&file_path),
         kind: "file".to_string(),
@@ -326,6 +370,7 @@ pub fn create_project_workspace_directory(
     let config = load_project_config(&state, &project_id)?;
     let directory = resolve_path(&config, root_id.as_deref(), &path, false)?;
     fs::create_dir_all(&directory)?;
+    invalidate_project_workspace_context(&project_id);
     Ok(WorkspaceMutationResult {
         path: display_path(&directory),
         kind: "directory".to_string(),
@@ -358,6 +403,7 @@ pub fn move_project_workspace_path(
     }
     let kind = if source.is_dir() { "directory" } else { "file" };
     fs::rename(&source, &target)?;
+    invalidate_project_workspace_context(&project_id);
     Ok(WorkspaceMutationResult {
         path: display_path(&target),
         kind: kind.to_string(),
@@ -386,6 +432,7 @@ pub fn delete_project_workspace_path(
     } else {
         fs::remove_file(target)?;
     }
+    invalidate_project_workspace_context(&project_id);
     Ok(())
 }
 
@@ -475,8 +522,13 @@ pub(crate) fn workspace_context_for_project(
     database: &Database,
     project_id: &str,
 ) -> Result<Option<String>, AppError> {
+    if let Some(cached) = cached_workspace_context(project_id) {
+        return Ok(cached);
+    }
+
     let config = load_config(database, project_id)?;
     if config.roots.is_empty() {
+        store_workspace_context(project_id, None);
         return Ok(None);
     }
 
@@ -528,7 +580,9 @@ pub(crate) fn workspace_context_for_project(
         sections.push(bounded);
     }
 
-    Ok(Some(sections.join("\n\n")))
+    let context = Some(sections.join("\n\n"));
+    store_workspace_context(project_id, context.clone());
+    Ok(context)
 }
 
 pub(crate) fn clear_project_workspace_config(
@@ -539,6 +593,7 @@ pub(crate) fn clear_project_workspace_config(
         "DELETE FROM app_settings WHERE key = ?1",
         params![config_key(project_id)],
     )?;
+    invalidate_project_workspace_context(project_id);
     Ok(())
 }
 
@@ -610,6 +665,7 @@ fn save_config(
          ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
         params![config_key(project_id), value, Utc::now().to_rfc3339()],
     )?;
+    invalidate_project_workspace_context(project_id);
     Ok(())
 }
 
