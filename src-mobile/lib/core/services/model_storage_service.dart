@@ -41,6 +41,7 @@ class ModelStorageService {
   ModelStorageService({Dio? dio}) : _dio = dio ?? Dio();
 
   static const int _freeSpaceReserveBytes = 768 * 1024 * 1024;
+  static const int _maxDownloadAttempts = 4;
 
   final Dio _dio;
   final Map<String, CancelToken> _cancelTokens = {};
@@ -283,25 +284,152 @@ class ModelStorageService {
     }
 
     final partFile = File('$destinationPath.part');
-    if (await partFile.exists()) {
-      await partFile.delete();
+    if (await partFile.exists() && artifact.size > 0) {
+      final partialLength = await partFile.length();
+      if (partialLength > artifact.size) {
+        await partFile.delete();
+      } else if (partialLength == artifact.size) {
+        await _verifyAndCommit(
+          modelId: modelId,
+          artifact: artifact,
+          partFile: partFile,
+          finalFile: finalFile,
+          onProgress: onProgress,
+        );
+        return;
+      }
     }
-    await _dio.download(
-      artifact.url,
-      partFile.path,
-      cancelToken: token,
-      deleteOnError: true,
-      options: Options(
-        followRedirects: true,
-        receiveTimeout: const Duration(hours: 4),
-        headers: const {'Accept': 'application/octet-stream'},
-      ),
-      onReceiveProgress: (received, total) {
-        final expected = total > 0 ? total : artifact.size;
+
+    Object? lastError;
+    for (var attempt = 1; attempt <= _maxDownloadAttempts; attempt++) {
+      if (token.isCancelled) {
+        throw DioException.requestCancelled(
+          requestOptions: RequestOptions(path: artifact.url),
+          reason: 'Download cancelled.',
+        );
+      }
+      try {
+        await _downloadRange(
+          modelId: modelId,
+          artifact: artifact,
+          partFile: partFile,
+          stage: stage,
+          token: token,
+          onProgress: onProgress,
+        );
+        await _verifyAndCommit(
+          modelId: modelId,
+          artifact: artifact,
+          partFile: partFile,
+          finalFile: finalFile,
+          onProgress: onProgress,
+        );
+        return;
+      } on DioException catch (error) {
+        if (CancelToken.isCancel(error) || token.isCancelled) rethrow;
+        lastError = error;
+      } on SocketException catch (error) {
+        lastError = error;
+      }
+
+      if (attempt < _maxDownloadAttempts) {
         onProgress(
           ModelInstallProgress(
             modelId: modelId,
-            stage: stage,
+            stage: 'Connection interrupted. Resuming…',
+            progress: artifact.size > 0 && await partFile.exists()
+                ? ((await partFile.length()) / artifact.size)
+                    .clamp(0, 1)
+                    .toDouble()
+                : 0,
+            receivedBytes:
+                await partFile.exists() ? await partFile.length() : 0,
+            totalBytes: artifact.size,
+          ),
+        );
+        await Future<void>.delayed(Duration(seconds: attempt * 2));
+      }
+    }
+
+    throw ModelInstallException(
+      'Model download was interrupted repeatedly. Your progress is saved; try again to resume.${lastError == null ? '' : ' (${lastError.runtimeType})'}',
+    );
+  }
+
+  Future<void> _downloadRange({
+    required String modelId,
+    required _RemoteArtifact artifact,
+    required File partFile,
+    required String stage,
+    required CancelToken token,
+    required void Function(ModelInstallProgress progress) onProgress,
+  }) async {
+    var existingBytes = await partFile.exists() ? await partFile.length() : 0;
+    final headers = <String, String>{'Accept': 'application/octet-stream'};
+    if (existingBytes > 0) {
+      headers['Range'] = 'bytes=$existingBytes-';
+    }
+
+    final response = await _dio.get<ResponseBody>(
+      artifact.url,
+      cancelToken: token,
+      options: Options(
+        responseType: ResponseType.stream,
+        followRedirects: true,
+        receiveTimeout: const Duration(hours: 4),
+        headers: headers,
+        validateStatus: (status) =>
+            status == 200 || status == 206 || status == 416,
+      ),
+    );
+
+    if (response.statusCode == 416) {
+      if (artifact.size > 0 && existingBytes == artifact.size) return;
+      if (await partFile.exists()) await partFile.delete();
+      existingBytes = 0;
+      throw DioException.badResponse(
+        statusCode: 416,
+        requestOptions: response.requestOptions,
+        response: response,
+      );
+    }
+
+    final resumed = existingBytes > 0 && response.statusCode == 206;
+    if (existingBytes > 0 && !resumed) {
+      await partFile.writeAsBytes(const [], flush: true);
+      existingBytes = 0;
+    }
+
+    final body = response.data;
+    if (body == null) {
+      throw DioException(
+        requestOptions: response.requestOptions,
+        response: response,
+        message: 'Download server returned an empty response.',
+      );
+    }
+
+    final sink = partFile.openWrite(
+      mode: existingBytes > 0 ? FileMode.append : FileMode.write,
+    );
+    var received = existingBytes;
+    try {
+      await for (final chunk in body.stream) {
+        if (token.isCancelled) {
+          throw DioException.requestCancelled(
+            requestOptions: response.requestOptions,
+            reason: 'Download cancelled.',
+          );
+        }
+        sink.add(chunk);
+        received += chunk.length;
+        final expected = artifact.size > 0
+            ? artifact.size
+            : existingBytes + body.contentLength;
+        onProgress(
+          ModelInstallProgress(
+            modelId: modelId,
+            stage: existingBytes > 0 ? 'Resuming model download' : stage,
             progress: expected > 0
                 ? (received / expected).clamp(0, 1).toDouble()
                 : 0,
@@ -309,8 +437,29 @@ class ModelStorageService {
             totalBytes: expected,
           ),
         );
-      },
-    );
+      }
+    } finally {
+      await sink.flush();
+      await sink.close();
+    }
+  }
+
+  Future<void> _verifyAndCommit({
+    required String modelId,
+    required _RemoteArtifact artifact,
+    required File partFile,
+    required File finalFile,
+    required void Function(ModelInstallProgress progress) onProgress,
+  }) async {
+    if (!await partFile.exists()) {
+      throw const ModelInstallException('Downloaded model data is missing.');
+    }
+    final size = await partFile.length();
+    if (artifact.size > 0 && size != artifact.size) {
+      throw ModelInstallException(
+        'Model download is incomplete ($size of ${artifact.size} bytes). Progress was saved and can be resumed.',
+      );
+    }
 
     if (artifact.sha256 != null) {
       onProgress(
@@ -318,18 +467,19 @@ class ModelStorageService {
           modelId: modelId,
           stage: 'Verifying download',
           progress: 1,
-          receivedBytes: await partFile.length(),
-          totalBytes: artifact.size,
+          receivedBytes: size,
+          totalBytes: artifact.size > 0 ? artifact.size : size,
         ),
       );
       final actual = await _sha256(partFile);
       if (actual.toLowerCase() != artifact.sha256!.toLowerCase()) {
         await partFile.delete();
         throw const ModelInstallException(
-          'Downloaded model verification failed. Please try again.',
+          'Downloaded model verification failed. The damaged partial file was removed; please try again.',
         );
       }
     }
+    if (await finalFile.exists()) await finalFile.delete();
     await partFile.rename(finalFile.path);
   }
 
