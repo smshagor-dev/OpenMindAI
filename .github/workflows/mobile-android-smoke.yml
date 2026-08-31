@@ -1,0 +1,138 @@
+name: Android Emulator Smoke
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/mobile-android-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-emulator-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  emulator-smoke:
+    name: Android x86_64 launch smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Enable KVM group permissions
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-linux-android
+
+      - name: Resolve Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${ANDROID_NDK_HOME:-}" && -d "${ANDROID_NDK_HOME}" ]]; then
+            resolved_ndk="${ANDROID_NDK_HOME}"
+          else
+            resolved_ndk="$(find "${ANDROID_HOME}/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          fi
+          test -n "${resolved_ndk}"
+          test -d "${resolved_ndk}"
+          echo "NDK_HOME=${resolved_ndk}" >> "${GITHUB_ENV}"
+          echo "ANDROID_NDK_HOME=${resolved_ndk}" >> "${GITHUB_ENV}"
+
+      - name: Verify Rust dependency lock
+        run: cargo metadata --locked --manifest-path src-tauri/Cargo.toml --format-version 1 > /dev/null
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Validate shared frontend
+        run: npm run build
+
+      - name: Initialize Android target
+        env:
+          CI: "true"
+        run: npm run android:init -- --ci --skip-targets-install
+
+      - name: Build Android x86_64 debug APK
+        env:
+          CI: "true"
+        run: npm run android:build -- --debug --target x86_64 --apk --ci
+
+      - name: Resolve smoke APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk_path="$(find src-tauri/gen/android/app/build/outputs -type f -name "*.apk" | sort | head -n 1)"
+          test -n "${apk_path}"
+          test -f "${apk_path}"
+          echo "SMOKE_APK=${GITHUB_WORKSPACE}/${apk_path}" >> "${GITHUB_ENV}"
+          echo "Using APK: ${apk_path}"
+
+      - name: Install and launch on Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: aosp_atd
+          arch: x86_64
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
+          disable-animations: true
+          script: |
+            set -euo pipefail
+            adb install -r "${SMOKE_APK}"
+            adb shell monkey -p ai.openmind.mobile -c android.intent.category.LAUNCHER 1
+            sleep 8
+
+            package_pid="$(adb shell pidof ai.openmind.mobile | tr -d '\r')"
+            test -n "${package_pid}"
+            echo "OpenMindAI PID: ${package_pid}"
+
+            adb shell dumpsys window windows > android-window-state.txt
+            grep -q "ai.openmind.mobile" android-window-state.txt
+
+            adb logcat -d > android-logcat.txt
+            if grep -E "FATAL EXCEPTION|Process: ai\.openmind\.mobile.*(FATAL|fatal)|Fatal signal" android-logcat.txt; then
+              echo "Fatal Android runtime error detected"
+              exit 1
+            fi
+
+            adb exec-out screencap -p > android-smoke.png
+            adb shell uiautomator dump /sdcard/openmindai-window.xml || true
+            adb pull /sdcard/openmindai-window.xml android-ui.xml || true
+
+      - name: Upload emulator diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openmindai-android-emulator-smoke
+          path: |
+            android-smoke.png
+            android-logcat.txt
+            android-window-state.txt
+            android-ui.xml
+          if-no-files-found: warn
+          retention-days: 14
