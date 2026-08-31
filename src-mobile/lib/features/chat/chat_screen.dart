@@ -438,7 +438,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _pickFiles() async {
     final files = await FilePicker.pickFiles();
-    if (files.isEmpty || !mounted) return;
+    if (files.isEmpty || !mounted) {
+      return;
+    }
     final paths = files.map((file) => file.xFile.path).where((path) => path.isNotEmpty);
     setState(() => _attachmentPaths.addAll(paths));
   }
