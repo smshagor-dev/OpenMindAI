@@ -67,6 +67,7 @@ mod local_workspace;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 #[path = "local_workspace_mobile.rs"]
 mod local_workspace;
+mod mobile_capabilities;
 mod mobile_chat;
 #[cfg(target_os = "android")]
 mod mobile_inference;
@@ -112,6 +113,8 @@ pub(crate) use local_workspace::{
     read_project_workspace_file, run_project_terminal_command, set_project_full_local_access,
     write_project_workspace_file,
 };
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub(crate) use mobile_capabilities::{mobile_capability_report, mobile_route_task};
 pub(crate) use mobile_chat::{mobile_regenerate_message, mobile_send_chat_message};
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub(crate) use mobile_inference::{
@@ -251,6 +254,8 @@ fn run_mobile() {
             clear_google_credentials,
             mobile_native_inference_probe,
             mobile_model_recommendation,
+            mobile_route_task,
+            mobile_capability_report,
             mobile_send_chat_message,
             mobile_regenerate_message,
             mobile_release_inference_model,
