@@ -40,9 +40,31 @@ export function MobileSetupWizard(props: {
     void loadRecommendation();
   }, [alreadyCompleted, loadRecommendation, props.onDismiss]);
 
+  useEffect(() => {
+    if (!installing) return;
+    let cancelled = false;
+
+    const refreshDownload = () => {
+      void api
+        .modelDownloadStatus()
+        .then((status) => {
+          if (!cancelled) setDownload(status);
+        })
+        .catch(() => undefined);
+    };
+
+    refreshDownload();
+    const timer = window.setInterval(refreshDownload, 750);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [installing]);
+
   const installRecommendedModel = useCallback(async () => {
     if (!recommendation || installing) return;
     setInstalling(true);
+    setDownload(null);
     setError(null);
     try {
       const status = await api.downloadCatalogModel(recommendation.modelId);
