@@ -36,8 +36,10 @@ pub fn platform_capabilities() -> PlatformCapabilities {
         local_workspace: !mobile,
         full_pc_terminal: !mobile,
         managed_desktop_runtime: !mobile,
-        // The Android/iOS inference backend is intentionally not advertised
-        // until a mobile runtime has been benchmarked and validated.
-        mobile_model_runtime_ready: false,
+        // Android and iOS both embed the pinned llama.cpp mobile engine. The
+        // platform-specific backend is selected at compile time (NDK on
+        // Android, Metal on iOS), so the native app can route Chat/Thinking
+        // through local inference without a desktop llama-server process.
+        mobile_model_runtime_ready: mobile,
     }
 }
