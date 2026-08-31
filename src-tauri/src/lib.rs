@@ -113,9 +113,7 @@ pub(crate) use local_workspace::{
 };
 pub(crate) use mobile_chat::{mobile_regenerate_message, mobile_send_chat_message};
 #[cfg(any(target_os = "android", target_os = "ios"))]
-pub(crate) use mobile_inference::{
-    mobile_native_inference_probe, mobile_release_inference_model, MobileInferenceState,
-};
+pub(crate) use mobile_inference::{mobile_native_inference_probe, MobileInferenceState};
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub(crate) use mobile_model_policy::mobile_model_recommendation;
 pub(crate) use multimodal::{
@@ -245,8 +243,7 @@ fn run_mobile() {
             mobile_native_inference_probe,
             mobile_model_recommendation,
             mobile_send_chat_message,
-            mobile_regenerate_message,
-            mobile_release_inference_model
+            mobile_regenerate_message
         ])
         .run(tauri_crate::generate_context!())
         .expect("error while running OpenMindAI mobile");
