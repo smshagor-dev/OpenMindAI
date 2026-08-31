@@ -76,6 +76,7 @@ mod mobile_inference;
 mod mobile_inference;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 mod mobile_model_policy;
+mod mobile_task_router;
 mod mobile_vision;
 mod multimodal;
 mod pdf_ocr;
@@ -122,6 +123,8 @@ pub(crate) use mobile_inference::{
 };
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub(crate) use mobile_model_policy::mobile_model_recommendation;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub(crate) use mobile_task_router::mobile_prepare_text_route;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub(crate) use mobile_vision::{
     mobile_regenerate_vision_message, mobile_send_vision_message, mobile_vision_status,
@@ -256,6 +259,7 @@ fn run_mobile() {
             mobile_model_recommendation,
             mobile_route_task,
             mobile_capability_report,
+            mobile_prepare_text_route,
             mobile_send_chat_message,
             mobile_regenerate_message,
             mobile_release_inference_model,
