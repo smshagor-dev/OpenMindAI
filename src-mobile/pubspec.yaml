@@ -1,0 +1,26 @@
+name: openmindai_mobile
+description: OpenMindAI mobile client for Android and iOS.
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.10.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  device_info_plus: ^13.2.0
+  file_picker: ^12.1.2
+  image_picker: ^1.2.3
+  permission_handler: ^13.0.1
+  shared_preferences: ^2.5.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/LICENSE.txt
