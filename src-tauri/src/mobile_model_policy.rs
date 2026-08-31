@@ -67,7 +67,7 @@ pub(crate) fn recommendation_for_state(
     });
 
     Ok(MobileModelRecommendation {
-        supported: cfg!(target_os = "android"),
+        supported: true,
         tier,
         model_id: entry.id,
         name: entry.name,
