@@ -74,6 +74,8 @@ mod mobile_chat;
 mod mobile_inference;
 mod mobile_model_cache;
 mod mobile_model_policy;
+#[cfg(any(target_os = "android", test))]
+mod mobile_stream_decoder;
 mod multimodal;
 mod pdf_ocr;
 mod platform;
