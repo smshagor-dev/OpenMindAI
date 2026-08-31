@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as p;
 
@@ -24,6 +26,8 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final _composer = TextEditingController();
+  final _searchController = TextEditingController();
+  final _scrollController = ScrollController();
   final _chatStore = ChatStore();
   final _onboardingStore = OnboardingStore();
   final _modelStorage = ModelStorageService();
@@ -34,8 +38,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   List<ChatConversation> _conversations = [];
   String? _activeConversationId;
+  String? _activeAssistantId;
   String _selectedModelId = 'qwen3-06b-q4';
   String _mode = 'chat';
+  String _chatSearchQuery = '';
   bool _loading = true;
   bool _generating = false;
   final List<String> _attachmentPaths = [];
@@ -49,6 +55,15 @@ class _ChatScreenState extends State<ChatScreen> {
 
   MobileModel get _selectedModel => MobileModelCatalog.byId(_selectedModelId);
 
+  List<ChatConversation> get _visibleConversations {
+    final query = _chatSearchQuery.trim().toLowerCase();
+    if (query.isEmpty) return _conversations;
+    return _conversations.where((conversation) {
+      if (conversation.title.toLowerCase().contains(query)) return true;
+      return conversation.messages.any((message) => message.text.toLowerCase().contains(query));
+    }).toList();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -61,6 +76,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _generationSubscription?.cancel();
     unawaited(_inference.cancel());
     _composer.dispose();
+    _searchController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -73,6 +90,18 @@ class _ChatScreenState extends State<ChatScreen> {
       _activeConversationId = conversations.isEmpty ? null : conversations.first.id;
       _selectedModelId = selectedModelId ?? _selectedModelId;
       _loading = false;
+    });
+    _scrollToBottom();
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollController.hasClients) return;
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+      );
     });
   }
 
@@ -128,6 +157,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _conversations.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     });
     await _chatStore.save(_conversations);
+    _scrollToBottom();
     await _beginGeneration(conversation, attachments: attachments);
   }
 
@@ -147,14 +177,18 @@ class _ChatScreenState extends State<ChatScreen> {
 
     setState(() {
       _generating = true;
+      _activeAssistantId = assistantId;
       conversation.messages.add(placeholder);
       conversation.updatedAt = DateTime.now();
     });
+    _scrollToBottom();
 
     var finished = false;
     Future<void> finish() async {
       if (finished) return;
       finished = true;
+      _generationSubscription = null;
+      if (_activeAssistantId == assistantId) _activeAssistantId = null;
       final index = conversation.messages.indexWhere((message) => message.id == assistantId);
       if (index >= 0 && conversation.messages[index].text.trim().isEmpty) {
         conversation.messages.removeAt(index);
@@ -162,6 +196,7 @@ class _ChatScreenState extends State<ChatScreen> {
       conversation.updatedAt = DateTime.now();
       await _chatStore.save(_conversations);
       if (mounted) setState(() => _generating = false);
+      _scrollToBottom();
     }
 
     final stream = _inference.stream(
@@ -180,6 +215,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (index < 0) return;
         final current = conversation.messages[index];
         setState(() => conversation.messages[index] = current.copyWith(text: current.text + delta));
+        _scrollToBottom();
       },
       onError: (Object error) async {
         if (mounted) {
@@ -202,7 +238,17 @@ class _ChatScreenState extends State<ChatScreen> {
     await _generationSubscription?.cancel();
     _generationSubscription = null;
     await _inference.cancel();
-    if (_activeConversation != null) await _chatStore.save(_conversations);
+    final conversation = _activeConversation;
+    final assistantId = _activeAssistantId;
+    _activeAssistantId = null;
+    if (conversation != null && assistantId != null) {
+      final index = conversation.messages.indexWhere((message) => message.id == assistantId);
+      if (index >= 0 && conversation.messages[index].text.trim().isEmpty) {
+        conversation.messages.removeAt(index);
+      }
+      conversation.updatedAt = DateTime.now();
+      await _chatStore.save(_conversations);
+    }
     if (mounted) setState(() => _generating = false);
   }
 
@@ -218,6 +264,7 @@ class _ChatScreenState extends State<ChatScreen> {
       orElse: () => ChatMessage(id: '', role: 'user', text: '', createdAt: DateTime.now()),
     );
     if (lastUser.id.isEmpty) return;
+    await _chatStore.save(_conversations);
     await _beginGeneration(conversation, attachments: lastUser.attachmentPaths);
   }
 
@@ -270,7 +317,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ListTile(
                 leading: const Icon(Icons.attach_file_rounded),
                 title: const Text('Files'),
-                subtitle: const Text('Text, code, JSON, Markdown, and other local files'),
+                subtitle: const Text('PDF, text, code, JSON, Markdown, YAML and CSV'),
                 onTap: () {
                   Navigator.pop(context);
                   _pickFiles();
@@ -374,6 +421,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   child: conversation == null || conversation.messages.isEmpty
                       ? _EmptyChat(modelName: _selectedModel.name, onModels: _openModels)
                       : ListView.builder(
+                          controller: _scrollController,
                           padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
                           itemCount: conversation.messages.length,
                           itemBuilder: (context, index) {
@@ -403,6 +451,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Widget _buildDrawer(BuildContext context) {
+    final visibleConversations = _visibleConversations;
     return Drawer(
       width: MediaQuery.sizeOf(context).width * .86,
       child: SafeArea(
@@ -424,19 +473,33 @@ class _ChatScreenState extends State<ChatScreen> {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
               child: TextField(
-                decoration: const InputDecoration(prefixIcon: Icon(Icons.search_rounded), hintText: 'Search chats', isDense: true),
-                onChanged: (_) => setState(() {}),
+                controller: _searchController,
+                decoration: InputDecoration(
+                  prefixIcon: const Icon(Icons.search_rounded),
+                  hintText: 'Search chats',
+                  isDense: true,
+                  suffixIcon: _chatSearchQuery.isEmpty
+                      ? null
+                      : IconButton(
+                          onPressed: () {
+                            _searchController.clear();
+                            setState(() => _chatSearchQuery = '');
+                          },
+                          icon: const Icon(Icons.close_rounded),
+                        ),
+                ),
+                onChanged: (value) => setState(() => _chatSearchQuery = value),
               ),
             ),
             const SizedBox(height: 10),
             Expanded(
-              child: _conversations.isEmpty
-                  ? const Center(child: Text('No conversations yet'))
+              child: visibleConversations.isEmpty
+                  ? Center(child: Text(_chatSearchQuery.isEmpty ? 'No conversations yet' : 'No matching chats'))
                   : ListView.builder(
                       padding: const EdgeInsets.symmetric(horizontal: 8),
-                      itemCount: _conversations.length,
+                      itemCount: visibleConversations.length,
                       itemBuilder: (context, index) {
-                        final item = _conversations[index];
+                        final item = visibleConversations[index];
                         return ListTile(
                           dense: true,
                           selected: item.id == _activeConversationId,
@@ -445,6 +508,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           onTap: () {
                             setState(() => _activeConversationId = item.id);
                             Navigator.pop(context);
+                            _scrollToBottom();
                           },
                         );
                       },
@@ -514,7 +578,7 @@ class _MessageBubble extends StatelessWidget {
     return Align(
       alignment: user ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
-        constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * (user ? .82 : .94)),
+        constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * (user ? .84 : .96)),
         margin: const EdgeInsets.only(bottom: 18),
         padding: user ? const EdgeInsets.symmetric(horizontal: 16, vertical: 11) : EdgeInsets.zero,
         decoration: user
@@ -530,15 +594,9 @@ class _MessageBubble extends StatelessWidget {
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: message.attachmentPaths
-                      .map((path) => Chip(
-                            visualDensity: VisualDensity.compact,
-                            avatar: const Icon(Icons.attach_file_rounded, size: 15),
-                            label: Text(p.basename(path), overflow: TextOverflow.ellipsis),
-                          ))
-                      .toList(),
+                  spacing: 7,
+                  runSpacing: 7,
+                  children: message.attachmentPaths.map((path) => _AttachmentPreview(path: path)).toList(),
                 ),
               ),
             if (message.text.isEmpty && !user)
@@ -550,8 +608,25 @@ class _MessageBubble extends StatelessWidget {
                   Text('Thinking…'),
                 ]),
               )
+            else if (user)
+              SelectableText(message.text, style: const TextStyle(fontSize: 16, height: 1.45))
             else
-              SelectableText(message.text, style: const TextStyle(fontSize: 16, height: 1.45)),
+              MarkdownBody(
+                data: message.text,
+                selectable: true,
+                styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+                  p: const TextStyle(fontSize: 16, height: 1.45),
+                  code: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 14,
+                    backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  ),
+                  codeblockDecoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
             if (!user && message.text.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
@@ -579,6 +654,39 @@ class _MessageBubble extends StatelessWidget {
       ),
     );
   }
+}
+
+class _AttachmentPreview extends StatelessWidget {
+  const _AttachmentPreview({required this.path});
+  final String path;
+
+  bool get _isImage => const {'.png', '.jpg', '.jpeg', '.webp'}.contains(p.extension(path).toLowerCase());
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isImage) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: Image.file(
+          File(path),
+          width: 160,
+          height: 120,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _fileChip(),
+        ),
+      );
+    }
+    return _fileChip();
+  }
+
+  Widget _fileChip() => Chip(
+        visualDensity: VisualDensity.compact,
+        avatar: const Icon(Icons.attach_file_rounded, size: 15),
+        label: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 190),
+          child: Text(p.basename(path), overflow: TextOverflow.ellipsis),
+        ),
+      );
 }
 
 class _Composer extends StatelessWidget {
@@ -662,10 +770,7 @@ class _Composer extends StatelessWidget {
             },
           ),
           const SizedBox(height: 5),
-          Text(
-            'OpenMindAI can make mistakes. Check important information.',
-            style: Theme.of(context).textTheme.labelSmall,
-          ),
+          Text('OpenMindAI can make mistakes. Check important information.', style: Theme.of(context).textTheme.labelSmall),
         ]),
       ),
     );
