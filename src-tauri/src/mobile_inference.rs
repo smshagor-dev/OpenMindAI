@@ -86,9 +86,9 @@ impl MobileInferenceState {
                 released: false,
                 busy: true,
             }),
-            Err(TryLockError::Poisoned(_)) => Err(AppError::internal(
-                "mobile native inference lock poisoned",
-            )),
+            Err(TryLockError::Poisoned(_)) => {
+                Err(AppError::internal("mobile native inference lock poisoned"))
+            }
         }
     }
 }
@@ -473,7 +473,5 @@ pub(crate) async fn mobile_native_inference_probe(
         engine.generate_probe(&model_path, requested_model_id, prompt, max_tokens)
     })
     .await
-    .map_err(|error| {
-        AppError::InferenceFailed(format!("native inference task failed: {error}"))
-    })?
+    .map_err(|error| AppError::InferenceFailed(format!("native inference task failed: {error}")))?
 }
