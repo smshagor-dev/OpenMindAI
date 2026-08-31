@@ -4208,6 +4208,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "docx-rs",
+ "encoding_rs",
  "flate2",
  "futures-util",
  "hound",
