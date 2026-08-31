@@ -1,6 +1,6 @@
-use tauri::{AppHandle, State};
 #[cfg(target_os = "android")]
 use tauri::Emitter;
+use tauri::{AppHandle, State};
 
 use crate::{app_error::AppError, chat::Message, AppState};
 
@@ -38,8 +38,7 @@ pub async fn mobile_regenerate_message(
     {
         let _ = (app, conversation_id, assistant_message_id, mode, state);
         Err(AppError::ModelUnsupported(
-            "on-device mobile chat regeneration is currently available on Android only"
-                .to_string(),
+            "on-device mobile chat regeneration is currently available on Android only".to_string(),
         ))
     }
 
