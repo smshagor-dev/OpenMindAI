@@ -1,8 +1,7 @@
-#[cfg(any(target_os = "android", target_os = "ios"))]
 use serde::Serialize;
 use tauri::State;
 
-use crate::{app_error::AppError, AppState};
+use crate::AppState;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -152,7 +151,7 @@ fn route_task(state: &AppState, task: &str) -> MobileTaskRoute {
                 .flatten()
                 .is_some(),
             supported: true,
-            reason: "The desktop Whisper package remains available in the catalog; mobile uses the platform speech service when available until the native audio model path is enabled."
+            reason: "Mobile uses device speech recognition when available; the native audio-model path remains a separate validated capability before it replaces the platform service."
                 .to_string(),
         },
         "text-to-speech" | "read-aloud" => MobileTaskRoute {
@@ -164,7 +163,7 @@ fn route_task(state: &AppState, task: &str) -> MobileTaskRoute {
             model_name: Some("Device speech synthesizer".to_string()),
             installed: true,
             supported: true,
-            reason: "Mobile can read assistant responses aloud through the OS speech synthesizer without spawning a desktop runtime."
+            reason: "Mobile reads assistant responses aloud through the OS speech synthesizer without a desktop runtime."
                 .to_string(),
         },
         "image-generation" => MobileTaskRoute {
@@ -179,7 +178,7 @@ fn route_task(state: &AppState, task: &str) -> MobileTaskRoute {
                 .flatten()
                 .is_some(),
             supported: true,
-            reason: "SDXL-class generation is too memory-heavy for the default mobile runtime. Keep the feature in the app, but route it to capable connected/remote compute instead of crashing low-memory phones."
+            reason: "SDXL-class generation stays available in mobile UX but routes to capable connected/remote compute instead of exhausting phone memory."
                 .to_string(),
         },
         "video-generation" => MobileTaskRoute {
@@ -191,7 +190,7 @@ fn route_task(state: &AppState, task: &str) -> MobileTaskRoute {
             model_name: Some("OpenMindAI Motion".to_string()),
             installed: false,
             supported: true,
-            reason: "Video generation remains visible but uses connected/remote compute on mobile because the native package exceeds practical phone memory budgets."
+            reason: "Video generation stays available in mobile UX but routes to connected/remote compute because the native package exceeds practical phone memory budgets."
                 .to_string(),
         },
         "connected-apps" => MobileTaskRoute {
@@ -297,8 +296,4 @@ pub(crate) fn mobile_capability_report(
         routes: Vec::new(),
         intentional_exclusions: Vec::new(),
     }
-}
-
-pub(crate) fn _validate_router_contract() -> Result<(), AppError> {
-    Ok(())
 }
