@@ -1,8 +1,17 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path/path.dart' as p;
+
 import '../../core/constants/model_catalog.dart';
+import '../../core/services/model_storage_service.dart';
 import '../../core/storage/onboarding_store.dart';
+import '../models/model_manager_sheet.dart';
 import 'models/chat_models.dart';
 import 'services/chat_store.dart';
 import 'services/mobile_inference_service.dart';
@@ -17,15 +26,22 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   final _composer = TextEditingController();
+  final _searchController = TextEditingController();
+  final _scrollController = ScrollController();
   final _chatStore = ChatStore();
   final _onboardingStore = OnboardingStore();
-  final _inference = NativeMobileInferenceService();
+  final _modelStorage = ModelStorageService();
   final _imagePicker = ImagePicker();
+
+  late final NativeMobileInferenceService _inference;
+  StreamSubscription<String>? _generationSubscription;
 
   List<ChatConversation> _conversations = [];
   String? _activeConversationId;
+  String? _activeAssistantId;
   String _selectedModelId = 'qwen3-06b-q4';
   String _mode = 'chat';
+  String _chatSearchQuery = '';
   bool _loading = true;
   bool _generating = false;
   final List<String> _attachmentPaths = [];
@@ -39,15 +55,29 @@ class _ChatScreenState extends State<ChatScreen> {
 
   MobileModel get _selectedModel => MobileModelCatalog.byId(_selectedModelId);
 
+  List<ChatConversation> get _visibleConversations {
+    final query = _chatSearchQuery.trim().toLowerCase();
+    if (query.isEmpty) return _conversations;
+    return _conversations.where((conversation) {
+      if (conversation.title.toLowerCase().contains(query)) return true;
+      return conversation.messages.any((message) => message.text.toLowerCase().contains(query));
+    }).toList();
+  }
+
   @override
   void initState() {
     super.initState();
+    _inference = NativeMobileInferenceService(storage: _modelStorage);
     _load();
   }
 
   @override
   void dispose() {
+    _generationSubscription?.cancel();
+    unawaited(_inference.cancel());
     _composer.dispose();
+    _searchController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -61,11 +91,25 @@ class _ChatScreenState extends State<ChatScreen> {
       _selectedModelId = selectedModelId ?? _selectedModelId;
       _loading = false;
     });
+    _scrollToBottom();
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollController.hasClients) return;
+      _scrollController.animateTo(
+        _scrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOut,
+      );
+    });
   }
 
   String _id(String prefix) => '$prefix-${DateTime.now().microsecondsSinceEpoch}';
 
-  void _newChat() {
+  Future<void> _newChat() async {
+    if (_generating) await _stopGeneration();
+    if (!mounted) return;
     setState(() {
       _activeConversationId = null;
       _attachmentPaths.clear();
@@ -92,15 +136,16 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_generating || (text.isEmpty && _attachmentPaths.isEmpty)) return;
 
     final conversation = _ensureConversation();
-    final userText = text.isEmpty ? 'Review the attached file.' : text;
+    final attachments = List<String>.from(_attachmentPaths);
+    final userText = text.isEmpty ? 'Review the attached content.' : text;
     final userMessage = ChatMessage(
       id: _id('message'),
       role: 'user',
       text: userText,
       createdAt: DateTime.now(),
+      attachmentPaths: attachments,
     );
 
-    final attachments = List<String>.from(_attachmentPaths);
     setState(() {
       conversation.messages.add(userMessage);
       conversation.updatedAt = DateTime.now();
@@ -109,39 +154,118 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       _composer.clear();
       _attachmentPaths.clear();
-      _generating = true;
       _conversations.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     });
     await _chatStore.save(_conversations);
+    _scrollToBottom();
+    await _beginGeneration(conversation, attachments: attachments);
+  }
 
-    try {
-      final response = await _inference.generate(
-        MobileInferenceRequest(
-          modelId: _selectedModelId,
-          mode: _mode,
-          messages: List<ChatMessage>.from(conversation.messages),
-          attachmentPaths: attachments,
-        ),
-      );
-      if (!mounted) return;
-      setState(() {
-        conversation.messages.add(ChatMessage(
-          id: _id('message'),
-          role: 'assistant',
-          text: response,
-          createdAt: DateTime.now(),
-        ));
-        conversation.updatedAt = DateTime.now();
-      });
+  Future<void> _beginGeneration(
+    ChatConversation conversation, {
+    required List<String> attachments,
+  }) async {
+    if (_generating) return;
+    final requestMessages = List<ChatMessage>.from(conversation.messages);
+    final assistantId = _id('message');
+    final placeholder = ChatMessage(
+      id: assistantId,
+      role: 'assistant',
+      text: '',
+      createdAt: DateTime.now(),
+    );
+
+    setState(() {
+      _generating = true;
+      _activeAssistantId = assistantId;
+      conversation.messages.add(placeholder);
+      conversation.updatedAt = DateTime.now();
+    });
+    _scrollToBottom();
+
+    var finished = false;
+    Future<void> finish() async {
+      if (finished) return;
+      finished = true;
+      _generationSubscription = null;
+      if (_activeAssistantId == assistantId) _activeAssistantId = null;
+      final index = conversation.messages.indexWhere((message) => message.id == assistantId);
+      if (index >= 0 && conversation.messages[index].text.trim().isEmpty) {
+        conversation.messages.removeAt(index);
+      }
+      conversation.updatedAt = DateTime.now();
       await _chatStore.save(_conversations);
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(error.toString()), behavior: SnackBarBehavior.floating),
-      );
-    } finally {
       if (mounted) setState(() => _generating = false);
+      _scrollToBottom();
     }
+
+    final stream = _inference.stream(
+      MobileInferenceRequest(
+        modelId: _selectedModelId,
+        mode: _mode,
+        messages: requestMessages,
+        attachmentPaths: attachments,
+      ),
+    );
+
+    _generationSubscription = stream.listen(
+      (delta) {
+        if (!mounted) return;
+        final index = conversation.messages.indexWhere((message) => message.id == assistantId);
+        if (index < 0) return;
+        final current = conversation.messages[index];
+        setState(() => conversation.messages[index] = current.copyWith(text: current.text + delta));
+        _scrollToBottom();
+      },
+      onError: (Object error) async {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(error.toString()),
+              behavior: SnackBarBehavior.floating,
+              action: SnackBarAction(label: 'Models', onPressed: _openModels),
+            ),
+          );
+        }
+        await finish();
+      },
+      onDone: finish,
+      cancelOnError: true,
+    );
+  }
+
+  Future<void> _stopGeneration() async {
+    await _generationSubscription?.cancel();
+    _generationSubscription = null;
+    await _inference.cancel();
+    final conversation = _activeConversation;
+    final assistantId = _activeAssistantId;
+    _activeAssistantId = null;
+    if (conversation != null && assistantId != null) {
+      final index = conversation.messages.indexWhere((message) => message.id == assistantId);
+      if (index >= 0 && conversation.messages[index].text.trim().isEmpty) {
+        conversation.messages.removeAt(index);
+      }
+      conversation.updatedAt = DateTime.now();
+      await _chatStore.save(_conversations);
+    }
+    if (mounted) setState(() => _generating = false);
+  }
+
+  Future<void> _regenerate() async {
+    if (_generating) return;
+    final conversation = _activeConversation;
+    if (conversation == null || conversation.messages.isEmpty) return;
+    if (conversation.messages.last.role == 'assistant') {
+      setState(() => conversation.messages.removeLast());
+    }
+    final lastUser = conversation.messages.lastWhere(
+      (message) => message.role == 'user',
+      orElse: () => ChatMessage(id: '', role: 'user', text: '', createdAt: DateTime.now()),
+    );
+    if (lastUser.id.isEmpty) return;
+    await _chatStore.save(_conversations);
+    await _beginGeneration(conversation, attachments: lastUser.attachmentPaths);
   }
 
   Future<void> _pickCamera() async {
@@ -176,6 +300,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ListTile(
                 leading: const Icon(Icons.camera_alt_outlined),
                 title: const Text('Camera'),
+                subtitle: const Text('Images automatically use OpenMindAI Lens'),
                 onTap: () {
                   Navigator.pop(context);
                   _pickCamera();
@@ -192,7 +317,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ListTile(
                 leading: const Icon(Icons.attach_file_rounded),
                 title: const Text('Files'),
-                subtitle: const Text('PDF, documents, code, text, and other supported files'),
+                subtitle: const Text('PDF, text, code, JSON, Markdown, YAML and CSV'),
                 onTap: () {
                   Navigator.pop(context);
                   _pickFiles();
@@ -215,13 +340,25 @@ class _ChatScreenState extends State<ChatScreen> {
           shrinkWrap: true,
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 24),
           children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(12, 4, 12, 12),
-              child: Text('Choose model', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 4, 8, 12),
+              child: Row(
+                children: [
+                  const Expanded(child: Text('Choose model', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700))),
+                  TextButton.icon(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      _openModels();
+                    },
+                    icon: const Icon(Icons.download_rounded),
+                    label: const Text('Manage'),
+                  ),
+                ],
+              ),
             ),
             ...MobileModelCatalog.models.map((model) => ListTile(
                   title: Text(model.name, style: const TextStyle(fontWeight: FontWeight.w600)),
-                  subtitle: Text('${model.kind} · ${model.minRamGb}+ GB RAM'),
+                  subtitle: Text('${model.kind} · ${model.minRamGb}+ GB RAM · ~${model.sizeGb.toStringAsFixed(1)} GB'),
                   trailing: model.id == _selectedModelId ? const Icon(Icons.check_rounded) : null,
                   onTap: () => Navigator.pop(context, model.id),
                 )),
@@ -232,6 +369,18 @@ class _ChatScreenState extends State<ChatScreen> {
     if (selected == null || !mounted) return;
     await _onboardingStore.setSelectedModelId(selected);
     if (mounted) setState(() => _selectedModelId = selected);
+  }
+
+  Future<void> _openModels() async {
+    if (!mounted) return;
+    await showModelManagerSheet(
+      context,
+      storage: _modelStorage,
+      onModelReady: (modelId) async {
+        await _onboardingStore.setSelectedModelId(modelId);
+        if (mounted) setState(() => _selectedModelId = modelId);
+      },
+    );
   }
 
   @override
@@ -259,6 +408,7 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         ),
         actions: [
+          IconButton(onPressed: _openModels, icon: const Icon(Icons.memory_rounded), tooltip: 'Models'),
           IconButton(onPressed: _newChat, icon: const Icon(Icons.edit_square), tooltip: 'New chat'),
           const SizedBox(width: 4),
         ],
@@ -269,27 +419,31 @@ class _ChatScreenState extends State<ChatScreen> {
               children: [
                 Expanded(
                   child: conversation == null || conversation.messages.isEmpty
-                      ? _EmptyChat(modelName: _selectedModel.name)
+                      ? _EmptyChat(modelName: _selectedModel.name, onModels: _openModels)
                       : ListView.builder(
+                          controller: _scrollController,
                           padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
-                          itemCount: conversation.messages.length + (_generating ? 1 : 0),
+                          itemCount: conversation.messages.length,
                           itemBuilder: (context, index) {
-                            if (_generating && index == conversation.messages.length) {
-                              return const _ThinkingRow();
-                            }
-                            return _MessageBubble(message: conversation.messages[index]);
+                            final message = conversation.messages[index];
+                            final isLastAssistant = message.role == 'assistant' && index == conversation.messages.length - 1;
+                            return _MessageBubble(
+                              message: message,
+                              onRegenerate: isLastAssistant && !_generating ? _regenerate : null,
+                            );
                           },
                         ),
                 ),
                 _Composer(
                   controller: _composer,
                   mode: _mode,
-                  attachmentCount: _attachmentPaths.length,
+                  attachmentPaths: _attachmentPaths,
                   generating: _generating,
                   onModeChanged: (value) => setState(() => _mode = value),
                   onAdd: _openAttachmentMenu,
                   onSend: _send,
-                  onClearAttachments: () => setState(_attachmentPaths.clear),
+                  onStop: _stopGeneration,
+                  onRemoveAttachment: (path) => setState(() => _attachmentPaths.remove(path)),
                 ),
               ],
             ),
@@ -297,6 +451,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Widget _buildDrawer(BuildContext context) {
+    final visibleConversations = _visibleConversations;
     return Drawer(
       width: MediaQuery.sizeOf(context).width * .86,
       child: SafeArea(
@@ -318,20 +473,33 @@ class _ChatScreenState extends State<ChatScreen> {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
               child: TextField(
-                readOnly: true,
-                onTap: () {},
-                decoration: const InputDecoration(prefixIcon: Icon(Icons.search_rounded), hintText: 'Search chats', isDense: true),
+                controller: _searchController,
+                decoration: InputDecoration(
+                  prefixIcon: const Icon(Icons.search_rounded),
+                  hintText: 'Search chats',
+                  isDense: true,
+                  suffixIcon: _chatSearchQuery.isEmpty
+                      ? null
+                      : IconButton(
+                          onPressed: () {
+                            _searchController.clear();
+                            setState(() => _chatSearchQuery = '');
+                          },
+                          icon: const Icon(Icons.close_rounded),
+                        ),
+                ),
+                onChanged: (value) => setState(() => _chatSearchQuery = value),
               ),
             ),
             const SizedBox(height: 10),
             Expanded(
-              child: _conversations.isEmpty
-                  ? const Center(child: Text('No conversations yet'))
+              child: visibleConversations.isEmpty
+                  ? Center(child: Text(_chatSearchQuery.isEmpty ? 'No conversations yet' : 'No matching chats'))
                   : ListView.builder(
                       padding: const EdgeInsets.symmetric(horizontal: 8),
-                      itemCount: _conversations.length,
+                      itemCount: visibleConversations.length,
                       itemBuilder: (context, index) {
-                        final item = _conversations[index];
+                        final item = visibleConversations[index];
                         return ListTile(
                           dense: true,
                           selected: item.id == _activeConversationId,
@@ -340,12 +508,22 @@ class _ChatScreenState extends State<ChatScreen> {
                           onTap: () {
                             setState(() => _activeConversationId = item.id);
                             Navigator.pop(context);
+                            _scrollToBottom();
                           },
                         );
                       },
                     ),
             ),
             const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.memory_rounded),
+              title: const Text('Models'),
+              subtitle: const Text('Download, verify, and remove local models'),
+              onTap: () {
+                Navigator.pop(context);
+                _openModels();
+              },
+            ),
             ListTile(
               leading: const CircleAvatar(child: Icon(Icons.person_outline_rounded)),
               title: const Text('OpenMindAI Mobile'),
@@ -361,8 +539,9 @@ class _ChatScreenState extends State<ChatScreen> {
 }
 
 class _EmptyChat extends StatelessWidget {
-  const _EmptyChat({required this.modelName});
+  const _EmptyChat({required this.modelName, required this.onModels});
   final String modelName;
+  final VoidCallback onModels;
 
   @override
   Widget build(BuildContext context) {
@@ -380,6 +559,8 @@ class _EmptyChat extends StatelessWidget {
           Text('How can I help?', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700)),
           const SizedBox(height: 8),
           Text(modelName, style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(height: 16),
+          TextButton.icon(onPressed: onModels, icon: const Icon(Icons.download_rounded), label: const Text('Manage local models')),
         ]),
       ),
     );
@@ -387,8 +568,9 @@ class _EmptyChat extends StatelessWidget {
 }
 
 class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message});
+  const _MessageBubble({required this.message, this.onRegenerate});
   final ChatMessage message;
+  final VoidCallback? onRegenerate;
 
   @override
   Widget build(BuildContext context) {
@@ -396,7 +578,7 @@ class _MessageBubble extends StatelessWidget {
     return Align(
       alignment: user ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
-        constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * (user ? .82 : .94)),
+        constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * (user ? .84 : .96)),
         margin: const EdgeInsets.only(bottom: 18),
         padding: user ? const EdgeInsets.symmetric(horizontal: 16, vertical: 11) : EdgeInsets.zero,
         decoration: user
@@ -405,48 +587,130 @@ class _MessageBubble extends StatelessWidget {
                 borderRadius: BorderRadius.circular(20),
               )
             : null,
-        child: SelectableText(message.text, style: const TextStyle(fontSize: 16, height: 1.45)),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (message.attachmentPaths.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Wrap(
+                  spacing: 7,
+                  runSpacing: 7,
+                  children: message.attachmentPaths.map((path) => _AttachmentPreview(path: path)).toList(),
+                ),
+              ),
+            if (message.text.isEmpty && !user)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 4),
+                child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  SizedBox(width: 17, height: 17, child: CircularProgressIndicator(strokeWidth: 2)),
+                  SizedBox(width: 9),
+                  Text('Thinking…'),
+                ]),
+              )
+            else if (user)
+              SelectableText(message.text, style: const TextStyle(fontSize: 16, height: 1.45))
+            else
+              MarkdownBody(
+                data: message.text,
+                selectable: true,
+                styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+                  p: const TextStyle(fontSize: 16, height: 1.45),
+                  code: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 14,
+                    backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  ),
+                  codeblockDecoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
+            if (!user && message.text.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      visualDensity: VisualDensity.compact,
+                      tooltip: 'Copy',
+                      onPressed: () => Clipboard.setData(ClipboardData(text: message.text)),
+                      icon: const Icon(Icons.copy_rounded, size: 18),
+                    ),
+                    if (onRegenerate != null)
+                      IconButton(
+                        visualDensity: VisualDensity.compact,
+                        tooltip: 'Regenerate',
+                        onPressed: onRegenerate,
+                        icon: const Icon(Icons.refresh_rounded, size: 19),
+                      ),
+                  ],
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
 }
 
-class _ThinkingRow extends StatelessWidget {
-  const _ThinkingRow();
+class _AttachmentPreview extends StatelessWidget {
+  const _AttachmentPreview({required this.path});
+  final String path;
+
+  bool get _isImage => const {'.png', '.jpg', '.jpeg', '.webp'}.contains(p.extension(path).toLowerCase());
 
   @override
   Widget build(BuildContext context) {
-    return const Padding(
-      padding: EdgeInsets.only(bottom: 18),
-      child: Row(children: [
-        SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
-        SizedBox(width: 10),
-        Text('Thinking…'),
-      ]),
-    );
+    if (_isImage) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: Image.file(
+          File(path),
+          width: 160,
+          height: 120,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _fileChip(),
+        ),
+      );
+    }
+    return _fileChip();
   }
+
+  Widget _fileChip() => Chip(
+        visualDensity: VisualDensity.compact,
+        avatar: const Icon(Icons.attach_file_rounded, size: 15),
+        label: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 190),
+          child: Text(p.basename(path), overflow: TextOverflow.ellipsis),
+        ),
+      );
 }
 
 class _Composer extends StatelessWidget {
   const _Composer({
     required this.controller,
     required this.mode,
-    required this.attachmentCount,
+    required this.attachmentPaths,
     required this.generating,
     required this.onModeChanged,
     required this.onAdd,
     required this.onSend,
-    required this.onClearAttachments,
+    required this.onStop,
+    required this.onRemoveAttachment,
   });
 
   final TextEditingController controller;
   final String mode;
-  final int attachmentCount;
+  final List<String> attachmentPaths;
   final bool generating;
   final ValueChanged<String> onModeChanged;
   final VoidCallback onAdd;
   final VoidCallback onSend;
-  final VoidCallback onClearAttachments;
+  final VoidCallback onStop;
+  final ValueChanged<String> onRemoveAttachment;
 
   @override
   Widget build(BuildContext context) {
@@ -464,17 +728,25 @@ class _Composer extends StatelessWidget {
               _ModeChip(label: 'Research', value: 'research', selected: mode == 'research', onSelected: onModeChanged),
             ]),
           ),
-          if (attachmentCount > 0)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 6),
-              child: Row(children: [
-                Chip(
-                  avatar: const Icon(Icons.attach_file_rounded, size: 17),
-                  label: Text('$attachmentCount attachment${attachmentCount == 1 ? '' : 's'}'),
-                  deleteIcon: const Icon(Icons.close_rounded, size: 17),
-                  onDeleted: onClearAttachments,
+          if (attachmentPaths.isNotEmpty)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: attachmentPaths
+                      .map((path) => Padding(
+                            padding: const EdgeInsets.only(right: 6, bottom: 6),
+                            child: Chip(
+                              avatar: const Icon(Icons.attach_file_rounded, size: 17),
+                              label: Text(p.basename(path)),
+                              deleteIcon: const Icon(Icons.close_rounded, size: 17),
+                              onDeleted: () => onRemoveAttachment(path),
+                            ),
+                          ))
+                      .toList(),
                 ),
-              ]),
+              ),
             ),
           TextField(
             controller: controller,
@@ -484,24 +756,21 @@ class _Composer extends StatelessWidget {
             decoration: InputDecoration(
               hintText: 'Message OpenMindAI',
               contentPadding: const EdgeInsets.symmetric(vertical: 11),
-              prefixIcon: IconButton(onPressed: onAdd, icon: const Icon(Icons.add_rounded)),
+              prefixIcon: IconButton(onPressed: generating ? null : onAdd, icon: const Icon(Icons.add_rounded)),
               suffixIcon: Padding(
                 padding: const EdgeInsets.all(6),
                 child: IconButton.filled(
-                  onPressed: generating ? null : onSend,
-                  icon: generating
-                      ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Icon(Icons.arrow_upward_rounded),
+                  onPressed: generating ? onStop : onSend,
+                  icon: Icon(generating ? Icons.stop_rounded : Icons.arrow_upward_rounded),
                 ),
               ),
             ),
-            onSubmitted: (_) => onSend(),
+            onSubmitted: (_) {
+              if (!generating) onSend();
+            },
           ),
           const SizedBox(height: 5),
-          Text(
-            'OpenMindAI can make mistakes. Check important information.',
-            style: Theme.of(context).textTheme.labelSmall,
-          ),
+          Text('OpenMindAI can make mistakes. Check important information.', style: Theme.of(context).textTheme.labelSmall),
         ]),
       ),
     );

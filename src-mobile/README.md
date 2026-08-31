@@ -1,20 +1,23 @@
 # OpenMindAI Mobile
 
-Flutter mobile application for Android and iOS. The mobile code is isolated under `src-mobile/` so the existing React/Tauri desktop application and desktop CI remain independent.
+Flutter application for Android and iOS. Mobile code lives under `src-mobile/` so the React/Tauri desktop app remains independent.
 
-## First-run flow
+## First run
 
-1. Welcome and required capability permissions.
+1. Welcome and capability permissions.
 2. Local-AI usage instructions.
-3. Full OpenMindAI Apache 2.0 license read/accept step.
-4. Device inspection and RAM/storage-aware model recommendation.
-5. Chat opens with the recommended OpenMindAI model selected.
+3. Full OpenMindAI Apache 2.0 license read/accept.
+4. Device RAM/storage inspection and recommended local model.
+5. The recommended model is downloaded to app-private storage and verified.
+6. Chat opens.
 
-After onboarding completes, `mobile_onboarding_complete_v1` is stored locally. Later launches bypass onboarding and open Chat directly.
+After setup completes, `mobile_onboarding_complete_v1` is stored locally. Later launches open Chat directly.
 
-## Model names
+## Local models
 
-The mobile UI intentionally uses the same public model names as desktop, for example:
+The mobile UI uses the same OpenMindAI product names as desktop. Upstream repository names and raw filenames are internal provisioning metadata and must not be rendered in user-facing screens.
+
+Current mobile local-model set:
 
 - OpenMindAI Nano
 - OpenMindAI Swift
@@ -24,68 +27,65 @@ The mobile UI intentionally uses the same public model names as desktop, for exa
 - OpenMindAI Reasoning
 - OpenMindAI Lens
 
-Upstream repository/model names are not part of the mobile presentation layer. Runtime code receives only the stable OpenMindAI model id.
+Models are resolved from their configured upstream repositories, downloaded to app-private application support storage, written through a temporary `.part` file, and SHA-256 verified when upstream LFS metadata exposes a digest. Vision installs include the matching multimodal projector.
 
-## Current foundation
+## Local inference
 
-Implemented in this first mobile foundation:
+`lib_llama_cpp` is the direct Android/iOS llama.cpp runtime. Chat does not require a paid cloud AI API.
 
-- first-run routing and persistent onboarding state;
-- camera, microphone, notification and iOS photo permission requests;
-- no broad Android storage permission; files use system pickers;
-- instructions and full license agreement UI;
-- Android/iOS device profile detection with physical RAM and free disk space;
-- device-based recommended model selection;
-- ChatGPT-inspired OpenMindAI chat layout with drawer/history, model picker, modes, attachments and composer;
-- locally persisted conversation history;
-- camera, photo and file attachment picking;
-- native inference `MethodChannel` contract at `openmindai.mobile/inference`.
+Implemented paths:
 
-The Android/iOS native local-inference implementation is the next runtime layer. The Flutter UI does not silently fall back to a paid cloud model when the native bridge is unavailable.
+- local GGUF model mounting;
+- streamed token output;
+- Stop and Regenerate;
+- Chat and Think modes;
+- local conversation persistence;
+- image input through OpenMindAI Lens + mmproj;
+- camera and photo attachments;
+- PDF structured-text extraction;
+- text, Markdown, source-code, JSON/YAML/CSV and other text attachments;
+- Search and Research modes that retrieve public web evidence and pass it to the local model;
+- local model install/progress/cancel/delete manager.
+
+Search and Research require internet access. The AI model itself still runs locally.
 
 ## Bootstrap Android/iOS hosts
 
-This branch starts with the Flutter-owned application source and keeps generated platform hosts out until the local inference bridge is selected. From `src-mobile/`, generate standard Flutter platform hosts with a current Flutter SDK:
+Generated Flutter host files are reproducible and are intentionally not mixed with the desktop source. From `src-mobile/`:
 
 ```bash
-flutter create --platforms=android,ios --org com.openmindai --project-name openmindai_mobile .
+flutter create --platforms=android,ios --org com.openmindai --project-name openmindai_mobile --no-pub .
+dart run tool/prepare_platforms.dart
 flutter pub get
+flutter analyze
+flutter test
+flutter build apk --debug
 ```
 
-Then apply the platform permission/native bridge requirements below before building.
+`tool/prepare_platforms.dart` configures:
 
-### Android permissions
+### Android
 
-The generated `android/app/src/main/AndroidManifest.xml` should declare only capabilities used by features:
+- `INTERNET`
+- `CAMERA`
+- `RECORD_AUDIO`
+- `POST_NOTIFICATIONS`
 
-```xml
-<uses-permission android:name="android.permission.CAMERA" />
-<uses-permission android:name="android.permission.RECORD_AUDIO" />
-<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-```
+Broad storage access such as `MANAGE_EXTERNAL_STORAGE` is deliberately not requested. Files use the system picker.
 
-File access uses Android's system picker/SAF, so `MANAGE_EXTERNAL_STORAGE` is intentionally not requested.
+### iOS
 
-### iOS permission descriptions
+- `NSCameraUsageDescription`
+- `NSMicrophoneUsageDescription`
+- `NSPhotoLibraryUsageDescription`
+- iOS deployment target 13.0 in the generated Podfile
 
-Add these keys to `ios/Runner/Info.plist`:
+## CI
 
-```xml
-<key>NSCameraUsageDescription</key>
-<string>OpenMindAI uses the camera when you choose to attach a photo or document.</string>
-<key>NSMicrophoneUsageDescription</key>
-<string>OpenMindAI uses the microphone when you choose voice input.</string>
-<key>NSPhotoLibraryUsageDescription</key>
-<string>OpenMindAI accesses selected photos only when you attach them to a conversation.</string>
-```
+`.github/workflows/mobile-flutter.yml` validates the mobile source separately from desktop CI. It generates clean Android/iOS hosts, applies platform configuration, resolves dependencies, checks formatting, runs `flutter analyze` and tests, builds an Android debug APK, and performs a no-codesign iOS debug build.
 
-## Native inference bridge
+## Runtime notes
 
-Flutter calls:
+The pub.dev `lib_llama_cpp` mobile prebuilts are CPU builds by default. GPU-specific Android Vulkan and iOS Metal assets are a separate optimization path and are not assumed by the baseline mobile build.
 
-- channel: `openmindai.mobile/inference`
-- method: `generate`
-- arguments: `modelId`, `mode`, `attachments`, `messages`
-- result: final assistant text
-
-The planned native bridge should keep model files and inference local, expose cancellation/streaming in the next iteration, and use the same catalog IDs as desktop.
+Large models remain optional because phones have tighter memory and thermal limits than desktop systems. OpenMindAI selects a conservative default from detected RAM, while the Models screen lets the user install or remove alternatives.

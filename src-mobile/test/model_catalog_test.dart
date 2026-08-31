@@ -16,4 +16,20 @@ void main() {
     expect(MobileModelCatalog.recommendForRam(8).name, 'OpenMindAI Core');
     expect(MobileModelCatalog.recommendForRam(16).name, 'OpenMindAI Titan');
   });
+
+  test('device recommendation downgrades when storage is tight', () {
+    const gib = 1024 * 1024 * 1024;
+    expect(
+      MobileModelCatalog.recommendForDevice(ramGb: 16, freeDiskBytes: 12 * gib).name,
+      'OpenMindAI Titan',
+    );
+    expect(
+      MobileModelCatalog.recommendForDevice(ramGb: 16, freeDiskBytes: 4 * gib).name,
+      'OpenMindAI Core',
+    );
+    expect(
+      MobileModelCatalog.recommendForDevice(ramGb: 8, freeDiskBytes: 2 * gib).name,
+      'OpenMindAI Nano',
+    );
+  });
 }
