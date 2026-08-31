@@ -6,6 +6,7 @@ import type {
   IntegrationStatus,
 } from "./lib/connectedActions";
 import { createSoundscapeArtifact } from "./lib/media";
+import { getPlatformCapabilities } from "./lib/platform";
 import { api as legacyApi } from "./api_legacy";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
@@ -78,10 +79,23 @@ export const api = {
     media: VisualMedia[] = [],
   ) => {
     let assistant: Message;
+    const platform = isTauri ? await getPlatformCapabilities() : null;
+
     if (await shouldUseProjectAgent(conversationId, mode)) {
       assistant = await invoke<Message>("send_project_agent_message", {
         conversationId,
         content,
+      });
+    } else if (platform?.target === "android") {
+      if (media.length > 0 || (mode !== "chat" && mode !== "thinking")) {
+        throw new Error(
+          "OpenMindAI Android currently supports on-device text Chat and Thinking. Vision and media modes are not enabled in this mobile build yet.",
+        );
+      }
+      assistant = await invoke<Message>("send_mobile_chat_message", {
+        conversationId,
+        content,
+        mode,
       });
     } else if (mode === "vision" && media.length > 0 && isTauri) {
       assistant = await invoke<Message>("send_multimodal_chat_message", {
@@ -169,12 +183,9 @@ export const api = {
     }
     return legacyApi.createGenerationArtifact(conversationId, messageId, kind, prompt);
   },
-  googleWorkspaceStatus: () =>
-    connectedInvoke<GoogleWorkspaceStatus>("google_workspace_status"),
-  connectGoogleWorkspace: () =>
-    connectedInvoke<GoogleWorkspaceStatus>("connect_google_workspace"),
-  disconnectGoogleWorkspace: () =>
-    connectedInvoke<void>("disconnect_google_workspace"),
+  googleWorkspaceStatus: () => connectedInvoke<GoogleWorkspaceStatus>("google_workspace_status"),
+  connectGoogleWorkspace: () => connectedInvoke<GoogleWorkspaceStatus>("connect_google_workspace"),
+  disconnectGoogleWorkspace: () => connectedInvoke<void>("disconnect_google_workspace"),
   executeGoogleWorkspaceAction: (
     action: string,
     params: Record<string, unknown>,
