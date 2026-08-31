@@ -72,6 +72,7 @@ mod local_workspace;
 mod local_workspace;
 mod mobile_chat;
 mod mobile_inference;
+mod mobile_model_cache;
 mod mobile_model_policy;
 mod multimodal;
 mod pdf_ocr;
