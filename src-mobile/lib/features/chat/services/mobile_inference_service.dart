@@ -6,6 +6,7 @@ import '../../../core/constants/model_catalog.dart';
 import '../../../core/services/model_storage_service.dart';
 import '../models/chat_models.dart';
 import 'attachment_context_service.dart';
+import 'web_evidence_service.dart';
 
 class MobileInferenceRequest {
   const MobileInferenceRequest({
@@ -46,11 +47,14 @@ class NativeMobileInferenceService extends MobileInferenceService {
   NativeMobileInferenceService({
     ModelStorageService? storage,
     AttachmentContextService? attachments,
+    WebEvidenceService? webEvidence,
   })  : _storage = storage ?? ModelStorageService(),
-        _attachments = attachments ?? AttachmentContextService();
+        _attachments = attachments ?? AttachmentContextService(),
+        _webEvidence = webEvidence ?? WebEvidenceService();
 
   final ModelStorageService _storage;
   final AttachmentContextService _attachments;
+  final WebEvidenceService _webEvidence;
 
   StreamSubscription<LlamaResponseStreamEvent>? _activeSubscription;
   StreamController<String>? _activeController;
@@ -86,6 +90,22 @@ class NativeMobileInferenceService extends MobileInferenceService {
         throw MobileInferenceUnavailable('${runtimeModel.name} is not installed.$suffix');
       }
 
+      String webContext = '';
+      if (request.mode == 'web-search' || request.mode == 'research') {
+        final query = request.messages.lastWhere(
+          (message) => message.role == 'user',
+          orElse: () => ChatMessage(id: '', role: 'user', text: '', createdAt: DateTime.now()),
+        ).text;
+        if (query.trim().isNotEmpty) {
+          try {
+            final evidence = await _webEvidence.search(query, deep: request.mode == 'research');
+            webContext = _webEvidence.formatForPrompt(evidence);
+          } catch (_) {
+            webContext = 'No web evidence could be retrieved for this request.';
+          }
+        }
+      }
+
       final client = LlamaOpenAIClient(
         models: {
           runtimeModel.id: LlamaModelConfig(
@@ -98,7 +118,7 @@ class NativeMobileInferenceService extends MobileInferenceService {
       final input = <LlamaResponseInputItem>[
         LlamaResponseInputItem(
           role: 'system',
-          content: [LlamaTextPart(_systemPrompt(request.mode))],
+          content: [LlamaTextPart(_systemPrompt(request.mode, webContext: webContext))],
         ),
       ];
 
@@ -176,16 +196,18 @@ class NativeMobileInferenceService extends MobileInferenceService {
     if (controller != null && !controller.isClosed) await controller.close();
   }
 
-  String _systemPrompt(String mode) {
+  String _systemPrompt(String mode, {required String webContext}) {
     const base = 'You are OpenMindAI, a private local-first assistant. Be accurate, concise, and useful. '
         'Never reveal internal upstream model repository names or raw model filenames to the user.';
     switch (mode) {
       case 'thinking':
         return '$base Reason carefully before answering. Give the final answer without exposing private chain-of-thought.';
       case 'web-search':
-        return '$base This build has no external evidence attached unless the user supplied it. Do not invent current web facts.';
+        return '$base Answer from the supplied web evidence when it is relevant. Cite sources inline as [1], [2], etc. '
+            'Do not invent citations or claims not supported by the evidence.\n\n$webContext';
       case 'research':
-        return '$base Analyze the available conversation and attachments deeply, separate facts from uncertainty, and avoid fabricated citations.';
+        return '$base Produce a deeper synthesis using the supplied web evidence. Distinguish supported facts from uncertainty, '
+            'cite evidence inline as [1], [2], etc., and do not fabricate sources.\n\n$webContext';
       default:
         return base;
     }
