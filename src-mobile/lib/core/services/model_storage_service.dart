@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:dio/dio.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -38,6 +39,8 @@ class ModelInstallProgress {
 
 class ModelStorageService {
   ModelStorageService({Dio? dio}) : _dio = dio ?? Dio();
+
+  static const int _freeSpaceReserveBytes = 768 * 1024 * 1024;
 
   final Dio _dio;
   final Map<String, CancelToken> _cancelTokens = {};
@@ -89,6 +92,7 @@ class ModelStorageService {
 
     try {
       final artifacts = await _resolveArtifacts(model);
+      await _ensureEnoughFreeSpace(model, artifacts);
       final weights = artifacts.weights;
       final weightPath = p.join(directory.path, weights.filename);
       await _downloadAndVerify(
@@ -132,6 +136,27 @@ class ModelStorageService {
     cancelInstall(model.id);
     final directory = await _modelDirectory(model);
     if (await directory.exists()) await directory.delete(recursive: true);
+  }
+
+  Future<void> _ensureEnoughFreeSpace(MobileModel model, _ResolvedArtifacts artifacts) async {
+    final freeBytes = await _freeDiskBytes();
+    if (freeBytes <= 0) return;
+    final artifactBytes = artifacts.weights.size + (artifacts.mmproj?.size ?? 0);
+    final requiredBytes = artifactBytes + _freeSpaceReserveBytes;
+    if (freeBytes >= requiredBytes) return;
+
+    final requiredGb = requiredBytes / 1024 / 1024 / 1024;
+    final freeGb = freeBytes / 1024 / 1024 / 1024;
+    throw ModelInstallException(
+      '${model.name} needs about ${requiredGb.toStringAsFixed(1)} GB free including working space, but this device has ${freeGb.toStringAsFixed(1)} GB available.',
+    );
+  }
+
+  Future<int> _freeDiskBytes() async {
+    final deviceInfo = DeviceInfoPlugin();
+    if (Platform.isAndroid) return (await deviceInfo.androidInfo).freeDiskSize;
+    if (Platform.isIOS) return (await deviceInfo.iosInfo).freeDiskSize;
+    return 0;
   }
 
   Future<_ResolvedArtifacts> _resolveArtifacts(MobileModel model) async {
@@ -258,6 +283,7 @@ class _RemoteArtifact {
 class ModelInstallException implements Exception {
   const ModelInstallException(this.message);
   final String message;
+
   @override
   String toString() => message;
 }
