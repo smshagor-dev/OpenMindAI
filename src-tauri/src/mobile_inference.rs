@@ -8,8 +8,10 @@ use tauri::State;
 use crate::{app_error::AppError, AppState};
 
 const MOBILE_CONTEXT_TOKENS: u32 = 2048;
+#[cfg(target_os = "android")]
 pub(crate) const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 128;
 const MAX_OUTPUT_TOKENS: u32 = 512;
+#[cfg(target_os = "android")]
 const MAX_CHAT_HISTORY_MESSAGES: usize = 48;
 
 #[derive(Debug, Clone, Serialize)]
@@ -35,6 +37,7 @@ pub struct MobileGenerationResult {
     pub model_path: String,
 }
 
+#[cfg(target_os = "android")]
 #[derive(Debug, Clone)]
 pub(crate) struct MobileChatMessage {
     pub role: String,
@@ -291,7 +294,7 @@ fn build_android_chat_prompt(
             .str_to_token(&prompt, AddBos::Always)
             .map_err(|error| AppError::InferenceFailed(format!("tokenization failed: {error}")))?;
 
-        if prompt_tokens.len() + output_limit as usize < MOBILE_CONTEXT_TOKENS as usize {
+        if prompt_tokens.len() + (output_limit as usize) < MOBILE_CONTEXT_TOKENS as usize {
             return Ok(prompt);
         }
 
