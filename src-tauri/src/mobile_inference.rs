@@ -159,7 +159,7 @@ fn generate_android(
         .map(|count| count.get().min(6) as i32)
         .unwrap_or(4);
     let context_params = LlamaContextParams::default()
-        .with_n_ctx(NonZeroU32::new(MOBILE_CONTEXT_TOKENS))
+        .with_n_ctx(Some(NonZeroU32::new(MOBILE_CONTEXT_TOKENS).expect("context must be non-zero")))
         .with_n_threads(threads)
         .with_n_threads_batch(threads);
     let mut context = model
