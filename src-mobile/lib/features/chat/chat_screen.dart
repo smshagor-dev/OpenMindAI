@@ -40,6 +40,7 @@ class _ChatScreenState extends State<ChatScreen> {
   StreamSubscription<VoiceTranscriptEvent>? _voiceSubscription;
 
   List<ChatConversation> _conversations = [];
+  final List<String> _attachmentPaths = [];
   String? _activeConversationId;
   String? _activeAssistantId;
   String _selectedModelId = 'qwen3-06b-q4';
@@ -50,7 +51,6 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _generating = false;
   bool _voiceListening = false;
   bool _voicePreparing = false;
-  final List<String> _attachmentPaths = [];
 
   ChatConversation? get _activeConversation {
     for (final conversation in _conversations) {
@@ -59,8 +59,7 @@ class _ChatScreenState extends State<ChatScreen> {
     return null;
   }
 
-  MobileModel get _selectedModel =>
-      MobileModelCatalog.byId(_selectedModelId);
+  MobileModel get _selectedModel => MobileModelCatalog.byId(_selectedModelId);
 
   List<ChatConversation> get _visibleConversations {
     final query = _chatSearchQuery.trim().toLowerCase();
@@ -81,9 +80,7 @@ class _ChatScreenState extends State<ChatScreen> {
       (event) {
         if (!mounted) return;
         _applyVoiceText(event.text);
-        if (event.isFinal) {
-          setState(() => _voiceListening = false);
-        }
+        if (event.isFinal) setState(() => _voiceListening = false);
       },
       onError: (Object error) {
         if (!mounted) return;
@@ -115,8 +112,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!mounted) return;
     setState(() {
       _conversations = conversations;
-      _activeConversationId =
-          conversations.isEmpty ? null : conversations.first.id;
+      _activeConversationId = conversations.isEmpty ? null : conversations.first.id;
       _selectedModelId = selectedModelId ?? _selectedModelId;
       _loading = false;
     });
@@ -134,8 +130,14 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  String _id(String prefix) =>
-      '$prefix-${DateTime.now().microsecondsSinceEpoch}';
+  String _id(String prefix) => '$prefix-${DateTime.now().microsecondsSinceEpoch}';
+
+  void _showError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
+    );
+  }
 
   void _applyVoiceText(String transcript) {
     final normalized = transcript.trim();
@@ -150,14 +152,11 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _toggleVoice() async {
     if (_generating || _voicePreparing) return;
-
     if (_voiceListening) {
       setState(() => _voicePreparing = true);
       try {
         final finalText = await _voice.stop();
-        if (mounted && finalText.trim().isNotEmpty) {
-          _applyVoiceText(finalText);
-        }
+        if (mounted && finalText.trim().isNotEmpty) _applyVoiceText(finalText);
       } catch (_) {
         _showError('OpenMindAI Hear could not finish the dictation.');
       } finally {
@@ -191,22 +190,10 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!_voiceListening) return;
     try {
       final finalText = await _voice.stop();
-      if (mounted && finalText.trim().isNotEmpty) {
-        _applyVoiceText(finalText);
-      }
+      if (mounted && finalText.trim().isNotEmpty) _applyVoiceText(finalText);
     } finally {
       if (mounted) setState(() => _voiceListening = false);
     }
-  }
-
-  void _showError(String message) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
   }
 
   Future<void> _newChat() async {
@@ -262,9 +249,7 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       _composer.clear();
       _attachmentPaths.clear();
-      _conversations.sort(
-        (a, b) => b.updatedAt.compareTo(a.updatedAt),
-      );
+      _conversations.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
     });
     await _chatStore.save(_conversations);
     _scrollToBottom();
@@ -311,48 +296,45 @@ class _ChatScreenState extends State<ChatScreen> {
       _scrollToBottom();
     }
 
-    final stream = _inference.stream(
-      MobileInferenceRequest(
-        modelId: _selectedModelId,
-        mode: _mode,
-        messages: requestMessages,
-        attachmentPaths: attachments,
-      ),
-    );
-
-    _generationSubscription = stream.listen(
-      (delta) {
-        if (!mounted) return;
-        final index = conversation.messages.indexWhere(
-          (message) => message.id == assistantId,
+    _generationSubscription = _inference
+        .stream(
+          MobileInferenceRequest(
+            modelId: _selectedModelId,
+            mode: _mode,
+            messages: requestMessages,
+            attachmentPaths: attachments,
+          ),
+        )
+        .listen(
+          (delta) {
+            if (!mounted) return;
+            final index = conversation.messages.indexWhere(
+              (message) => message.id == assistantId,
+            );
+            if (index < 0) return;
+            final current = conversation.messages[index];
+            setState(() {
+              conversation.messages[index] = current.copyWith(
+                text: current.text + delta,
+              );
+            });
+            _scrollToBottom();
+          },
+          onError: (Object error) async {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(error.toString()),
+                  behavior: SnackBarBehavior.floating,
+                  action: SnackBarAction(label: 'Models', onPressed: _openModels),
+                ),
+              );
+            }
+            await finish();
+          },
+          onDone: finish,
+          cancelOnError: true,
         );
-        if (index < 0) return;
-        final current = conversation.messages[index];
-        setState(() {
-          conversation.messages[index] = current.copyWith(
-            text: current.text + delta,
-          );
-        });
-        _scrollToBottom();
-      },
-      onError: (Object error) async {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(error.toString()),
-              behavior: SnackBarBehavior.floating,
-              action: SnackBarAction(
-                label: 'Models',
-                onPressed: _openModels,
-              ),
-            ),
-          );
-        }
-        await finish();
-      },
-      onDone: finish,
-      cancelOnError: true,
-    );
   }
 
   Future<void> _stopGeneration() async {
@@ -393,10 +375,7 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     if (lastUser.id.isEmpty) return;
     await _chatStore.save(_conversations);
-    await _beginGeneration(
-      conversation,
-      attachments: lastUser.attachmentPaths,
-    );
+    await _beginGeneration(conversation, attachments: lastUser.attachmentPaths);
   }
 
   Future<void> _pickCamera() async {
@@ -412,16 +391,16 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _pickPhotos() async {
     final images = await _imagePicker.pickMultiImage(imageQuality: 92);
     if (images.isNotEmpty && mounted) {
-      setState(
-        () => _attachmentPaths.addAll(images.map((image) => image.path)),
-      );
+      setState(() => _attachmentPaths.addAll(images.map((image) => image.path)));
     }
   }
 
   Future<void> _pickFiles() async {
-    final result = await FilePicker.platform.pickFiles(allowMultiple: true);
-    if (result == null || !mounted) return;
-    final paths = result.files.map((file) => file.path).whereType<String>();
+    final files = await FilePicker.pickFiles();
+    if (files.isEmpty || !mounted) return;
+    final paths = files
+        .map((file) => file.xFile.path)
+        .where((path) => path.isNotEmpty);
     setState(() => _attachmentPaths.addAll(paths));
   }
 
@@ -438,9 +417,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ListTile(
                 leading: const Icon(Icons.camera_alt_outlined),
                 title: const Text('Camera'),
-                subtitle: const Text(
-                  'Images automatically use OpenMindAI Lens',
-                ),
+                subtitle: const Text('Images automatically use OpenMindAI Lens'),
                 onTap: () {
                   Navigator.pop(context);
                   _pickCamera();
@@ -457,9 +434,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ListTile(
                 leading: const Icon(Icons.attach_file_rounded),
                 title: const Text('Files'),
-                subtitle: const Text(
-                  'PDF, text, code, JSON, Markdown, YAML and CSV',
-                ),
+                subtitle: const Text('PDF, text, code, JSON, Markdown, YAML and CSV'),
                 onTap: () {
                   Navigator.pop(context);
                   _pickFiles();
@@ -489,10 +464,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   const Expanded(
                     child: Text(
                       'Choose model',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.w700,
-                      ),
+                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
                     ),
                   ),
                   TextButton.icon(
@@ -513,8 +485,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
                 subtitle: Text(
-                  '${model.kind} · ${model.minRamGb}+ GB RAM · '
-                  '~${model.sizeGb.toStringAsFixed(1)} GB',
+                  '${model.kind} · ${model.minRamGb}+ GB RAM · ~${model.sizeGb.toStringAsFixed(1)} GB',
                 ),
                 trailing: model.id == _selectedModelId
                     ? const Icon(Icons.check_rounded)
@@ -527,9 +498,7 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
     if (selected == null || !mounted) return;
-    if (selected != _selectedModelId) {
-      await _inference.shutdown();
-    }
+    if (selected != _selectedModelId) await _inference.shutdown();
     await _onboardingStore.setSelectedModelId(selected);
     if (mounted) setState(() => _selectedModelId = selected);
   }
@@ -540,9 +509,7 @@ class _ChatScreenState extends State<ChatScreen> {
       context,
       storage: _modelStorage,
       onModelReady: (modelId) async {
-        if (modelId != _selectedModelId) {
-          await _inference.shutdown();
-        }
+        if (modelId != _selectedModelId) await _inference.shutdown();
         await _onboardingStore.setSelectedModelId(modelId);
         if (mounted) setState(() => _selectedModelId = modelId);
       },
@@ -573,10 +540,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   child: Text(
                     _selectedModel.name,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w600,
-                    ),
+                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
                   ),
                 ),
                 const SizedBox(width: 3),
@@ -605,23 +569,18 @@ class _ChatScreenState extends State<ChatScreen> {
               children: [
                 Expanded(
                   child: conversation == null || conversation.messages.isEmpty
-                      ? _EmptyChat(
-                          modelName: _selectedModel.name,
-                          onModels: _openModels,
-                        )
+                      ? _EmptyChat(modelName: _selectedModel.name, onModels: _openModels)
                       : ListView.builder(
                           controller: _scrollController,
                           padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
                           itemCount: conversation.messages.length,
                           itemBuilder: (context, index) {
                             final message = conversation.messages[index];
-                            final isLastAssistant =
-                                message.role == 'assistant' &&
+                            final lastAssistant = message.role == 'assistant' &&
                                 index == conversation.messages.length - 1;
                             return _MessageBubble(
                               message: message,
-                              onRegenerate:
-                                  isLastAssistant && !_generating
+                              onRegenerate: lastAssistant && !_generating
                                   ? _regenerate
                                   : null,
                             );
@@ -663,10 +622,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   const Expanded(
                     child: Text(
                       'OpenMindAI',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.w700,
-                      ),
+                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
                     ),
                   ),
                   IconButton(
@@ -697,9 +653,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           icon: const Icon(Icons.close_rounded),
                         ),
                 ),
-                onChanged: (value) {
-                  setState(() => _chatSearchQuery = value);
-                },
+                onChanged: (value) => setState(() => _chatSearchQuery = value),
               ),
             ),
             const SizedBox(height: 10),
@@ -741,18 +695,14 @@ class _ChatScreenState extends State<ChatScreen> {
             ListTile(
               leading: const Icon(Icons.memory_rounded),
               title: const Text('Models'),
-              subtitle: const Text(
-                'Download, verify, and remove local models',
-              ),
+              subtitle: const Text('Download, verify, and remove local models'),
               onTap: () {
                 Navigator.pop(context);
                 _openModels();
               },
             ),
             const ListTile(
-              leading: CircleAvatar(
-                child: Icon(Icons.person_outline_rounded),
-              ),
+              leading: CircleAvatar(child: Icon(Icons.person_outline_rounded)),
               title: Text('OpenMindAI Mobile'),
               subtitle: Text('Local-first'),
               trailing: Icon(Icons.more_horiz_rounded),
@@ -879,9 +829,7 @@ class _MessageBubble extends StatelessWidget {
               MarkdownBody(
                 data: message.text,
                 selectable: true,
-                styleSheet: MarkdownStyleSheet.fromTheme(
-                  Theme.of(context),
-                ).copyWith(
+                styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
                   p: const TextStyle(fontSize: 16, height: 1.45),
                   code: TextStyle(
                     fontFamily: 'monospace',
@@ -890,8 +838,7 @@ class _MessageBubble extends StatelessWidget {
                         Theme.of(context).colorScheme.surfaceContainerHighest,
                   ),
                   codeblockDecoration: BoxDecoration(
-                    color:
-                        Theme.of(context).colorScheme.surfaceContainerHighest,
+                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
                     borderRadius: BorderRadius.circular(12),
                   ),
                 ),
@@ -933,8 +880,8 @@ class _AttachmentPreview extends StatelessWidget {
   final String path;
 
   bool get _isImage => const {'.png', '.jpg', '.jpeg', '.webp'}.contains(
-    p.extension(path).toLowerCase(),
-  );
+        p.extension(path).toLowerCase(),
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -946,7 +893,7 @@ class _AttachmentPreview extends StatelessWidget {
           width: 160,
           height: 120,
           fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => _fileChip(),
+          errorBuilder: (context, error, stackTrace) => _fileChip(),
         ),
       );
     }
@@ -954,13 +901,13 @@ class _AttachmentPreview extends StatelessWidget {
   }
 
   Widget _fileChip() => Chip(
-    visualDensity: VisualDensity.compact,
-    avatar: const Icon(Icons.attach_file_rounded, size: 15),
-    label: ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 190),
-      child: Text(p.basename(path), overflow: TextOverflow.ellipsis),
-    ),
-  );
+        visualDensity: VisualDensity.compact,
+        avatar: const Icon(Icons.attach_file_rounded, size: 15),
+        label: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 190),
+          child: Text(p.basename(path), overflow: TextOverflow.ellipsis),
+        ),
+      );
 }
 
 class _Composer extends StatelessWidget {
@@ -1041,20 +988,11 @@ class _Composer extends StatelessWidget {
                     children: attachmentPaths
                         .map(
                           (path) => Padding(
-                            padding: const EdgeInsets.only(
-                              right: 6,
-                              bottom: 6,
-                            ),
+                            padding: const EdgeInsets.only(right: 6, bottom: 6),
                             child: Chip(
-                              avatar: const Icon(
-                                Icons.attach_file_rounded,
-                                size: 17,
-                              ),
+                              avatar: const Icon(Icons.attach_file_rounded, size: 17),
                               label: Text(p.basename(path)),
-                              deleteIcon: const Icon(
-                                Icons.close_rounded,
-                                size: 17,
-                              ),
+                              deleteIcon: const Icon(Icons.close_rounded, size: 17),
                               onDeleted: () => onRemoveAttachment(path),
                             ),
                           ),
@@ -1085,15 +1023,12 @@ class _Composer extends StatelessWidget {
                       tooltip: voiceListening
                           ? 'Stop OpenMindAI Hear'
                           : 'Voice input',
-                      onPressed:
-                          generating || voicePreparing ? null : onVoice,
+                      onPressed: generating || voicePreparing ? null : onVoice,
                       icon: voicePreparing
                           ? const SizedBox(
                               width: 19,
                               height: 19,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                              ),
+                              child: CircularProgressIndicator(strokeWidth: 2),
                             )
                           : Icon(
                               voiceListening
@@ -1106,9 +1041,7 @@ class _Composer extends StatelessWidget {
                       child: IconButton.filled(
                         onPressed: generating ? onStop : onSend,
                         icon: Icon(
-                          generating
-                              ? Icons.stop_rounded
-                              : Icons.arrow_upward_rounded,
+                          generating ? Icons.stop_rounded : Icons.arrow_upward_rounded,
                         ),
                       ),
                     ),
