@@ -51,6 +51,31 @@ export type MobileVisionStatus = {
   reason: string;
 };
 
+export type MobilePreparedRoute = {
+  task: string;
+  registryModelId: string;
+  modelName: string;
+  reason: string;
+};
+
+export type MobileTaskRoute = {
+  task: string;
+  execution: string;
+  local: boolean;
+  networkRequired: boolean;
+  modelId: string | null;
+  modelName: string | null;
+  installed: boolean;
+  supported: boolean;
+  reason: string;
+};
+
+export type MobileCapabilityReport = {
+  target: string;
+  routes: MobileTaskRoute[];
+  intentionalExclusions: string[];
+};
+
 function connectedInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri) {
     return Promise.reject(new Error("Connected app actions require the OpenMindAI native app."));
@@ -156,11 +181,19 @@ function mobileTextMode(mode: string) {
   return mode;
 }
 
+async function prepareMobileTextRoute(conversationId: string, task: string) {
+  return connectedInvoke<MobilePreparedRoute>("mobile_prepare_text_route", {
+    conversationId,
+    task,
+  });
+}
+
 async function sendMobileLocalChat(
   conversationId: string,
   content: string,
   mode: string,
 ): Promise<Message> {
+  await prepareMobileTextRoute(conversationId, mode);
   const resolvedMode = mobileTextMode(mode);
   if (resolvedMode !== "chat" && resolvedMode !== "thinking") {
     throw new Error(
@@ -179,6 +212,7 @@ async function regenerateMobileLocalChat(
   assistantMessageId: string,
   mode: string,
 ): Promise<Message> {
+  await prepareMobileTextRoute(conversationId, mode);
   const resolvedMode = mobileTextMode(mode);
   if (resolvedMode !== "chat" && resolvedMode !== "thinking") {
     throw new Error(`Mobile local regeneration for ${mode} needs a specialized route.`);
@@ -207,6 +241,11 @@ export const api = {
   mobileModelRecommendation: () =>
     connectedInvoke<MobileModelRecommendation>("mobile_model_recommendation"),
   mobileVisionStatus: () => connectedInvoke<MobileVisionStatus>("mobile_vision_status"),
+  mobileCapabilityReport: () =>
+    connectedInvoke<MobileCapabilityReport>("mobile_capability_report"),
+  mobileRouteTask: (task: string) =>
+    connectedInvoke<MobileTaskRoute>("mobile_route_task", { task }),
+  mobilePrepareTextRoute: prepareMobileTextRoute,
   sendChatMessage: async (
     conversationId: string,
     content: string,
