@@ -17,6 +17,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   final _permissions = PermissionService();
   final _store = OnboardingStore();
   final _deviceProfile = DeviceProfileService();
+
   int _step = 0;
   bool _requestingPermissions = false;
   bool _licenseAccepted = false;
@@ -28,8 +29,15 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
     _profileFuture = _deviceProfile.read();
   }
 
-  void _next() => setState(() => _step = (_step + 1).clamp(0, 3));
-  void _back() => setState(() => _step = (_step - 1).clamp(0, 3));
+  void _next() {
+    if (_step >= 3) return;
+    setState(() => _step += 1);
+  }
+
+  void _back() {
+    if (_step <= 0) return;
+    setState(() => _step -= 1);
+  }
 
   Future<void> _continueFromWelcome() async {
     if (_requestingPermissions) return;
@@ -37,19 +45,23 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
     final result = await _permissions.requestInitialPermissions();
     if (!mounted) return;
     setState(() => _requestingPermissions = false);
+
     if (result.hasPermanentDenial) {
       await showDialog<void>(
         context: context,
-        builder: (context) => AlertDialog(
+        builder: (dialogContext) => AlertDialog(
           title: const Text('Permission blocked'),
           content: const Text(
-            'One or more permissions were permanently denied. You can enable them later in system settings; core text chat can still continue.',
+            'One or more permissions were permanently denied. Text chat can continue, and you can enable optional permissions later in system settings.',
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Continue')),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Continue'),
+            ),
             FilledButton(
               onPressed: () {
-                Navigator.pop(context);
+                Navigator.pop(dialogContext);
                 _permissions.openSettings();
               },
               child: const Text('Open settings'),
@@ -58,54 +70,52 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
         ),
       );
     }
+
     if (mounted) _next();
   }
 
   @override
   Widget build(BuildContext context) {
+    final pages = <Widget>[
+      _WelcomePage(
+        loading: _requestingPermissions,
+        onContinue: _continueFromWelcome,
+      ),
+      _InstructionsPage(onContinue: _next),
+      _LicensePage(
+        accepted: _licenseAccepted,
+        onChanged: (value) => setState(() => _licenseAccepted = value),
+        onContinue: _licenseAccepted ? _next : null,
+      ),
+      _RecommendationPage(
+        profileFuture: _profileFuture,
+        onFinish: (profile) async {
+          await _store.complete(selectedModelId: profile.recommendedModel.id);
+          if (mounted) widget.onFinished();
+        },
+      ),
+    ];
+
     return Scaffold(
       body: SafeArea(
         child: Column(
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 2),
               child: Row(
                 children: [
-                  if (_step > 0)
-                    IconButton(onPressed: _back, icon: const Icon(Icons.arrow_back))
-                  else
-                    const SizedBox(width: 48),
-                  const Spacer(),
-                  _StepDots(active: _step),
-                  const Spacer(),
+                  SizedBox(
+                    width: 48,
+                    child: _step == 0
+                        ? null
+                        : IconButton(onPressed: _back, icon: const Icon(Icons.arrow_back_rounded)),
+                  ),
+                  Expanded(child: _ProgressDots(active: _step)),
                   const SizedBox(width: 48),
                 ],
               ),
             ),
-            Expanded(
-              child: IndexedStack(
-                index: _step,
-                children: [
-                  _WelcomeScreen(
-                    loading: _requestingPermissions,
-                    onContinue: _continueFromWelcome,
-                  ),
-                  _InstructionsScreen(onContinue: _next),
-                  _LicenseScreen(
-                    accepted: _licenseAccepted,
-                    onChanged: (value) => setState(() => _licenseAccepted = value),
-                    onContinue: _licenseAccepted ? _next : null,
-                  ),
-                  _RecommendationScreen(
-                    profileFuture: _profileFuture,
-                    onFinish: (profile) async {
-                      await _store.complete(selectedModelId: profile.recommendedModel.id);
-                      if (mounted) widget.onFinished();
-                    },
-                  ),
-                ],
-              ),
-            ),
+            Expanded(child: pages[_step]),
           ],
         ),
       ),
@@ -113,14 +123,14 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   }
 }
 
-class _StepDots extends StatelessWidget {
-  const _StepDots({required this.active});
+class _ProgressDots extends StatelessWidget {
+  const _ProgressDots({required this.active});
   final int active;
 
   @override
   Widget build(BuildContext context) {
     return Row(
-      mainAxisSize: MainAxisSize.min,
+      mainAxisAlignment: MainAxisAlignment.center,
       children: List.generate(4, (index) {
         final selected = index == active;
         return AnimatedContainer(
@@ -131,7 +141,7 @@ class _StepDots extends StatelessWidget {
           decoration: BoxDecoration(
             color: selected
                 ? Theme.of(context).colorScheme.onSurface
-                : Theme.of(context).colorScheme.onSurface.withValues(alpha: .2),
+                : Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.2),
             borderRadius: BorderRadius.circular(10),
           ),
         );
@@ -140,8 +150,21 @@ class _StepDots extends StatelessWidget {
   }
 }
 
-class _WelcomeScreen extends StatelessWidget {
-  const _WelcomeScreen({required this.loading, required this.onContinue});
+class _OnboardingPage extends StatelessWidget {
+  const _OnboardingPage({required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 14, 24, 24),
+      child: child,
+    );
+  }
+}
+
+class _WelcomePage extends StatelessWidget {
+  const _WelcomePage({required this.loading, required this.onContinue});
   final bool loading;
   final VoidCallback onContinue;
 
@@ -164,20 +187,24 @@ class _WelcomeScreen extends StatelessWidget {
               color: Theme.of(context).colorScheme.surface,
             ),
           ),
-          const SizedBox(height: 30),
-          Text('Welcome to OpenMindAI', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w700)),
+          const SizedBox(height: 28),
+          Text(
+            'Welcome to OpenMindAI',
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w700),
+          ),
           const SizedBox(height: 12),
           Text(
-            'Private, local-first AI on your phone. Your core model and conversations stay on the device.',
+            'Private, local-first AI on your phone. Core models and conversations stay under your control.',
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.bodyLarge?.copyWith(height: 1.45),
           ),
-          const SizedBox(height: 30),
-          const _PermissionLine(icon: Icons.camera_alt_outlined, text: 'Camera for image and document input'),
-          const _PermissionLine(icon: Icons.mic_none_rounded, text: 'Microphone for voice input'),
-          const _PermissionLine(icon: Icons.notifications_none_rounded, text: 'Notifications for completed local tasks'),
-          const _PermissionLine(icon: Icons.folder_open_rounded, text: 'Files through the system file picker'),
-          const SizedBox(height: 36),
+          const SizedBox(height: 28),
+          const _Capability(icon: Icons.camera_alt_outlined, text: 'Camera for image and document input'),
+          const _Capability(icon: Icons.mic_none_rounded, text: 'Microphone for voice input'),
+          const _Capability(icon: Icons.notifications_none_rounded, text: 'Notifications for completed local tasks'),
+          const _Capability(icon: Icons.folder_open_rounded, text: 'Files through the system picker'),
+          const SizedBox(height: 34),
           SizedBox(
             width: double.infinity,
             child: FilledButton(
@@ -188,9 +215,9 @@ class _WelcomeScreen extends StatelessWidget {
                   : const Text('Continue'),
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           Text(
-            'Only permissions used by app features are requested. Broad storage access is not required.',
+            'OpenMindAI requests only permissions used by app features. Broad storage access is not required.',
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.bodySmall,
           ),
@@ -200,8 +227,8 @@ class _WelcomeScreen extends StatelessWidget {
   }
 }
 
-class _PermissionLine extends StatelessWidget {
-  const _PermissionLine({required this.icon, required this.text});
+class _Capability extends StatelessWidget {
+  const _Capability({required this.icon, required this.text});
   final IconData icon;
   final String text;
 
@@ -209,29 +236,61 @@ class _PermissionLine extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 7),
-      child: Row(children: [Icon(icon, size: 21), const SizedBox(width: 14), Expanded(child: Text(text))]),
+      child: Row(
+        children: [
+          Icon(icon, size: 21),
+          const SizedBox(width: 14),
+          Expanded(child: Text(text)),
+        ],
+      ),
     );
   }
 }
 
-class _InstructionsScreen extends StatelessWidget {
-  const _InstructionsScreen({required this.onContinue});
+class _InstructionsPage extends StatelessWidget {
+  const _InstructionsPage({required this.onContinue});
   final VoidCallback onContinue;
 
   @override
   Widget build(BuildContext context) {
+    const items = [
+      ('Models use device storage', 'OpenMindAI recommends a model based on device RAM and available storage. Larger models remain optional.'),
+      ('Local AI uses battery and memory', 'Long responses and larger models can warm the device. Keep enough free memory and battery for best performance.'),
+      ('Core chat can work offline', 'Downloaded local models do not require a paid cloud AI subscription. Search and connected services still need internet.'),
+      ('You stay in control', 'Camera, microphone, files, model downloads, and connected services are explicit user actions.'),
+    ];
+
     return _OnboardingPage(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text('Before you start', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w700)),
-          const SizedBox(height: 10),
-          Text('A few things make local AI work better on mobile.', style: Theme.of(context).textTheme.bodyLarge),
-          const SizedBox(height: 28),
-          const _InstructionCard(number: '1', title: 'Models use device storage', body: 'OpenMindAI will recommend a model based on your RAM and available storage. Larger models are optional.'),
-          const _InstructionCard(number: '2', title: 'Local inference uses battery and memory', body: 'Long responses and larger models can warm the device. Keep enough free memory and battery for best performance.'),
-          const _InstructionCard(number: '3', title: 'Internet is optional for core chat', body: 'Downloaded local models can answer without a cloud AI subscription. Web Search and connected services require internet.'),
-          const _InstructionCard(number: '4', title: 'You stay in control', body: 'Camera, microphone, files, model downloads, and connected services remain explicit user actions.'),
+          const SizedBox(height: 8),
+          const Text('A few things make local AI work better on mobile.'),
+          const SizedBox(height: 26),
+          ...List.generate(items.length, (index) {
+            final item = items[index];
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 20),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  CircleAvatar(radius: 16, child: Text('${index + 1}')),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(item.$1, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                        const SizedBox(height: 5),
+                        Text(item.$2, style: TextStyle(height: 1.4, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
           const Spacer(),
           SizedBox(
             width: double.infinity,
@@ -247,34 +306,13 @@ class _InstructionsScreen extends StatelessWidget {
   }
 }
 
-class _InstructionCard extends StatelessWidget {
-  const _InstructionCard({required this.number, required this.title, required this.body});
-  final String number;
-  final String title;
-  final String body;
+class _LicensePage extends StatelessWidget {
+  const _LicensePage({
+    required this.accepted,
+    required this.onChanged,
+    required this.onContinue,
+  });
 
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 20),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          CircleAvatar(radius: 16, child: Text(number)),
-          const SizedBox(width: 14),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(title, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
-            const SizedBox(height: 5),
-            Text(body, style: TextStyle(height: 1.4, color: Theme.of(context).colorScheme.onSurfaceVariant)),
-          ])),
-        ],
-      ),
-    );
-  }
-}
-
-class _LicenseScreen extends StatelessWidget {
-  const _LicenseScreen({required this.accepted, required this.onChanged, required this.onContinue});
   final bool accepted;
   final ValueChanged<bool> onChanged;
   final VoidCallback? onContinue;
@@ -288,7 +326,7 @@ class _LicenseScreen extends StatelessWidget {
           Text('License agreement', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w700)),
           const SizedBox(height: 8),
           const Text('Read the OpenMindAI license before continuing.'),
-          const SizedBox(height: 18),
+          const SizedBox(height: 16),
           Expanded(
             child: Container(
               width: double.infinity,
@@ -300,8 +338,12 @@ class _LicenseScreen extends StatelessWidget {
               child: FutureBuilder<String>(
                 future: rootBundle.loadString('assets/LICENSE.txt'),
                 builder: (context, snapshot) {
-                  if (!snapshot.hasData) return const Center(child: CircularProgressIndicator(strokeWidth: 2));
-                  return SingleChildScrollView(child: SelectableText(snapshot.data!, style: const TextStyle(fontSize: 12.5, height: 1.45)));
+                  if (!snapshot.hasData) {
+                    return const Center(child: CircularProgressIndicator(strokeWidth: 2));
+                  }
+                  return SingleChildScrollView(
+                    child: SelectableText(snapshot.data!, style: const TextStyle(fontSize: 12.5, height: 1.45)),
+                  );
                 },
               ),
             ),
@@ -327,8 +369,8 @@ class _LicenseScreen extends StatelessWidget {
   }
 }
 
-class _RecommendationScreen extends StatelessWidget {
-  const _RecommendationScreen({required this.profileFuture, required this.onFinish});
+class _RecommendationPage extends StatelessWidget {
+  const _RecommendationPage({required this.profileFuture, required this.onFinish});
   final Future<MobileDeviceProfile> profileFuture;
   final ValueChanged<MobileDeviceProfile> onFinish;
 
@@ -339,24 +381,34 @@ class _RecommendationScreen extends StatelessWidget {
         future: profileFuture,
         builder: (context, snapshot) {
           if (snapshot.connectionState != ConnectionState.done) {
-            return const Center(child: Column(mainAxisSize: MainAxisSize.min, children: [CircularProgressIndicator(strokeWidth: 2), SizedBox(height: 18), Text('Checking this device…')]));
+            return const Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(strokeWidth: 2),
+                  SizedBox(height: 16),
+                  Text('Checking this device…'),
+                ],
+              ),
+            );
           }
-          if (snapshot.hasError || !snapshot.hasData) {
-            return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-              const Icon(Icons.error_outline, size: 42),
-              const SizedBox(height: 12),
-              Text('Could not read device capabilities.\n${snapshot.error}', textAlign: TextAlign.center),
-            ]));
+
+          if (!snapshot.hasData) {
+            return Center(child: Text('Could not read device capabilities.\n${snapshot.error}', textAlign: TextAlign.center));
           }
+
           final profile = snapshot.data!;
           final model = profile.recommendedModel;
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Recommended for this device', style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w700)),
+              Text(
+                'Recommended for this device',
+                style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w700),
+              ),
               const SizedBox(height: 8),
               Text('${profile.deviceName} · ${profile.platform} ${profile.osVersion}'),
-              const SizedBox(height: 28),
+              const SizedBox(height: 26),
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(22),
@@ -364,26 +416,36 @@ class _RecommendationScreen extends StatelessWidget {
                   color: Theme.of(context).colorScheme.surfaceContainerHighest,
                   borderRadius: BorderRadius.circular(24),
                 ),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Row(children: [
-                    const Icon(Icons.auto_awesome_rounded),
-                    const SizedBox(width: 10),
-                    Expanded(child: Text(model.name, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700))),
-                    const Chip(label: Text('Recommended')),
-                  ]),
-                  const SizedBox(height: 14),
-                  Text(model.description, style: const TextStyle(height: 1.45)),
-                  const SizedBox(height: 18),
-                  Wrap(spacing: 8, runSpacing: 8, children: [
-                    Chip(label: Text('${profile.ramGb} GB RAM')),
-                    Chip(label: Text('${profile.freeDiskGb.toStringAsFixed(1)} GB free')),
-                    Chip(label: Text(model.kind)),
-                  ]),
-                ]),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.auto_awesome_rounded),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(model.name, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text(model.description, style: const TextStyle(height: 1.45)),
+                    const SizedBox(height: 16),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        Chip(label: Text('${profile.ramGb} GB RAM')),
+                        Chip(label: Text('${profile.freeDiskGb.toStringAsFixed(1)} GB free')),
+                        Chip(label: Text(model.kind)),
+                      ],
+                    ),
+                  ],
+                ),
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: 16),
               Text(
-                'The model name shown in OpenMindAI is the product name used by the desktop app. Technical upstream model names are not shown in the mobile UI.',
+                'Only OpenMindAI product names are shown here. Technical upstream model names stay hidden from the mobile UI.',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
               const Spacer(),
@@ -399,19 +461,6 @@ class _RecommendationScreen extends StatelessWidget {
           );
         },
       ),
-    );
-  }
-}
-
-class _OnboardingPage extends StatelessWidget {
-  const _OnboardingPage({required this.child});
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 14, 24, 24),
-      child: child,
     );
   }
 }
