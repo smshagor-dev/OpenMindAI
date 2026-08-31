@@ -2,7 +2,6 @@ import { useEffect } from "react";
 import { check as checkForAppUpdate } from "@tauri-apps/plugin-updater";
 import { api } from "../api";
 import { notifyUser } from "../lib/notify";
-import { getPlatformCapabilities } from "../lib/platform";
 
 const UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1000;
 
@@ -15,9 +14,6 @@ function downloadKey(version: string) {
 }
 
 async function checkForPublishedUpdate() {
-  const capabilities = await getPlatformCapabilities();
-  if (!capabilities.desktop) return;
-
   const preferences = await api.preferences();
   if (!preferences.autoCheckAppUpdates) return;
 
