@@ -93,11 +93,11 @@ export function MobileSetupWizard(props: {
             <img src="/icon.png" alt="" />
           </div>
           <p className="mobile-setup-kicker">OPENMINDAI MOBILE</p>
-          <h1>Your private AI workspace, on Android</h1>
+          <h1>Your private AI workspace, on mobile</h1>
           <p className="setup-lede">
-            OpenMindAI stores mobile conversations, models, and app data inside Android&apos;s
-            private app storage. Desktop Full PC and terminal permissions are never enabled on
-            mobile.
+            OpenMindAI stores mobile conversations, models, and app data inside the operating
+            system&apos;s private app storage. Desktop Full PC and terminal permissions are never
+            enabled on mobile.
           </p>
 
           <div className="mobile-setup-features">
@@ -112,14 +112,14 @@ export function MobileSetupWizard(props: {
               <HardDrive size={18} />
               <span>
                 <strong>Private app storage</strong>
-                <small>{props.root?.root ?? "Android-managed local storage"}</small>
+                <small>{props.root?.root ?? "OS-managed private app storage"}</small>
               </span>
             </div>
             <div>
               <ShieldCheck size={18} />
               <span>
                 <strong>Desktop privileges isolated</strong>
-                <small>No Full PC access or unrestricted terminal on Android.</small>
+                <small>No Full PC access or unrestricted terminal on mobile.</small>
               </span>
             </div>
             <div>
@@ -154,7 +154,7 @@ export function MobileSetupWizard(props: {
                 <p className="muted">{recommendation.reason}</p>
                 <p className={modelReady ? "setup-success" : "muted"}>
                   {modelReady
-                    ? "Installed and ready for native Android inference."
+                    ? "Installed and ready for native on-device inference."
                     : "Not installed yet. You can download it now or continue and install it later."}
                 </p>
                 {downloadPercent != null && installing ? (
