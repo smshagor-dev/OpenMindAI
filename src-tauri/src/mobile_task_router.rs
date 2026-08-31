@@ -1,7 +1,4 @@
 #[cfg(any(target_os = "android", target_os = "ios"))]
-use std::path::Path;
-
-#[cfg(any(target_os = "android", target_os = "ios"))]
 use serde::Serialize;
 use tauri::State;
 
@@ -138,7 +135,10 @@ fn prepare_route(
     })?;
     let expected = format!(
         "models/{}",
-        installed_path.trim().replace('\\', "/').trim_start_matches("models/")
+        installed_path
+            .trim()
+            .replace('\\', "/")
+            .trim_start_matches("models/")
     );
     let selected = discovered
         .iter()
@@ -195,7 +195,7 @@ pub(crate) fn mobile_prepare_text_route(
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "android", target_os = "ios")))]
 mod tests {
     use super::*;
 
