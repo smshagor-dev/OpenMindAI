@@ -1,12 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Artifact, LlamaRuntimeStatus, Message, RuntimeInventory } from "./types";
+import type { Artifact, Message } from "./types";
 import type {
   ConnectedProvider,
   GoogleWorkspaceStatus,
   IntegrationStatus,
 } from "./lib/connectedActions";
 import { createSoundscapeArtifact } from "./lib/media";
-import { getPlatformCapabilities, type PlatformCapabilities } from "./lib/platform";
 import { api as legacyApi } from "./api_legacy";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
@@ -29,118 +28,11 @@ type ProjectAgentStatus = {
   attachedRoots: number;
 };
 
-export type MobileModelRecommendation = {
-  supported: boolean;
-  tier: "nano" | "swift" | "core";
-  modelId: string;
-  name: string;
-  repository: string;
-  quantization: string;
-  sizeBytes: number;
-  totalRamBytes: number;
-  installed: boolean;
-  installedModelPath: string | null;
-  reason: string;
-};
-
-export type MobileVisionStatus = {
-  supported: boolean;
-  installed: boolean;
-  modelId: string;
-  modelName: string;
-  reason: string;
-};
-
-export type MobilePreparedRoute = {
-  task: string;
-  registryModelId: string;
-  modelName: string;
-  reason: string;
-};
-
-export type MobileTaskRoute = {
-  task: string;
-  execution: string;
-  local: boolean;
-  networkRequired: boolean;
-  modelId: string | null;
-  modelName: string | null;
-  installed: boolean;
-  supported: boolean;
-  reason: string;
-};
-
-export type MobileCapabilityReport = {
-  target: string;
-  routes: MobileTaskRoute[];
-  intentionalExclusions: string[];
-};
-
 function connectedInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri) {
-    return Promise.reject(new Error("Connected app actions require the OpenMindAI native app."));
+    return Promise.reject(new Error("Connected app actions require the OpenMindAI desktop app."));
   }
   return invoke<T>(command, args);
-}
-
-async function isMobileNativeTarget() {
-  if (!isTauri) return false;
-  const capabilities = await getPlatformCapabilities();
-  return capabilities.target === "android" || capabilities.target === "ios";
-}
-
-function embeddedMobileRuntime(capabilities: PlatformCapabilities): RuntimeInventory {
-  const selected: NonNullable<RuntimeInventory["selected"]> = {
-    manifest: {
-      runtimeName: "OpenMindAI Embedded llama.cpp",
-      version: "native",
-      platform: capabilities.target,
-      architecture: "mobile",
-      backend: capabilities.target === "ios" ? "metal" : "cpu",
-      source: "embedded",
-      installedAt: "bundled",
-      binaries: { server: null, cli: null, bench: null },
-      checksum: null,
-      status: "ready",
-    },
-    serverExists: false,
-    cliExists: false,
-    benchExists: false,
-    versionOutput: "Embedded llama.cpp mobile runtime",
-    deviceOutput:
-      "Native in-process mobile inference with task-aware text and multimodal routing.",
-    usable: true,
-    message: "Embedded on-device runtime ready",
-  };
-
-  return {
-    runtimes: [selected],
-    selected,
-    serverState: "ready",
-  };
-}
-
-async function mobileAwareRuntimeInventory(): Promise<RuntimeInventory> {
-  const capabilities = await getPlatformCapabilities();
-  if (capabilities.mobile && capabilities.mobileModelRuntimeReady) {
-    return embeddedMobileRuntime(capabilities);
-  }
-  return legacyApi.runtimeInventory();
-}
-
-async function mobileAwareRuntimeStatus(): Promise<LlamaRuntimeStatus> {
-  const capabilities = await getPlatformCapabilities();
-  if (capabilities.mobile && capabilities.mobileModelRuntimeReady) {
-    const inventory = embeddedMobileRuntime(capabilities);
-    return {
-      available: true,
-      backend: inventory.selected?.manifest.backend ?? null,
-      endpoint: null,
-      state: "ready",
-      selectedRuntime: inventory.selected,
-    };
-  }
-  return legacyApi.runtimeStatus();
 }
 
 async function messageUsesSoundscape(conversationId: string, messageId: string | null) {
@@ -176,76 +68,9 @@ async function shouldUseProjectAgent(conversationId: string, mode: string) {
   return status?.available ?? false;
 }
 
-function mobileTextMode(mode: string) {
-  if (mode === "document" || mode === "pdf") return "chat";
-  return mode;
-}
-
-async function prepareMobileTextRoute(conversationId: string, task: string) {
-  return connectedInvoke<MobilePreparedRoute>("mobile_prepare_text_route", {
-    conversationId,
-    task,
-  });
-}
-
-async function sendMobileLocalChat(
-  conversationId: string,
-  content: string,
-  mode: string,
-): Promise<Message> {
-  await prepareMobileTextRoute(conversationId, mode);
-  const resolvedMode = mobileTextMode(mode);
-  if (resolvedMode !== "chat" && resolvedMode !== "thinking") {
-    throw new Error(
-      `Mobile local ${mode} needs a specialized route. Install/enable the matching capability or use a connected provider.`,
-    );
-  }
-  return invoke<Message>("mobile_send_chat_message", {
-    conversationId,
-    content,
-    mode: resolvedMode,
-  });
-}
-
-async function regenerateMobileLocalChat(
-  conversationId: string,
-  assistantMessageId: string,
-  mode: string,
-): Promise<Message> {
-  await prepareMobileTextRoute(conversationId, mode);
-  const resolvedMode = mobileTextMode(mode);
-  if (resolvedMode !== "chat" && resolvedMode !== "thinking") {
-    throw new Error(`Mobile local regeneration for ${mode} needs a specialized route.`);
-  }
-  return invoke<Message>("mobile_regenerate_message", {
-    conversationId,
-    assistantMessageId,
-    mode: resolvedMode,
-  });
-}
-
 export const api = {
   ...legacyApi,
-  runtimeInventory: mobileAwareRuntimeInventory,
-  runtimeStatus: mobileAwareRuntimeStatus,
-  startRuntime: mobileAwareRuntimeStatus,
-  stopRuntime: mobileAwareRuntimeStatus,
-  activateModel: async (conversationId: string, modelId: string) => {
-    if (await isMobileNativeTarget()) {
-      await legacyApi.setConversationModel(conversationId, modelId);
-      return mobileAwareRuntimeStatus();
-    }
-    return legacyApi.activateModel(conversationId, modelId);
-  },
   projectAgentStatus,
-  mobileModelRecommendation: () =>
-    connectedInvoke<MobileModelRecommendation>("mobile_model_recommendation"),
-  mobileVisionStatus: () => connectedInvoke<MobileVisionStatus>("mobile_vision_status"),
-  mobileCapabilityReport: () =>
-    connectedInvoke<MobileCapabilityReport>("mobile_capability_report"),
-  mobileRouteTask: (task: string) =>
-    connectedInvoke<MobileTaskRoute>("mobile_route_task", { task }),
-  mobilePrepareTextRoute: prepareMobileTextRoute,
   sendChatMessage: async (
     conversationId: string,
     content: string,
@@ -258,19 +83,6 @@ export const api = {
         conversationId,
         content,
       });
-    } else if (await isMobileNativeTarget()) {
-      if (media.length > 0 || mode === "vision") {
-        if (media.length === 0) {
-          throw new Error("Attach at least one image, PDF page, or video frame for Vision mode.");
-        }
-        assistant = await invoke<Message>("mobile_send_vision_message", {
-          conversationId,
-          content,
-          media,
-        });
-      } else {
-        assistant = await sendMobileLocalChat(conversationId, content, mode);
-      }
     } else if (mode === "vision" && media.length > 0 && isTauri) {
       assistant = await invoke<Message>("send_multimodal_chat_message", {
         conversationId,
@@ -327,19 +139,6 @@ export const api = {
         conversationId,
         assistantMessageId,
       });
-    } else if (await isMobileNativeTarget()) {
-      if (isVisualTurn) {
-        assistant = await invoke<Message>("mobile_regenerate_vision_message", {
-          conversationId,
-          assistantMessageId,
-        });
-      } else {
-        assistant = await regenerateMobileLocalChat(
-          conversationId,
-          assistantMessageId,
-          resolvedMode,
-        );
-      }
     } else if (isVisualTurn && isTauri) {
       assistant = await invoke<Message>("regenerate_multimodal_message", {
         conversationId,

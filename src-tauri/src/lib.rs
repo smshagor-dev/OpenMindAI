@@ -38,10 +38,7 @@ macro_rules! openmind_generate_handler {
             run_project_terminal_command,
             project_agent_status_for_conversation,
             send_project_agent_message,
-            regenerate_project_agent_message,
-            mobile_send_chat_message,
-            mobile_regenerate_message,
-            platform_capabilities
+            regenerate_project_agent_message
         ]
     };
 }
@@ -57,34 +54,10 @@ mod connector_input_guard;
 mod connector_stabilization;
 mod github_workspace;
 mod google_workspace;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod local_agent;
-#[cfg(any(target_os = "android", target_os = "ios"))]
-#[path = "local_agent_mobile.rs"]
-mod local_agent;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod local_workspace;
-#[cfg(any(target_os = "android", target_os = "ios"))]
-#[path = "local_workspace_mobile.rs"]
-mod local_workspace;
-mod mobile_capabilities;
-mod mobile_chat;
-#[cfg(target_os = "android")]
-mod mobile_inference;
-#[cfg(target_os = "ios")]
-#[path = "mobile_inference_ios.rs"]
-mod mobile_inference;
-#[cfg(any(target_os = "android", target_os = "ios"))]
-mod mobile_model_policy;
-mod mobile_task_router;
-mod mobile_vision;
 mod multimodal;
 mod pdf_ocr;
-mod platform;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-mod speech_runtime;
-#[cfg(any(target_os = "android", target_os = "ios"))]
-#[path = "speech_runtime_mobile.rs"]
 mod speech_runtime;
 mod vision_batch;
 mod warm_start;
@@ -114,168 +87,10 @@ pub(crate) use local_workspace::{
     read_project_workspace_file, run_project_terminal_command, set_project_full_local_access,
     write_project_workspace_file,
 };
-#[cfg(any(target_os = "android", target_os = "ios"))]
-pub(crate) use mobile_capabilities::{mobile_capability_report, mobile_route_task};
-pub(crate) use mobile_chat::{mobile_regenerate_message, mobile_send_chat_message};
-#[cfg(any(target_os = "android", target_os = "ios"))]
-pub(crate) use mobile_inference::{
-    mobile_native_inference_probe, mobile_release_inference_model, MobileInferenceState,
-};
-#[cfg(any(target_os = "android", target_os = "ios"))]
-pub(crate) use mobile_model_policy::mobile_model_recommendation;
-#[cfg(any(target_os = "android", target_os = "ios"))]
-pub(crate) use mobile_task_router::mobile_prepare_text_route;
-#[cfg(any(target_os = "android", target_os = "ios"))]
-pub(crate) use mobile_vision::{
-    mobile_regenerate_vision_message, mobile_send_vision_message, mobile_vision_status,
-    MobileVisionState,
-};
 pub(crate) use multimodal::{
     artifact_media_data_url, create_soundscape_artifact, regenerate_multimodal_message,
     send_multimodal_chat_message, transcribe_audio,
 };
 pub(crate) use pdf_ocr::ocr_pdf_pages;
-pub(crate) use platform::platform_capabilities;
 
 include!("lib_legacy.rs");
-
-#[cfg(any(target_os = "android", target_os = "ios"))]
-fn run_mobile() {
-    use tauri_crate::Manager as _;
-
-    tauri_crate::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_notification::init())
-        .setup(|app| {
-            // Mobile never resolves the desktop portable/external-drive root. Keep all
-            // databases, downloaded assets, artifacts, and logs inside the OS-managed,
-            // bundle-scoped app-local data directory.
-            let app_data = app.path().app_local_data_dir()?;
-            let root = PortableRootManager::from_root(app_data.join("OpenMindAI"));
-            root.ensure_directories()?;
-            let database_path = root.database_path();
-            let database = Database::open(database_path.clone())?;
-            let hardware = HardwareProfiler::detect();
-
-            app.manage(AppState {
-                runtime: Mutex::new(LlamaRuntimeManager::new(root.clone())),
-                downloads: ModelDownloadManager::new(root.clone()),
-                runtime_installer: RuntimeInstaller::new(root.clone()),
-                root,
-                hardware,
-                active_database_path: database_path,
-                database: Mutex::new(database),
-                active_generations: ActiveGenerations::default(),
-                warm_start: warm_start::WarmStartCoordinator::default(),
-                http: Client::new(),
-            });
-            app.manage(MobileInferenceState::default());
-            app.manage(MobileVisionState::default());
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
-            get_portable_root,
-            installation_status,
-            complete_setup,
-            save_setup_progress,
-            mark_runtime_ready,
-            mark_model_ready,
-            check_storage_location,
-            list_conversations,
-            create_conversation,
-            rename_conversation,
-            set_conversation_pinned,
-            set_conversation_model,
-            archive_conversation,
-            delete_conversation,
-            list_messages,
-            add_user_message,
-            create_streaming_assistant_message,
-            append_message_chunk,
-            complete_message,
-            delete_message,
-            list_projects,
-            create_project,
-            update_project,
-            delete_project,
-            link_project_conversation,
-            unlink_project_conversation,
-            add_project_file,
-            delete_project_file,
-            create_text_artifact,
-            create_document_artifact,
-            create_generation_artifact,
-            list_artifacts,
-            list_library_entries,
-            open_artifact,
-            open_external_url,
-            reveal_artifact_in_folder,
-            detect_hardware,
-            get_performance_profile,
-            discover_models,
-            get_qwen_download_status,
-            get_model_download_status,
-            download_qwen_model,
-            download_catalog_model,
-            cancel_qwen_download,
-            cancel_model_download,
-            pause_model_download,
-            delete_catalog_model,
-            validate_model,
-            plan_model_launch,
-            activate_model,
-            get_storage_summary,
-            clear_cache,
-            run_diagnostics,
-            repair_installation,
-            backup_database,
-            list_backups,
-            check_model_updates,
-            open_maintenance_folder,
-            read_recent_logs,
-            get_llama_runtime_status,
-            get_llama_runtime_inventory,
-            get_runtime_install_status,
-            install_recommended_runtime,
-            cancel_runtime_install,
-            start_llama_runtime,
-            stop_llama_runtime,
-            send_chat_message,
-            regenerate_message,
-            cancel_generation,
-            get_app_preferences,
-            save_app_preferences,
-            get_user_profile,
-            save_user_profile,
-            get_github_account,
-            save_github_token,
-            disconnect_github,
-            list_github_repos,
-            list_github_issues,
-            get_google_credentials,
-            save_google_credentials,
-            clear_google_credentials,
-            mobile_native_inference_probe,
-            mobile_model_recommendation,
-            mobile_route_task,
-            mobile_capability_report,
-            mobile_prepare_text_route,
-            mobile_send_chat_message,
-            mobile_regenerate_message,
-            mobile_release_inference_model,
-            mobile_vision_status,
-            mobile_send_vision_message,
-            mobile_regenerate_vision_message
-        ])
-        .run(tauri_crate::generate_context!())
-        .expect("error while running OpenMindAI mobile");
-}
-
-// Tauri mobile builds load this crate as a library through the native Android/iOS
-// host instead of executing src/main.rs. Mobile startup intentionally uses a
-// separate app-data bootstrap so the desktop portable-root/runtime policy is never run.
-#[cfg(any(target_os = "android", target_os = "ios"))]
-#[tauri_crate::mobile_entry_point]
-pub fn mobile_entry() {
-    run_mobile();
-}
