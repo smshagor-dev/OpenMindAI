@@ -179,25 +179,17 @@ pub(crate) fn generate_android_chat(
     output_limit: u32,
     cancellation: tokio_util::sync::CancellationToken,
 ) -> Result<MobileGenerationResult, AppError> {
-    use llama_cpp_2::llama_backend::LlamaBackend;
-    use llama_cpp_2::model::params::LlamaModelParams;
-    use llama_cpp_2::model::LlamaModel;
-
-    let backend = LlamaBackend::init().map_err(|error| {
-        AppError::ModelLoadFailed(format!("llama backend init failed: {error}"))
-    })?;
-    let model = LlamaModel::load_from_file(&backend, &model_path, &LlamaModelParams::default())
-        .map_err(|error| AppError::ModelLoadFailed(format!("failed to load GGUF: {error}")))?;
-    let prompt = build_android_chat_prompt(&model, messages, output_limit)?;
-
-    run_loaded_generation(
-        &backend,
-        &model,
-        model_display,
-        prompt,
-        output_limit,
-        Some(&cancellation),
-    )
+    crate::mobile_model_cache::with_cached_model(&model_path, |backend, model| {
+        let prompt = build_android_chat_prompt(model, messages, output_limit)?;
+        run_loaded_generation(
+            backend,
+            model,
+            model_display,
+            prompt,
+            output_limit,
+            Some(&cancellation),
+        )
+    })
 }
 
 #[cfg(target_os = "android")]
@@ -208,24 +200,16 @@ fn generate_android_prompt(
     output_limit: u32,
     cancellation: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<MobileGenerationResult, AppError> {
-    use llama_cpp_2::llama_backend::LlamaBackend;
-    use llama_cpp_2::model::params::LlamaModelParams;
-    use llama_cpp_2::model::LlamaModel;
-
-    let backend = LlamaBackend::init().map_err(|error| {
-        AppError::ModelLoadFailed(format!("llama backend init failed: {error}"))
-    })?;
-    let model = LlamaModel::load_from_file(&backend, &model_path, &LlamaModelParams::default())
-        .map_err(|error| AppError::ModelLoadFailed(format!("failed to load GGUF: {error}")))?;
-
-    run_loaded_generation(
-        &backend,
-        &model,
-        model_display,
-        prompt,
-        output_limit,
-        cancellation,
-    )
+    crate::mobile_model_cache::with_cached_model(&model_path, |backend, model| {
+        run_loaded_generation(
+            backend,
+            model,
+            model_display,
+            prompt,
+            output_limit,
+            cancellation,
+        )
+    })
 }
 
 #[cfg(target_os = "android")]
