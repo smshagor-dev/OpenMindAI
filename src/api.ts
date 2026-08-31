@@ -28,9 +28,23 @@ type ProjectAgentStatus = {
   attachedRoots: number;
 };
 
+export type MobileModelRecommendation = {
+  supported: boolean;
+  tier: "nano" | "swift" | "core";
+  modelId: string;
+  name: string;
+  repository: string;
+  quantization: string;
+  sizeBytes: number;
+  totalRamBytes: number;
+  installed: boolean;
+  installedModelPath: string | null;
+  reason: string;
+};
+
 function connectedInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri) {
-    return Promise.reject(new Error("Connected app actions require the OpenMindAI desktop app."));
+    return Promise.reject(new Error("Connected app actions require the OpenMindAI native app."));
   }
   return invoke<T>(command, args);
 }
@@ -71,6 +85,8 @@ async function shouldUseProjectAgent(conversationId: string, mode: string) {
 export const api = {
   ...legacyApi,
   projectAgentStatus,
+  mobileModelRecommendation: () =>
+    connectedInvoke<MobileModelRecommendation>("mobile_model_recommendation"),
   sendChatMessage: async (
     conversationId: string,
     content: string,

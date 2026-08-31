@@ -70,6 +70,7 @@ mod mobile_inference;
 #[cfg(target_os = "ios")]
 #[path = "mobile_inference_ios.rs"]
 mod mobile_inference;
+mod mobile_model_policy;
 mod multimodal;
 mod pdf_ocr;
 mod platform;
@@ -108,6 +109,7 @@ pub(crate) use local_workspace::{
 };
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub(crate) use mobile_inference::{mobile_native_inference_probe, MobileInferenceState};
+pub(crate) use mobile_model_policy::mobile_model_recommendation;
 pub(crate) use multimodal::{
     artifact_media_data_url, create_soundscape_artifact, regenerate_multimodal_message,
     send_multimodal_chat_message, transcribe_audio,
@@ -232,7 +234,8 @@ fn run_mobile() {
             get_google_credentials,
             save_google_credentials,
             clear_google_credentials,
-            mobile_native_inference_probe
+            mobile_native_inference_probe,
+            mobile_model_recommendation
         ])
         .run(tauri_crate::generate_context!())
         .expect("error while running OpenMindAI mobile");

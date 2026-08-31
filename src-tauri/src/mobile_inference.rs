@@ -16,9 +16,7 @@ use llama_cpp_2::{
 use serde::Serialize;
 use tauri::State;
 
-use crate::{
-    app_error::AppError, model_registry::ModelRegistry, AppState,
-};
+use crate::{app_error::AppError, model_registry::ModelRegistry, AppState};
 
 const MOBILE_CONTEXT_TOKENS: u32 = 2048;
 const MOBILE_MAX_OUTPUT_TOKENS: u32 = 256;
@@ -67,10 +65,9 @@ impl NativeEngine {
             return Ok(());
         }
 
-        let backend = self
-            .backend
-            .as_ref()
-            .ok_or_else(|| AppError::ModelLoadFailed("native llama backend unavailable".to_string()))?;
+        let backend = self.backend.as_ref().ok_or_else(|| {
+            AppError::ModelLoadFailed("native llama backend unavailable".to_string())
+        })?;
         let params = LlamaModelParams::default();
         let model = LlamaModel::load_from_file(backend, model_path, &params)
             .map_err(|error| AppError::ModelLoadFailed(error.to_string()))?;
@@ -89,30 +86,32 @@ impl NativeEngine {
     ) -> Result<NativeInferenceProbeResult, AppError> {
         self.ensure_model(model_path)?;
         let started = Instant::now();
-        let backend = self
-            .backend
-            .as_ref()
-            .ok_or_else(|| AppError::ModelLoadFailed("native llama backend unavailable".to_string()))?;
+        let backend = self.backend.as_ref().ok_or_else(|| {
+            AppError::ModelLoadFailed("native llama backend unavailable".to_string())
+        })?;
         let model = &self
             .loaded_model
             .as_ref()
             .ok_or_else(|| AppError::ModelLoadFailed("native model is not loaded".to_string()))?
             .model;
 
-        let chat_template = model
-            .chat_template(None)
-            .map_err(|error| AppError::ModelUnsupported(format!("model chat template unavailable: {error}")))?;
-        let chat = [LlamaChatMessage::new(
-            "user".to_string(),
-            prompt.to_string(),
-        )
-        .map_err(|error| AppError::InferenceFailed(error.to_string()))?];
+        let chat_template = model.chat_template(None).map_err(|error| {
+            AppError::ModelUnsupported(format!("model chat template unavailable: {error}"))
+        })?;
+        let chat = [
+            LlamaChatMessage::new("user".to_string(), prompt.to_string())
+                .map_err(|error| AppError::InferenceFailed(error.to_string()))?,
+        ];
         let rendered_prompt = model
             .apply_chat_template(&chat_template, &chat, true)
-            .map_err(|error| AppError::InferenceFailed(format!("failed to apply model chat template: {error}")))?;
+            .map_err(|error| {
+                AppError::InferenceFailed(format!("failed to apply model chat template: {error}"))
+            })?;
         let prompt_tokens = model
             .str_to_token(&rendered_prompt, AddBos::Always)
-            .map_err(|error| AppError::InferenceFailed(format!("failed to tokenize prompt: {error}")))?;
+            .map_err(|error| {
+                AppError::InferenceFailed(format!("failed to tokenize prompt: {error}"))
+            })?;
 
         if prompt_tokens.is_empty() {
             return Err(AppError::InferenceFailed(
@@ -133,18 +132,24 @@ impl NativeEngine {
             .with_n_batch(MOBILE_CONTEXT_TOKENS);
         let mut context = model
             .new_context(backend, context_params)
-            .map_err(|error| AppError::ModelLoadFailed(format!("failed to create native llama context: {error}")))?;
+            .map_err(|error| {
+                AppError::ModelLoadFailed(format!("failed to create native llama context: {error}"))
+            })?;
 
         let mut batch = LlamaBatch::new(prompt_tokens.len().max(1), 1);
         let last_prompt_index = prompt_tokens.len().saturating_sub(1) as i32;
         for (position, token) in (0_i32..).zip(prompt_tokens.iter().copied()) {
             batch
                 .add(token, position, &[0], position == last_prompt_index)
-                .map_err(|error| AppError::InferenceFailed(format!("failed to build native prompt batch: {error}")))?;
+                .map_err(|error| {
+                    AppError::InferenceFailed(format!(
+                        "failed to build native prompt batch: {error}"
+                    ))
+                })?;
         }
-        context
-            .decode(&mut batch)
-            .map_err(|error| AppError::InferenceFailed(format!("native prompt decode failed: {error}")))?;
+        context.decode(&mut batch).map_err(|error| {
+            AppError::InferenceFailed(format!("native prompt decode failed: {error}"))
+        })?;
 
         let mut sampler = LlamaSampler::chain_simple([
             LlamaSampler::top_k(20),
@@ -155,8 +160,11 @@ impl NativeEngine {
         let mut decoder = UTF_8.new_decoder();
         let mut output = String::new();
         let mut generated_tokens = 0_u32;
-        let mut position = i32::try_from(prompt_tokens.len())
-            .map_err(|_| AppError::ContextOverflow("prompt token count exceeds native position range".to_string()))?;
+        let mut position = i32::try_from(prompt_tokens.len()).map_err(|_| {
+            AppError::ContextOverflow(
+                "prompt token count exceeds native position range".to_string(),
+            )
+        })?;
 
         for _ in 0..max_tokens {
             let token = sampler.sample(&context, batch.n_tokens() - 1);
@@ -167,17 +175,19 @@ impl NativeEngine {
 
             let piece = model
                 .token_to_piece(token, &mut decoder, true, None)
-                .map_err(|error| AppError::InferenceFailed(format!("failed to decode native token: {error}")))?;
+                .map_err(|error| {
+                    AppError::InferenceFailed(format!("failed to decode native token: {error}"))
+                })?;
             output.push_str(&piece);
             generated_tokens += 1;
 
             batch.clear();
-            batch
-                .add(token, position, &[0], true)
-                .map_err(|error| AppError::InferenceFailed(format!("failed to build native decode batch: {error}")))?;
-            context
-                .decode(&mut batch)
-                .map_err(|error| AppError::InferenceFailed(format!("native token decode failed: {error}")))?;
+            batch.add(token, position, &[0], true).map_err(|error| {
+                AppError::InferenceFailed(format!("failed to build native decode batch: {error}"))
+            })?;
+            context.decode(&mut batch).map_err(|error| {
+                AppError::InferenceFailed(format!("native token decode failed: {error}"))
+            })?;
             position += 1;
         }
 
@@ -230,7 +240,9 @@ pub(crate) async fn mobile_native_inference_probe(
         engine.generate_chat(&model_path, &prompt, max_tokens)
     })
     .await
-    .map_err(|error| AppError::InferenceFailed(format!("native inference task failed: {error}")))??;
+    .map_err(|error| {
+        AppError::InferenceFailed(format!("native inference task failed: {error}"))
+    })??;
 
     result.model_id = requested_model_id;
     Ok(result)

@@ -9,6 +9,7 @@ import "./projects.css";
 import "./work.css";
 import "./mobile.css";
 import "./mobile-platform.css";
+import "./mobile-model.css";
 
 bootstrapPlatformDataset();
 
