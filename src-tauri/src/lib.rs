@@ -41,6 +41,7 @@ macro_rules! openmind_generate_handler {
             regenerate_project_agent_message,
             mobile_local_inference_status,
             mobile_generate_text,
+            mobile_model_recommendation,
             platform_capabilities
         ]
     };
@@ -68,6 +69,7 @@ mod local_workspace;
 #[path = "local_workspace_mobile.rs"]
 mod local_workspace;
 mod mobile_inference;
+mod mobile_model_policy;
 mod multimodal;
 mod pdf_ocr;
 mod platform;
@@ -105,6 +107,7 @@ pub(crate) use local_workspace::{
     write_project_workspace_file,
 };
 pub(crate) use mobile_inference::{mobile_generate_text, mobile_local_inference_status};
+pub(crate) use mobile_model_policy::mobile_model_recommendation;
 pub(crate) use multimodal::{
     artifact_media_data_url, create_soundscape_artifact, regenerate_multimodal_message,
     send_multimodal_chat_message, transcribe_audio,
