@@ -102,36 +102,19 @@ jobs:
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
           disable-animations: true
           script: |
-            set -eu
             adb install -r "${SMOKE_APK}"
             adb logcat -c
             adb shell monkey -p ai.openmind.mobile -c android.intent.category.LAUNCHER 1
-            sleep 8
-
-            # Capture diagnostics before any assertion so a startup crash does
-            # not discard the evidence needed to fix it.
-            adb logcat -d > android-logcat.txt || true
-            adb shell dumpsys window windows > android-window-state.txt || true
-            adb shell dumpsys activity processes > android-process-state.txt || true
-            adb shell dumpsys package ai.openmind.mobile > android-package-state.txt || true
-            adb exec-out screencap -p > android-smoke.png || true
+            sleep 12
+            adb shell dumpsys window windows > android-window-state.txt
+            adb logcat -d > android-logcat.txt
+            adb exec-out screencap -p > android-smoke.png
             adb shell uiautomator dump /sdcard/openmindai-window.xml || true
             adb pull /sdcard/openmindai-window.xml android-ui.xml || true
-
-            package_pid="$(adb shell pidof ai.openmind.mobile | tr -d '\r' || true)"
-            if [ -z "${package_pid}" ]; then
-              echo "OpenMindAI process exited during startup"
-              grep -E -i "ai\.openmind\.mobile|AndroidRuntime|FATAL EXCEPTION|Fatal signal|UnsatisfiedLinkError|panic|error while running OpenMindAI" android-logcat.txt | tail -n 250 || true
-              exit 1
-            fi
-            echo "OpenMindAI PID: ${package_pid}"
-
+            adb shell pidof ai.openmind.mobile | tr -d '\r' | grep -Eq '[0-9]+'
+            echo "OpenMindAI PID: $(adb shell pidof ai.openmind.mobile | tr -d '\r')"
             grep -q "ai.openmind.mobile" android-window-state.txt
-
-            if grep -E "FATAL EXCEPTION|Process: ai\.openmind\.mobile.*(FATAL|fatal)|Fatal signal" android-logcat.txt; then
-              echo "Fatal Android runtime error detected"
-              exit 1
-            fi
+            ! grep -E "FATAL EXCEPTION|Process: ai\.openmind\.mobile.*(FATAL|fatal)|Fatal signal" android-logcat.txt
 
       - name: Upload emulator diagnostics
         if: always()
