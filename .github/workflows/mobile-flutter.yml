@@ -52,7 +52,7 @@ jobs:
         run: flutter build apk --debug
 
   ios-build:
-    name: iOS No-Codesign Build
+    name: iOS Simulator Build
     runs-on: macos-latest
     timeout-minutes: 45
     defaults:
@@ -70,5 +70,5 @@ jobs:
         run: dart run tool/prepare_platforms.dart
       - name: Resolve packages
         run: flutter pub get
-      - name: Build iOS without signing
-        run: flutter build ios --debug --no-codesign
+      - name: Build iOS simulator
+        run: flutter build ios --simulator --debug
