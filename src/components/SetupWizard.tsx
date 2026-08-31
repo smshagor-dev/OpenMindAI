@@ -23,7 +23,9 @@ export function SetupWizard(props: {
     return (
       <MobileSetupWizard
         hardware={props.hardware ?? null}
+        models={props.models ?? []}
         root={props.root ?? null}
+        refresh={props.refresh}
         onDismiss={props.onDismiss}
       />
     );
