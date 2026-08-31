@@ -76,12 +76,28 @@ impl ModelLaunchPlanner {
             .saturating_add(estimated_context_bytes)
             .saturating_add(768 * 1024 * 1024);
         let gpu_layers = match (backend.clone(), dedicated_vram_budget_bytes) {
-            (BackendKind::Cuda, Some(budget)) if budget > total_estimate => 999,
-            (BackendKind::Cuda, Some(budget)) if budget > estimated_model_bytes / 2 => 32,
-            (BackendKind::Cuda, Some(_)) => 16,
-            (BackendKind::Vulkan, Some(budget)) if budget > total_estimate => 999,
-            (BackendKind::Vulkan, Some(budget)) if budget > estimated_model_bytes / 2 => 24,
-            (BackendKind::Vulkan, Some(_)) => 12,
+            (BackendKind::Cuda | BackendKind::Hip | BackendKind::Metal, Some(budget))
+                if budget > total_estimate =>
+            {
+                999
+            }
+            (BackendKind::Cuda | BackendKind::Hip | BackendKind::Metal, Some(budget))
+                if budget > estimated_model_bytes / 2 =>
+            {
+                32
+            }
+            (BackendKind::Cuda | BackendKind::Hip | BackendKind::Metal, Some(_)) => 16,
+            (BackendKind::Vulkan | BackendKind::Sycl, Some(budget))
+                if budget > total_estimate =>
+            {
+                999
+            }
+            (BackendKind::Vulkan | BackendKind::Sycl, Some(budget))
+                if budget > estimated_model_bytes / 2 =>
+            {
+                24
+            }
+            (BackendKind::Vulkan | BackendKind::Sycl, Some(_)) => 12,
             _ => 0,
         };
 
@@ -109,8 +125,8 @@ impl ModelLaunchPlanner {
                 context_size,
                 threads: profile.cpu_threads,
                 batch_size: 512,
-                ubatch_size: 128,
-                flash_attention: false,
+                ubatch_size: 256,
+                flash_attention: profile.flash_attention,
                 mmap: profile.mmap,
                 mlock: false,
                 parallelism: 1,
@@ -131,7 +147,11 @@ fn safe_dedicated_vram_budget(total: u64) -> u64 {
 }
 
 fn estimate_context_bytes(context_size: u32) -> u64 {
-    u64::from(context_size) * 1024 * 1024 / 2
+    // Qwen-class GQA models use far less KV memory than the previous generic
+    // 512 KiB/token estimate. 192 KiB/token keeps a safety margin while
+    // avoiding false partial-offload decisions on common 8 GB GPUs.
+    const KV_BYTES_PER_TOKEN_ESTIMATE: u64 = 192 * 1024;
+    u64::from(context_size) * KV_BYTES_PER_TOKEN_ESTIMATE
 }
 
 #[cfg(test)]
@@ -146,6 +166,8 @@ mod tests {
         let plan = ModelLaunchPlanner::plan(&model, &hardware, 8080);
         assert_eq!(plan.config.backend, BackendKind::Vulkan);
         assert!(plan.dedicated_vram_budget_bytes.unwrap() < 8 * 1024 * 1024 * 1024);
+        assert_eq!(plan.config.gpu_layers, 999);
+        assert_eq!(plan.estimated_context_bytes, 8192 * 192 * 1024);
         assert_ne!(
             plan.dedicated_vram_budget_bytes.unwrap(),
             40 * 1024 * 1024 * 1024

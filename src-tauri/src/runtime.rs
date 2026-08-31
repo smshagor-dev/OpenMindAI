@@ -298,6 +298,8 @@ impl LlamaRuntimeManager {
             config.context_size.to_string(),
             "--threads".to_string(),
             config.threads.to_string(),
+            "--threads-batch".to_string(),
+            config.threads.to_string(),
             "--batch-size".to_string(),
             config.batch_size.to_string(),
             "--ubatch-size".to_string(),

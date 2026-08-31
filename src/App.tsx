@@ -45,7 +45,6 @@ import {
   buildMessageContent,
   inferChatMode,
   isUntitledConversation,
-  mergeStreamingSnapshot,
   readAttachment,
   settledValue,
   titleFromPrompt,
@@ -352,24 +351,6 @@ export function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!activeId || !streamingId) return;
-    const interval = window.setInterval(() => {
-      api
-        .messages(activeId)
-        .then((items) => {
-          const visible = items.filter((message) => message.role !== "system");
-          setMessages((current) => mergeStreamingSnapshot(current, visible));
-          const streamedMessage = visible.find((message) => message.id === streamingId);
-          if (streamedMessage && streamedMessage.status !== "streaming") {
-            setStreamingId(null);
-          }
-        })
-        .catch(showError);
-    }, 1500);
-    return () => window.clearInterval(interval);
-  }, [activeId, showError, streamingId]);
-
   const newConversation = useCallback(() => {
     setActiveId(null);
     setMessages([]);
@@ -502,7 +483,7 @@ export function App() {
       }
       setStreamingId(null);
       await refreshMessages(conversationId, setMessages, showError);
-      await refreshApp();
+      setConversations(await api.conversations());
     } catch (caught) {
       if (optimisticUser) {
         setMessages((items) =>
@@ -571,7 +552,7 @@ export function App() {
         await api.sendChatMessage(conversationId, messageContent, inferredMode, []);
         setStreamingId(null);
         await refreshMessages(conversationId, setMessages, showError);
-        await refreshApp();
+        setConversations(await api.conversations());
       } catch (caught) {
         setStreamingId(null);
         showError(caught);

@@ -354,7 +354,8 @@ export function inferChatMode(prompt: string, attachments: AttachmentDraft[]): C
     )
   )
     return "sound";
-  if (/\b(think|reason|solve|debug|step by step|carefully)\b/.test(text)) return "thinking";
+  if (/\b(think deeply|reason deeply|reason carefully|step by step|show your reasoning)\b/.test(text))
+    return "thinking";
   return "chat";
 }
 

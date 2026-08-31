@@ -1349,7 +1349,9 @@ fn resolve_conversation_model(
         })?;
     let reason = routing_reason(&selected, active_model_id.as_deref(), mode, content);
 
-    if active_model_id.as_deref() != Some(selected.id.as_str()) {
+    if mode.eq_ignore_ascii_case("chat")
+        && active_model_id.as_deref() != Some(selected.id.as_str())
+    {
         repo.set_active_model(conversation_id, Some(&selected.id))?;
     }
     Ok(ModelRoutingDecision {
@@ -1397,12 +1399,24 @@ async fn run_streaming_completion(
         active: &state.active_generations,
         client: &state.http,
         endpoint: &endpoint,
+        model: &model.id,
         conversation_id,
         assistant,
         mode: inference_mode,
         media,
     })
     .await;
+
+    if let Ok(metrics) = &result {
+        tracing::info!(
+            model = %model.name,
+            mode,
+            time_to_first_token_ms = ?metrics.time_to_first_token_ms,
+            generated_chars = metrics.generated_chars,
+            elapsed_ms = metrics.elapsed_ms,
+            "local inference completed"
+        );
+    }
 
     if let Err(error) = result {
         let db = state
@@ -1591,10 +1605,9 @@ fn select_conversation_model(
     models: &[ModelRecord],
     active_model_id: Option<&str>,
     mode: &str,
-    content: &str,
+    _content: &str,
 ) -> Option<ModelRecord> {
     let normalized_mode = mode.to_ascii_lowercase();
-    let normalized_content = content.to_ascii_lowercase();
 
     if normalized_mode == "vision" {
         return model_by_repo(models, "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF");
@@ -1602,9 +1615,8 @@ fn select_conversation_model(
 
     if matches!(
         normalized_mode.as_str(),
-        "thinking" | "research" | "search" | "image" | "video" | "voice"
-    ) || looks_like_code_task(&normalized_content)
-    {
+        "thinking" | "research" | "image" | "video" | "voice"
+    ) {
         if let Some(model) = model_by_repo(models, "Qwen/Qwen3-8B-GGUF") {
             return Some(model);
         }
@@ -2131,7 +2143,7 @@ mod milestone2_tests {
     }
 
     #[test]
-    fn select_conversation_model_routes_code_to_titan() {
+    fn select_conversation_model_routes_code_to_core() {
         let core = test_model("core", Some("Qwen/Qwen3-4B-GGUF"), true);
         let titan = test_model("titan", Some("Qwen/Qwen3-8B-GGUF"), true);
         let models = vec![core, titan.clone()];
@@ -2140,7 +2152,7 @@ mod milestone2_tests {
             select_conversation_model(&models, None, "chat", "debug this rust compile error")
                 .unwrap();
 
-        assert_eq!(selected.id, titan.id);
+        assert_eq!(selected.id, "core");
     }
 
     #[test]

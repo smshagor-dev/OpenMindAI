@@ -43,14 +43,25 @@ impl PerformanceProfileManager {
             .and_then(|gpu| gpu.dedicated_vram_bytes)
             .map(reserve_for_vram);
 
+        let cpu_threads = hardware
+            .cpu
+            .physical_cores
+            .unwrap_or_else(|| hardware.cpu.logical_threads.saturating_sub(2).max(1))
+            .min(hardware.cpu.logical_threads.max(1))
+            .max(1);
+        let flash_attention = matches!(
+            &recommended_backend,
+            BackendKind::Cuda | BackendKind::Hip | BackendKind::Sycl | BackendKind::Metal
+        );
+
         PerformanceProfile {
             mode: PerformanceMode::Auto,
             recommended_backend,
-            cpu_threads: hardware.cpu.logical_threads.saturating_sub(2).max(1),
+            cpu_threads,
             system_memory_budget_bytes,
             vram_budget_bytes,
             mmap: true,
-            flash_attention: false,
+            flash_attention,
         }
     }
 }
@@ -119,5 +130,7 @@ mod tests {
         assert_eq!(profile.recommended_backend, BackendKind::Cuda);
         assert!(profile.system_memory_budget_bytes < hardware.memory.total_bytes);
         assert!(profile.vram_budget_bytes.unwrap() < 8 * 1024 * 1024 * 1024);
+        assert_eq!(profile.cpu_threads, 6);
+        assert!(profile.flash_attention);
     }
 }

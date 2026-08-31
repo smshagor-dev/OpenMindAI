@@ -25,6 +25,8 @@ const WEB_SEARCH_RESULTS: usize = 8;
 const WEB_SEARCH_TIMEOUT_SECS: u64 = 12;
 const MAX_VISION_DATA_URL_CHARS: usize = 6_000_000;
 const MAX_INFERENCE_MEDIA_ITEMS: usize = 4;
+const UI_STREAM_CHUNK_BYTES: usize = 32;
+const DB_STREAM_FLUSH_BYTES: usize = 2_048;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -119,6 +121,7 @@ pub struct StreamRequest<'a> {
     pub active: &'a ActiveGenerations,
     pub client: &'a Client,
     pub endpoint: &'a str,
+    pub model: &'a str,
     pub conversation_id: &'a str,
     pub assistant: &'a Message,
     pub mode: InferenceMode,
@@ -178,7 +181,7 @@ pub async fn stream_chat_completion(
     attach_media_to_latest_user_message(&mut messages, request.media)?;
     let config = ChatGenerationConfig::default();
     let body = json!({
-        "model": "qwen3-4b-q4_k_m",
+        "model": request.model,
         "messages": messages,
         "stream": true,
         "temperature": config.temperature,
@@ -202,6 +205,7 @@ pub async fn stream_chat_completion(
     let mut stream = response.bytes_stream();
     let mut sse_buffer = String::new();
     let mut flush_buffer = String::new();
+    let mut ui_buffer = String::new();
     let mut generated_chars = 0;
     let mut first_token_at = None;
     let mut status = "completed";
@@ -233,19 +237,12 @@ pub async fn stream_chat_completion(
                     first_token_at.get_or_insert_with(|| started.elapsed().as_millis());
                     generated_chars += token.chars().count();
                     flush_buffer.push_str(&token);
-                    request
-                        .app
-                        .emit(
-                            "inference:chunk",
-                            StreamChunkEvent {
-                                conversation_id: request.conversation_id.to_string(),
-                                message_id: request.assistant.id.clone(),
-                                chunk: token,
-                            },
-                        )
-                        .map_err(|error| AppError::StreamFailed(error.to_string()))?;
+                    ui_buffer.push_str(&token);
 
-                    if flush_buffer.len() >= 512 {
+                    if ui_buffer.len() >= UI_STREAM_CHUNK_BYTES {
+                        emit_stream_chunk(&request, &mut ui_buffer)?;
+                    }
+                    if flush_buffer.len() >= DB_STREAM_FLUSH_BYTES {
                         flush(request.database, &request.assistant.id, &mut flush_buffer)?;
                     }
                 }
@@ -253,6 +250,9 @@ pub async fn stream_chat_completion(
         }
     }
 
+    if !ui_buffer.is_empty() {
+        emit_stream_chunk(&request, &mut ui_buffer)?;
+    }
     if !flush_buffer.is_empty() {
         flush(request.database, &request.assistant.id, &mut flush_buffer)?;
     }
@@ -275,6 +275,23 @@ pub async fn stream_chat_completion(
         generated_chars,
         elapsed_ms: started.elapsed().as_millis(),
     })
+}
+
+fn emit_stream_chunk(request: &StreamRequest<'_>, buffer: &mut String) -> Result<(), AppError> {
+    if buffer.is_empty() {
+        return Ok(());
+    }
+    request
+        .app
+        .emit(
+            "inference:chunk",
+            StreamChunkEvent {
+                conversation_id: request.conversation_id.to_string(),
+                message_id: request.assistant.id.clone(),
+                chunk: std::mem::take(buffer),
+            },
+        )
+        .map_err(|error| AppError::StreamFailed(error.to_string()))
 }
 
 fn attach_media_to_latest_user_message(
@@ -741,8 +758,8 @@ fn hex_value(value: u8) -> Option<u8> {
 /// still finishing or it just swapped models — never a permanent condition.
 /// Retrying briefly turns that blip into a normal short wait instead of
 /// surfacing a raw HTTP 503 to the user.
-const COMPLETION_RETRY_ATTEMPTS: u32 = 5;
-const COMPLETION_RETRY_DELAY_MS: u64 = 600;
+const COMPLETION_RETRY_ATTEMPTS: u32 = 3;
+const COMPLETION_RETRY_DELAY_MS: u64 = 200;
 
 async fn post_completion_with_retry(
     client: &Client,
