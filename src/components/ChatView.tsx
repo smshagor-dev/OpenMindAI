@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
 import {
   Code2,
@@ -6,13 +6,10 @@ import {
   FileText,
   HardDrive,
   Image,
-  LoaderCircle,
   Music2,
-  Plus,
   Video,
   Volume2,
 } from "lucide-react";
-import { api } from "../api";
 import type {
   AppPreferences,
   Artifact,
@@ -25,7 +22,6 @@ import type {
 import type { AttachmentDraft } from "../lib/chat";
 import { MessageItem } from "./MessageItem";
 import { Composer } from "./Composer";
-import { MobileHome } from "./MobileHome";
 import type { PreviewTarget } from "./PreviewPanel";
 
 const SUGGESTIONS = [
@@ -84,31 +80,7 @@ export function ChatView(props: {
   const latestMessageRef = useRef<globalThis.HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(true);
-  const [mobileConversations, setMobileConversations] = useState<Conversation[]>(props.conversations ?? []);
-  const [mobileComposeOpen, setMobileComposeOpen] = useState(false);
   const isEmpty = props.messages.length === 0;
-
-  useEffect(() => {
-    if (!isEmpty) setMobileComposeOpen(false);
-  }, [isEmpty]);
-
-  useEffect(() => {
-    if (props.conversations) {
-      setMobileConversations(props.conversations);
-      return;
-    }
-    if (!isEmpty) return;
-    let cancelled = false;
-    void api
-      .conversations()
-      .then((items) => {
-        if (!cancelled) setMobileConversations(items);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [isEmpty, props.conversations]);
 
   useEffect(() => {
     if (stickToBottom.current) {
@@ -154,32 +126,6 @@ export function ChatView(props: {
     props.activity.searching ||
     props.activity.researching;
 
-  const openConversation = (id: string) => {
-    if (props.onOpenConversation) {
-      props.onOpenConversation(id);
-      return;
-    }
-    window.dispatchEvent(
-      new globalThis.CustomEvent("openmindai:open-conversation", { detail: id }),
-    );
-  };
-
-  const openModels = () => {
-    if (props.onOpenModels) {
-      props.onOpenModels();
-      return;
-    }
-    window.dispatchEvent(new globalThis.Event("openmindai:open-models"));
-  };
-
-  const openSearch = () => {
-    if (props.onOpenSearch) {
-      props.onOpenSearch();
-      return;
-    }
-    window.dispatchEvent(new globalThis.Event("openmindai:open-search"));
-  };
-
   return (
     <>
       <div
@@ -193,39 +139,6 @@ export function ChatView(props: {
       >
         {isEmpty ? (
           <div className="chat-empty-state">
-            <div className={mobileComposeOpen ? "mobile-home-stage compose-open" : "mobile-home-stage"}>
-              <MobileHome
-                conversations={mobileConversations}
-                models={props.models}
-                activeModelId={props.activeModelId}
-                runtime={props.runtime}
-                onOpenConversation={openConversation}
-                onOpenModels={openModels}
-                onOpenSearch={openSearch}
-              />
-
-              <button
-                type="button"
-                className="mobile-new-chat-fab"
-                aria-label="Start a new chat"
-                onClick={() => {
-                  setMobileComposeOpen(true);
-                  window.setTimeout(() => props.composerRef.current?.focus(), 0);
-                }}
-              >
-                <Plus size={22} />
-              </button>
-
-              <div className="mobile-compose-sheet">
-                <div className="mobile-compose-heading">
-                  <span>New Chat</span>
-                  <small>Private · Local-first</small>
-                </div>
-                <div className="mobile-compose-spacer" />
-                {composer}
-              </div>
-            </div>
-
             <div className="chat-empty-inner desktop-empty-state">
               <h2>Where should we begin?</h2>
               {composer}
@@ -282,43 +195,19 @@ export function ChatView(props: {
         )}
 
         {!isEmpty && active && props.preferences?.typingIndicatorEnabled ? (
-          <>
-            <div className="mobile-thinking-card">
-              <div className="mobile-thinking-head">
-                <span className="mobile-thinking-orb">
-                  <LoaderCircle size={16} />
-                </span>
-                <div>
-                  <strong>
-                    {props.activity.researching
-                      ? "Researching..."
-                      : props.activity.searching
-                        ? "Searching..."
-                        : "Thinking..."}
-                  </strong>
-                  <small>{props.activity.detail ?? "Local model is working on your request"}</small>
-                </div>
-              </div>
-              <div className="mobile-thinking-progress">
-                <i className="done" />
-                <i className={props.streaming ? "done" : "active"} />
-                <i className={props.streaming ? "active" : ""} />
-              </div>
-            </div>
-            <div className="activity-row desktop-activity-row">
-              <span className="pulse-dot" />
-              <span>
-                {props.activity.researching
-                  ? "Deep research running"
-                  : props.activity.searching
-                    ? "Searching sources"
-                    : props.streaming || props.activity.typing
-                      ? "Assistant is typing"
-                      : "Preparing request"}
-              </span>
-              {props.activity.detail ? <small>{props.activity.detail}</small> : null}
-            </div>
-          </>
+          <div className="activity-row desktop-activity-row">
+            <span className="pulse-dot" />
+            <span>
+              {props.activity.researching
+                ? "Deep research running"
+                : props.activity.searching
+                  ? "Searching sources"
+                  : props.streaming || props.activity.typing
+                    ? "Assistant is typing"
+                    : "Preparing request"}
+            </span>
+            {props.activity.detail ? <small>{props.activity.detail}</small> : null}
+          </div>
         ) : null}
         <div className="latest-message-anchor" ref={latestMessageRef} />
       </div>
