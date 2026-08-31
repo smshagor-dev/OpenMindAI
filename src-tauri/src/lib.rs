@@ -41,7 +41,6 @@ macro_rules! openmind_generate_handler {
             regenerate_project_agent_message,
             mobile_send_chat_message,
             mobile_regenerate_message,
-            mobile_release_inference_model,
             platform_capabilities
         ]
     };
