@@ -1,4 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(target_os = "android")]
+use std::path::PathBuf;
 
 use serde::Serialize;
 use tauri::State;
@@ -6,6 +8,7 @@ use tauri::State;
 use crate::{app_error::AppError, AppState};
 
 const MOBILE_CONTEXT_TOKENS: u32 = 2048;
+#[cfg(target_os = "android")]
 const DEFAULT_MAX_OUTPUT_TOKENS: u32 = 128;
 const MAX_OUTPUT_TOKENS: u32 = 512;
 
@@ -174,7 +177,10 @@ fn generate_android(
         )));
     }
 
-    let batch_capacity = prompt_tokens.len().max(1).min(MOBILE_CONTEXT_TOKENS as usize) as i32;
+    let batch_capacity = prompt_tokens
+        .len()
+        .max(1)
+        .min(MOBILE_CONTEXT_TOKENS as usize);
     let mut batch = LlamaBatch::new(batch_capacity, 1);
     let last_prompt_index = prompt_tokens.len().saturating_sub(1) as i32;
     for (position, token) in prompt_tokens.iter().copied().enumerate() {
@@ -201,7 +207,7 @@ fn generate_android(
         }
 
         let piece = model
-            .token_to_piece_bytes(token, 256, false, None)
+            .token_to_piece_bytes(token, 4096, false, None)
             .map_err(|error| AppError::InferenceFailed(format!("token decode failed: {error}")))?;
         output.extend_from_slice(&piece);
 
