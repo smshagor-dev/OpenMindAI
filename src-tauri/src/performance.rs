@@ -29,6 +29,9 @@ pub struct PerformanceProfileManager;
 
 impl PerformanceProfileManager {
     pub fn auto(hardware: &HardwareProfile) -> PerformanceProfile {
+        // HardwareProfile::clone() promotes the lightweight startup snapshot to
+        // the completed background profile as soon as it is available.
+        let hardware = hardware.clone();
         let total_memory = hardware.memory.total_bytes;
         let reserve = reserve_for_system(total_memory);
         let system_memory_budget_bytes = total_memory.saturating_sub(reserve);
