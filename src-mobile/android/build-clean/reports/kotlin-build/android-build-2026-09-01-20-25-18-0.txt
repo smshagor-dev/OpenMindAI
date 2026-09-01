@@ -1,0 +1,199 @@
+Gradle start parameters:
+  tasks = [assembleDebug]
+  excluded tasks = []
+  current dir = G:\OpenMindAI\src-mobile\android
+  project properties args = [track-widget-creation: true, flutter.installedNdkVersions: 28.2.13676358,29.0.13113456, target-platform: android-x64, flutter.sdkManagerPath: C:\Users\smsha\AppData\Local\Android\Sdk\cmdline-tools\latest\bin\sdkmanager.bat, filesystem-scheme: org-dartlang-root, dart-defines: RkxVVFRFUl9CVUlMRF9OQU1FPTAuNC4w,RkxVVFRFUl9CVUlMRF9OVU1CRVI9NA==,RkxVVFRFUl9WRVJTSU9OPTMuNDcuMQ==,RkxVVFRFUl9DSEFOTkVMPXN0YWJsZQ==,RkxVVFRFUl9HSVRfVVJMPWh0dHBzOi8vZ2l0aHViLmNvbS9mbHV0dGVyL2ZsdXR0ZXIuZ2l0,RkxVVFRFUl9GUkFNRVdPUktfUkVWSVNJT049NjY1NTQ4MmVjMA==,RkxVVFRFUl9FTkdJTkVfUkVWSVNJT049NWQ1MzE3ODg2OQ==,RkxVVFRFUl9EQVJUX1ZFUlNJT049My4xMy4x, base-application-name: android.app.Application, tree-shake-icons: false, dart-obfuscation: false, flutter.androidSdkRoot: C:\Users\smsha\AppData\Local\Android\Sdk, target: G:\OpenMindAI\src-mobile\lib\main.dart]
+  system properties args = [user.variant: , file.encoding: windows-1252, user.country: US, user.language: en]
+
+Build failed: [Execution failed for task ':app:compileFlutterBuildDebug'.]
+
+Time metrics:
+  Total Gradle task time: 39.645 s
+  Task action before worker execution: 0.123 s
+  Run compilation in Gradle worker: 2.630 s
+    Clear output: 0.013 s
+    Run compilation: 2.560 s
+      Compiler code analysis: 1.338 s
+      Compiler code generation: 0.376 s
+        Compiler backend: 0.224 s
+        Compiler IR lowering: 0.151 s
+      Compiler initialization time: 0.212 s
+      Compiler translation to IR: 0.108 s
+  Spent time before task action: 0.309 s
+  Start gradle worker: 0.002 s
+
+Size metrics:
+    Analysis lines per second: 1090
+    Code generation lines per second: 3878
+  Total compiler iteration: 1
+    Number of lines analyzed: 1460
+  Start time of task action: 2026-09-01T17:24:46
+
+
+Total time for Kotlin tasks: 3.104 s (7.8 % of all tasks time)
+Time   |% of Kotlin time|Task                                   
+3.104 s|100.0 %         |:android_file_picker:compileDebugKotlin
+
+Task ':app:compileFlutterBuildDebug' finished in 31.206 s
+Time metrics:
+  Total Gradle task time: 31.206 s
+
+Task ':android_file_picker:compileDebugKotlin' finished in 3.104 s
+Task info:
+  Kotlin language version: 2.4
+Compilation log for task ':android_file_picker:compileDebugKotlin':
+  [KOTLIN] Kotlin compiler class: org.jetbrains.kotlin.cli.jvm.K2JVMCompiler
+  [KOTLIN] Kotlin compiler classpath: C:\Users\smsha\.gradle\caches\modules-2\files-2.1\org.jetbrains.kotlin\kotlin-build-tools-compat\2.4.0\209372718c8759fbcb47402dc130d45f00c3f81\kotlin-build-tools-compat-2.4.0.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\org.jetbrains.kotlin\kotlin-build-tools-impl\2.4.0\3dde5b4075cd7963afd0b0b2835627f40abc1149\kotlin-build-tools-impl-2.4.0.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\org.jetbrains.kotlin\kotlin-tooling-core\2.4.0\75970f5a2a9cb4d25557965bbec0a7ccd55bfbcf\kotlin-tooling-core-2.4.0.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\org.jetbrains.kotlin\kotlin-build-tools-cri-impl\2.4.0\7fdfe4b4de70b7e6d81c054572e862121aa1603a\kotlin-build-tools-cri-impl-2.4.0.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\org.jetbrains.kotlin\kotlin-compiler-runner\2.4.0\d2b2336d493d2d3a8047c826cb27606f67029da8\kotlin-compiler-runner-2.4.0.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\org.jetbrains.kotlin\kotlin-compiler-embeddable\2.4.0\f1a24af8bd111a83950236b1aec7a6d72a97e92c\kotlin-compiler-embeddable-2.4.0.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\org.jetbrains.kotlin\kotlin-build-tools-api\2.4.0\46429d5887df2d02f33fe11a0c8444c5be5fd8da\kotlin-build-tools-api-2.4.0.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\org.jetbrains.kotlin\kotlin-daemon-client\2.4.0\e9080614f98d07554367b7e5810529963e9f43e2\kotlin-daemon-client-2.4.0.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\org.jetbrains.kotlin\kotlin-stdlib\2.4.0\4e9f4b531dce5c7dee58ed2de9a8b9a763c8dc6c\kotlin-stdlib-2.4.0.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\org.jetbrains\annotations\13.0\919f0dfe192fb4e063e7dacadee7f8bb9a2672a9\annotations-13.0.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\org.jetbrains.kotlin\kotlin-script-runtime\2.4.0\1de03f0ef3e208ab5f97ee6a587e9b8480447df6\kotlin-script-runtime-2.4.0.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\org.jetbrains.kotlin\kotlin-reflect\1.6.10\1cbe9c92c12a94eea200d23c2bbaedaf3daf5132\kotlin-reflect-1.6.10.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\org.jetbrains.kotlin\kotlin-daemon-embeddable\2.4.0\1ecabef3a8ba6a8e25654573d54edb7e4136e903\kotlin-daemon-embeddable-2.4.0.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\org.jetbrains.kotlinx\kotlinx-coroutines-core-jvm\1.8.0\ac1dc37a30a93150b704022f8d895ee1bd3a36b3\kotlinx-coroutines-core-jvm-1.8.0.jar
+  Kotlin compile daemon JVM options: 
+  Compiling using the daemon strategy
+  found daemon on port 17985 (573679 ms old), trying to connect
+  connected to the daemon
+  successfully leased a compile session (id = 11)
+  Kotlin compile daemon JVM options: [-Xmx8G, -XX:MaxMetaspaceSize=4G, -XX:ReservedCodeCacheSize=512m, --Djava.awt.headless=true, --Djava.rmi.server.hostname=127.0.0.1, --Dkotlin.environment.keepalive, --ea, --Dkotlin.daemon.custom.run.files.path.for.tests=C:\Users\smsha\AppData\Local\kotlin\daemon, --XX:+UseCodeCacheFlushing, --XX:+UseParallelGC, --Dkotlin.daemon.initiator.marker.file=C:\Users\smsha\AppData\Local\Temp\kotlin-compiler-client-8422509911911055536-is-running, ---add-exports=java.base/sun.nio.ch=ALL-UNNAMED, -Dkotlin.environment.keepalive, -ea]
+  Kotlin compiler args: -Xallow-no-source-files -classpath C:\Users\smsha\AppData\Local\Android\Sdk\platforms\android-36\android.jar;C:\Users\smsha\AppData\Local\Android\Sdk\build-tools\36.0.0\core-lambda-stubs.jar;G:\OpenMindAI\src-mobile\android\build-clean\android_file_picker\intermediates\compile_r_class_jar\debug\generateDebugRFile\R.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\io.flutter\flutter_embedding_debug\1.0.0-5d531788691ec3404cac0cee66ead4007b177363\9b59f0065003a12551efa35826efc9c0570e45da\flutter_embedding_debug-1.0.0-5d531788691ec3404cac0cee66ead4007b177363.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\1a2872f66d94e51b09d034592506a359\workspace\transformed\fragment-1.7.1-api.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\da65b987cf8b38d1e043505f7f6431cb\workspace\transformed\activity-1.8.1-api.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\24b470ce00594729308d21bd3874addd\workspace\transformed\loader-1.0.0-api.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\474d0af429521f2825038cbcd3959073\workspace\transformed\lifecycle-livedata-core-ktx-2.10.0-api.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\8785fb07922f3d72684284d2569bcd15\workspace\transformed\lifecycle-viewmodel-2.10.0-api.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\7701e09a1241ec64d3b0eede85ab7822\workspace\transformed\lifecycle-viewmodel-api.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\androidx.lifecycle\lifecycle-common-jvm\2.10.0\2b7a92c746f3339efc533a2da0024e596760f816\lifecycle-common-jvm-2.10.0.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\9e8a3fa642331a6af366b5ed828f61ab\workspace\transformed\lifecycle-livedata-2.10.0-api.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\c5b72122121f6fd6ebe39bfc19f83fbe\workspace\transformed\lifecycle-process-2.10.0-api.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\55ac41e282d388c24ec9bd081f14c335\workspace\transformed\lifecycle-livedata-core-2.10.0-api.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\androidx.lifecycle\lifecycle-common-java8\2.10.0\86a8e6b9d0ba0c964fdc7223a38b6ce74bcb24dd\lifecycle-common-java8-2.10.0.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\2bc084f1aa4bd36207e412001e6ecd6b\workspace\transformed\lifecycle-runtime-api.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\2a497a32d1d4891f652898db8e97bb7a\workspace\transformed\lifecycle-viewmodel-savedstate-api.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\e222b72d6eb85d8dbc1204c82f0b0bc5\workspace\transformed\core-ktx-1.18.0-api.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\16f8fb0362b191005f3f6aff15374ec6\workspace\transformed\viewpager-1.0.0-api.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\4d25c5319f753f052e336bd58767ea8c\workspace\transformed\customview-1.0.0-api.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\42655be6bd4458dc1d30456396e14413\workspace\transformed\core-1.18.0-api.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\6580d7f07d26e09bc0845ebf0de72a74\workspace\transformed\window-1.2.0-api.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\d85fc2bdbc642acdab1df200785c1088\workspace\transformed\window-java-1.2.0-api.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\1d83aec029ab63e032107272d4d6ef0b\workspace\transformed\annotation-experimental-1.4.1-api.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\d39463e8851ee68d13109f595c9f18aa\workspace\transformed\core-viewtree-1.0.0-api.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\00e9a36883f51fc7349be4479529b43b\workspace\transformed\versionedparcelable-1.1.1-api.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\androidx.collection\collection\1.1.0\1f27220b47669781457de0d600849a5de0e89909\collection-1.1.0.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\f081b151ee371cf5ddc7022899eafbe2\workspace\transformed\core-runtime-2.2.0-api.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\androidx.arch.core\core-common\2.2.0\5e1b8b81dfd5f52c56a8d53b18ca759c19a301f3\core-common-2.2.0.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\8e71f83794cc3860955b70ae002ea7f1\workspace\transformed\savedstate-api.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\androidx.annotation\annotation-jvm\1.10.0\388cfaa79001d0f024d28f6a13d5a3dfc2f0e18f\annotation-jvm-1.10.0.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\org.jetbrains.kotlinx\kotlinx-coroutines-android\1.9.0\6cf3b8df5a2ce8c6b0dffe55657a827c405ee2fe\kotlinx-coroutines-android-1.9.0.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\org.jetbrains.kotlinx\kotlinx-coroutines-core-jvm\1.9.0\9beade4c1c1569e4f36cbd2c37e02e3e41502601\kotlinx-coroutines-core-jvm-1.9.0.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\org.jetbrains.kotlinx\kotlinx-serialization-core-jvm\1.7.3\1f226780b845ff9206474c05159245d861556249\kotlinx-serialization-core-jvm-1.7.3.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\org.jetbrains.kotlin\kotlin-stdlib\2.4.0\4e9f4b531dce5c7dee58ed2de9a8b9a763c8dc6c\kotlin-stdlib-2.4.0.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\org.jetbrains\annotations\23.0.0\8cc20c07506ec18e0834947b84a864bfc094484e\annotations-23.0.0.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\7d2f20dae63b04e1de56a161b938ef04\workspace\transformed\tracing-1.2.0-api.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\752677a4a6d1a039a10141b0626b001e\workspace\transformed\relinker-1.4.5-api.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\d35531e9765099ac61a2f1884d66dea9\workspace\transformed\exifinterface-1.4.1-api.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\com.google.guava\listenablefuture\1.0\c949a840a6acbc5268d088e47b04177bf90b3cad\listenablefuture-1.0.jar;C:\Users\smsha\.gradle\caches\modules-2\files-2.1\org.jspecify\jspecify\1.0.0\7425a601c1c7ec76645a78d22b8c6a627edee507\jspecify-1.0.0.jar;C:\Users\smsha\.gradle\caches\9.3.1\transforms\b9826872d5b082164fed5dfaa3144414\workspace\transformed\startup-runtime-1.1.1-api.jar -d G:\OpenMindAI\src-mobile\android\build-clean\android_file_picker\tmp\kotlin-classes\debug -jvm-target 17 -module-name com.mr.flutter.plugin.filepicker:android_file_picker_debug -no-jdk -no-reflect -no-stdlib -Xreport-perf C:\Users\smsha\AppData\Local\Pub\Cache\hosted\pub.dev\android_file_picker-1.0.3\android\src\main\kotlin\com\mr\flutter\plugin\filepicker\FileInfo.kt C:\Users\smsha\AppData\Local\Pub\Cache\hosted\pub.dev\android_file_picker-1.0.3\android\src\main\kotlin\com\mr\flutter\plugin\filepicker\FilePickerDelegate.kt C:\Users\smsha\AppData\Local\Pub\Cache\hosted\pub.dev\android_file_picker-1.0.3\android\src\main\kotlin\com\mr\flutter\plugin\filepicker\FilePickerPlugin.kt C:\Users\smsha\AppData\Local\Pub\Cache\hosted\pub.dev\android_file_picker-1.0.3\android\src\main\kotlin\com\mr\flutter\plugin\filepicker\FileUtils.kt C:\Users\smsha\AppData\Local\Pub\Cache\hosted\pub.dev\android_file_picker-1.0.3\android\src\main\kotlin\com\mr\flutter\plugin\filepicker\MethodResultWrapper.kt
+  Options for KOTLIN DAEMON: CompilationOptions(compilerMode=NON_INCREMENTAL_COMPILER, targetPlatform=JVM, reportCategories=[0], reportSeverity=2, requestedCompilationResults=[0, 3, 2], kotlinScriptExtensions=null, generateCompilerRefIndex=false)
+  file:///C:/Users/smsha/AppData/Local/Pub/Cache/hosted/pub.dev/android_file_picker-1.0.3/android/src/main/kotlin/com/mr/flutter/plugin/filepicker/FilePickerDelegate.kt:79:89 Elvis operator (?:) always returns the left operand of non-nullable type 'Uri'.
+  file:///C:/Users/smsha/AppData/Local/Pub/Cache/hosted/pub.dev/android_file_picker-1.0.3/android/src/main/kotlin/com/mr/flutter/plugin/filepicker/FilePickerPlugin.kt:151:49 Unnecessary safe call on a non-null receiver of type 'HashMap<*, *>'.
+  file:///C:/Users/smsha/AppData/Local/Pub/Cache/hosted/pub.dev/android_file_picker-1.0.3/android/src/main/kotlin/com/mr/flutter/plugin/filepicker/FilePickerPlugin.kt:152:38 Unnecessary safe call on a non-null receiver of type 'HashMap<*, *>'.
+  file:///C:/Users/smsha/AppData/Local/Pub/Cache/hosted/pub.dev/android_file_picker-1.0.3/android/src/main/kotlin/com/mr/flutter/plugin/filepicker/FilePickerPlugin.kt:153:60 Unnecessary safe call on a non-null receiver of type 'HashMap<*, *>'.
+  file:///C:/Users/smsha/AppData/Local/Pub/Cache/hosted/pub.dev/android_file_picker-1.0.3/android/src/main/kotlin/com/mr/flutter/plugin/filepicker/FilePickerPlugin.kt:164:70 Unchecked cast of 'Any?' to 'ArrayList<String>?'.
+  file:///C:/Users/smsha/AppData/Local/Pub/Cache/hosted/pub.dev/android_file_picker-1.0.3/android/src/main/kotlin/com/mr/flutter/plugin/filepicker/FileUtils.kt:623:45 'enum entry WEBP: Bitmap.CompressFormat' is deprecated. Deprecated in Java.
+  file:///C:/Users/smsha/AppData/Local/Pub/Cache/hosted/pub.dev/android_file_picker-1.0.3/android/src/main/kotlin/com/mr/flutter/plugin/filepicker/FileUtils.kt:631:35 'enum entry WEBP: Bitmap.CompressFormat' is deprecated. Deprecated in Java.
+  Kotlin to JVM compiler performance report
+                  INIT     212 ms
+               ANALYZE    1338 ms    1090.521 loc/s
+     TRANSLATION to IR     108 ms   13488.544 loc/s
+           IR LOWERING     151 ms    9632.602 loc/s
+               BACKEND     224 ms    6492.860 loc/s
+  Binary class from Kotlin file performed 543 times, total time 75 ms
+  GC time for PS MarkSweep is 0 ms, 0 collections
+  GC time for PS Scavenge is 0 ms, 0 collections
+  JIT time is 2834 ms
+  
+  Finished executing kotlin compiler using DAEMON strategy
+Time metrics:
+  Total Gradle task time: 3.104 s
+  Task action before worker execution: 0.123 s
+  Run compilation in Gradle worker: 2.630 s
+    Clear output: 0.013 s
+    Run compilation: 2.560 s
+      Compiler code analysis: 1.338 s
+      Compiler code generation: 0.376 s
+        Compiler backend: 0.224 s
+        Compiler IR lowering: 0.151 s
+      Compiler initialization time: 0.212 s
+      Compiler translation to IR: 0.108 s
+  Spent time before task action: 0.309 s
+  Start gradle worker: 0.002 s
+Size metrics:
+    Analysis lines per second: 1090
+    Code generation lines per second: 3878
+  Total compiler iteration: 1
+    Number of lines analyzed: 1460
+  Start time of task action: 2026-09-01T17:24:46
+GC metrics:
+  PS MarkSweep:
+    GC count: 0
+    GC time: 0.000 s
+  PS Scavenge:
+    GC count: 0
+    GC time: 0.000 s
+
+Task ':android_file_picker:packageDebugResources' finished in 1.104 s
+Time metrics:
+  Total Gradle task time: 1.104 s
+
+Task ':android_file_picker:processDebugManifest' finished in 0.958 s
+Time metrics:
+  Total Gradle task time: 0.958 s
+
+Task ':android_file_picker:generateDebugRFile' finished in 0.706 s
+Time metrics:
+  Total Gradle task time: 0.706 s
+
+Task ':android_file_picker:copyDebugJniLibsProjectAndLocalJars' finished in 0.533 s
+Time metrics:
+  Total Gradle task time: 0.533 s
+
+Task ':android_file_picker:checkDebugAarMetadata' finished in 0.439 s
+Time metrics:
+  Total Gradle task time: 0.439 s
+
+Task ':android_file_picker:mergeDebugJniLibFolders' finished in 0.286 s
+Time metrics:
+  Total Gradle task time: 0.286 s
+
+Task ':android_file_picker:javaPreCompileDebug' finished in 0.275 s
+Time metrics:
+  Total Gradle task time: 0.275 s
+
+Task ':android_file_picker:parseDebugLocalResources' finished in 0.274 s
+Time metrics:
+  Total Gradle task time: 0.274 s
+
+Task ':android_file_picker:mergeDebugAssets' finished in 0.186 s
+Time metrics:
+  Total Gradle task time: 0.186 s
+
+Task ':android_file_picker:generateDebugResources' finished in 0.173 s
+Time metrics:
+  Total Gradle task time: 0.173 s
+
+Task ':android_file_picker:writeDebugAarMetadata' finished in 0.113 s
+Time metrics:
+  Total Gradle task time: 0.113 s
+
+Task ':android_file_picker:processDebugNavigationResources' finished in 0.109 s
+Time metrics:
+  Total Gradle task time: 0.109 s
+
+Task ':android_file_picker:mergeDebugNativeLibs' was skipped: NO-SOURCE
+Time metrics:
+  Total Gradle task time: 0.089 s
+
+Task ':android_file_picker:prepareLintJarForPublish' finished in 0.074 s
+Time metrics:
+  Total Gradle task time: 0.074 s
+
+Task ':android_file_picker:prepareDebugArtProfile' finished in 0.007 s
+Time metrics:
+  Total Gradle task time: 0.007 s
+
+Task ':android_file_picker:extractDeepLinksForAarDebug' finished in 0.003 s
+Time metrics:
+  Total Gradle task time: 0.003 s
+
+Task ':app:mergeDebugNativeDebugMetadata' was skipped: NO-SOURCE
+Time metrics:
+  Total Gradle task time: 0.002 s
+
+Task ':android_file_picker:stripDebugDebugSymbols' was skipped: NO-SOURCE
+Time metrics:
+  Total Gradle task time: 0.001 s
+
+Task ':android_file_picker:checkKotlinGradlePluginConfigurationErrors' was skipped: SKIPPED
+Time metrics:
+  Total Gradle task time: 0.001 s
+
+Task ':app:validateCompileSdkVersion' finished in 0.001 s
+Time metrics:
+  Total Gradle task time: 0.001 s
+
+Task ':app:cleanMergeDebugAssets' finished in 0.001 s
+Time metrics:
+  Total Gradle task time: 0.001 s
+
+Task ':android_file_picker:preBuild' finished in 0.000 s
+
+Task ':android_file_picker:preDebugBuild' finished in 0.000 s
+
+Task ':android_file_picker:generateDebugAssets' finished in 0.000 s
+
+Task ':app:DebugMinSdkCheck' finished in 0.000 s
+
+Task ':app:preBuild' finished in 0.000 s
+
+Task ':app:preDebugBuild' finished in 0.000 s
+
+Task ':app:checkKotlinGradlePluginConfigurationErrors' was skipped: SKIPPED
+

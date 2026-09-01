@@ -88,6 +88,11 @@ target/
 # Frontend build output
 /dist/
 dist/
+/src-mobile/build/
+/src-mobile/build-clean/
+/src-mobile/build-run/
+/src-mobile/.dart_tool/
+/src-mobile/ios/Flutter/ephemeral/
 
 # Node dependencies
 /node_modules/
