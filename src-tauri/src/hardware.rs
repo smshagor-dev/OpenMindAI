@@ -373,7 +373,7 @@ fn gpu_from_dxgi_desc(index: u32, desc: DXGI_ADAPTER_DESC1, vulkan_available: bo
         revision: Some(desc.Revision),
         dedicated_vram_bytes,
         dedicated_system_memory_bytes: u64::try_from(desc.DedicatedSystemMemory).ok(),
-        shared_memory_bytes: u64::try_from(desc.SharedMemory).ok(),
+        shared_memory_bytes: u64::try_from(desc.SharedSystemMemory).ok(),
         luid: Some(format!(
             "{}:{}",
             desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart
