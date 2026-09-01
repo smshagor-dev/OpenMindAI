@@ -75,9 +75,13 @@ Firebase configuration is kept in:
 
 `FirebaseService` initializes Firebase Core and Analytics without making local AI startup depend on Firebase connectivity. Firebase initialization failure does not prevent offline/local inference from opening.
 
+`tool/prepare_platforms.dart` validates that the committed Android package, iOS bundle, Firebase project IDs and Firebase application IDs still match before a local build proceeds. This prevents a regenerated native host from silently using the wrong Firebase app.
+
 ## Local development and APK builds
 
 Flutter mobile builds are intentionally local. The repository does not run a dedicated GitHub Actions Flutter/APK workflow.
+
+The dependency lockfile currently requires **Dart 3.12+** and **Flutter 3.44+**. `pubspec.yaml` declares the same minimum toolchain so dependency resolution and project metadata stay consistent.
 
 The Android and iOS hosts are committed. From `src-mobile/` normally run:
 
@@ -90,7 +94,7 @@ flutter test
 flutter build apk --debug
 ```
 
-If native hosts are deliberately regenerated, restore/retain the committed Firebase configuration files and run `dart run tool/prepare_platforms.dart` before building.
+If native hosts are deliberately regenerated, restore/retain the committed Firebase configuration files and run `dart run tool/prepare_platforms.dart` before building. The preparation command now fails with a clear error if the Firebase files or application identities do not match.
 
 For a smaller device-specific Android artifact, Flutter can build split APKs instead of one universal APK:
 
