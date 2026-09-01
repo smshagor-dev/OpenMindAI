@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Openmindai Mobile</string>
+	<string>OpenMindAI</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -15,7 +15,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>openmindai_mobile</string>
+	<string>OpenMindAI</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -65,12 +65,12 @@
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
-	</array>	<key>NSCameraUsageDescription</key>
+	</array>
+	<key>NSCameraUsageDescription</key>
 	<string>OpenMindAI uses the camera only when you choose to attach an image or document.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>OpenMindAI uses the microphone only when you choose voice input.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>OpenMindAI accesses photos only when you choose images to attach to a conversation.</string>
-
 </dict>
 </plist>
