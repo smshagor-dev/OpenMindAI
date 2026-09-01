@@ -22,8 +22,11 @@ class CanvasArtifact {
 }
 
 class CanvasGenerationService {
-  CanvasGenerationService({required MobileInferenceService inference})
-    : _inference = inference;
+  factory CanvasGenerationService({required MobileInferenceService inference}) {
+    return CanvasGenerationService._(inference);
+  }
+
+  CanvasGenerationService._(this._inference);
 
   final MobileInferenceService _inference;
 
@@ -58,7 +61,7 @@ Return ONLY one complete SVG document. Requirements:
 
     final raw = await _inference.generate(
       MobileInferenceRequest(
-        modelId: modelId,
+        preferredModelId: modelId,
         mode: 'thinking',
         messages: [
           ChatMessage(

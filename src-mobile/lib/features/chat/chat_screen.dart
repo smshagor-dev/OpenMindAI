@@ -411,7 +411,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _generationSubscription = _inference
         .stream(
           MobileInferenceRequest(
-            modelId: _selectedModelId,
+            preferredModelId: _selectedModelId,
             mode: _mode,
             messages: requestMessages,
             attachmentPaths: attachments,
@@ -434,13 +434,15 @@ class _ChatScreenState extends State<ChatScreen> {
           },
           onError: (Object error) async {
             if (mounted) {
+              final inferenceError = error is MobileInferenceException
+                  ? error
+                  : null;
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
                   content: Text(error.toString()),
-                  action: SnackBarAction(
-                    label: 'Models',
-                    onPressed: _openModels,
-                  ),
+                  action: inferenceError?.shouldOpenModels ?? true
+                      ? SnackBarAction(label: 'Models', onPressed: _openModels)
+                      : null,
                 ),
               );
             }
