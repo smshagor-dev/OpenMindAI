@@ -15,6 +15,7 @@ use tokio::sync::Notify;
 
 use crate::{
     app_error::AppError,
+    hardware::HardwareProfiler,
     launch_planner::ModelLaunchPlanner,
     model_registry::{ModelLifecycleState, ModelRegistry},
     runtime::{allocate_local_port, LlamaRuntimeStatus},
@@ -159,9 +160,11 @@ fn prepare_default_chat_runtime_sync(app: &AppHandle) -> Result<LlamaRuntimeStat
             })?
     };
 
-    // ModelLaunchPlanner resolves the completed hardware profile on demand and
-    // keeps the safer display-GPU VRAM headroom policy for Windows Vulkan.
-    let hardware = state.hardware.clone();
+    // Keep runtime selection and launch planning on the same completed hardware
+    // profile. This matters when the loader races the background DXGI scan:
+    // NVIDIA must not accidentally select Vulkan and AMD/Windows must not fall
+    // back to CPU just because the initial startup snapshot had no GPU yet.
+    let hardware = HardwareProfiler::for_inference(&state.hardware);
     let plan = ModelLaunchPlanner::plan(&model, &hardware, allocate_local_port()?);
     let status = {
         let mut runtime = state
