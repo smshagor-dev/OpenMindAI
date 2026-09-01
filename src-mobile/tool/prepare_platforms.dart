@@ -2,10 +2,10 @@ import 'dart:io';
 
 Future<void> main() async {
   await _patchAndroidManifest();
-  await _patchAndroidMinSdk();
+  await _patchAndroidBuild();
   await _patchIosInfoPlist();
   await _patchIosDeploymentTarget();
-  stdout.writeln('OpenMindAI mobile platform configuration is ready.');
+  stdout.writeln('OpenMindAI mobile platform configuration is ready for local builds.');
 }
 
 Future<void> _patchAndroidManifest() async {
@@ -39,14 +39,52 @@ Future<void> _patchAndroidManifest() async {
   await file.writeAsString(value);
 }
 
-Future<void> _patchAndroidMinSdk() async {
+Future<void> _patchAndroidBuild() async {
   final file = File('android/app/build.gradle.kts');
   if (!await file.exists()) return;
   var value = await file.readAsString();
+
+  value = value.replaceFirst(
+    RegExp(r'compileSdk\s*=\s*flutter\.compileSdkVersion'),
+    'compileSdk = 37',
+  );
+  value = value.replaceFirst(
+    RegExp(r'ndkVersion\s*=\s*flutter\.ndkVersion'),
+    'ndkVersion = "29.0.13113456"',
+  );
   value = value.replaceFirst(
     RegExp(r'minSdk\s*=\s*flutter\.minSdkVersion'),
     'minSdk = 21',
   );
+  value = value.replaceAll('JavaVersion.VERSION_1_8', 'JavaVersion.VERSION_17');
+  value = value.replaceAll('JavaVersion.VERSION_11', 'JavaVersion.VERSION_17');
+
+  if (!value.contains('isCoreLibraryDesugaringEnabled = true')) {
+    value = value.replaceFirst(
+      'compileOptions {',
+      'compileOptions {\n        isCoreLibraryDesugaringEnabled = true',
+    );
+  }
+  if (!value.contains('multiDexEnabled = true')) {
+    value = value.replaceFirst(
+      'defaultConfig {',
+      'defaultConfig {\n        multiDexEnabled = true',
+    );
+  }
+  if (!value.contains('coreLibraryDesugaring(')) {
+    const dependencies = '''
+
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+}
+''';
+    if (value.contains('\nflutter {')) {
+      value = value.replaceFirst('\nflutter {', '$dependencies\nflutter {');
+    } else {
+      value = '$value$dependencies';
+    }
+  }
+
   await file.writeAsString(value);
 }
 
