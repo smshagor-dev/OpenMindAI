@@ -161,7 +161,7 @@ impl HardwareProfiler {
     pub fn for_inference(_fallback: &HardwareProfile) -> HardwareProfile {
         #[cfg(test)]
         {
-            return _fallback.clone_fields();
+            _fallback.clone_fields()
         }
 
         #[cfg(not(test))]
@@ -178,6 +178,7 @@ impl HardwareProfiler {
     }
 }
 
+#[cfg(not(test))]
 fn store_detected_hardware(profile: HardwareProfile) {
     let cache = DETECTED_HARDWARE.get_or_init(|| RwLock::new(None));
     if let Ok(mut current) = cache.write() {
@@ -372,7 +373,7 @@ fn gpu_from_dxgi_desc(index: u32, desc: DXGI_ADAPTER_DESC1, vulkan_available: bo
         revision: Some(desc.Revision),
         dedicated_vram_bytes,
         dedicated_system_memory_bytes: u64::try_from(desc.DedicatedSystemMemory).ok(),
-        shared_memory_bytes: u64::try_from(desc.SharedSystemMemory).ok(),
+        shared_memory_bytes: u64::try_from(desc.SharedMemory).ok(),
         luid: Some(format!(
             "{}:{}",
             desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart
