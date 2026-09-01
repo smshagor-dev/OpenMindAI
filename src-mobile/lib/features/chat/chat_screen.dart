@@ -2,10 +2,14 @@ import 'dart:async';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../core/constants/model_catalog.dart';
+import '../../core/services/attachment_storage_service.dart';
 import '../../core/services/model_storage_service.dart';
+import '../../core/services/notification_service.dart';
+import '../../core/storage/app_settings_controller.dart';
 import '../../core/storage/onboarding_store.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/openmind_ui.dart';
@@ -33,8 +37,11 @@ class _ChatScreenState extends State<ChatScreen> {
   final _searchController = TextEditingController();
   final _scrollController = ScrollController();
   final _chatStore = ChatStore();
+  final _attachmentStorage = AttachmentStorageService();
   final _onboardingStore = OnboardingStore();
   final _modelStorage = ModelStorageService();
+  final _settings = AppSettingsController.instance;
+  final _notifications = NotificationService.instance;
   final _imagePicker = ImagePicker();
   final _voice = VoiceInputService();
   final _speech = SpeechOutputService();
@@ -126,6 +133,27 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToBottom();
   }
 
+  Future<void> _reloadHistory() async {
+    final conversations = await _chatStore.load();
+    if (!mounted) return;
+    setState(() {
+      _conversations = conversations;
+      if (conversations.every((item) => item.id != _activeConversationId)) {
+        _activeConversationId = conversations.isEmpty ? null : conversations.first.id;
+      }
+    });
+    _scrollToBottom();
+  }
+
+  void _haptic({bool strong = false}) {
+    if (!_settings.haptics) return;
+    if (strong) {
+      HapticFeedback.mediumImpact();
+    } else {
+      HapticFeedback.selectionClick();
+    }
+  }
+
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scrollController.hasClients) return;
@@ -157,6 +185,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _toggleVoice() async {
     if (_generating || _voicePreparing) return;
+    _haptic();
     if (_voiceListening) {
       setState(() => _voicePreparing = true);
       try {
@@ -211,6 +240,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _toggleSpeech(ChatMessage message) async {
     if (message.role != 'assistant' || message.text.trim().isEmpty) return;
+    _haptic();
     if (_speakingMessageId == message.id) {
       await _stopSpeech();
       return;
@@ -239,6 +269,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _newChat() async {
+    _haptic();
     if (_generating) await _stopGeneration();
     if (_voiceListening) await _voice.cancel();
     await _stopSpeech();
@@ -273,8 +304,20 @@ class _ChatScreenState extends State<ChatScreen> {
     final text = _composer.text.trim();
     if (text.isEmpty && _attachmentPaths.isEmpty) return;
 
+    List<String> attachments;
+    try {
+      attachments = await _attachmentStorage.persistPaths(_attachmentPaths);
+    } catch (error) {
+      _showError('Could not save the selected attachment locally: $error');
+      return;
+    }
+    if (text.isEmpty && attachments.isEmpty) {
+      _showError('The selected attachment is no longer available.');
+      return;
+    }
+
+    _haptic(strong: true);
     final conversation = _ensureConversation();
-    final attachments = List<String>.from(_attachmentPaths);
     final userText = text.isEmpty ? 'Review the attached content.' : text;
     final userMessage = ChatMessage(
       id: _id('message'),
@@ -324,7 +367,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToBottom();
 
     var finished = false;
-    Future<void> finish() async {
+    Future<void> finish({required bool successful}) async {
       if (finished) return;
       finished = true;
       _generationSubscription = null;
@@ -332,13 +375,27 @@ class _ChatScreenState extends State<ChatScreen> {
       final index = conversation.messages.indexWhere(
         (message) => message.id == assistantId,
       );
-      if (index >= 0 && conversation.messages[index].text.trim().isEmpty) {
+      final hasResponse = index >= 0 && conversation.messages[index].text.trim().isNotEmpty;
+      if (index >= 0 && !hasResponse) {
         conversation.messages.removeAt(index);
       }
       conversation.updatedAt = DateTime.now();
       await _chatStore.save(_conversations);
       if (mounted) setState(() => _generating = false);
       _scrollToBottom();
+
+      if (successful &&
+          hasResponse &&
+          _settings.completionNotifications &&
+          WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+        try {
+          await _notifications.showResponseReady(
+            conversationTitle: conversation.title,
+          );
+        } catch (_) {
+          // Notification delivery is optional; the completed answer is already saved.
+        }
+      }
     }
 
     _generationSubscription = _inference
@@ -372,14 +429,15 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               );
             }
-            await finish();
+            await finish(successful: false);
           },
-          onDone: finish,
+          onDone: () async => finish(successful: true),
           cancelOnError: true,
         );
   }
 
   Future<void> _stopGeneration() async {
+    _haptic();
     await _generationSubscription?.cancel();
     _generationSubscription = null;
     await _inference.cancel();
@@ -401,6 +459,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _regenerate() async {
     if (_generating) return;
+    _haptic();
     await _stopSpeech();
     final conversation = _activeConversation;
     if (conversation == null || conversation.messages.isEmpty) return;
@@ -422,6 +481,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _pickCamera() async {
+    _haptic();
     final image = await _imagePicker.pickImage(
       source: ImageSource.camera,
       imageQuality: 92,
@@ -432,22 +492,23 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _pickPhotos() async {
+    _haptic();
     final images = await _imagePicker.pickMultiImage(imageQuality: 92);
     if (images.isNotEmpty && mounted) {
-      setState(() => _attachmentPaths.addAll(images.map((image) => image.path)));
+      setState(() => _attachmentPaths.addAll(images.map((image) => image.path));
     }
   }
 
   Future<void> _pickFiles() async {
+    _haptic();
     final files = await FilePicker.pickFiles();
-    if (files.isEmpty || !mounted) {
-      return;
-    }
+    if (files.isEmpty || !mounted) return;
     final paths = files.map((file) => file.xFile.path).where((path) => path.isNotEmpty);
     setState(() => _attachmentPaths.addAll(paths));
   }
 
   void _openAttachmentMenu() {
+    _haptic();
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -481,7 +542,7 @@ class _ChatScreenState extends State<ChatScreen> {
               _AttachTile(
                 icon: Icons.attach_file_rounded,
                 title: 'Files',
-                subtitle: 'PDF, text, code, JSON, Markdown, YAML and CSV',
+                subtitle: 'PDF, DOCX, text, code, JSON, Markdown, YAML and CSV',
                 onTap: () {
                   Navigator.pop(context);
                   _pickFiles();
@@ -506,7 +567,7 @@ class _ChatScreenState extends State<ChatScreen> {
           children: [
             OpenMindPageHeader(
               title: 'Choose model',
-              subtitle: 'Select the local model used for new replies.',
+              subtitle: 'Select the local model used for new replies and Canvas.',
               trailing: IconButton(
                 tooltip: 'Manage models',
                 onPressed: () {
@@ -549,6 +610,7 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
     if (selected == null || !mounted) return;
+    _haptic();
     await _stopSpeech();
     if (selected != _selectedModelId) await _inference.shutdown();
     await _onboardingStore.setSelectedModelId(selected);
@@ -557,6 +619,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _openModels() async {
     if (!mounted) return;
+    _haptic();
     await showModelManagerSheet(
       context,
       storage: _modelStorage,
@@ -570,6 +633,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _openConversation(ChatConversation conversation) async {
+    _haptic();
     await _stopSpeech();
     if (!mounted) return;
     setState(() => _activeConversationId = conversation.id);
@@ -577,22 +641,113 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToBottom();
   }
 
-  void _openCanvas() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => const CanvasScreen()),
+  Future<void> _renameConversation(ChatConversation conversation) async {
+    final controller = TextEditingController(text: conversation.title);
+    final value = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Rename chat'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLength: 80,
+          decoration: const InputDecoration(hintText: 'Chat name'),
+          onSubmitted: (text) => Navigator.pop(dialogContext, text),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, controller.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    final title = value?.trim();
+    if (title == null || title.isEmpty) return;
+    _haptic();
+    conversation.title = title;
+    conversation.updatedAt = DateTime.now();
+    _conversations.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    await _chatStore.save(_conversations);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _deleteConversation(ChatConversation conversation) async {
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Delete chat?'),
+        content: Text('Delete “${conversation.title}” and its saved attachments from this device?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true) return;
+
+    _haptic(strong: true);
+    if (_activeConversationId == conversation.id && _generating) {
+      await _stopGeneration();
+    }
+    final attachmentPaths = <String>{
+      for (final message in conversation.messages) ...message.attachmentPaths,
+    };
+    _conversations.removeWhere((item) => item.id == conversation.id);
+    if (_activeConversationId == conversation.id) {
+      _activeConversationId = _conversations.isEmpty ? null : _conversations.first.id;
+    }
+    await _chatStore.save(_conversations);
+    await _attachmentStorage.deletePaths(attachmentPaths);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _openCanvas() async {
+    _haptic();
+    await _stopVoiceIfNeeded();
+    await _stopSpeech();
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => CanvasScreen(
+          inference: _inference,
+          modelId: _selectedModelId,
+        ),
+      ),
     );
   }
 
-  void _openSettings() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
+  Future<void> _openSettings() async {
+    _haptic();
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => SettingsScreen(onHistoryChanged: _reloadHistory),
+      ),
     );
+    if (mounted) setState(() {});
   }
 
   void _useStarter(String prompt, String mode) {
+    _haptic();
     _composer.text = prompt;
     _composer.selection = TextSelection.collapsed(offset: prompt.length);
     setState(() => _mode = mode);
+  }
+
+  void _changeMode(String value) {
+    _haptic();
+    setState(() => _mode = value);
   }
 
   @override
@@ -679,12 +834,13 @@ class _ChatScreenState extends State<ChatScreen> {
                   generating: _generating,
                   voiceListening: _voiceListening,
                   voicePreparing: _voicePreparing,
-                  onModeChanged: (value) => setState(() => _mode = value),
+                  onModeChanged: _changeMode,
                   onAdd: _openAttachmentMenu,
                   onVoice: _toggleVoice,
                   onSend: _send,
                   onStop: _stopGeneration,
                   onRemoveAttachment: (path) {
+                    _haptic();
                     setState(() => _attachmentPaths.remove(path));
                   },
                 ),
@@ -830,6 +986,34 @@ class _ChatScreenState extends State<ChatScreen> {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                             ),
+                            trailing: PopupMenuButton<String>(
+                              tooltip: 'Chat actions',
+                              onSelected: (value) {
+                                if (value == 'rename') {
+                                  _renameConversation(item);
+                                } else if (value == 'delete') {
+                                  _deleteConversation(item);
+                                }
+                              },
+                              itemBuilder: (_) => const [
+                                PopupMenuItem(
+                                  value: 'rename',
+                                  child: ListTile(
+                                    contentPadding: EdgeInsets.zero,
+                                    leading: Icon(Icons.edit_outlined),
+                                    title: Text('Rename'),
+                                  ),
+                                ),
+                                PopupMenuItem(
+                                  value: 'delete',
+                                  child: ListTile(
+                                    contentPadding: EdgeInsets.zero,
+                                    leading: Icon(Icons.delete_outline_rounded),
+                                    title: Text('Delete'),
+                                  ),
+                                ),
+                              ],
+                            ),
                             onTap: () => _openConversation(item),
                           ),
                         );
@@ -840,9 +1024,7 @@ class _ChatScreenState extends State<ChatScreen> {
             const Padding(
               padding: EdgeInsets.fromLTRB(12, 8, 12, 12),
               child: ListTile(
-                leading: CircleAvatar(
-                  child: Icon(Icons.lock_outline_rounded),
-                ),
+                leading: CircleAvatar(child: Icon(Icons.lock_outline_rounded)),
                 title: Text('Private by design', style: TextStyle(fontWeight: FontWeight.w700)),
                 subtitle: Text('Core chat stays on this device'),
               ),
@@ -870,7 +1052,7 @@ class _ModeBanner extends StatelessWidget {
       'web-search' => (
           Icons.travel_explore_rounded,
           'Search mode',
-          'Uses web evidence when the current answer needs fresh information.',
+          'Uses public web evidence when the current answer needs fresh information.',
         ),
       'research' => (
           Icons.biotech_outlined,
