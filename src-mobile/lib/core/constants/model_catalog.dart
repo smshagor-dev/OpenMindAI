@@ -60,7 +60,7 @@ class MobileModelCatalog {
       kind: 'Chat',
       minRamGb: 8,
       sizeBytes: 2497280256,
-      description: 'Balanced default model for capable modern devices.',
+      description: 'Balanced optional model for capable modern devices.',
       repository: 'Qwen/Qwen3-4B-GGUF',
       filenameContains: ['Q4_K_M', '.gguf'],
     ),
@@ -70,7 +70,7 @@ class MobileModelCatalog {
       kind: 'Chat',
       minRamGb: 16,
       sizeBytes: 5200000000,
-      description: 'Higher-quality general model for high-memory devices.',
+      description: 'Higher-quality optional model for high-memory devices.',
       repository: 'Qwen/Qwen3-8B-GGUF',
       filenameContains: ['Q4_K_M', '.gguf'],
     ),
@@ -90,7 +90,7 @@ class MobileModelCatalog {
       kind: 'Reasoning',
       minRamGb: 16,
       sizeBytes: 4680000000,
-      description: 'Deeper local reasoning for analysis, math, and coding.',
+      description: 'Deeper optional local reasoning for analysis, math, and coding.',
       repository: 'lmstudio-community/DeepSeek-R1-Distill-Qwen-7B-GGUF',
       filenameContains: ['Q4_K_M', '.gguf'],
     ),
@@ -101,7 +101,7 @@ class MobileModelCatalog {
       minRamGb: 8,
       sizeBytes: 2775000000,
       description:
-          'Local image, screenshot, chart, and document understanding.',
+          'Optional local image, screenshot, chart, and document understanding.',
       repository: 'ggml-org/Qwen2.5-VL-3B-Instruct-GGUF',
       filenameContains: ['Q4_K_M', '.gguf'],
       mmprojFilenameContains: ['mmproj-', 'Q8_0', '.gguf'],
@@ -113,6 +113,19 @@ class MobileModelCatalog {
 
   static MobileModel get vision => byId('qwen25-vl-3b-q4km');
 
+  /// Small first-run download. More capable models stay opt-in in Model Manager.
+  /// This keeps a fresh mobile install near the Nano footprint instead of
+  /// automatically pulling multi-gigabyte models on high-memory phones.
+  static MobileModel initialInstallModel({
+    required int ramGb,
+    required int freeDiskBytes,
+  }) {
+    final nano = byId('qwen3-06b-q4');
+    final requiredBytes = nano.sizeBytes + _installReserveBytes;
+    if (freeDiskBytes > 0 && freeDiskBytes < requiredBytes) return nano;
+    return nano;
+  }
+
   static MobileModel recommendForRam(int ramGb) {
     if (ramGb >= 16) return byId('qwen3-8b-q4km');
     if (ramGb >= 8) return byId('qwen3-4b-q4km');
@@ -120,6 +133,8 @@ class MobileModelCatalog {
     return byId('qwen3-06b-q4');
   }
 
+  /// Capability recommendation used by the model manager. This does not mean
+  /// the model should be downloaded automatically during onboarding.
   static MobileModel recommendForDevice({
     required int ramGb,
     required int freeDiskBytes,
