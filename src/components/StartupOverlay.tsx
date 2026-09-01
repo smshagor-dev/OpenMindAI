@@ -62,6 +62,12 @@ export function StartupOverlay() {
   const activeStep = steps.find((step) => step.state === "loading") ?? steps.find((step) => step.state === "pending");
 
   useEffect(() => {
+    // tauri.conf starts the native window hidden. This effect runs only after
+    // React has committed the loader, so a normal launch can now be revealed
+    // without ever exposing the raw WebView background. Background-login
+    // instances intentionally stay hidden; the Rust command handles that.
+    void invoke<boolean>("reveal_main_window").catch(() => undefined);
+
     const detectAppReady = () => {
       const ready = Boolean(document.querySelector(".app-shell, .setup-wizard"));
       if (ready) setAppReady(true);
