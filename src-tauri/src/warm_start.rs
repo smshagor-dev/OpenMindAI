@@ -190,16 +190,34 @@ pub(crate) async fn prepare_default_chat_runtime(
         .map_err(|error| AppError::internal(format!("startup model task failed: {error}")))?
 }
 
+/// The native window starts hidden. React calls this only after the staged
+/// loader has mounted, which prevents a raw WebView/white frame from ever being
+/// shown. Windows-login background instances intentionally remain hidden.
+#[tauri::command]
+pub(crate) fn reveal_main_window(app: AppHandle) -> Result<bool, AppError> {
+    if is_background_boot() {
+        return Ok(false);
+    }
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| AppError::internal("main window is unavailable"))?;
+    window
+        .show()
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    window
+        .set_focus()
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    Ok(true)
+}
+
 /// The process can be launched with `--background` from Windows login. The
 /// same process stays alive with its Core model/runtime resident; a later
 /// normal launch is handed to this instance by `main.rs` and simply reveals
 /// the already-prepared Tauri window.
 pub fn spawn_background_services(app: AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        if is_background_boot() {
+    if is_background_boot() {
+        if let Some(window) = app.get_webview_window("main") {
             let _ = window.hide();
-        } else {
-            let _ = window.show();
         }
     }
 
