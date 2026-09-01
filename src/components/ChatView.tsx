@@ -71,7 +71,10 @@ export function ChatView(props: {
 
   useEffect(() => {
     if (stickToBottom.current) {
-      latestMessageRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      latestMessageRef.current?.scrollIntoView({
+        behavior: props.streaming ? "auto" : "smooth",
+        block: "end",
+      });
     }
   }, [
     props.messages,
