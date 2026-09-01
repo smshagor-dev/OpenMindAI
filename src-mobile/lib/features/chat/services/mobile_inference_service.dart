@@ -9,4 +9,24 @@ import 'attachment_context_service.dart';
 import 'mounted_text_runtime.dart';
 import 'web_evidence_service.dart';
 
-// Source restoration placeholder. Will be replaced by atomic routing integration patch.
+class MobileInferenceRequest {
+  const MobileInferenceRequest({
+    required this.modelId,
+    required this.mode,
+    required this.messages,
+    required this.attachmentPaths,
+  });
+
+  final String modelId;
+  final String mode;
+  final List<ChatMessage> messages;
+  final List<String> attachmentPaths;
+}
+
+abstract class MobileInferenceService {
+  Stream<String> stream(MobileInferenceRequest request);
+  Future<void> cancel();
+  Future<void> shutdown() => cancel();
+}
+
+// Restored baseline file will be updated atomically in the next patch.
