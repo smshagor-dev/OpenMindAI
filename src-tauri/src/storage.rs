@@ -1,7 +1,10 @@
 use std::{
     fs,
     path::Path,
-    sync::{OnceLock, RwLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        OnceLock, RwLock,
+    },
 };
 
 use serde::Serialize;
@@ -12,7 +15,7 @@ use crate::{
 };
 
 static STORAGE_SUMMARY_CACHE: OnceLock<RwLock<Option<(String, StorageSummary)>>> = OnceLock::new();
-static STORAGE_SCAN_STARTED: OnceLock<()> = OnceLock::new();
+static STORAGE_SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,8 +44,8 @@ impl<'a> StorageMonitor<'a> {
     }
 
     /// Startup callers receive a cheap snapshot immediately. Recursive sizing
-    /// of models/cache/generated folders is performed once on a background
-    /// thread and subsequent refreshes receive the completed values.
+    /// of models/cache/generated folders is performed in the background and
+    /// subsequent refreshes receive the completed values.
     pub fn summary(&self) -> Result<StorageSummary, AppError> {
         let root_key = self.root.root().display().to_string();
         let cache = STORAGE_SUMMARY_CACHE.get_or_init(|| RwLock::new(None));
@@ -54,7 +57,10 @@ impl<'a> StorageMonitor<'a> {
             }
         }
 
-        if STORAGE_SCAN_STARTED.set(()).is_ok() {
+        if STORAGE_SCAN_RUNNING
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
             let root = self.root.clone();
             let key = root_key.clone();
             std::thread::spawn(move || {
@@ -65,6 +71,7 @@ impl<'a> StorageMonitor<'a> {
                         *current = Some((key, summary));
                     }
                 }
+                STORAGE_SCAN_RUNNING.store(false, Ordering::Release);
             });
         }
 
