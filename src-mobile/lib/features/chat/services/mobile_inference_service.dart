@@ -10,13 +10,7 @@ import 'mounted_text_runtime.dart';
 import 'web_evidence_service.dart';
 
 class MobileInferenceRequest {
-  const MobileInferenceRequest({
-    required this.modelId,
-    required this.mode,
-    required this.messages,
-    required this.attachmentPaths,
-  });
-
+  const MobileInferenceRequest({required this.modelId, required this.mode, required this.messages, required this.attachmentPaths});
   final String modelId;
   final String mode;
   final List<ChatMessage> messages;
@@ -29,4 +23,9 @@ abstract class MobileInferenceService {
   Future<void> shutdown() => cancel();
 }
 
-// Restored baseline file will be updated atomically in the next patch.
+class MobileInferenceUnavailable implements Exception {
+  const MobileInferenceUnavailable(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
