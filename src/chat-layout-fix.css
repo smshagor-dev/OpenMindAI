@@ -1,23 +1,30 @@
 .message.user {
-  flex-direction: column;
-  align-items: flex-end;
-  justify-content: flex-start;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr);
+  grid-auto-flow: row;
+  justify-items: end;
+  align-items: start !important;
+  justify-content: stretch !important;
 }
 
-.message.user .message-content {
-  align-self: flex-end;
+.message.user > .message-content {
+  grid-column: 1;
+  justify-self: end;
+  align-self: auto;
 }
 
-.message.user .message-actions-user {
-  align-self: flex-end;
+.message.user > .message-actions-user {
+  grid-column: 1;
+  justify-self: end;
+  align-self: auto;
   width: auto;
   max-width: min(680px, 86%);
   margin-top: 6px;
-  margin-left: auto;
+  margin-left: 0;
   justify-content: flex-end;
   flex-wrap: wrap;
 }
 
-.message.user .message-actions-user .message-timestamp {
+.message.user > .message-actions-user .message-timestamp {
   margin-left: 0;
 }
