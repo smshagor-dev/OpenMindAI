@@ -1,15 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
-import {
-  Code2,
-  FileSearch,
-  FileText,
-  HardDrive,
-  Image,
-  Music2,
-  Video,
-  Volume2,
-} from "lucide-react";
+import { Code2, FileSearch, FileText, HardDrive, Image, Music2, Video, Volume2 } from "lucide-react";
 import type {
   AppPreferences,
   Artifact,
@@ -43,7 +34,6 @@ interface RealtimeActivity {
 
 export function ChatView(props: {
   conversation: Conversation | null;
-  conversations?: Conversation[];
   messages: Message[];
   prompt: string;
   setPrompt: (value: string) => void;
@@ -67,9 +57,6 @@ export function ChatView(props: {
   modelSwitching: boolean;
   modelSwitchError: string | null;
   onSelectModel: (modelId: string) => void;
-  onOpenConversation?: (id: string) => void;
-  onOpenModels?: () => void;
-  onOpenSearch?: () => void;
   artifactsByMessage: Map<string, Artifact[]>;
   onCreateArtifact: (messageId: string, kind: ArtifactKind, content: string, filenameHint?: string) => void;
   onOpenArtifact: (artifact: Artifact) => void;
@@ -114,17 +101,10 @@ export function ChatView(props: {
       modelSwitching={props.modelSwitching}
       modelSwitchError={props.modelSwitchError}
       onSelectModel={props.onSelectModel}
-      placeholder="Message OpenMindAI..."
+      placeholder={isEmpty ? "Ask anything..." : "Message OpenMindAI..."}
       note={isEmpty ? undefined : "Responses are generated locally on your machine."}
     />
   );
-
-  const active =
-    props.submitting ||
-    props.streaming ||
-    props.activity.typing ||
-    props.activity.searching ||
-    props.activity.researching;
 
   return (
     <>
@@ -139,7 +119,7 @@ export function ChatView(props: {
       >
         {isEmpty ? (
           <div className="chat-empty-state">
-            <div className="chat-empty-inner desktop-empty-state">
+            <div className="chat-empty-inner">
               <h2>Where should we begin?</h2>
               {composer}
               <div className="suggestion-list">
@@ -162,8 +142,7 @@ export function ChatView(props: {
                 })}
               </div>
               <p className="chat-empty-footer">
-                <HardDrive size={13} /> Local-first workspace - chats, models and artifacts remain
-                under the portable root
+                <HardDrive size={13} /> Local-first workspace - chats, models and artifacts remain under the portable root
               </p>
             </div>
           </div>
@@ -178,24 +157,19 @@ export function ChatView(props: {
               onRegenerate={() => props.regenerate(message.id)}
               onRetry={() => props.retry(message.id)}
               artifacts={props.artifactsByMessage.get(message.id) ?? []}
-              onCreateArtifact={(kind, content, filenameHint) =>
-                props.onCreateArtifact(message.id, kind, content, filenameHint)
-              }
+              onCreateArtifact={(kind, content, filenameHint) => props.onCreateArtifact(message.id, kind, content, filenameHint)}
               onOpenArtifact={props.onOpenArtifact}
               onRevealArtifact={props.onRevealArtifact}
               onRetryArtifact={props.onRetryArtifact}
               onPreview={props.onPreview}
-              onEditUser={
-                message.role === "user"
-                  ? (content) => props.editUserMessage(message.id, content)
-                  : undefined
-              }
+              onEditUser={message.role === "user" ? (content) => props.editUserMessage(message.id, content) : undefined}
             />
           ))
         )}
-
-        {!isEmpty && active && props.preferences?.typingIndicatorEnabled ? (
-          <div className="activity-row desktop-activity-row">
+        {!isEmpty &&
+        (props.submitting || props.streaming || props.activity.typing || props.activity.searching || props.activity.researching) &&
+        props.preferences?.typingIndicatorEnabled ? (
+          <div className="activity-row">
             <span className="pulse-dot" />
             <span>
               {props.activity.researching
