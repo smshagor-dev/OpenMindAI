@@ -7,7 +7,8 @@ class OnboardingStore {
 
   final SharedPreferencesAsync _prefs = SharedPreferencesAsync();
 
-  Future<bool> isComplete() async => await _prefs.getBool(_completeKey) ?? false;
+  Future<bool> isComplete() async =>
+      await _prefs.getBool(_completeKey) ?? false;
 
   Future<void> complete({required String selectedModelId}) async {
     await _prefs.setBool(_licenseKey, true);

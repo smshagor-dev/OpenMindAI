@@ -123,8 +123,11 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                     child: Center(
                       child: Text(
                         '${_step + 1}/4',
-                        style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        style: Theme.of(context).textTheme.labelMedium
+                            ?.copyWith(
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSurfaceVariant,
                             ),
                       ),
                     ),
@@ -220,8 +223,8 @@ class _WelcomePage extends StatelessWidget {
               'OpenMindAI brings private, local-first chat, vision and voice to your phone. You decide when the app uses files, camera, microphone or the web.',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
             ),
             const SizedBox(height: 28),
             const OpenMindSectionCard(
@@ -282,7 +285,11 @@ class _WelcomePage extends StatelessWidget {
 }
 
 class _Capability extends StatelessWidget {
-  const _Capability({required this.icon, required this.title, required this.text});
+  const _Capability({
+    required this.icon,
+    required this.title,
+    required this.text,
+  });
 
   final IconData icon;
   final String title;
@@ -303,13 +310,17 @@ class _Capability extends StatelessWidget {
               Text(
                 text,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
             ],
           ),
         ),
-        const Icon(Icons.check_circle_outline_rounded, color: AppTheme.accent, size: 20),
+        const Icon(
+          Icons.check_circle_outline_rounded,
+          color: AppTheme.accent,
+          size: 20,
+        ),
       ],
     );
   }
@@ -352,7 +363,8 @@ class _InstructionsPage extends StatelessWidget {
           const SizedBox(height: 8),
           const OpenMindPageHeader(
             title: 'Before you start',
-            subtitle: 'Four things to know about running AI directly on a phone.',
+            subtitle:
+                'Four things to know about running AI directly on a phone.',
           ),
           const SizedBox(height: 22),
           Expanded(
@@ -371,12 +383,19 @@ class _InstructionsPage extends StatelessWidget {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(item.$2, style: const TextStyle(fontWeight: FontWeight.w800)),
+                            Text(
+                              item.$2,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
                             const SizedBox(height: 5),
                             Text(
                               item.$3,
                               style: TextStyle(
-                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurfaceVariant,
                               ),
                             ),
                           ],
@@ -422,7 +441,8 @@ class _LicensePage extends StatelessWidget {
           const SizedBox(height: 8),
           const OpenMindPageHeader(
             title: 'License agreement',
-            subtitle: 'Review the OpenMindAI license before installing a model.',
+            subtitle:
+                'Review the OpenMindAI license before installing a model.',
           ),
           const SizedBox(height: 16),
           Expanded(
@@ -433,7 +453,9 @@ class _LicensePage extends StatelessWidget {
                   future: rootBundle.loadString('assets/LICENSE.txt'),
                   builder: (context, snapshot) {
                     if (!snapshot.hasData) {
-                      return const Center(child: CircularProgressIndicator(strokeWidth: 2));
+                      return const Center(
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      );
                     }
                     return Scrollbar(
                       child: SingleChildScrollView(
@@ -524,7 +546,8 @@ class _RecommendationPageState extends State<_RecommendationPage> {
             return const OpenMindEmptyState(
               icon: Icons.memory_rounded,
               title: 'Checking this device',
-              description: 'Reading available memory and storage to recommend a balanced local model.',
+              description:
+                  'Reading available memory and storage to recommend a balanced local model.',
               action: SizedBox(
                 width: 24,
                 height: 24,
@@ -536,7 +559,8 @@ class _RecommendationPageState extends State<_RecommendationPage> {
             return OpenMindEmptyState(
               icon: Icons.error_outline_rounded,
               title: 'Device check unavailable',
-              description: 'OpenMindAI could not read device capabilities. ${snapshot.error ?? ''}',
+              description:
+                  'OpenMindAI could not read device capabilities. ${snapshot.error ?? ''}',
             );
           }
 
@@ -549,7 +573,8 @@ class _RecommendationPageState extends State<_RecommendationPage> {
               const SizedBox(height: 8),
               OpenMindPageHeader(
                 title: 'Recommended model',
-                subtitle: '${profile.deviceName} · ${profile.platform} ${profile.osVersion}',
+                subtitle:
+                    '${profile.deviceName} · ${profile.platform} ${profile.osVersion}',
               ),
               const SizedBox(height: 18),
               OpenMindSectionCard(
@@ -565,9 +590,15 @@ class _RecommendationPageState extends State<_RecommendationPage> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const OpenMindStatusPill(label: 'Recommended', active: true),
+                              const OpenMindStatusPill(
+                                label: 'Recommended',
+                                active: true,
+                              ),
                               const SizedBox(height: 7),
-                              Text(model.name, style: Theme.of(context).textTheme.titleLarge),
+                              Text(
+                                model.name,
+                                style: Theme.of(context).textTheme.titleLarge,
+                              ),
                             ],
                           ),
                         ),
@@ -585,11 +616,13 @@ class _RecommendationPageState extends State<_RecommendationPage> {
                           icon: Icons.memory_rounded,
                         ),
                         OpenMindStatusPill(
-                          label: '${profile.freeDiskGb.toStringAsFixed(1)} GB free',
+                          label:
+                              '${profile.freeDiskGb.toStringAsFixed(1)} GB free',
                           icon: Icons.storage_rounded,
                         ),
                         OpenMindStatusPill(
-                          label: '~${model.sizeGb.toStringAsFixed(1)} GB download',
+                          label:
+                              '~${model.sizeGb.toStringAsFixed(1)} GB download',
                           icon: Icons.download_rounded,
                         ),
                       ],
@@ -629,8 +662,16 @@ class _RecommendationPageState extends State<_RecommendationPage> {
                 width: double.infinity,
                 child: FilledButton.icon(
                   onPressed: _installing ? null : () => _install(profile),
-                  icon: Icon(_installing ? Icons.downloading_rounded : Icons.download_rounded),
-                  label: Text(_installing ? 'Installing local model…' : 'Install and open chat'),
+                  icon: Icon(
+                    _installing
+                        ? Icons.downloading_rounded
+                        : Icons.download_rounded,
+                  ),
+                  label: Text(
+                    _installing
+                        ? 'Installing local model…'
+                        : 'Install and open chat',
+                  ),
                 ),
               ),
               if (_installing)

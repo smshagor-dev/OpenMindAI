@@ -46,7 +46,8 @@ After.
     test('splits long replies without exceeding the safe size', () {
       final text = List.generate(
         20,
-        (index) => 'Sentence $index contains enough words to exercise chunking.',
+        (index) =>
+            'Sentence $index contains enough words to exercise chunking.',
       ).join(' ');
 
       final chunks = splitSpeechText(text, 120);

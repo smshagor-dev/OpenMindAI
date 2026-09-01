@@ -50,10 +50,10 @@ class _OpenMindMobileAppState extends State<OpenMindMobileApp> {
         home: _onboardingComplete == null
             ? const _BootScreen()
             : _onboardingComplete!
-                ? const ChatScreen()
-                : OnboardingFlow(
-                    onFinished: () => setState(() => _onboardingComplete = true),
-                  ),
+            ? const ChatScreen()
+            : OnboardingFlow(
+                onFinished: () => setState(() => _onboardingComplete = true),
+              ),
       ),
     );
   }

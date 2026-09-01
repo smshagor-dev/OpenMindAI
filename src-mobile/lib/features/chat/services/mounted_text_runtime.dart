@@ -52,11 +52,7 @@ class MountedTextRuntime {
         request.headers.contentType = ContentType.json;
         request.headers.set(HttpHeaders.acceptHeader, 'text/event-stream');
         request.write(
-          jsonEncode({
-            'model': modelId,
-            'messages': messages,
-            'stream': true,
-          }),
+          jsonEncode({'model': modelId, 'messages': messages, 'stream': true}),
         );
 
         final response = await request.close();
@@ -67,9 +63,10 @@ class MountedTextRuntime {
           );
         }
 
-        await for (final line in response
-            .transform(utf8.decoder)
-            .transform(const LineSplitter())) {
+        await for (final line
+            in response
+                .transform(utf8.decoder)
+                .transform(const LineSplitter())) {
           if (controller.isClosed) {
             break;
           }
@@ -85,9 +82,7 @@ class MountedTextRuntime {
             continue;
           }
           final choices = decoded['choices'];
-          if (choices is! List ||
-              choices.isEmpty ||
-              choices.first is! Map) {
+          if (choices is! List || choices.isEmpty || choices.first is! Map) {
             continue;
           }
           final delta = (choices.first as Map)['delta'];
@@ -127,11 +122,7 @@ class MountedTextRuntime {
 
     await unmount();
     final server = LlamaHttpServer.open(
-      config: LlamaServerConfig(
-        model: modelId,
-        modelPath: modelPath,
-        port: 0,
-      ),
+      config: LlamaServerConfig(model: modelId, modelPath: modelPath, port: 0),
     );
     final address = await server.start();
     _server = server;

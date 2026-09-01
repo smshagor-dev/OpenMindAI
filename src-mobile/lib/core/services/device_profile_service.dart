@@ -63,7 +63,9 @@ class DeviceProfileService {
       );
     }
 
-    throw UnsupportedError('OpenMindAI mobile currently targets Android and iOS.');
+    throw UnsupportedError(
+      'OpenMindAI mobile currently targets Android and iOS.',
+    );
   }
 
   int _ramGb(int ramMb) => (ramMb / 1024).floor();

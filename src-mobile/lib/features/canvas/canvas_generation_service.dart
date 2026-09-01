@@ -23,7 +23,7 @@ class CanvasArtifact {
 
 class CanvasGenerationService {
   CanvasGenerationService({required MobileInferenceService inference})
-      : _inference = inference;
+    : _inference = inference;
 
   final MobileInferenceService _inference;
 
@@ -39,7 +39,8 @@ class CanvasGenerationService {
       _ => (1024, 1024),
     };
 
-    final instruction = '''
+    final instruction =
+        '''
 Create a polished vector illustration for the user's request.
 
 User request: $prompt
@@ -78,7 +79,10 @@ Return ONLY one complete SVG document. Requirements:
       await directory.create(recursive: true);
     }
     final file = File(
-      p.join(directory.path, 'openmindai-${DateTime.now().millisecondsSinceEpoch}.svg'),
+      p.join(
+        directory.path,
+        'openmindai-${DateTime.now().millisecondsSinceEpoch}.svg',
+      ),
     );
     await file.writeAsString(svg, flush: true);
 
@@ -128,11 +132,15 @@ String sanitizeGeneratedSvg(String raw) {
     final document = XmlDocument.parse(svg);
     final root = document.rootElement;
     if (root.name.local.toLowerCase() != 'svg') {
-      throw const CanvasGenerationException('Generated content is not an SVG image.');
+      throw const CanvasGenerationException(
+        'Generated content is not an SVG image.',
+      );
     }
     final viewBox = root.getAttribute('viewBox');
     if (viewBox == null || viewBox.trim().isEmpty) {
-      throw const CanvasGenerationException('Generated SVG is missing its canvas size.');
+      throw const CanvasGenerationException(
+        'Generated SVG is missing its canvas size.',
+      );
     }
   } on CanvasGenerationException {
     rethrow;

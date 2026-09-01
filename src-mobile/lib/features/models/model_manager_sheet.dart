@@ -16,10 +16,7 @@ Future<void> showModelManagerSheet(
     showDragHandle: true,
     builder: (_) => FractionallySizedBox(
       heightFactor: .94,
-      child: _ModelManagerSheet(
-        storage: storage,
-        onModelReady: onModelReady,
-      ),
+      child: _ModelManagerSheet(storage: storage, onModelReady: onModelReady),
     ),
   );
 }
@@ -105,7 +102,8 @@ class _ModelManagerSheetState extends State<_ModelManagerSheet> {
           padding: const EdgeInsets.fromLTRB(20, 2, 14, 14),
           child: OpenMindPageHeader(
             title: 'Local models',
-            subtitle: '$installedCount installed · Download once, then run on this device.',
+            subtitle:
+                '$installedCount installed · Download once, then run on this device.',
             trailing: IconButton(
               tooltip: 'Refresh models',
               onPressed: _refresh,
@@ -184,10 +182,10 @@ class _ModelCard extends StatelessWidget {
   final VoidCallback onCancel;
 
   IconData get _icon => switch (model.kind) {
-        'Reasoning' => Icons.psychology_outlined,
-        'Vision' => Icons.visibility_outlined,
-        _ => Icons.chat_bubble_outline_rounded,
-      };
+    'Reasoning' => Icons.psychology_outlined,
+    'Vision' => Icons.visibility_outlined,
+    _ => Icons.chat_bubble_outline_rounded,
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -214,8 +212,8 @@ class _ModelCard extends StatelessWidget {
                     Text(
                       model.description,
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: scheme.onSurfaceVariant,
-                          ),
+                        color: scheme.onSurfaceVariant,
+                      ),
                     ),
                   ],
                 ),
@@ -252,7 +250,9 @@ class _ModelCard extends StatelessWidget {
           if (installProgress != null) ...[
             const SizedBox(height: 16),
             LinearProgressIndicator(
-              value: installProgress.progress > 0 ? installProgress.progress : null,
+              value: installProgress.progress > 0
+                  ? installProgress.progress
+                  : null,
               minHeight: 6,
               borderRadius: BorderRadius.circular(99),
             ),

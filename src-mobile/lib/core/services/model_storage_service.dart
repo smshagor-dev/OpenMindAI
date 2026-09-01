@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
@@ -84,6 +85,14 @@ class ModelStorageService {
     if (model.supportsVision && projector == null) {
       return null;
     }
+    if (!await _installedArtifactsLookValid(
+      directory: directory,
+      model: model,
+      weights: weights,
+      projector: projector,
+    )) {
+      return null;
+    }
     return InstalledMobileModel(
       model: model,
       modelPath: weights.path,
@@ -136,6 +145,13 @@ class ModelStorageService {
         );
       }
 
+      await _writeInstallManifest(
+        directory: directory,
+        weights: weights,
+        weightPath: weightPath,
+        mmproj: artifacts.mmproj,
+        mmprojPath: mmprojPath,
+      );
       onProgress(
         ModelInstallProgress(
           modelId: model.id,
@@ -149,6 +165,19 @@ class ModelStorageService {
         model: model,
         modelPath: weightPath,
         mmprojPath: mmprojPath,
+      );
+    } on DioException catch (error) {
+      if (CancelToken.isCancel(error) || token.isCancelled) {
+        throw const ModelInstallException(
+          'Model download was cancelled. Progress is saved and can be resumed.',
+        );
+      }
+      throw ModelInstallException(
+        'Could not download or resolve ${model.name}. Check your internet connection and try again.',
+      );
+    } on SocketException {
+      throw ModelInstallException(
+        'Could not download ${model.name}. Check your internet connection and try again.',
       );
     } finally {
       _cancelTokens.remove(model.id);
@@ -175,7 +204,8 @@ class ModelStorageService {
     if (freeBytes <= 0) {
       return;
     }
-    final artifactBytes = artifacts.weights.size + (artifacts.mmproj?.size ?? 0);
+    final artifactBytes =
+        artifacts.weights.size + (artifacts.mmproj?.size ?? 0);
     final requiredBytes = artifactBytes + _freeSpaceReserveBytes;
     if (freeBytes >= requiredBytes) {
       return;
@@ -209,15 +239,10 @@ class ModelStorageService {
         (response.data?['siblings'] as List?)?.whereType<Map>().toList() ??
         const [];
     if (siblings.isEmpty) {
-      throw ModelInstallException(
-        'Could not resolve files for ${model.name}.',
-      );
+      throw ModelInstallException('Could not resolve files for ${model.name}.');
     }
 
-    _RemoteArtifact? select(
-      List<String> required, {
-      bool projector = false,
-    }) {
+    _RemoteArtifact? select(List<String> required, {bool projector = false}) {
       for (final raw in siblings) {
         final filename = raw['rfilename']?.toString() ?? '';
         final lower = filename.toLowerCase();
@@ -339,11 +364,12 @@ class ModelStorageService {
             stage: 'Connection interrupted. Resuming…',
             progress: artifact.size > 0 && await partFile.exists()
                 ? ((await partFile.length()) / artifact.size)
-                    .clamp(0, 1)
-                    .toDouble()
+                      .clamp(0, 1)
+                      .toDouble()
                 : 0,
-            receivedBytes:
-                await partFile.exists() ? await partFile.length() : 0,
+            receivedBytes: await partFile.exists()
+                ? await partFile.length()
+                : 0,
             totalBytes: artifact.size,
           ),
         );
@@ -481,6 +507,99 @@ class ModelStorageService {
     }
     if (await finalFile.exists()) await finalFile.delete();
     await partFile.rename(finalFile.path);
+  }
+
+  Future<void> _writeInstallManifest({
+    required Directory directory,
+    required _RemoteArtifact weights,
+    required String weightPath,
+    required _RemoteArtifact? mmproj,
+    required String? mmprojPath,
+  }) async {
+    final weightFile = File(weightPath);
+    final files = <Map<String, Object?>>[
+      await _manifestEntry(weights, weightFile),
+    ];
+    if (mmproj != null && mmprojPath != null) {
+      files.add(await _manifestEntry(mmproj, File(mmprojPath)));
+    }
+    final manifest = File(p.join(directory.path, 'install-manifest.json'));
+    await manifest.writeAsString(
+      const JsonEncoder.withIndent('  ').convert({
+        'version': 1,
+        'verifiedAt': DateTime.now().toUtc().toIso8601String(),
+        'files': files,
+      }),
+      flush: true,
+    );
+  }
+
+  Future<Map<String, Object?>> _manifestEntry(
+    _RemoteArtifact artifact,
+    File file,
+  ) async {
+    final stat = await file.stat();
+    return {
+      'filename': artifact.filename,
+      'size': artifact.size > 0 ? artifact.size : await file.length(),
+      'sha256': artifact.sha256,
+      'modified': stat.modified.toUtc().toIso8601String(),
+    };
+  }
+
+  Future<bool> _installedArtifactsLookValid({
+    required Directory directory,
+    required MobileModel model,
+    required File weights,
+    required File? projector,
+  }) async {
+    final manifest = File(p.join(directory.path, 'install-manifest.json'));
+    if (!await manifest.exists()) {
+      final weightLength = await weights.length();
+      final minimumExpected = (model.sizeBytes * .55).round();
+      if (weightLength < minimumExpected || weightLength < 8 * 1024 * 1024) {
+        return false;
+      }
+      if (model.supportsVision &&
+          (projector == null || await projector.length() < 1024 * 1024)) {
+        return false;
+      }
+      return true;
+    }
+
+    try {
+      final decoded =
+          jsonDecode(await manifest.readAsString()) as Map<String, dynamic>;
+      final entries = (decoded['files'] as List<dynamic>)
+          .whereType<Map>()
+          .map((entry) => Map<String, dynamic>.from(entry))
+          .toList();
+      if (entries.isEmpty) return false;
+      for (final entry in entries) {
+        final filename = entry['filename']?.toString();
+        final expectedSize = (entry['size'] as num?)?.toInt();
+        final expectedSha = entry['sha256']?.toString();
+        final expectedModified = entry['modified']?.toString();
+        if (filename == null || expectedSize == null) return false;
+        final file = File(p.join(directory.path, filename));
+        if (!await file.exists() || await file.length() != expectedSize) {
+          return false;
+        }
+        if (expectedSha != null && expectedSha.isNotEmpty) {
+          final modified = (await file.stat()).modified
+              .toUtc()
+              .toIso8601String();
+          if (expectedModified != modified &&
+              (await _sha256(file)).toLowerCase() !=
+                  expectedSha.toLowerCase()) {
+            return false;
+          }
+        }
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<String> _sha256(File file) async {

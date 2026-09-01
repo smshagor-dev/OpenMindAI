@@ -4,21 +4,16 @@ import 'package:record/record.dart';
 import 'package:whisper_ggml/whisper_ggml.dart';
 
 class VoiceTranscriptEvent {
-  const VoiceTranscriptEvent({
-    required this.text,
-    required this.isFinal,
-  });
+  const VoiceTranscriptEvent({required this.text, required this.isFinal});
 
   final String text;
   final bool isFinal;
 }
 
 class VoiceInputService {
-  VoiceInputService({
-    AudioRecorder? recorder,
-    WhisperController? whisper,
-  })  : _recorder = recorder ?? AudioRecorder(),
-        _whisper = whisper ?? WhisperController();
+  VoiceInputService({AudioRecorder? recorder, WhisperController? whisper})
+    : _recorder = recorder ?? AudioRecorder(),
+      _whisper = whisper ?? WhisperController();
 
   final AudioRecorder _recorder;
   final WhisperController _whisper;

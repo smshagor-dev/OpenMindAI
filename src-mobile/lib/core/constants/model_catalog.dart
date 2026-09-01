@@ -100,17 +100,16 @@ class MobileModelCatalog {
       kind: 'Vision',
       minRamGb: 8,
       sizeBytes: 2775000000,
-      description: 'Local image, screenshot, chart, and document understanding.',
+      description:
+          'Local image, screenshot, chart, and document understanding.',
       repository: 'ggml-org/Qwen2.5-VL-3B-Instruct-GGUF',
       filenameContains: ['Q4_K_M', '.gguf'],
       mmprojFilenameContains: ['mmproj-', 'Q8_0', '.gguf'],
     ),
   ];
 
-  static MobileModel byId(String? id) => models.firstWhere(
-        (model) => model.id == id,
-        orElse: () => models.first,
-      );
+  static MobileModel byId(String? id) =>
+      models.firstWhere((model) => model.id == id, orElse: () => models.first);
 
   static MobileModel get vision => byId('qwen25-vl-3b-q4km');
 

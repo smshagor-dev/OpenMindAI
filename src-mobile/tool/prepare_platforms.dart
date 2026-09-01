@@ -6,7 +6,9 @@ Future<void> main() async {
   await _writeAndroidNotificationIcon();
   await _patchIosInfoPlist();
   await _patchIosDeploymentTarget();
-  stdout.writeln('OpenMindAI mobile platform configuration is ready for local builds.');
+  stdout.writeln(
+    'OpenMindAI mobile platform configuration is ready for local builds.',
+  );
 }
 
 Future<void> _patchAndroidManifest() async {
@@ -35,7 +37,10 @@ Future<void> _patchAndroidManifest() async {
     </queries>
 ''';
   if (!value.contains('android.intent.action.TTS_SERVICE')) {
-    value = value.replaceFirst('\n    <application', '$ttsQueries\n    <application');
+    value = value.replaceFirst(
+      '\n    <application',
+      '$ttsQueries\n    <application',
+    );
   }
   await file.writeAsString(value);
 }

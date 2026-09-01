@@ -126,7 +126,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!mounted) return;
     setState(() {
       _conversations = conversations;
-      _activeConversationId = conversations.isEmpty ? null : conversations.first.id;
+      _activeConversationId = conversations.isEmpty
+          ? null
+          : conversations.first.id;
       _selectedModelId = selectedModelId ?? _selectedModelId;
       _loading = false;
     });
@@ -139,7 +141,9 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() {
       _conversations = conversations;
       if (conversations.every((item) => item.id != _activeConversationId)) {
-        _activeConversationId = conversations.isEmpty ? null : conversations.first.id;
+        _activeConversationId = conversations.isEmpty
+            ? null
+            : conversations.first.id;
       }
     });
     _scrollToBottom();
@@ -165,11 +169,14 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  String _id(String prefix) => '$prefix-${DateTime.now().microsecondsSinceEpoch}';
+  String _id(String prefix) =>
+      '$prefix-${DateTime.now().microsecondsSinceEpoch}';
 
   void _showError(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   void _applyVoiceText(String transcript) {
@@ -262,7 +269,9 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       }
     } finally {
-      if (mounted && session == _speechSession && _speakingMessageId == message.id) {
+      if (mounted &&
+          session == _speechSession &&
+          _speakingMessageId == message.id) {
         setState(() => _speakingMessageId = null);
       }
     }
@@ -375,7 +384,8 @@ class _ChatScreenState extends State<ChatScreen> {
       final index = conversation.messages.indexWhere(
         (message) => message.id == assistantId,
       );
-      final hasResponse = index >= 0 && conversation.messages[index].text.trim().isNotEmpty;
+      final hasResponse =
+          index >= 0 && conversation.messages[index].text.trim().isNotEmpty;
       if (index >= 0 && !hasResponse) {
         conversation.messages.removeAt(index);
       }
@@ -416,7 +426,9 @@ class _ChatScreenState extends State<ChatScreen> {
             if (index < 0) return;
             final current = conversation.messages[index];
             setState(() {
-              conversation.messages[index] = current.copyWith(text: current.text + delta);
+              conversation.messages[index] = current.copyWith(
+                text: current.text + delta,
+              );
             });
             _scrollToBottom();
           },
@@ -425,7 +437,10 @@ class _ChatScreenState extends State<ChatScreen> {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
                   content: Text(error.toString()),
-                  action: SnackBarAction(label: 'Models', onPressed: _openModels),
+                  action: SnackBarAction(
+                    label: 'Models',
+                    onPressed: _openModels,
+                  ),
                 ),
               );
             }
@@ -495,7 +510,9 @@ class _ChatScreenState extends State<ChatScreen> {
     _haptic();
     final images = await _imagePicker.pickMultiImage(imageQuality: 92);
     if (images.isNotEmpty && mounted) {
-      setState(() => _attachmentPaths.addAll(images.map((image) => image.path));
+      setState(
+        () => _attachmentPaths.addAll(images.map((image) => image.path)),
+      );
     }
   }
 
@@ -503,7 +520,9 @@ class _ChatScreenState extends State<ChatScreen> {
     _haptic();
     final files = await FilePicker.pickFiles();
     if (files.isEmpty || !mounted) return;
-    final paths = files.map((file) => file.xFile.path).where((path) => path.isNotEmpty);
+    final paths = files
+        .map((file) => file.xFile.path)
+        .where((path) => path.isNotEmpty);
     setState(() => _attachmentPaths.addAll(paths));
   }
 
@@ -519,7 +538,10 @@ class _ChatScreenState extends State<ChatScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Add to chat', style: Theme.of(context).textTheme.titleLarge),
+              Text(
+                'Add to chat',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
               const SizedBox(height: 12),
               _AttachTile(
                 icon: Icons.camera_alt_outlined,
@@ -567,7 +589,8 @@ class _ChatScreenState extends State<ChatScreen> {
           children: [
             OpenMindPageHeader(
               title: 'Choose model',
-              subtitle: 'Select the local model used for new replies and Canvas.',
+              subtitle:
+                  'Select the local model used for new replies and Canvas.',
               trailing: IconButton(
                 tooltip: 'Manage models',
                 onPressed: () {
@@ -590,15 +613,21 @@ class _ChatScreenState extends State<ChatScreen> {
                       model.kind == 'Vision'
                           ? Icons.visibility_outlined
                           : model.kind == 'Reasoning'
-                              ? Icons.psychology_outlined
-                              : Icons.chat_bubble_outline_rounded,
+                          ? Icons.psychology_outlined
+                          : Icons.chat_bubble_outline_rounded,
                     ),
-                    title: Text(model.name, style: const TextStyle(fontWeight: FontWeight.w700)),
+                    title: Text(
+                      model.name,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
                     subtitle: Text(
                       '${model.kind} · ${model.minRamGb}+ GB RAM · ~${model.sizeGb.toStringAsFixed(1)} GB',
                     ),
                     trailing: model.id == _selectedModelId
-                        ? const Icon(Icons.check_circle_rounded, color: AppTheme.accent)
+                        ? const Icon(
+                            Icons.check_circle_rounded,
+                            color: AppTheme.accent,
+                          )
                         : const Icon(Icons.chevron_right_rounded),
                     onTap: () => Navigator.pop(context, model.id),
                   ),
@@ -682,7 +711,9 @@ class _ChatScreenState extends State<ChatScreen> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: const Text('Delete chat?'),
-        content: Text('Delete “${conversation.title}” and its saved attachments from this device?'),
+        content: Text(
+          'Delete “${conversation.title}” and its saved attachments from this device?',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
@@ -706,7 +737,9 @@ class _ChatScreenState extends State<ChatScreen> {
     };
     _conversations.removeWhere((item) => item.id == conversation.id);
     if (_activeConversationId == conversation.id) {
-      _activeConversationId = _conversations.isEmpty ? null : _conversations.first.id;
+      _activeConversationId = _conversations.isEmpty
+          ? null
+          : _conversations.first.id;
     }
     await _chatStore.save(_conversations);
     await _attachmentStorage.deletePaths(attachmentPaths);
@@ -720,10 +753,8 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!mounted) return;
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => CanvasScreen(
-          inference: _inference,
-          modelId: _selectedModelId,
-        ),
+        builder: (_) =>
+            CanvasScreen(inference: _inference, modelId: _selectedModelId),
       ),
     );
   }
@@ -775,7 +806,10 @@ class _ChatScreenState extends State<ChatScreen> {
                   child: Text(
                     _selectedModel.name,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+                    style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 4),
@@ -816,13 +850,16 @@ class _ChatScreenState extends State<ChatScreen> {
                           itemCount: conversation.messages.length,
                           itemBuilder: (context, index) {
                             final message = conversation.messages[index];
-                            final lastAssistant = message.role == 'assistant' &&
+                            final lastAssistant =
+                                message.role == 'assistant' &&
                                 index == conversation.messages.length - 1;
                             return ChatMessageBubble(
                               message: message,
                               speaking: _speakingMessageId == message.id,
                               onSpeak: () => _toggleSpeech(message),
-                              onRegenerate: lastAssistant && !_generating ? _regenerate : null,
+                              onRegenerate: lastAssistant && !_generating
+                                  ? _regenerate
+                                  : null,
                             );
                           },
                         ),
@@ -866,8 +903,17 @@ class _ChatScreenState extends State<ChatScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('OpenMindAI', style: TextStyle(fontSize: 19, fontWeight: FontWeight.w800)),
-                        Text('Local-first mobile AI', style: TextStyle(fontSize: 12)),
+                        Text(
+                          'OpenMindAI',
+                          style: TextStyle(
+                            fontSize: 19,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        Text(
+                          'Local-first mobile AI',
+                          style: TextStyle(fontSize: 12),
+                        ),
                       ],
                     ),
                   ),
@@ -954,10 +1000,10 @@ class _ChatScreenState extends State<ChatScreen> {
                 child: Text(
                   'RECENT CHATS',
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        letterSpacing: 1.0,
-                        fontWeight: FontWeight.w800,
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
+                    letterSpacing: 1.0,
+                    fontWeight: FontWeight.w800,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
             ),
@@ -965,8 +1011,12 @@ class _ChatScreenState extends State<ChatScreen> {
               child: visibleConversations.isEmpty
                   ? Center(
                       child: Text(
-                        _chatSearchQuery.isEmpty ? 'No conversations yet' : 'No matching chats',
-                        style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                        _chatSearchQuery.isEmpty
+                            ? 'No conversations yet'
+                            : 'No matching chats',
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
                       ),
                     )
                   : ListView.builder(
@@ -979,8 +1029,13 @@ class _ChatScreenState extends State<ChatScreen> {
                           child: ListTile(
                             dense: true,
                             selected: item.id == _activeConversationId,
-                            selectedTileColor: AppTheme.accent.withValues(alpha: .10),
-                            leading: const Icon(Icons.chat_bubble_outline_rounded, size: 18),
+                            selectedTileColor: AppTheme.accent.withValues(
+                              alpha: .10,
+                            ),
+                            leading: const Icon(
+                              Icons.chat_bubble_outline_rounded,
+                              size: 18,
+                            ),
                             title: Text(
                               item.title,
                               maxLines: 1,
@@ -1025,7 +1080,10 @@ class _ChatScreenState extends State<ChatScreen> {
               padding: EdgeInsets.fromLTRB(12, 8, 12, 12),
               child: ListTile(
                 leading: CircleAvatar(child: Icon(Icons.lock_outline_rounded)),
-                title: Text('Private by design', style: TextStyle(fontWeight: FontWeight.w700)),
+                title: Text(
+                  'Private by design',
+                  style: TextStyle(fontWeight: FontWeight.w700),
+                ),
                 subtitle: Text('Core chat stays on this device'),
               ),
             ),
@@ -1045,20 +1103,20 @@ class _ModeBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     final (icon, title, detail) = switch (mode) {
       'thinking' => (
-          Icons.psychology_outlined,
-          'Think mode',
-          'More deliberate local reasoning before the response.',
-        ),
+        Icons.psychology_outlined,
+        'Think mode',
+        'More deliberate local reasoning before the response.',
+      ),
       'web-search' => (
-          Icons.travel_explore_rounded,
-          'Search mode',
-          'Uses public web evidence when the current answer needs fresh information.',
-        ),
+        Icons.travel_explore_rounded,
+        'Search mode',
+        'Uses public web evidence when the current answer needs fresh information.',
+      ),
       'research' => (
-          Icons.biotech_outlined,
-          'Research mode',
-          'Collects and synthesizes multiple sources for a deeper answer.',
-        ),
+        Icons.biotech_outlined,
+        'Research mode',
+        'Collects and synthesizes multiple sources for a deeper answer.',
+      ),
       _ => (Icons.chat_bubble_outline_rounded, 'Chat', 'General conversation.'),
     };
     return Container(
@@ -1078,12 +1136,15 @@ class _ModeBanner extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+                Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
                 Text(
                   detail,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ],
             ),
@@ -1114,7 +1175,10 @@ class _AttachTile extends StatelessWidget {
       child: Card(
         child: ListTile(
           leading: OpenMindFeatureIcon(icon),
-          title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+          title: Text(
+            title,
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
           subtitle: Text(subtitle),
           trailing: const Icon(Icons.chevron_right_rounded),
           onTap: onTap,
@@ -1144,7 +1208,10 @@ class _DrawerAction extends StatelessWidget {
       leading: Icon(icon, color: accent ? AppTheme.accent : null),
       title: Text(
         label,
-        style: TextStyle(fontWeight: FontWeight.w700, color: accent ? AppTheme.accent : null),
+        style: TextStyle(
+          fontWeight: FontWeight.w700,
+          color: accent ? AppTheme.accent : null,
+        ),
       ),
       onTap: onTap,
     );
@@ -1193,7 +1260,9 @@ class _EmptyChat extends StatelessWidget {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final maxWidth = constraints.maxWidth > 650 ? 620.0 : constraints.maxWidth;
+        final maxWidth = constraints.maxWidth > 650
+            ? 620.0
+            : constraints.maxWidth;
         return Center(
           child: SingleChildScrollView(
             padding: const EdgeInsets.fromLTRB(24, 28, 24, 28),
@@ -1213,14 +1282,21 @@ class _EmptyChat extends StatelessWidget {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Icon(Icons.offline_bolt_outlined, size: 15, color: AppTheme.accent),
+                      const Icon(
+                        Icons.offline_bolt_outlined,
+                        size: 15,
+                        color: AppTheme.accent,
+                      ),
                       const SizedBox(width: 5),
                       Flexible(
                         child: Text(
                           '$modelName · Local-first',
                           overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurfaceVariant,
                               ),
                         ),
                       ),
@@ -1252,15 +1328,23 @@ class _EmptyChat extends StatelessWidget {
                                 Expanded(
                                   child: Column(
                                     mainAxisAlignment: MainAxisAlignment.center,
-                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
                                     children: [
-                                      Text(item.$2, style: const TextStyle(fontWeight: FontWeight.w800)),
+                                      Text(
+                                        item.$2,
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w800,
+                                        ),
+                                      ),
                                       const SizedBox(height: 2),
                                       Text(
                                         item.$3,
                                         maxLines: 2,
                                         overflow: TextOverflow.ellipsis,
-                                        style: Theme.of(context).textTheme.bodySmall,
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.bodySmall,
                                       ),
                                     ],
                                   ),

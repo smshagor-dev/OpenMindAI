@@ -16,7 +16,7 @@ dependencies:
   device_info_plus: ^13.2.0
   dio: ^5.11.0
   file_picker: ^12.1.2
-  flutter_local_notifications: ^20.1.0
+  flutter_local_notifications: ^22.3.0
   flutter_markdown_plus: ^1.0.12
   flutter_svg: ^2.3.0
   flutter_tts: ^4.2.5
@@ -25,8 +25,8 @@ dependencies:
   lib_llama_cpp: ^0.7.3
   path: ^1.9.1
   path_provider: ^2.1.6
+  pdfrx_engine: ^0.5.0
   pdf: ^3.13.0
-  pdf_struct_extractor: ^0.1.0
   permission_handler: ^13.0.1
   record: ^6.2.1
   share_plus: ^13.3.0

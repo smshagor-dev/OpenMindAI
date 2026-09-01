@@ -62,7 +62,10 @@ class SpeechOutputService {
 String normalizeSpeechText(String value) {
   var text = value;
   text = text.replaceAll(RegExp(r'```[\s\S]*?```'), ' Code block omitted. ');
-  text = text.replaceAllMapped(RegExp(r'`([^`]+)`'), (match) => match.group(1) ?? '');
+  text = text.replaceAllMapped(
+    RegExp(r'`([^`]+)`'),
+    (match) => match.group(1) ?? '',
+  );
   text = text.replaceAll(RegExp(r'!\[[^\]]*\]\([^\)]*\)'), ' Image. ');
   text = text.replaceAllMapped(
     RegExp(r'\[([^\]]+)\]\([^\)]*\)'),

@@ -61,10 +61,7 @@ class ChatStore {
   Future<List<ChatConversation>> load() async {
     final db = await _database();
     await _migrateLegacy(db);
-    final rows = await db.query(
-      'conversations',
-      orderBy: 'updated_at DESC',
-    );
+    final rows = await db.query('conversations', orderBy: 'updated_at DESC');
     final conversations = <ChatConversation>[];
     for (final row in rows) {
       final id = row['id'] as String;

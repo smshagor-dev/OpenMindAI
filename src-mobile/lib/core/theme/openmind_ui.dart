@@ -91,17 +91,14 @@ class OpenMindPageHeader extends StatelessWidget {
                 Text(
                   subtitle!,
                   style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ],
             ],
           ),
         ),
-        if (trailing != null) ...[
-          const SizedBox(width: 12),
-          trailing!,
-        ],
+        if (trailing != null) ...[const SizedBox(width: 12), trailing!],
       ],
     );
   }
@@ -165,9 +162,9 @@ class OpenMindStatusPill extends StatelessWidget {
           Text(
             label,
             style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                  fontWeight: FontWeight.w700,
-                  color: active ? AppTheme.accent : null,
-                ),
+              fontWeight: FontWeight.w700,
+              color: active ? AppTheme.accent : null,
+            ),
           ),
         ],
       ),
@@ -211,13 +208,10 @@ class OpenMindEmptyState extends StatelessWidget {
                 description,
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
-              if (action != null) ...[
-                const SizedBox(height: 20),
-                action!,
-              ],
+              if (action != null) ...[const SizedBox(height: 20), action!],
             ],
           ),
         ),

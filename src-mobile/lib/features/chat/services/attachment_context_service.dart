@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:archive/archive.dart';
 import 'package:path/path.dart' as p;
-import 'package:pdf_struct_extractor/pdf_struct_extractor.dart';
+import 'package:pdfrx_engine/pdfrx_engine.dart';
 import 'package:xml/xml.dart';
 
 class AttachmentContext {
@@ -95,10 +95,9 @@ class AttachmentContextService {
         }
         final length = await file.length();
         final readLength = length > _maxTextBytes ? _maxTextBytes : length;
-        final bytes = await file.openRead(0, readLength).fold<List<int>>(
-          <int>[],
-          (buffer, chunk) => buffer..addAll(chunk),
-        );
+        final bytes = await file
+            .openRead(0, readLength)
+            .fold<List<int>>(<int>[], (buffer, chunk) => buffer..addAll(chunk));
         final value = utf8.decode(bytes, allowMalformed: true);
         text
           ..writeln('\n--- Attached file: ${p.basename(path)} ---')
@@ -110,10 +109,7 @@ class AttachmentContextService {
         '\nAttached file ${p.basename(path)} could not be converted to local text context in this build.',
       );
     }
-    return AttachmentContext(
-      imagePaths: images,
-      textContext: text.toString(),
-    );
+    return AttachmentContext(imagePaths: images, textContext: text.toString());
   }
 
   Future<String> _extractPdf(String path) async {
@@ -122,47 +118,26 @@ class AttachmentContextService {
       return 'The selected PDF is no longer available.';
     }
     try {
-      final result = await PdfStructuredExtractor.extractFromFile(path);
-      final pages = result['pages'];
-      if (pages is! List) {
-        return 'No readable PDF text was found.';
-      }
+      final document = await PdfDocument.openFile(path);
       final output = StringBuffer();
-      for (final page in pages) {
-        if (page is! Map) {
-          continue;
-        }
-        final blocks = page['blocks'];
-        if (blocks is! List) {
-          continue;
-        }
-        for (final block in blocks) {
-          if (block is! Map) {
-            continue;
-          }
-          final type = block['type']?.toString();
-          if (type == 'table') {
-            final rows = block['rows'];
-            if (rows is List) {
-              for (final row in rows) {
-                if (row is List) {
-                  output.writeln(
-                    row.map((cell) => cell.toString()).join(' | '),
-                  );
-                }
-              }
-            }
-          } else {
-            final value = block['text']?.toString().trim();
-            if (value != null && value.isNotEmpty) {
-              output.writeln(value);
-            }
+      try {
+        await document.loadPagesProgressively();
+        for (final page in document.pages) {
+          final pageText = await page.loadText();
+          final value = pageText?.fullText.trim();
+          if (value != null && value.isNotEmpty) {
+            output
+              ..writeln('Page ${page.pageNumber}')
+              ..writeln(value)
+              ..writeln();
           }
           if (output.length >= _maxPdfCharacters) {
             return '${output.toString().substring(0, _maxPdfCharacters)}\n'
                 '[PDF text truncated for local context size]';
           }
         }
+      } finally {
+        await document.dispose();
       }
       return output.isEmpty
           ? 'No readable PDF text was found.'
@@ -194,9 +169,12 @@ class AttachmentContextService {
       if (bytes == null || bytes.isEmpty) {
         return 'No readable Word document body was found.';
       }
-      final document = XmlDocument.parse(utf8.decode(bytes, allowMalformed: true));
+      final document = XmlDocument.parse(
+        utf8.decode(bytes, allowMalformed: true),
+      );
       final output = StringBuffer();
-      for (final paragraph in document.descendants.whereType<XmlElement>().where(
+      for (final paragraph
+          in document.descendants.whereType<XmlElement>().where(
             (element) => element.name.local == 'p',
           )) {
         final line = StringBuffer();

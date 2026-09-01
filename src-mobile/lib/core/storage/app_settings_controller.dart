@@ -35,14 +35,11 @@ class AppSettingsController extends ChangeNotifier {
     themeMode = value;
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      _themeKey,
-      switch (value) {
-        ThemeMode.light => 'light',
-        ThemeMode.dark => 'dark',
-        ThemeMode.system => 'system',
-      },
-    );
+    await prefs.setString(_themeKey, switch (value) {
+      ThemeMode.light => 'light',
+      ThemeMode.dark => 'dark',
+      ThemeMode.system => 'system',
+    });
   }
 
   Future<void> setCompactChat(bool value) async {

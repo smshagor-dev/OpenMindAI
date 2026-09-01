@@ -34,7 +34,9 @@ class ChatMessageBubble extends StatelessWidget {
         maxWidth: MediaQuery.sizeOf(context).width * (user ? .84 : .94),
       ),
       margin: EdgeInsets.only(bottom: compact ? 10 : 16),
-      padding: user ? const EdgeInsets.symmetric(horizontal: 16, vertical: 12) : EdgeInsets.zero,
+      padding: user
+          ? const EdgeInsets.symmetric(horizontal: 16, vertical: 12)
+          : EdgeInsets.zero,
       decoration: user
           ? BoxDecoration(
               color: Theme.of(context).brightness == Brightness.dark
@@ -91,29 +93,44 @@ class ChatMessageBubble extends StatelessWidget {
             MarkdownBody(
               data: message.text,
               selectable: true,
-              styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-                p: const TextStyle(fontSize: 16, height: 1.48),
-                h1: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800, height: 1.25),
-                h2: const TextStyle(fontSize: 21, fontWeight: FontWeight.w800, height: 1.3),
-                h3: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, height: 1.35),
-                code: TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 14,
-                  color: scheme.onSurface,
-                  backgroundColor: scheme.surfaceContainer,
-                ),
-                codeblockPadding: const EdgeInsets.all(14),
-                codeblockDecoration: BoxDecoration(
-                  color: scheme.surfaceContainer,
-                  border: Border.all(color: scheme.outlineVariant),
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                blockquoteDecoration: BoxDecoration(
-                  color: AppTheme.accent.withValues(alpha: .08),
-                  border: const Border(left: BorderSide(color: AppTheme.accent, width: 3)),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-              ),
+              styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context))
+                  .copyWith(
+                    p: const TextStyle(fontSize: 16, height: 1.48),
+                    h1: const TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w800,
+                      height: 1.25,
+                    ),
+                    h2: const TextStyle(
+                      fontSize: 21,
+                      fontWeight: FontWeight.w800,
+                      height: 1.3,
+                    ),
+                    h3: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                      height: 1.35,
+                    ),
+                    code: TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 14,
+                      color: scheme.onSurface,
+                      backgroundColor: scheme.surfaceContainer,
+                    ),
+                    codeblockPadding: const EdgeInsets.all(14),
+                    codeblockDecoration: BoxDecoration(
+                      color: scheme.surfaceContainer,
+                      border: Border.all(color: scheme.outlineVariant),
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    blockquoteDecoration: BoxDecoration(
+                      color: AppTheme.accent.withValues(alpha: .08),
+                      border: const Border(
+                        left: BorderSide(color: AppTheme.accent, width: 3),
+                      ),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
             ),
           if (!user && message.text.isNotEmpty)
             Padding(
@@ -124,13 +141,16 @@ class ChatMessageBubble extends StatelessWidget {
                   _ActionButton(
                     tooltip: 'Copy',
                     icon: Icons.copy_rounded,
-                    onPressed: () => Clipboard.setData(ClipboardData(text: message.text)),
+                    onPressed: () =>
+                        Clipboard.setData(ClipboardData(text: message.text)),
                   ),
                   _ActionButton(
                     tooltip: speaking
                         ? 'Stop OpenMindAI Speak'
                         : 'Read aloud with OpenMindAI Speak',
-                    icon: speaking ? Icons.stop_circle_outlined : Icons.volume_up_outlined,
+                    icon: speaking
+                        ? Icons.stop_circle_outlined
+                        : Icons.volume_up_outlined,
                     active: speaking,
                     onPressed: onSpeak,
                   ),
@@ -185,7 +205,9 @@ class _ActionButton extends StatelessWidget {
       tooltip: tooltip,
       onPressed: onPressed,
       style: IconButton.styleFrom(
-        backgroundColor: active ? AppTheme.accent.withValues(alpha: .12) : Colors.transparent,
+        backgroundColor: active
+            ? AppTheme.accent.withValues(alpha: .12)
+            : Colors.transparent,
         foregroundColor: active ? AppTheme.accent : null,
       ),
       icon: Icon(icon, size: 18),
@@ -198,9 +220,12 @@ class _AttachmentPreview extends StatelessWidget {
 
   final String path;
 
-  bool get _isImage => const {'.png', '.jpg', '.jpeg', '.webp'}.contains(
-        p.extension(path).toLowerCase(),
-      );
+  bool get _isImage => const {
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.webp',
+  }.contains(p.extension(path).toLowerCase());
 
   @override
   Widget build(BuildContext context) {
@@ -220,22 +245,22 @@ class _AttachmentPreview extends StatelessWidget {
   }
 
   Widget _fileChip(BuildContext context) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surfaceContainer,
-          border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
-          borderRadius: BorderRadius.circular(13),
+    padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+    decoration: BoxDecoration(
+      color: Theme.of(context).colorScheme.surfaceContainer,
+      border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+      borderRadius: BorderRadius.circular(13),
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Icon(Icons.insert_drive_file_outlined, size: 17),
+        const SizedBox(width: 7),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 190),
+          child: Text(p.basename(path), overflow: TextOverflow.ellipsis),
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.insert_drive_file_outlined, size: 17),
-            const SizedBox(width: 7),
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 190),
-              child: Text(p.basename(path), overflow: TextOverflow.ellipsis),
-            ),
-          ],
-        ),
-      );
+      ],
+    ),
+  );
 }

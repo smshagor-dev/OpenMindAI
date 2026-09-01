@@ -2,7 +2,12 @@ import 'package:dio/dio.dart';
 import 'package:html/parser.dart' as html_parser;
 
 class WebEvidenceItem {
-  const WebEvidenceItem({required this.title, required this.url, required this.snippet, this.body});
+  const WebEvidenceItem({
+    required this.title,
+    required this.url,
+    required this.snippet,
+    this.body,
+  });
   final String title;
   final String url;
   final String snippet;
@@ -14,7 +19,10 @@ class WebEvidenceService {
 
   final Dio _dio;
 
-  Future<List<WebEvidenceItem>> search(String query, {bool deep = false}) async {
+  Future<List<WebEvidenceItem>> search(
+    String query, {
+    bool deep = false,
+  }) async {
     final response = await _dio.get<String>(
       'https://html.duckduckgo.com/html/',
       queryParameters: {'q': query},
@@ -51,12 +59,14 @@ class WebEvidenceService {
         enriched.add(item);
         continue;
       }
-      enriched.add(WebEvidenceItem(
-        title: item.title,
-        url: item.url,
-        snippet: item.snippet,
-        body: await _readPage(item.url),
-      ));
+      enriched.add(
+        WebEvidenceItem(
+          title: item.title,
+          url: item.url,
+          snippet: item.snippet,
+          body: await _readPage(item.url),
+        ),
+      );
     }
     return enriched;
   }
@@ -90,10 +100,14 @@ class WebEvidenceService {
         ),
       );
       final document = html_parser.parse(response.data ?? '');
-      for (final element in document.querySelectorAll('script,style,noscript,svg')) {
+      for (final element in document.querySelectorAll(
+        'script,style,noscript,svg',
+      )) {
         element.remove();
       }
-      final text = (document.body?.text ?? '').replaceAll(RegExp(r'\s+'), ' ').trim();
+      final text = (document.body?.text ?? '')
+          .replaceAll(RegExp(r'\s+'), ' ')
+          .trim();
       if (text.isEmpty) return null;
       return text.length > 8000 ? text.substring(0, 8000) : text;
     } catch (_) {

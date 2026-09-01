@@ -41,7 +41,11 @@ class ChatComposer extends StatelessWidget {
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: Theme.of(context).scaffoldBackgroundColor,
-          border: Border(top: BorderSide(color: scheme.outlineVariant.withValues(alpha: .45))),
+          border: Border(
+            top: BorderSide(
+              color: scheme.outlineVariant.withValues(alpha: .45),
+            ),
+          ),
         ),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(12, 9, 12, 10),
@@ -93,18 +97,29 @@ class ChatComposer extends StatelessWidget {
                       children: attachmentPaths
                           .map(
                             (path) => Padding(
-                              padding: const EdgeInsets.only(right: 7, bottom: 7),
+                              padding: const EdgeInsets.only(
+                                right: 7,
+                                bottom: 7,
+                              ),
                               child: InputChip(
-                                avatar: const Icon(Icons.attach_file_rounded, size: 16),
+                                avatar: const Icon(
+                                  Icons.attach_file_rounded,
+                                  size: 16,
+                                ),
                                 label: ConstrainedBox(
-                                  constraints: const BoxConstraints(maxWidth: 150),
+                                  constraints: const BoxConstraints(
+                                    maxWidth: 150,
+                                  ),
                                   child: Text(
                                     p.basename(path),
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                   ),
                                 ),
-                                deleteIcon: const Icon(Icons.close_rounded, size: 16),
+                                deleteIcon: const Icon(
+                                  Icons.close_rounded,
+                                  size: 16,
+                                ),
                                 onDeleted: () => onRemoveAttachment(path),
                               ),
                             ),
@@ -122,7 +137,9 @@ class ChatComposer extends StatelessWidget {
                   boxShadow: [
                     BoxShadow(
                       color: Colors.black.withValues(
-                        alpha: Theme.of(context).brightness == Brightness.dark ? .16 : .045,
+                        alpha: Theme.of(context).brightness == Brightness.dark
+                            ? .16
+                            : .045,
                       ),
                       blurRadius: 18,
                       offset: const Offset(0, 6),
@@ -151,7 +168,12 @@ class ChatComposer extends StatelessWidget {
                           border: InputBorder.none,
                           enabledBorder: InputBorder.none,
                           focusedBorder: InputBorder.none,
-                          contentPadding: const EdgeInsets.fromLTRB(6, 13, 8, 13),
+                          contentPadding: const EdgeInsets.fromLTRB(
+                            6,
+                            13,
+                            8,
+                            13,
+                          ),
                           hintText: voiceListening
                               ? 'Listening with OpenMindAI Hear…'
                               : 'Message OpenMindAI',
@@ -162,7 +184,9 @@ class ChatComposer extends StatelessWidget {
                       ),
                     ),
                     IconButton(
-                      tooltip: voiceListening ? 'Stop OpenMindAI Hear' : 'Voice input',
+                      tooltip: voiceListening
+                          ? 'Stop OpenMindAI Hear'
+                          : 'Voice input',
                       onPressed: generating || voicePreparing ? null : onVoice,
                       icon: voicePreparing
                           ? const SizedBox(
@@ -183,11 +207,15 @@ class ChatComposer extends StatelessWidget {
                         tooltip: generating ? 'Stop generation' : 'Send',
                         onPressed: generating ? onStop : onSend,
                         style: IconButton.styleFrom(
-                          backgroundColor: generating ? scheme.error : AppTheme.accent,
+                          backgroundColor: generating
+                              ? scheme.error
+                              : AppTheme.accent,
                           foregroundColor: Colors.white,
                         ),
                         icon: Icon(
-                          generating ? Icons.stop_rounded : Icons.arrow_upward_rounded,
+                          generating
+                              ? Icons.stop_rounded
+                              : Icons.arrow_upward_rounded,
                         ),
                       ),
                     ),
@@ -199,7 +227,9 @@ class ChatComposer extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(
-                    voiceListening ? Icons.graphic_eq_rounded : Icons.lock_outline_rounded,
+                    voiceListening
+                        ? Icons.graphic_eq_rounded
+                        : Icons.lock_outline_rounded,
                     size: 13,
                     color: scheme.onSurfaceVariant,
                   ),
@@ -211,8 +241,8 @@ class ChatComposer extends StatelessWidget {
                           : 'Local-first AI · Check important information',
                       overflow: TextOverflow.ellipsis,
                       style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                            color: scheme.onSurfaceVariant,
-                          ),
+                        color: scheme.onSurfaceVariant,
+                      ),
                     ),
                   ),
                 ],

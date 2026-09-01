@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -61,18 +60,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final json = await _chatStore.exportJson();
       final result = await FilePicker.saveFile(
         dialogTitle: 'Export OpenMindAI chats',
-        fileName: 'openmindai-chats-${DateTime.now().millisecondsSinceEpoch}.json',
+        fileName:
+            'openmindai-chats-${DateTime.now().millisecondsSinceEpoch}.json',
         bytes: Uint8List.fromList(utf8.encode(json)),
       );
       if (!mounted || result == null) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Chat export saved.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Chat export saved.')));
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not export chats: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Could not export chats: $error')));
     }
   }
 
@@ -87,7 +87,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _refreshUsage();
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Removed $removed unreferenced attachment file(s).')),
+      SnackBar(
+        content: Text('Removed $removed unreferenced attachment file(s).'),
+      ),
     );
   }
 
@@ -136,7 +138,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: [
             const OpenMindPageHeader(
               title: 'Make OpenMindAI yours',
-              subtitle: 'Appearance, interaction, local data, models and device permissions.',
+              subtitle:
+                  'Appearance, interaction, local data, models and device permissions.',
             ),
             const SizedBox(height: 22),
             _sectionLabel(context, 'Appearance'),
@@ -165,14 +168,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   SwitchListTile.adaptive(
                     contentPadding: EdgeInsets.zero,
                     title: const Text('Haptic feedback'),
-                    subtitle: const Text('Use subtle device feedback for important controls.'),
+                    subtitle: const Text(
+                      'Use subtle device feedback for important controls.',
+                    ),
                     value: _settings.haptics,
                     onChanged: _settings.setHaptics,
                   ),
                   SwitchListTile.adaptive(
                     contentPadding: EdgeInsets.zero,
                     title: const Text('Completion notifications'),
-                    subtitle: const Text('Notify when a long local response finishes while the app is not active.'),
+                    subtitle: const Text(
+                      'Notify when a long local response finishes while the app is not active.',
+                    ),
                     value: _settings.completionNotifications,
                     onChanged: (value) {
                       _haptic();
@@ -191,17 +198,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   _SettingsRow(
                     icon: Icons.memory_rounded,
                     title: 'Models',
-                    subtitle: 'Install, verify, cancel downloads or remove local models.',
-                    onTap: () => showModelManagerSheet(
-                      context,
-                      storage: _modelStorage,
-                    ),
+                    subtitle:
+                        'Install, verify, cancel downloads or remove local models.',
+                    onTap: () =>
+                        showModelManagerSheet(context, storage: _modelStorage),
                   ),
                   const Divider(height: 18),
                   const _SettingsRow(
                     icon: Icons.folder_open_rounded,
                     title: 'App-private storage',
-                    subtitle: 'Models, SQLite history, Canvas files and attachments stay inside the app sandbox until you export them.',
+                    subtitle:
+                        'Models, SQLite history, Canvas files and attachments stay inside the app sandbox until you export them.',
                   ),
                 ],
               ),
@@ -236,14 +243,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       _SettingsRow(
                         icon: Icons.ios_share_rounded,
                         title: 'Export chats',
-                        subtitle: 'Save a portable JSON copy with conversation metadata and attachment paths.',
+                        subtitle:
+                            'Save a portable JSON copy with conversation metadata and attachment paths.',
                         onTap: _exportChats,
                       ),
                       const Divider(height: 18),
                       _SettingsRow(
                         icon: Icons.delete_sweep_outlined,
                         title: 'Clear chat history',
-                        subtitle: 'Delete conversations and their app-private attachment copies.',
+                        subtitle:
+                            'Delete conversations and their app-private attachment copies.',
                         destructive: true,
                         onTap: _clearHistory,
                       ),
@@ -261,25 +270,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   const _SettingsRow(
                     icon: Icons.mic_none_rounded,
                     title: 'OpenMindAI Hear',
-                    subtitle: 'Whisper-powered local voice dictation from the chat composer.',
+                    subtitle:
+                        'Whisper-powered local voice dictation from the chat composer.',
                   ),
                   const Divider(height: 18),
                   const _SettingsRow(
                     icon: Icons.volume_up_outlined,
                     title: 'OpenMindAI Speak',
-                    subtitle: 'Read assistant replies using an installed device voice.',
+                    subtitle:
+                        'Read assistant replies using an installed device voice.',
                   ),
                   const Divider(height: 18),
                   const _SettingsRow(
                     icon: Icons.camera_alt_outlined,
                     title: 'Camera & photos',
-                    subtitle: 'Images are accessed only after an explicit picker or camera action.',
+                    subtitle:
+                        'Images are accessed only after an explicit picker or camera action.',
                   ),
                   const Divider(height: 18),
                   _SettingsRow(
                     icon: Icons.admin_panel_settings_outlined,
                     title: 'System permissions',
-                    subtitle: 'Review camera, microphone, photos and notification access in device settings.',
+                    subtitle:
+                        'Review camera, microphone, photos and notification access in device settings.',
                     onTap: _permissions.openSettings,
                   ),
                 ],
@@ -300,7 +313,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   _SettingsRow(
                     icon: Icons.lock_outline_rounded,
                     title: 'Privacy model',
-                    subtitle: 'Core inference, chat history, voice transcription and Canvas generation run locally. Search/Research use the network only when selected.',
+                    subtitle:
+                        'Core inference, chat history, voice transcription and Canvas generation run locally. Search/Research use the network only when selected.',
                   ),
                 ],
               ),
@@ -312,16 +326,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _sectionLabel(BuildContext context, String label) => Padding(
-        padding: const EdgeInsets.only(left: 4),
-        child: Text(
-          label.toUpperCase(),
-          style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                letterSpacing: 1.1,
-                fontWeight: FontWeight.w800,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-        ),
-      );
+    padding: const EdgeInsets.only(left: 4),
+    child: Text(
+      label.toUpperCase(),
+      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+        letterSpacing: 1.1,
+        fontWeight: FontWeight.w800,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+      ),
+    ),
+  );
 }
 
 class _LocalUsage {

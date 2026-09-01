@@ -20,15 +20,24 @@ void main() {
   test('device recommendation downgrades when storage is tight', () {
     const gib = 1024 * 1024 * 1024;
     expect(
-      MobileModelCatalog.recommendForDevice(ramGb: 16, freeDiskBytes: 12 * gib).name,
+      MobileModelCatalog.recommendForDevice(
+        ramGb: 16,
+        freeDiskBytes: 12 * gib,
+      ).name,
       'OpenMindAI Titan',
     );
     expect(
-      MobileModelCatalog.recommendForDevice(ramGb: 16, freeDiskBytes: 4 * gib).name,
+      MobileModelCatalog.recommendForDevice(
+        ramGb: 16,
+        freeDiskBytes: 4 * gib,
+      ).name,
       'OpenMindAI Core',
     );
     expect(
-      MobileModelCatalog.recommendForDevice(ramGb: 8, freeDiskBytes: 2 * gib).name,
+      MobileModelCatalog.recommendForDevice(
+        ramGb: 8,
+        freeDiskBytes: 2 * gib,
+      ).name,
       'OpenMindAI Nano',
     );
   });

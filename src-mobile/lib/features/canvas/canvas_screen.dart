@@ -1,7 +1,5 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
-import 'package:cross_file/cross_file.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,7 +7,6 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../../core/storage/app_settings_controller.dart';
-import '../../core/theme/app_theme.dart';
 import '../../core/theme/openmind_ui.dart';
 import '../chat/services/mobile_inference_service.dart';
 import 'canvas_generation_service.dart';
@@ -63,7 +60,9 @@ class _CanvasScreenState extends State<CanvasScreen> {
     if (text.isEmpty || _generating) {
       if (text.isEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Describe the image you want to create.')),
+          const SnackBar(
+            content: Text('Describe the image you want to create.'),
+          ),
         );
       }
       return;
@@ -100,18 +99,19 @@ class _CanvasScreenState extends State<CanvasScreen> {
       final bytes = Uint8List.fromList(utf8.encode(artifact.svg));
       final result = await FilePicker.saveFile(
         dialogTitle: 'Save OpenMindAI Canvas image',
-        fileName: 'openmindai-canvas-${DateTime.now().millisecondsSinceEpoch}.svg',
+        fileName:
+            'openmindai-canvas-${DateTime.now().millisecondsSinceEpoch}.svg',
         bytes: bytes,
       );
       if (!mounted || result == null) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Canvas image saved.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Canvas image saved.')));
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not save image: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Could not save image: $error')));
     }
   }
 
@@ -128,17 +128,17 @@ class _CanvasScreenState extends State<CanvasScreen> {
       );
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not share image: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Could not share image: $error')));
     }
   }
 
   double get _previewAspect => switch (_aspect) {
-        '4:3' => 4 / 3,
-        '16:9' => 16 / 9,
-        _ => 1,
-      };
+    '4:3' => 4 / 3,
+    '16:9' => 16 / 9,
+    _ => 1,
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -161,7 +161,10 @@ class _CanvasScreenState extends State<CanvasScreen> {
                     children: [
                       Text(
                         'Local image generation',
-                        style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+                        style: TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.w800,
+                        ),
                       ),
                       SizedBox(height: 10),
                       Text(
@@ -212,7 +215,8 @@ class _CanvasScreenState extends State<CanvasScreen> {
                 children: [
                   const OpenMindPageHeader(
                     title: 'Create locally',
-                    subtitle: 'Generate, preview, save and share private vector artwork with the model already installed on your phone.',
+                    subtitle:
+                        'Generate, preview, save and share private vector artwork with the model already installed on your phone.',
                   ),
                   const SizedBox(height: 20),
                   if (wide)
@@ -286,7 +290,8 @@ class _EditorPanel extends StatelessWidget {
             maxLines: 8,
             enabled: !generating,
             decoration: const InputDecoration(
-              hintText: 'A cinematic city at night, reflected neon lights, detailed architecture…',
+              hintText:
+                  'A cinematic city at night, reflected neon lights, detailed architecture…',
               alignLabelWithHint: true,
             ),
           ),
@@ -317,7 +322,9 @@ class _EditorPanel extends StatelessWidget {
               ButtonSegment(value: '16:9', label: Text('16:9')),
             ],
             selected: {aspect},
-            onSelectionChanged: generating ? null : (value) => onAspect(value.first),
+            onSelectionChanged: generating
+                ? null
+                : (value) => onAspect(value.first),
           ),
           if (error != null) ...[
             const SizedBox(height: 16),
@@ -349,7 +356,9 @@ class _EditorPanel extends StatelessWidget {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.auto_awesome_rounded),
-              label: Text(generating ? 'Generating locally…' : 'Generate locally'),
+              label: Text(
+                generating ? 'Generating locally…' : 'Generate locally',
+              ),
             ),
           ),
           const SizedBox(height: 10),
@@ -357,8 +366,8 @@ class _EditorPanel extends StatelessWidget {
             'Uses the selected installed OpenMindAI model. No cloud image API is called.',
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
         ],
       ),
@@ -402,7 +411,10 @@ class _PreviewPanel extends StatelessWidget {
               child: artifact != null
                   ? Padding(
                       padding: const EdgeInsets.all(8),
-                      child: SvgPicture.string(artifact!.svg, fit: BoxFit.contain),
+                      child: SvgPicture.string(
+                        artifact!.svg,
+                        fit: BoxFit.contain,
+                      ),
                     )
                   : Center(
                       child: generating
@@ -421,7 +433,10 @@ class _PreviewPanel extends StatelessWidget {
                                 SizedBox(height: 16),
                                 Text(
                                   'Canvas preview',
-                                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.w800,
+                                  ),
                                 ),
                                 SizedBox(height: 5),
                                 Text('Your generated image will appear here.'),

@@ -48,10 +48,10 @@ class NativeMobileInferenceService extends MobileInferenceService {
     AttachmentContextService? attachments,
     WebEvidenceService? webEvidence,
     MountedTextRuntime? mountedText,
-  })  : _storage = storage ?? ModelStorageService(),
-        _attachments = attachments ?? AttachmentContextService(),
-        _webEvidence = webEvidence ?? WebEvidenceService(),
-        _mountedText = mountedText ?? MountedTextRuntime();
+  }) : _storage = storage ?? ModelStorageService(),
+       _attachments = attachments ?? AttachmentContextService(),
+       _webEvidence = webEvidence ?? WebEvidenceService(),
+       _mountedText = mountedText ?? MountedTextRuntime();
 
   final ModelStorageService _storage;
   final AttachmentContextService _attachments;
@@ -98,10 +98,7 @@ class NativeMobileInferenceService extends MobileInferenceService {
       }
 
       final webContext = await _webContext(request);
-      final systemPrompt = _systemPrompt(
-        request.mode,
-        webContext: webContext,
-      );
+      final systemPrompt = _systemPrompt(request.mode, webContext: webContext);
 
       final Stream<String> deltas;
       if (prepared.imagePaths.isEmpty) {
@@ -183,7 +180,8 @@ class NativeMobileInferenceService extends MobileInferenceService {
       if (isLast &&
           message.role == 'user' &&
           attachmentText.trim().isNotEmpty) {
-        text = '$text\n\n<openmindai_attachment_data>\n'
+        text =
+            '$text\n\n<openmindai_attachment_data>\n'
             '$attachmentText\n</openmindai_attachment_data>';
       }
       messages.add({'role': message.role, 'content': text});
@@ -221,7 +219,8 @@ class NativeMobileInferenceService extends MobileInferenceService {
       final includeAttachments = isLast && message.role == 'user';
       var text = message.text;
       if (includeAttachments && attachmentText.trim().isNotEmpty) {
-        text = '$text\n\n<openmindai_attachment_data>\n'
+        text =
+            '$text\n\n<openmindai_attachment_data>\n'
             '$attachmentText\n</openmindai_attachment_data>';
       }
 
@@ -237,8 +236,10 @@ class NativeMobileInferenceService extends MobileInferenceService {
       );
     }
 
-    await for (final event
-        in client.responses.stream(model: runtimeModel.id, input: input)) {
+    await for (final event in client.responses.stream(
+      model: runtimeModel.id,
+      input: input,
+    )) {
       if (event is LlamaResponseOutputTextDelta && event.delta.isNotEmpty) {
         yield event.delta;
       }
@@ -248,15 +249,17 @@ class NativeMobileInferenceService extends MobileInferenceService {
   Future<String> _webContext(MobileInferenceRequest request) async {
     if (request.mode != 'web-search' && request.mode != 'research') return '';
 
-    final query = request.messages.lastWhere(
-      (message) => message.role == 'user',
-      orElse: () => ChatMessage(
-        id: '',
-        role: 'user',
-        text: '',
-        createdAt: DateTime.now(),
-      ),
-    ).text;
+    final query = request.messages
+        .lastWhere(
+          (message) => message.role == 'user',
+          orElse: () => ChatMessage(
+            id: '',
+            role: 'user',
+            text: '',
+            createdAt: DateTime.now(),
+          ),
+        )
+        .text;
     if (query.trim().isEmpty) return '';
 
     try {
