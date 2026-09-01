@@ -158,10 +158,10 @@ impl HardwareProfiler {
     /// synchronously here. This cost is paid only when a prompt races startup,
     /// and prevents an entire session from being pinned to CPU because the
     /// first model was launched before DXGI/GPU discovery completed.
-    pub fn for_inference(fallback: &HardwareProfile) -> HardwareProfile {
+    pub fn for_inference(_fallback: &HardwareProfile) -> HardwareProfile {
         #[cfg(test)]
         {
-            return fallback.clone_fields();
+            return _fallback.clone_fields();
         }
 
         #[cfg(not(test))]
