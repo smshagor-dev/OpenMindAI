@@ -13,7 +13,7 @@ class NotificationService {
   Future<void> initialize() async {
     if (_initialized) return;
     const settings = InitializationSettings(
-      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      android: AndroidInitializationSettings('openmindai_notification'),
       iOS: DarwinInitializationSettings(),
     );
     await _plugin.initialize(settings: settings);
