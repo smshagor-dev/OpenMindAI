@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/constants/model_catalog.dart';
+import '../../core/services/device_profile_service.dart';
 import '../../core/services/model_storage_service.dart';
 import '../../core/theme/openmind_ui.dart';
 
@@ -32,6 +33,7 @@ class _ModelManagerSheet extends StatefulWidget {
 }
 
 class _ModelManagerSheetState extends State<_ModelManagerSheet> {
+  late final Future<MobileDeviceProfile> _profileFuture;
   final Map<String, bool> _installed = {};
   final Map<String, ModelInstallProgress> _progress = {};
   final Set<String> _busy = {};
@@ -40,6 +42,7 @@ class _ModelManagerSheetState extends State<_ModelManagerSheet> {
   @override
   void initState() {
     super.initState();
+    _profileFuture = DeviceProfileService().read();
     _refresh();
   }
 
@@ -96,68 +99,89 @@ class _ModelManagerSheetState extends State<_ModelManagerSheet> {
   @override
   Widget build(BuildContext context) {
     final installedCount = _installed.values.where((value) => value).length;
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 2, 14, 14),
-          child: OpenMindPageHeader(
-            title: 'Local models',
-            subtitle:
-                '$installedCount installed · Download once, then run on this device.',
-            trailing: IconButton(
-              tooltip: 'Refresh models',
-              onPressed: _refresh,
-              icon: const Icon(Icons.refresh_rounded),
-            ),
+    return FutureBuilder<MobileDeviceProfile>(
+      future: _profileFuture,
+      builder: (context, snapshot) {
+        final profile = snapshot.data;
+        final recommendedModels = profile == null
+            ? const <MobileModel>[]
+            : MobileModelCatalog.recommendationsForDevice(
+                ramGb: profile.ramGb,
+                freeDiskBytes: profile.freeDiskBytes,
+              );
+        final recommendedIds = recommendedModels.map((model) => model.id).toSet();
+        final sortedModels = [
+          ...recommendedModels,
+          ...MobileModelCatalog.models.where(
+            (model) => !recommendedIds.contains(model.id),
           ),
-        ),
-        if (_error != null)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-            child: Material(
-              color: Theme.of(context).colorScheme.errorContainer,
-              borderRadius: BorderRadius.circular(16),
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Row(
-                  children: [
-                    const Icon(Icons.error_outline_rounded),
-                    const SizedBox(width: 10),
-                    Expanded(child: Text(_error!)),
-                    IconButton(
-                      onPressed: () => setState(() => _error = null),
-                      icon: const Icon(Icons.close_rounded),
-                    ),
-                  ],
+        ];
+
+        return Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 2, 14, 14),
+              child: OpenMindPageHeader(
+                title: 'Local models',
+                subtitle:
+                    '$installedCount installed - ${recommendedIds.length} recommended for this device.',
+                trailing: IconButton(
+                  tooltip: 'Refresh models',
+                  onPressed: _refresh,
+                  icon: const Icon(Icons.refresh_rounded),
                 ),
               ),
             ),
-          ),
-        Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.fromLTRB(16, 2, 16, 28),
-            itemCount: MobileModelCatalog.models.length,
-            itemBuilder: (context, index) {
-              final model = MobileModelCatalog.models[index];
-              final installed = _installed[model.id] ?? false;
-              final busy = _busy.contains(model.id);
-              final progress = _progress[model.id];
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: _ModelCard(
-                  model: model,
-                  installed: installed,
-                  busy: busy,
-                  progress: progress,
-                  onInstall: () => _install(model),
-                  onDelete: () => _delete(model),
-                  onCancel: () => widget.storage.cancelInstall(model.id),
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: Material(
+                  color: Theme.of(context).colorScheme.errorContainer,
+                  borderRadius: BorderRadius.circular(16),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.error_outline_rounded),
+                        const SizedBox(width: 10),
+                        Expanded(child: Text(_error!)),
+                        IconButton(
+                          onPressed: () => setState(() => _error = null),
+                          icon: const Icon(Icons.close_rounded),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
-              );
-            },
-          ),
-        ),
-      ],
+              ),
+            Expanded(
+              child: ListView.builder(
+                padding: const EdgeInsets.fromLTRB(16, 2, 16, 28),
+                itemCount: sortedModels.length,
+                itemBuilder: (context, index) {
+                  final model = sortedModels[index];
+                  final installed = _installed[model.id] ?? false;
+                  final busy = _busy.contains(model.id);
+                  final progress = _progress[model.id];
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: _ModelCard(
+                      model: model,
+                      installed: installed,
+                      busy: busy,
+                      recommended: recommendedIds.contains(model.id),
+                      progress: progress,
+                      onInstall: () => _install(model),
+                      onDelete: () => _delete(model),
+                      onCancel: () => widget.storage.cancelInstall(model.id),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -167,6 +191,7 @@ class _ModelCard extends StatelessWidget {
     required this.model,
     required this.installed,
     required this.busy,
+    required this.recommended,
     required this.progress,
     required this.onInstall,
     required this.onDelete,
@@ -176,6 +201,7 @@ class _ModelCard extends StatelessWidget {
   final MobileModel model;
   final bool installed;
   final bool busy;
+  final bool recommended;
   final ModelInstallProgress? progress;
   final VoidCallback onInstall;
   final VoidCallback onDelete;
@@ -231,6 +257,12 @@ class _ModelCard extends StatelessWidget {
             spacing: 7,
             runSpacing: 7,
             children: [
+              if (recommended)
+                const OpenMindStatusPill(
+                  label: 'Recommended',
+                  icon: Icons.auto_awesome_rounded,
+                  active: true,
+                ),
               OpenMindStatusPill(label: model.kind, icon: _icon),
               OpenMindStatusPill(
                 label: '${model.minRamGb}+ GB RAM',

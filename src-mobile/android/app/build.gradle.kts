@@ -27,7 +27,7 @@ android {
     defaultConfig {
         multiDexEnabled = true
         applicationId = "com.openmindai.mobile"
-        minSdk = 23
+        minSdk = 28
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

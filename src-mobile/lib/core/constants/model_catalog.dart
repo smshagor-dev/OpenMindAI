@@ -139,18 +139,34 @@ class MobileModelCatalog {
     required int ramGb,
     required int freeDiskBytes,
   }) {
+    return recommendationsForDevice(
+      ramGb: ramGb,
+      freeDiskBytes: freeDiskBytes,
+    ).first;
+  }
+
+  static List<MobileModel> recommendationsForDevice({
+    required int ramGb,
+    required int freeDiskBytes,
+  }) {
     final candidates = <MobileModel>[
       byId('qwen3-8b-q4km'),
       byId('qwen3-4b-q4km'),
       byId('qwen3-17b-q4km'),
       byId('qwen3-06b-q4'),
+      byId('deepseek-r1-7b-q4km'),
+      byId('deepseek-r1-15b-q4km'),
+      byId('qwen25-vl-3b-q4km'),
     ];
 
+    final recommended = <MobileModel>[];
     for (final model in candidates) {
       if (ramGb < model.minRamGb) continue;
       final requiredBytes = model.sizeBytes + _installReserveBytes;
-      if (freeDiskBytes <= 0 || freeDiskBytes >= requiredBytes) return model;
+      if (freeDiskBytes <= 0 || freeDiskBytes >= requiredBytes) {
+        recommended.add(model);
+      }
     }
-    return byId('qwen3-06b-q4');
+    return recommended.isEmpty ? [byId('qwen3-06b-q4')] : recommended;
   }
 }
