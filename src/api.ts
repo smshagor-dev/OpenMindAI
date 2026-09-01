@@ -91,6 +91,16 @@ function statusFromInventory(inventory: RuntimeInventory): LlamaRuntimeStatus {
   };
 }
 
+function cacheRuntimeStatus(status: LlamaRuntimeStatus) {
+  const selected = status.selectedRuntime;
+  runtimeInventoryCache = {
+    runtimes: selected ? [selected] : [],
+    selected,
+    serverState: status.state,
+  };
+  runtimeBootstrapPromise = null;
+}
+
 async function runtimeBootstrapSnapshot(): Promise<RuntimeBootstrapSnapshot> {
   if (runtimeBootstrapPromise) return runtimeBootstrapPromise;
 
@@ -160,11 +170,6 @@ function markRuntimeForegroundStarted() {
   }
 }
 
-function invalidateRuntimeSnapshot() {
-  runtimeInventoryCache = null;
-  runtimeBootstrapPromise = null;
-}
-
 function scheduleBackgroundRuntimeScan() {
   if (!isTauri || runtimeScanTimer !== null) return;
   runtimeScanTimer = window.setTimeout(() => {
@@ -232,19 +237,25 @@ export const api = {
   activateModel: async (conversationId: string, modelId: string) => {
     markRuntimeForegroundStarted();
     const status = await legacyApi.activateModel(conversationId, modelId);
-    invalidateRuntimeSnapshot();
+    cacheRuntimeStatus(status);
     return status;
   },
   startRuntime: async () => {
     markRuntimeForegroundStarted();
     const status = await legacyApi.startRuntime();
-    invalidateRuntimeSnapshot();
+    cacheRuntimeStatus(status);
     return status;
   },
   stopRuntime: async () => {
     markRuntimeForegroundStarted();
     await legacyApi.stopRuntime();
-    invalidateRuntimeSnapshot();
+    const selected = runtimeInventoryCache?.selected ?? (await runtimeBootstrapSnapshot()).inventory.selected;
+    runtimeInventoryCache = {
+      runtimes: selected ? [selected] : [],
+      selected,
+      serverState: "stopped",
+    };
+    runtimeBootstrapPromise = null;
   },
   projectAgentStatus,
   sendChatMessage: async (
