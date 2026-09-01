@@ -9,10 +9,12 @@ class AppSettingsController extends ChangeNotifier {
   static const _themeKey = 'openmindai.theme_mode';
   static const _compactKey = 'openmindai.compact_chat';
   static const _hapticsKey = 'openmindai.haptics';
+  static const _notificationsKey = 'openmindai.completion_notifications';
 
   ThemeMode themeMode = ThemeMode.system;
   bool compactChat = false;
   bool haptics = true;
+  bool completionNotifications = true;
   bool loaded = false;
 
   Future<void> load() async {
@@ -24,6 +26,7 @@ class AppSettingsController extends ChangeNotifier {
     };
     compactChat = prefs.getBool(_compactKey) ?? false;
     haptics = prefs.getBool(_hapticsKey) ?? true;
+    completionNotifications = prefs.getBool(_notificationsKey) ?? true;
     loaded = true;
     notifyListeners();
   }
@@ -54,5 +57,12 @@ class AppSettingsController extends ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_hapticsKey, value);
+  }
+
+  Future<void> setCompletionNotifications(bool value) async {
+    completionNotifications = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_notificationsKey, value);
   }
 }

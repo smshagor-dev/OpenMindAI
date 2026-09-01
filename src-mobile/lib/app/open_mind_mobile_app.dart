@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../core/services/notification_service.dart';
 import '../core/storage/app_settings_controller.dart';
 import '../core/storage/onboarding_store.dart';
 import '../core/theme/app_theme.dart';
@@ -26,6 +27,11 @@ class _OpenMindMobileAppState extends State<OpenMindMobileApp> {
 
   Future<void> _load() async {
     await _settings.load();
+    try {
+      await NotificationService.instance.initialize();
+    } catch (_) {
+      // Notifications are optional and must never block local chat startup.
+    }
     final complete = await _store.isComplete();
     if (!mounted) return;
     setState(() => _onboardingComplete = complete);

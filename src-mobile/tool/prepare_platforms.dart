@@ -2,10 +2,11 @@ import 'dart:io';
 
 Future<void> main() async {
   await _patchAndroidManifest();
-  await _patchAndroidMinSdk();
+  await _patchAndroidBuild();
+  await _writeAndroidNotificationIcon();
   await _patchIosInfoPlist();
   await _patchIosDeploymentTarget();
-  stdout.writeln('OpenMindAI mobile platform configuration is ready.');
+  stdout.writeln('OpenMindAI mobile platform configuration is ready for local builds.');
 }
 
 Future<void> _patchAndroidManifest() async {
@@ -39,15 +40,71 @@ Future<void> _patchAndroidManifest() async {
   await file.writeAsString(value);
 }
 
-Future<void> _patchAndroidMinSdk() async {
+Future<void> _patchAndroidBuild() async {
   final file = File('android/app/build.gradle.kts');
   if (!await file.exists()) return;
   var value = await file.readAsString();
+
+  value = value.replaceFirst(
+    RegExp(r'compileSdk\s*=\s*flutter\.compileSdkVersion'),
+    'compileSdk = 37',
+  );
+  value = value.replaceFirst(
+    RegExp(r'ndkVersion\s*=\s*flutter\.ndkVersion'),
+    'ndkVersion = "29.0.13113456"',
+  );
   value = value.replaceFirst(
     RegExp(r'minSdk\s*=\s*flutter\.minSdkVersion'),
     'minSdk = 21',
   );
+  value = value.replaceAll('JavaVersion.VERSION_1_8', 'JavaVersion.VERSION_17');
+  value = value.replaceAll('JavaVersion.VERSION_11', 'JavaVersion.VERSION_17');
+
+  if (!value.contains('isCoreLibraryDesugaringEnabled = true')) {
+    value = value.replaceFirst(
+      'compileOptions {',
+      'compileOptions {\n        isCoreLibraryDesugaringEnabled = true',
+    );
+  }
+  if (!value.contains('multiDexEnabled = true')) {
+    value = value.replaceFirst(
+      'defaultConfig {',
+      'defaultConfig {\n        multiDexEnabled = true',
+    );
+  }
+  if (!value.contains('coreLibraryDesugaring(')) {
+    const dependencies = '''
+
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+}
+''';
+    if (value.contains('\nflutter {')) {
+      value = value.replaceFirst('\nflutter {', '$dependencies\nflutter {');
+    } else {
+      value = '$value$dependencies';
+    }
+  }
+
   await file.writeAsString(value);
+}
+
+Future<void> _writeAndroidNotificationIcon() async {
+  final directory = Directory('android/app/src/main/res/drawable');
+  await directory.create(recursive: true);
+  final file = File('${directory.path}/openmindai_notification.xml');
+  if (await file.exists()) return;
+  await file.writeAsString('''<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,2A10,10 0,1 0,12 22A10,10 0,0 0,12 2M7,12A5,5 0,0 1,17 12A5,5 0,0 1,7 12M12,8A4,4 0,1 0,12 16A4,4 0,0 0,12 8" />
+</vector>
+''');
 }
 
 Future<void> _patchIosInfoPlist() async {

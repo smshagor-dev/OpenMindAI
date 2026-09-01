@@ -1,6 +1,35 @@
 # OpenMindAI Mobile
 
-Flutter application for Android and iOS. Mobile code lives under `src-mobile/` so the React/Tauri desktop app remains independent.
+Flutter application for Android and iOS. Mobile code lives under `src-mobile/` and stays independent from the React/Tauri desktop application.
+
+## Functional scope
+
+OpenMindAI Mobile is local-first. The AI model, normal chat history, voice transcription, document processing, vision input and Canvas generation run on the device. Search and Research use the internet only to retrieve public evidence; the final model inference remains local.
+
+Implemented end-to-end functionality:
+
+- first-run onboarding, capability permissions and full license acceptance;
+- device RAM/free-storage inspection and recommended model selection;
+- app-private model download with resume, cancellation and SHA-256 verification when upstream LFS metadata provides a digest;
+- local GGUF inference through `lib_llama_cpp`;
+- resident text-model sessions with streamed output;
+- Chat, Think, Search and Research modes;
+- Stop and Regenerate;
+- SQLite conversation history with automatic migration from the earlier SharedPreferences format;
+- chat search, rename, delete, export and full-history cleanup;
+- camera and photo input through OpenMindAI Lens + multimodal projector;
+- PDF, DOCX, text, Markdown, source-code, JSON, YAML, CSV and other text attachment context;
+- durable app-private copies of chat attachments so old chats do not depend on temporary picker paths;
+- orphan attachment cleanup and storage usage controls;
+- OpenMindAI Hear local Whisper voice dictation;
+- OpenMindAI Speak device TTS read-aloud;
+- optional completion notifications for long responses finishing while the app is inactive;
+- real haptic-feedback setting used by important controls;
+- System, Light and Dark themes plus compact chat spacing;
+- local model install/delete/cancel manager;
+- OpenMindAI Canvas on-device SVG image synthesis using the selected installed OpenMindAI model, with safe-SVG validation, preview, Save As and system Share.
+
+Canvas deliberately uses local vector synthesis instead of silently calling a paid/cloud image API. A heavier diffusion runtime can be added later as an optional performance/model package without changing the local-only contract.
 
 ## First run
 
@@ -15,9 +44,9 @@ After setup completes, `mobile_onboarding_complete_v1` is stored locally. Later 
 
 ## Local models
 
-The mobile UI uses the same OpenMindAI product names as desktop. Upstream repository names and raw filenames are internal provisioning metadata and must not be rendered in user-facing screens.
+The mobile UI uses OpenMindAI product names. Upstream repository names and raw filenames are internal provisioning metadata and are not rendered in normal user-facing screens.
 
-Current mobile local-model set:
+Current mobile model set:
 
 - OpenMindAI Nano
 - OpenMindAI Swift
@@ -27,65 +56,56 @@ Current mobile local-model set:
 - OpenMindAI Reasoning
 - OpenMindAI Lens
 
-Models are resolved from their configured upstream repositories, downloaded to app-private application support storage, written through a temporary `.part` file, and SHA-256 verified when upstream LFS metadata exposes a digest. Vision installs include the matching multimodal projector.
+Vision installs include the matching multimodal projector.
 
-## Local inference
+## Local development and APK builds
 
-`lib_llama_cpp` is the direct Android/iOS llama.cpp runtime. Chat does not require a paid cloud AI API.
+Flutter mobile builds are intentionally local. The repository no longer runs a dedicated GitHub Actions Flutter/APK workflow.
 
-Implemented paths:
-
-- local GGUF model mounting;
-- streamed token output;
-- Stop and Regenerate;
-- Chat and Think modes;
-- local conversation persistence;
-- image input through OpenMindAI Lens + mmproj;
-- camera and photo attachments;
-- PDF structured-text extraction;
-- text, Markdown, source-code, JSON/YAML/CSV and other text attachments;
-- Search and Research modes that retrieve public web evidence and pass it to the local model;
-- local model install/progress/cancel/delete manager.
-
-Search and Research require internet access. The AI model itself still runs locally.
-
-## Bootstrap Android/iOS hosts
-
-Generated Flutter host files are reproducible and are intentionally not mixed with the desktop source. From `src-mobile/`:
+From `src-mobile/`:
 
 ```bash
 flutter create --platforms=android,ios --org com.openmindai --project-name openmindai_mobile --no-pub .
 dart run tool/prepare_platforms.dart
 flutter pub get
+dart format lib test tool
 flutter analyze
 flutter test
 flutter build apk --debug
 ```
 
-`tool/prepare_platforms.dart` configures:
+For a release APK after local signing/configuration is ready:
 
-### Android
+```bash
+flutter build apk --release
+```
+
+For iOS development on macOS:
+
+```bash
+flutter build ios --simulator --debug
+```
+
+`tool/prepare_platforms.dart` configures the generated hosts for the dependencies used by the app, including Android permissions, API/NDK compatibility, Java 17/desugaring, TTS discovery, and iOS permission descriptions/deployment target.
+
+### Android permissions
 
 - `INTERNET`
 - `CAMERA`
 - `RECORD_AUDIO`
 - `POST_NOTIFICATIONS`
 
-Broad storage access such as `MANAGE_EXTERNAL_STORAGE` is deliberately not requested. Files use the system picker.
+Broad storage access such as `MANAGE_EXTERNAL_STORAGE` is deliberately not requested. Files use system pickers and durable chat copies are stored inside the application sandbox.
 
-### iOS
+### iOS permissions
 
-- `NSCameraUsageDescription`
-- `NSMicrophoneUsageDescription`
-- `NSPhotoLibraryUsageDescription`
-- iOS deployment target 13.0 in the generated Podfile
-
-## CI
-
-`.github/workflows/mobile-flutter.yml` validates the mobile source separately from desktop CI. It generates clean Android/iOS hosts, applies platform configuration, resolves dependencies, checks formatting, runs `flutter analyze` and tests, builds an Android debug APK, and performs a no-codesign iOS debug build.
+- camera;
+- microphone;
+- photo library;
+- notification permission is requested through the app capability flow.
 
 ## Runtime notes
 
-The pub.dev `lib_llama_cpp` mobile prebuilts are CPU builds by default. GPU-specific Android Vulkan and iOS Metal assets are a separate optimization path and are not assumed by the baseline mobile build.
+The baseline `lib_llama_cpp` mobile prebuilts use the supported mobile CPU runtime by default. GPU-specific Android Vulkan and iOS Metal packaging remains an optional optimization rather than a correctness dependency.
 
-Large models remain optional because phones have tighter memory and thermal limits than desktop systems. OpenMindAI selects a conservative default from detected RAM, while the Models screen lets the user install or remove alternatives.
+Phones have tighter memory, battery and thermal limits than desktops. OpenMindAI therefore recommends a conservative model from detected device capacity while still allowing users to install or remove alternatives.
