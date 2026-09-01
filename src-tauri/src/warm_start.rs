@@ -7,12 +7,21 @@ use sysinfo::System;
 use tauri::{AppHandle, Manager};
 use tokio::sync::Notify;
 
-use crate::{app_error::AppError, AppState};
+use crate::{
+    app_error::AppError,
+    hardware::HardwareProfiler,
+    launch_planner::ModelLaunchPlanner,
+    model_registry::ModelRegistry,
+    runtime::allocate_local_port,
+    AppState,
+};
 
+const CORE_IDLE_WARMUP_DELAY_MS: u64 = 1_500;
 const MEMORY_CHECK_INTERVAL_SECS: u64 = 60;
 const IDLE_BEFORE_MEMORY_TRIM_SECS: u64 = 20 * 60;
 const LOW_MEMORY_MIN_AVAILABLE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const LOW_MEMORY_AVAILABLE_PERCENT: u64 = 10;
+const CORE_REPOSITORY: &str = "Qwen/Qwen3-4B-GGUF";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WarmPhase {
@@ -56,6 +65,7 @@ impl WarmStartCoordinator {
                 state.model_id = Some(model_id.to_string());
             }
         }
+        self.notify.notify_waiters();
     }
 
     pub async fn wait_if_loading(&self, model_id: &str) {
@@ -90,6 +100,37 @@ impl WarmStartCoordinator {
         self.notify.notify_waiters();
     }
 
+    fn has_foreground_request(&self) -> bool {
+        self.state
+            .lock()
+            .is_ok_and(|state| state.foreground_model_id.is_some())
+    }
+
+    fn begin_background_warmup(&self, model_id: &str) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        if state.foreground_model_id.is_some() || state.phase != WarmPhase::Idle {
+            return false;
+        }
+        state.phase = WarmPhase::Loading;
+        state.model_id = Some(model_id.to_string());
+        true
+    }
+
+    fn clear_background_warmup(&self, model_id: &str) {
+        if let Ok(mut state) = self.state.lock() {
+            if state.phase == WarmPhase::Loading
+                && state.model_id.as_deref() == Some(model_id)
+                && state.foreground_model_id.is_none()
+            {
+                state.phase = WarmPhase::Idle;
+                state.model_id = None;
+            }
+        }
+        self.notify.notify_waiters();
+    }
+
     fn idle_model_for_memory_trim(&self, minimum_idle: Duration) -> Option<String> {
         let state = self.state.lock().ok()?;
         if state.phase != WarmPhase::Ready {
@@ -111,12 +152,102 @@ impl WarmStartCoordinator {
     }
 }
 
-/// Startup must never load model weights. The desktop window and cached app
-/// state should become interactive first; model loading belongs to the first
-/// foreground prompt/model activation path. The only always-on background
-/// service kept here is the low-memory idle-runtime monitor.
+/// Keep first paint fast, then warm only the small default Core model in the
+/// background. This moves GGUF loading off the window-creation path while still
+/// making the common first chat turn hot by the time a user finishes typing.
 pub fn spawn_background_services(app: AppHandle) {
+    spawn_core_idle_warmup(app.clone());
     spawn_memory_pressure_monitor(app);
+}
+
+fn spawn_core_idle_warmup(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(CORE_IDLE_WARMUP_DELAY_MS)).await;
+
+        let warm_app = app.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            let state = warm_app.state::<AppState>();
+            if !state.active_generations.is_idle() || state.warm_start.has_foreground_request() {
+                return Ok::<_, AppError>(None);
+            }
+
+            let model = {
+                let db = state
+                    .database
+                    .lock()
+                    .map_err(|_| AppError::internal("database lock poisoned"))?;
+                ModelRegistry::new(&db, &state.root)
+                    .list_models()?
+                    .into_iter()
+                    .find(|model| {
+                        model.enabled
+                            && model.source_repository.as_deref() == Some(CORE_REPOSITORY)
+                    })
+            };
+            let Some(model) = model else {
+                return Ok(None);
+            };
+
+            if !state.warm_start.begin_background_warmup(&model.id) {
+                return Ok(None);
+            }
+
+            // A foreground prompt always wins. Check between each potentially
+            // expensive preparation step so a user who sends immediately does
+            // not queue behind unnecessary speculative work.
+            if state.warm_start.has_foreground_request() {
+                state.warm_start.clear_background_warmup(&model.id);
+                return Ok(None);
+            }
+            let hardware = HardwareProfiler::for_inference(&state.hardware);
+            if state.warm_start.has_foreground_request() {
+                state.warm_start.clear_background_warmup(&model.id);
+                return Ok(None);
+            }
+            let plan = ModelLaunchPlanner::plan(&model, &hardware, allocate_local_port()?);
+            if state.warm_start.has_foreground_request() {
+                state.warm_start.clear_background_warmup(&model.id);
+                return Ok(None);
+            }
+
+            let status = {
+                let mut runtime = state
+                    .runtime
+                    .lock()
+                    .map_err(|_| AppError::internal("runtime lock poisoned"))?;
+                runtime.ensure_model_server(&hardware, &plan.config)
+            };
+
+            match status {
+                Ok(status) => {
+                    state.warm_start.mark_runtime_ready(&model.id);
+                    Ok(Some((model.name, status.backend)))
+                }
+                Err(error) => {
+                    state.warm_start.clear_background_warmup(&model.id);
+                    Err(error)
+                }
+            }
+        })
+        .await;
+
+        match result {
+            Ok(Ok(Some((model_name, backend)))) => {
+                tracing::info!(
+                    model = %model_name,
+                    ?backend,
+                    "default chat model warmed after first paint"
+                );
+            }
+            Ok(Ok(None)) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "background chat model warmup skipped after failure");
+            }
+            Err(error) => {
+                tracing::warn!(%error, "background chat model warmup task failed");
+            }
+        }
+    });
 }
 
 fn spawn_memory_pressure_monitor(app: AppHandle) {
@@ -178,11 +309,18 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn foreground_request_never_waits_for_startup_preload() {
+    async fn foreground_request_never_waits_for_background_preload() {
         let coordinator = WarmStartCoordinator::default();
         coordinator.note_foreground_request("core");
         coordinator.wait_if_loading("core").await;
         coordinator.mark_runtime_ready("core");
+    }
+
+    #[test]
+    fn foreground_request_prevents_speculative_warmup() {
+        let coordinator = WarmStartCoordinator::default();
+        coordinator.note_foreground_request("core");
+        assert!(!coordinator.begin_background_warmup("core"));
     }
 
     #[test]
