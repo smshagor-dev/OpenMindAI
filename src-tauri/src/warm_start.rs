@@ -3,16 +3,34 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(target_os = "windows")]
+use std::{
+    os::windows::process::CommandExt,
+    process::{Command, Stdio},
+};
+
 use sysinfo::System;
 use tauri::{AppHandle, Manager};
 use tokio::sync::Notify;
 
-use crate::{app_error::AppError, AppState};
+use crate::{
+    app_error::AppError,
+    launch_planner::ModelLaunchPlanner,
+    model_registry::{ModelLifecycleState, ModelRegistry},
+    runtime::{allocate_local_port, LlamaRuntimeStatus},
+    AppState,
+};
 
 const MEMORY_CHECK_INTERVAL_SECS: u64 = 60;
 const IDLE_BEFORE_MEMORY_TRIM_SECS: u64 = 20 * 60;
 const LOW_MEMORY_MIN_AVAILABLE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const LOW_MEMORY_AVAILABLE_PERCENT: u64 = 10;
+const CORE_REPOSITORY: &str = "Qwen/Qwen3-4B-GGUF";
+const BACKGROUND_ENV: &str = "OPENMINDAI_BACKGROUND_BOOT";
+const BACKGROUND_PRELOAD_DELAY_SECS: u64 = 8;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WarmPhase {
@@ -112,14 +130,132 @@ impl WarmStartCoordinator {
     }
 }
 
-/// Startup/background work must never load GGUF weights speculatively. Model
-/// loading is user-triggered by the first prompt or explicit model activation,
-/// so opening OpenMindAI cannot suddenly saturate GPU/VRAM and stall the
-/// desktop. The only always-on background service is the low-memory idle
-/// runtime monitor.
+fn is_background_boot() -> bool {
+    std::env::var_os(BACKGROUND_ENV).is_some()
+}
+
+fn prepare_default_chat_runtime_sync(app: &AppHandle) -> Result<LlamaRuntimeStatus, AppError> {
+    let state = app.state::<AppState>();
+    let model = {
+        let db = state
+            .database
+            .lock()
+            .map_err(|_| AppError::internal("database lock poisoned"))?;
+        ModelRegistry::new(&db, &state.root)
+            .list_models()?
+            .into_iter()
+            .find(|model| {
+                model.enabled
+                    && matches!(
+                        model.state,
+                        ModelLifecycleState::Ready | ModelLifecycleState::Loaded
+                    )
+                    && model.source_repository.as_deref() == Some(CORE_REPOSITORY)
+            })
+            .ok_or_else(|| {
+                AppError::ModelNotFound(
+                    "OpenMindAI Core is not installed or ready for local chat".to_string(),
+                )
+            })?
+    };
+
+    // ModelLaunchPlanner resolves the completed hardware profile on demand and
+    // keeps the safer display-GPU VRAM headroom policy for Windows Vulkan.
+    let hardware = state.hardware.clone();
+    let plan = ModelLaunchPlanner::plan(&model, &hardware, allocate_local_port()?);
+    let status = {
+        let mut runtime = state
+            .runtime
+            .lock()
+            .map_err(|_| AppError::internal("runtime lock poisoned"))?;
+        runtime.ensure_model_server(&hardware, &plan.config)?
+    };
+    state.warm_start.mark_runtime_ready(&model.id);
+    Ok(status)
+}
+
+/// Used by the startup overlay on a normal launch and by the hidden Windows
+/// login instance. A background-login preload waits briefly so Windows can
+/// finish its own login work before OpenMindAI allocates model memory/VRAM.
+#[tauri::command]
+pub(crate) async fn prepare_default_chat_runtime(
+    app: AppHandle,
+) -> Result<LlamaRuntimeStatus, AppError> {
+    if is_background_boot() {
+        tokio::time::sleep(Duration::from_secs(BACKGROUND_PRELOAD_DELAY_SECS)).await;
+    }
+
+    tauri::async_runtime::spawn_blocking(move || prepare_default_chat_runtime_sync(&app))
+        .await
+        .map_err(|error| AppError::internal(format!("startup model task failed: {error}")))?
+}
+
+/// The process can be launched with `--background` from Windows login. The
+/// same process stays alive with its Core model/runtime resident; a later
+/// normal launch is handed to this instance by `main.rs` and simply reveals
+/// the already-prepared Tauri window.
 pub fn spawn_background_services(app: AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if is_background_boot() {
+            let _ = window.hide();
+        } else {
+            let _ = window.show();
+        }
+    }
+
+    register_windows_autostart();
     spawn_memory_pressure_monitor(app);
 }
+
+#[cfg(target_os = "windows")]
+fn register_windows_autostart() {
+    if cfg!(debug_assertions) {
+        return;
+    }
+    let Some(config) = crate::portable_root::load_installation() else {
+        return;
+    };
+    if !config.installation_complete {
+        return;
+    }
+
+    std::thread::spawn(|| {
+        let Ok(executable) = std::env::current_exe() else {
+            return;
+        };
+        let command_value = format!("\"{}\" --background", executable.display());
+        let mut command = Command::new("reg.exe");
+        command
+            .args([
+                "add",
+                "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                "/v",
+                "OpenMindAI",
+                "/t",
+                "REG_SZ",
+                "/d",
+                &command_value,
+                "/f",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW);
+        match command.status() {
+            Ok(status) if status.success() => {
+                tracing::debug!("Windows login background startup registered");
+            }
+            Ok(status) => {
+                tracing::warn!(?status, "could not register Windows login startup");
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not launch reg.exe for Windows startup registration");
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+fn register_windows_autostart() {}
 
 fn spawn_memory_pressure_monitor(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
@@ -180,7 +316,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn foreground_request_never_waits_for_speculative_preload() {
+    async fn foreground_request_never_waits_for_startup_prepare() {
         let coordinator = WarmStartCoordinator::default();
         coordinator.note_foreground_request("core");
         coordinator.wait_if_loading("core").await;
