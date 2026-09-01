@@ -1,4 +1,8 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::Path,
+    sync::{OnceLock, RwLock},
+};
 
 use serde::Serialize;
 
@@ -6,6 +10,9 @@ use crate::{
     app_error::AppError,
     portable_root::{available_bytes_for_path, PortableRootManager},
 };
+
+static STORAGE_SUMMARY_CACHE: OnceLock<RwLock<Option<(String, StorageSummary)>>> = OnceLock::new();
+static STORAGE_SCAN_STARTED: OnceLock<()> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,7 +40,45 @@ impl<'a> StorageMonitor<'a> {
         Self { root }
     }
 
+    /// Startup callers receive a cheap snapshot immediately. Recursive sizing
+    /// of models/cache/generated folders is performed once on a background
+    /// thread and subsequent refreshes receive the completed values.
     pub fn summary(&self) -> Result<StorageSummary, AppError> {
+        let root_key = self.root.root().display().to_string();
+        let cache = STORAGE_SUMMARY_CACHE.get_or_init(|| RwLock::new(None));
+        if let Ok(current) = cache.read() {
+            if let Some((cached_root, summary)) = current.as_ref() {
+                if cached_root == &root_key {
+                    return Ok(summary.clone());
+                }
+            }
+        }
+
+        if STORAGE_SCAN_STARTED.set(()).is_ok() {
+            let root = self.root.clone();
+            let key = root_key.clone();
+            std::thread::spawn(move || {
+                let monitor = StorageMonitor::new(&root);
+                if let Ok(summary) = monitor.compute_summary() {
+                    let cache = STORAGE_SUMMARY_CACHE.get_or_init(|| RwLock::new(None));
+                    if let Ok(mut current) = cache.write() {
+                        *current = Some((key, summary));
+                    }
+                }
+            });
+        }
+
+        Ok(StorageSummary {
+            root: root_key,
+            models_bytes: 0,
+            database_bytes: 0,
+            cache_bytes: 0,
+            generated_bytes: 0,
+            available_bytes: None,
+        })
+    }
+
+    fn compute_summary(&self) -> Result<StorageSummary, AppError> {
         Ok(StorageSummary {
             root: self.root.root().display().to_string(),
             models_bytes: directory_size(&self.root.resolve_relative("models")?)?,
@@ -54,6 +99,13 @@ impl<'a> StorageMonitor<'a> {
             let path = self.root.resolve_relative(relative)?;
             bytes_freed += clear_directory_contents(&path)?;
         }
+
+        if let Some(cache) = STORAGE_SUMMARY_CACHE.get() {
+            if let Ok(mut current) = cache.write() {
+                *current = None;
+            }
+        }
+
         Ok(CacheClearResult { bytes_freed })
     }
 }
