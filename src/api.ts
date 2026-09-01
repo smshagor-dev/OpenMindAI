@@ -1,5 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Artifact, Message } from "./types";
+import type {
+  Artifact,
+  LlamaRuntimeStatus,
+  Message,
+  RuntimeInventory,
+  RuntimeValidation,
+} from "./types";
 import type {
   ConnectedProvider,
   GoogleWorkspaceStatus,
@@ -9,6 +15,7 @@ import { createSoundscapeArtifact } from "./lib/media";
 import { api as legacyApi } from "./api_legacy";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
+const RUNTIME_BACKGROUND_SCAN_DELAY_MS = 30_000;
 
 type VisualMedia = {
   kind: "image";
@@ -28,12 +35,156 @@ type ProjectAgentStatus = {
   attachedRoots: number;
 };
 
+type RuntimeBootstrapSnapshot = {
+  inventory: RuntimeInventory;
+  status: LlamaRuntimeStatus;
+};
+
+let runtimeForegroundStarted = false;
+let runtimeScanTimer: number | null = null;
+let runtimeInventoryCache: RuntimeInventory | null = null;
+let runtimeScanPromise: Promise<RuntimeInventory> | null = null;
+let runtimeBootstrapPromise: Promise<RuntimeBootstrapSnapshot> | null = null;
+
 function connectedInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri) {
     return Promise.reject(new Error("Connected app actions require the OpenMindAI desktop app."));
   }
   return invoke<T>(command, args);
 }
+
+function cachedRuntimeValidation(): RuntimeValidation {
+  return {
+    manifest: {
+      runtimeName: "OpenMindAI Runtime",
+      version: "cached",
+      platform: navigator.platform || "desktop",
+      architecture: "cached",
+      backend: "cpu",
+      source: "saved installation",
+      installedAt: "",
+      binaries: {
+        server: null,
+        cli: null,
+        bench: null,
+      },
+      checksum: null,
+      status: "ready",
+    },
+    serverExists: true,
+    cliExists: true,
+    benchExists: false,
+    versionOutput: null,
+    deviceOutput: null,
+    usable: true,
+    message: "Saved runtime readiness; deep validation deferred until after startup.",
+  };
+}
+
+function statusFromInventory(inventory: RuntimeInventory): LlamaRuntimeStatus {
+  return {
+    available: inventory.selected !== null,
+    backend: inventory.selected?.manifest.backend ?? null,
+    endpoint: null,
+    state: inventory.serverState,
+    selectedRuntime: inventory.selected,
+  };
+}
+
+async function runtimeBootstrapSnapshot(): Promise<RuntimeBootstrapSnapshot> {
+  if (runtimeBootstrapPromise) return runtimeBootstrapPromise;
+
+  runtimeBootstrapPromise = legacyApi
+    .installationStatus()
+    .then((installation) => {
+      if (installation.setupRequired) {
+        const inventory: RuntimeInventory = {
+          runtimes: [],
+          selected: null,
+          serverState: "stopped",
+        };
+        return {
+          inventory,
+          status: statusFromInventory(inventory),
+        };
+      }
+
+      const selected = cachedRuntimeValidation();
+      const inventory: RuntimeInventory = {
+        runtimes: [selected],
+        selected,
+        serverState: "stopped",
+      };
+      return {
+        inventory,
+        status: statusFromInventory(inventory),
+      };
+    })
+    .catch(() => {
+      const inventory: RuntimeInventory = {
+        runtimes: [],
+        selected: null,
+        serverState: "stopped",
+      };
+      return {
+        inventory,
+        status: statusFromInventory(inventory),
+      };
+    });
+
+  return runtimeBootstrapPromise;
+}
+
+async function deepRuntimeInventory(): Promise<RuntimeInventory> {
+  if (runtimeInventoryCache) return runtimeInventoryCache;
+  if (runtimeScanPromise) return runtimeScanPromise;
+
+  runtimeScanPromise = legacyApi
+    .runtimeInventory()
+    .then((inventory) => {
+      runtimeInventoryCache = inventory;
+      return inventory;
+    })
+    .finally(() => {
+      runtimeScanPromise = null;
+    });
+
+  return runtimeScanPromise;
+}
+
+function markRuntimeForegroundStarted() {
+  runtimeForegroundStarted = true;
+  if (runtimeScanTimer !== null) {
+    window.clearTimeout(runtimeScanTimer);
+    runtimeScanTimer = null;
+  }
+}
+
+function invalidateRuntimeSnapshot() {
+  runtimeInventoryCache = null;
+  runtimeBootstrapPromise = null;
+}
+
+function scheduleBackgroundRuntimeScan() {
+  if (!isTauri || runtimeScanTimer !== null) return;
+  runtimeScanTimer = window.setTimeout(() => {
+    runtimeScanTimer = null;
+    if (runtimeForegroundStarted || runtimeInventoryCache || runtimeScanPromise) return;
+
+    const run = () => {
+      if (runtimeForegroundStarted || runtimeInventoryCache || runtimeScanPromise) return;
+      void deepRuntimeInventory().catch(() => undefined);
+    };
+
+    if ("requestIdleCallback" in window) {
+      window.requestIdleCallback(run, { timeout: 10_000 });
+    } else {
+      run();
+    }
+  }, RUNTIME_BACKGROUND_SCAN_DELAY_MS);
+}
+
+scheduleBackgroundRuntimeScan();
 
 async function messageUsesSoundscape(conversationId: string, messageId: string | null) {
   if (!messageId) return false;
@@ -70,6 +221,31 @@ async function shouldUseProjectAgent(conversationId: string, mode: string) {
 
 export const api = {
   ...legacyApi,
+  runtimeInventory: async () => {
+    if (runtimeInventoryCache) return runtimeInventoryCache;
+    return (await runtimeBootstrapSnapshot()).inventory;
+  },
+  runtimeStatus: async () => {
+    if (runtimeInventoryCache) return statusFromInventory(runtimeInventoryCache);
+    return (await runtimeBootstrapSnapshot()).status;
+  },
+  activateModel: async (conversationId: string, modelId: string) => {
+    markRuntimeForegroundStarted();
+    const status = await legacyApi.activateModel(conversationId, modelId);
+    invalidateRuntimeSnapshot();
+    return status;
+  },
+  startRuntime: async () => {
+    markRuntimeForegroundStarted();
+    const status = await legacyApi.startRuntime();
+    invalidateRuntimeSnapshot();
+    return status;
+  },
+  stopRuntime: async () => {
+    markRuntimeForegroundStarted();
+    await legacyApi.stopRuntime();
+    invalidateRuntimeSnapshot();
+  },
   projectAgentStatus,
   sendChatMessage: async (
     conversationId: string,
@@ -77,6 +253,7 @@ export const api = {
     mode: string,
     media: VisualMedia[] = [],
   ) => {
+    markRuntimeForegroundStarted();
     let assistant: Message;
     if (await shouldUseProjectAgent(conversationId, mode)) {
       assistant = await invoke<Message>("send_project_agent_message", {
@@ -108,6 +285,7 @@ export const api = {
     assistantMessageId: string,
     mode: string,
   ): Promise<Message> => {
+    markRuntimeForegroundStarted();
     let resolvedMode = mode;
     const history = await legacyApi.messages(conversationId);
     const targetIndex = history.findIndex((message) => message.id === assistantMessageId);
