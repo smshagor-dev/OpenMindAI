@@ -8,6 +8,7 @@ import "./startup.css";
 import "./multimodal.css";
 import "./projects.css";
 import "./work.css";
+import "./chat-layout-fix.css";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
