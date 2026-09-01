@@ -6,6 +6,7 @@ macro_rules! openmind_generate_handler {
         $crate::tauri_crate::generate_handler![
             $($command),*,
             prepare_default_chat_runtime,
+            reveal_main_window,
             transcribe_audio,
             ocr_pdf_pages,
             send_multimodal_chat_message,
@@ -93,6 +94,6 @@ pub(crate) use multimodal::{
     send_multimodal_chat_message, transcribe_audio,
 };
 pub(crate) use pdf_ocr::ocr_pdf_pages;
-pub(crate) use warm_start::prepare_default_chat_runtime;
+pub(crate) use warm_start::{prepare_default_chat_runtime, reveal_main_window};
 
 include!("lib_legacy.rs");
