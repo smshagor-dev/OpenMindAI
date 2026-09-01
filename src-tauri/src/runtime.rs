@@ -152,6 +152,10 @@ impl LlamaRuntimeManager {
         })
     }
 
+    /// Runtime discovery on the UI/chat path must be metadata-only. Older
+    /// builds spawned each llama binary with --version and --list-devices here,
+    /// adding up to 20 seconds of avoidable latency before a model could start.
+    /// The real launch/health check below is the authoritative validation.
     pub fn inventory(&self, hardware: &HardwareProfile) -> Result<RuntimeInventory, AppError> {
         let manifests = RuntimeRegistry::new(&self.root).discover()?;
         let validations = manifests
@@ -180,14 +184,14 @@ impl LlamaRuntimeManager {
         }
 
         let selected = self.inventory(hardware)?.selected.ok_or_else(|| {
-            AppError::RuntimeNotFound("no validated llama.cpp runtime found".to_string())
+            AppError::RuntimeNotFound("no usable llama.cpp runtime found".to_string())
         })?;
         let server = selected
             .manifest
             .binaries
             .server
             .as_ref()
-            .ok_or_else(|| AppError::RuntimeNotFound("llama-server.exe missing".to_string()))?;
+            .ok_or_else(|| AppError::RuntimeNotFound("llama-server executable missing".to_string()))?;
         let server_path = self.root.resolve_relative(server)?;
         let port = allocate_local_port()?;
         let endpoint = format!("http://127.0.0.1:{port}");
@@ -220,6 +224,7 @@ impl LlamaRuntimeManager {
 
         self.child = Some(child);
         self.endpoint = Some(endpoint.clone());
+        self.active_runtime = Some(selected);
 
         if wait_for_localhost(port, Duration::from_secs(8)) {
             self.state = ServerState::Ready;
@@ -235,12 +240,10 @@ impl LlamaRuntimeManager {
                 "llama-server exited before accepting localhost connections".to_string(),
             ));
         } else {
-            // llama-server without a model may stay alive but not serve health. The process
-            // lifecycle is still owned and can be stopped cleanly in this milestone.
             self.state = ServerState::Running;
         }
 
-        self.status(hardware)
+        Ok(self.active_status())
     }
 
     pub fn ensure_model_server(
@@ -250,29 +253,34 @@ impl LlamaRuntimeManager {
     ) -> Result<LlamaRuntimeStatus, AppError> {
         let model_path = resolve_model_path(&self.root, &config.model_path)?;
         let model_path_string = model_path.display().to_string();
+        let selected = self.inventory(hardware)?.selected.ok_or_else(|| {
+            AppError::RuntimeNotFound("no usable llama.cpp runtime found".to_string())
+        })?;
+        let selected_backend = selected.manifest.backend.clone();
 
-        if self
+        let child_alive = self
             .child
             .as_mut()
-            .is_some_and(|child| child.try_wait().ok().flatten().is_none())
-            && self.loaded_model_path.as_deref() == Some(model_path_string.as_str())
-        {
-            // Hot chat path: the same model is already loaded and the child is
-            // alive. Re-running status() here used to rediscover runtimes and
-            // spawn --version / --list-devices probes before every message.
+            .is_some_and(|child| child.try_wait().ok().flatten().is_none());
+        let same_model = self.loaded_model_path.as_deref() == Some(model_path_string.as_str());
+        let same_backend = self
+            .active_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.manifest.backend == selected_backend);
+
+        if child_alive && same_model && same_backend {
+            // True hot-chat path: reuse the resident model and its KV prompt
+            // cache. No runtime probing, process restart or model reload.
             return Ok(self.active_status());
         }
 
         self.stop()?;
-        let selected = self.inventory(hardware)?.selected.ok_or_else(|| {
-            AppError::RuntimeNotFound("no validated llama.cpp runtime found".to_string())
-        })?;
         let server = selected
             .manifest
             .binaries
             .server
             .as_ref()
-            .ok_or_else(|| AppError::RuntimeNotFound("llama-server.exe missing".to_string()))?;
+            .ok_or_else(|| AppError::RuntimeNotFound("llama-server executable missing".to_string()))?;
         let server_path = self.root.resolve_relative(server)?;
         let log_path = self.root.resolve_relative(format!(
             "logs/llama-server-model-{}.log",
@@ -311,7 +319,7 @@ impl LlamaRuntimeManager {
             args.push("--mmproj".to_string());
             args.push(mmproj_path.display().to_string());
         }
-        if config.gpu_layers > 0 {
+        if config.gpu_layers > 0 && selected_backend != BackendKind::Cpu {
             args.push("--gpu-layers".to_string());
             args.push(config.gpu_layers.to_string());
         }
@@ -321,7 +329,9 @@ impl LlamaRuntimeManager {
         if config.mlock {
             args.push("--mlock".to_string());
         }
-        if config.flash_attention {
+        // Vulkan flash-attention support varies by llama.cpp build. Avoid
+        // paying for a failed launch/retry on the common Windows AMD path.
+        if config.flash_attention && selected_backend != BackendKind::Vulkan {
             args.push("--flash-attn".to_string());
         }
 
@@ -440,16 +450,29 @@ pub(crate) fn preferred_backend_order(hardware: &HardwareProfile) -> Vec<Backend
         order.push(BackendKind::Cuda);
     }
     if has_amd {
-        order.push(BackendKind::Hip);
+        // Windows AMD packages are Vulkan-first in OpenMindAI. This keeps the
+        // runtime choice aligned with the launch planner on RX 580-class GPUs.
+        if cfg!(target_os = "windows") {
+            order.push(BackendKind::Vulkan);
+            order.push(BackendKind::Hip);
+        } else {
+            order.push(BackendKind::Hip);
+        }
     }
     if has_intel {
         order.push(BackendKind::Sycl);
     }
-    order.push(BackendKind::Vulkan);
+    if !order.contains(&BackendKind::Vulkan) {
+        order.push(BackendKind::Vulkan);
+    }
     order.push(BackendKind::Cpu);
     order
 }
 
+/// Fast metadata validation. Model launch and `/health` are the source of
+/// truth for executable compatibility. Spawning `--version`/`--list-devices`
+/// on every inventory read made both startup and first-token latency depend on
+/// subprocess timeouts.
 pub fn validate_manifest(
     root: &PortableRootManager,
     manifest: RuntimeManifest,
@@ -457,26 +480,18 @@ pub fn validate_manifest(
     let server_exists = file_exists_under_root(root, manifest.binaries.server.as_deref())?;
     let cli_exists = file_exists_under_root(root, manifest.binaries.cli.as_deref())?;
     let bench_exists = file_exists_under_root(root, manifest.binaries.bench.as_deref())?;
-    let probe_binary = manifest
-        .binaries
-        .cli
-        .as_deref()
-        .or(manifest.binaries.server.as_deref());
-    let version_output = probe_binary.and_then(|relative| {
-        run_probe(root, relative, &["--version"], Duration::from_secs(8)).ok()
-    });
-    let device_output = probe_binary.and_then(|relative| {
-        run_probe(root, relative, &["--list-devices"], Duration::from_secs(12)).ok()
-    });
-    let usable = (server_exists || cli_exists)
-        && manifest.status != RuntimeStatus::Disabled
-        && version_output.is_some();
+    let usable = server_exists
+        && !matches!(
+            manifest.status,
+            RuntimeStatus::Disabled | RuntimeStatus::Invalid | RuntimeStatus::Missing
+        );
+    let version_output = usable.then(|| manifest.version.clone());
     let message = if usable {
-        "runtime validated".to_string()
-    } else if !server_exists && !cli_exists {
-        "required executable missing".to_string()
+        "runtime ready for launch".to_string()
+    } else if !server_exists {
+        "required server executable missing".to_string()
     } else {
-        "runtime probe failed".to_string()
+        "runtime disabled or invalid".to_string()
     };
 
     Ok(RuntimeValidation {
@@ -485,7 +500,7 @@ pub fn validate_manifest(
         cli_exists,
         bench_exists,
         version_output,
-        device_output,
+        device_output: None,
         usable,
         message,
     })
@@ -532,46 +547,6 @@ fn discover_mmproj_sibling(model_path: &Path) -> Option<PathBuf> {
     candidates.into_iter().next()
 }
 
-fn run_probe(
-    root: &PortableRootManager,
-    relative: &str,
-    args: &[&str],
-    timeout: Duration,
-) -> Result<String, AppError> {
-    let path = root.resolve_relative(relative)?;
-    let mut command = Command::new(path);
-    command
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    hide_console_window(&mut command);
-    let mut child = command
-        .spawn()
-        .map_err(|error| AppError::RuntimeStartFailed(error.to_string()))?;
-
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if child
-            .try_wait()
-            .map_err(|error| AppError::RuntimeStartFailed(error.to_string()))?
-            .is_some()
-        {
-            let output = child
-                .wait_with_output()
-                .map_err(|error| AppError::RuntimeStartFailed(error.to_string()))?;
-            let mut text = String::from_utf8_lossy(&output.stdout).to_string();
-            text.push_str(&String::from_utf8_lossy(&output.stderr));
-            return Ok(text.trim().to_string());
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-
-    let _ = child.kill();
-    Err(AppError::RuntimeStartFailed(
-        "runtime probe timed out".to_string(),
-    ))
-}
-
 fn hide_console_window(_command: &mut Command) {
     #[cfg(target_os = "windows")]
     {
@@ -604,15 +579,14 @@ fn wait_for_localhost(port: u16, timeout: Duration) -> bool {
 /// The HTTP listener accepts connections the moment the process starts --
 /// well before the model finishes loading into memory -- so a bare
 /// `wait_for_localhost` marks the server "Ready" while `/v1/chat/completions`
-/// is still answering 503, which is what surfaced as a raw 503 to users.
-/// `/health` only returns 200 once the model is actually loaded.
+/// is still answering 503. `/health` only returns 200 once the model is loaded.
 fn wait_for_model_health(host: &str, port: u16, timeout: Duration) -> bool {
     let start = Instant::now();
     while start.elapsed() < timeout {
         if http_health_ok(host, port) {
             return true;
         }
-        thread::sleep(Duration::from_millis(300));
+        thread::sleep(Duration::from_millis(200));
     }
     false
 }
@@ -624,12 +598,12 @@ fn http_health_ok(host: &str, port: u16) -> bool {
     let Some(addr) = addrs.next() else {
         return false;
     };
-    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(500))
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(350))
     else {
         return false;
     };
     if stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
+        .set_read_timeout(Some(Duration::from_secs(1)))
         .is_err()
     {
         return false;
@@ -798,9 +772,6 @@ mod tests {
 
     #[test]
     fn real_staged_runtime_validates_when_present() {
-        // Resolving the real OPENMINDAI_ROOT races with portable_root's own
-        // tests, which mutate that same process-global env var — share their
-        // lock so this test observes a stable environment.
         let _guard = crate::portable_root::tests::ENV_LOCK.lock().unwrap();
         let Ok(root) = PortableRootManager::resolve() else {
             return;
