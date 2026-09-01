@@ -2,16 +2,10 @@ use serde::{Deserialize, Serialize};
 use sysinfo::System;
 
 #[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
-
-#[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_DESC1, DXGI_ADAPTER_FLAG_SOFTWARE,
     DXGI_ERROR_NOT_FOUND,
 };
-
-#[cfg(target_os = "windows")]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -97,6 +91,11 @@ pub struct BackendProfile {
 pub struct HardwareProfiler;
 
 impl HardwareProfiler {
+    /// Fast startup snapshot. This path deliberately avoids spawning external
+    /// tools such as `vulkaninfo` or `nvidia-smi`; those probes used to run
+    /// before Tauri created the window and could delay first paint noticeably.
+    /// Vendor/DXGI data is enough for launch planning, while the runtime itself
+    /// remains the source of truth when a model is actually activated.
     pub fn detect() -> HardwareProfile {
         let mut system = System::new_all();
         system.refresh_all();
@@ -110,16 +109,16 @@ impl HardwareProfiler {
         let gpus = enumerate_gpus();
         let primary_gpu = gpus.first().map(|gpu| gpu.id.clone());
         let recommended_inference_gpu = choose_recommended_gpu(&gpus).map(|gpu| gpu.id.clone());
-        // Mirrors the per-GPU vendor classification below (`classify_backends`/
-        // `recommended_backend`) -- these are the summary flags the frontend
-        // actually reads for its backend-label display (SettingsDialog.tsx),
-        // so leaving them hardcoded false understated real AMD/Intel GPUs.
+        let has_nvidia = gpus
+            .iter()
+            .any(|gpu| gpu.vendor == GpuVendor::Nvidia && !gpu.is_software);
         let has_amd = gpus
             .iter()
             .any(|gpu| gpu.vendor == GpuVendor::Amd && !gpu.is_software);
         let has_intel = gpus
             .iter()
             .any(|gpu| gpu.vendor == GpuVendor::Intel && !gpu.is_software);
+        let has_hardware_gpu = gpus.iter().any(|gpu| !gpu.is_software);
 
         HardwareProfile {
             operating_system: System::long_os_version()
@@ -139,8 +138,8 @@ impl HardwareProfiler {
             recommended_inference_gpu,
             backends: BackendProfile {
                 cpu: true,
-                cuda: command_available("nvidia-smi"),
-                vulkan: command_available("vulkaninfo"),
+                cuda: has_nvidia,
+                vulkan: cfg!(target_os = "windows") && has_hardware_gpu,
                 sycl: has_intel,
                 hip: has_amd,
                 metal: cfg!(target_os = "macos"),
@@ -196,23 +195,6 @@ fn recommended_backend(vendor: &GpuVendor, has_vulkan: bool) -> BackendKind {
     }
 }
 
-fn command_available(command: &str) -> bool {
-    let mut command = std::process::Command::new(command);
-    command
-        .arg("--help")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    hide_console_window(&mut command);
-    command.status().is_ok()
-}
-
-fn hide_console_window(_command: &mut std::process::Command) {
-    #[cfg(target_os = "windows")]
-    {
-        _command.creation_flags(CREATE_NO_WINDOW);
-    }
-}
-
 #[cfg(target_os = "windows")]
 fn enumerate_gpus() -> Vec<GpuInfo> {
     let factory: IDXGIFactory1 = match unsafe { CreateDXGIFactory1() } {
@@ -220,7 +202,9 @@ fn enumerate_gpus() -> Vec<GpuInfo> {
         Err(_) => return Vec::new(),
     };
 
-    let vulkan_available = command_available("vulkaninfo");
+    // Do not shell out to `vulkaninfo` on the critical startup path. A real
+    // hardware adapter on Windows is treated as Vulkan-capable for planning;
+    // installed runtime validation still decides what can actually launch.
     let mut gpus = Vec::new();
     let mut index = 0;
     loop {
@@ -231,7 +215,8 @@ fn enumerate_gpus() -> Vec<GpuInfo> {
         };
 
         if let Ok(desc) = unsafe { adapter.GetDesc1() } {
-            gpus.push(gpu_from_dxgi_desc(index, desc, vulkan_available));
+            let is_software = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0;
+            gpus.push(gpu_from_dxgi_desc(index, desc, !is_software));
         }
         index += 1;
     }
