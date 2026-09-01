@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use crate::{
-    hardware::{BackendKind, HardwareProfile},
+    hardware::{BackendKind, HardwareProfile, HardwareProfiler},
     model_registry::ModelRecord,
     performance::{PerformanceProfile, PerformanceProfileManager},
 };
@@ -39,8 +39,14 @@ pub struct ModelLaunchPlanner;
 
 impl ModelLaunchPlanner {
     pub fn plan(model: &ModelRecord, hardware: &HardwareProfile, port: u16) -> LaunchPlan {
-        let profile = PerformanceProfileManager::auto(hardware);
-        Self::plan_with_profile(model, hardware, &profile, port)
+        // Startup intentionally keeps hardware discovery off the window-creation
+        // path. A model launch cannot use that placeholder, though: doing so
+        // would permanently start this model in CPU mode for the session. Pay
+        // the real GPU profile cost here only if the background scan has not
+        // already finished.
+        let inference_hardware = HardwareProfiler::for_inference(hardware);
+        let profile = PerformanceProfileManager::auto(&inference_hardware);
+        Self::plan_with_profile(model, &inference_hardware, &profile, port)
     }
 
     pub fn plan_with_profile(
