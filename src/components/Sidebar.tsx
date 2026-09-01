@@ -1,22 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  ArrowLeft,
-  Bot,
-  CircleHelp,
   Database,
-  FileBox,
   FolderKanban,
   FolderOpen,
-  Info,
   LibraryBig,
-  Menu,
-  MessageSquareText,
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
-  PlugZap,
   Search,
-  Settings,
   SquarePen,
   Wrench,
 } from "lucide-react";
@@ -26,7 +17,6 @@ import packageJson from "../../package.json";
 
 const MIN_SIDEBAR_WIDTH = 260;
 const MAX_SIDEBAR_WIDTH = 440;
-const MOBILE_MEDIA_QUERY = "(max-width: 860px)";
 
 export function Sidebar(props: {
   collapsed: boolean;
@@ -52,40 +42,10 @@ export function Sidebar(props: {
   onOpenSettings: (section?: string) => void;
 }) {
   const displayName =
-    props.userProfile?.preferredName || props.userProfile?.fullName || "OpenMindAI User";
+    props.userProfile?.preferredName || props.userProfile?.fullName || "Local User";
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [resizing, setResizing] = useState(false);
-  const [mobileLayout, setMobileLayout] = useState(() => window.matchMedia(MOBILE_MEDIA_QUERY).matches);
-  const [mobileOpen, setMobileOpen] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    const media = window.matchMedia(MOBILE_MEDIA_QUERY);
-    const sync = () => {
-      setMobileLayout(media.matches);
-      if (!media.matches) setMobileOpen(false);
-    };
-    sync();
-    media.addEventListener("change", sync);
-    return () => media.removeEventListener("change", sync);
-  }, []);
-
-  useEffect(() => {
-    const openConversation = (event: globalThis.Event) => {
-      const id = (event as globalThis.CustomEvent<string>).detail;
-      if (id) props.onOpenConversation(id);
-    };
-    const openModels = () => props.onOpenModels();
-    const openSearch = () => props.onOpenSearch();
-    window.addEventListener("openmindai:open-conversation", openConversation);
-    window.addEventListener("openmindai:open-models", openModels);
-    window.addEventListener("openmindai:open-search", openSearch);
-    return () => {
-      window.removeEventListener("openmindai:open-conversation", openConversation);
-      window.removeEventListener("openmindai:open-models", openModels);
-      window.removeEventListener("openmindai:open-search", openSearch);
-    };
-  }, [props]);
 
   useEffect(() => {
     if (!profileMenuOpen) return;
@@ -113,304 +73,181 @@ export function Sidebar(props: {
     };
   }, [resizing, props]);
 
-  const runMobileAction = (action: () => void) => {
-    action();
-    if (mobileLayout) setMobileOpen(false);
-  };
-
-  const baseSidebarClass = props.collapsed
-    ? "sidebar collapsed"
-    : resizing
-      ? "sidebar resizing"
-      : "sidebar";
-  const sidebarClass = mobileOpen ? `${baseSidebarClass} mobile-open` : baseSidebarClass;
-  const mobileChatOpen = mobileLayout && props.view === "chat" && props.activeId !== null;
-
   return (
-    <>
-      <button
-        type="button"
-        className={mobileChatOpen ? "mobile-menu-button mobile-back-button" : "mobile-menu-button"}
-        aria-label={mobileChatOpen ? "Back to conversations" : mobileOpen ? "Close navigation" : "Open navigation"}
-        aria-expanded={mobileChatOpen ? undefined : mobileOpen}
-        onClick={() => {
-          if (mobileChatOpen) {
-            props.onNewChat();
-            return;
-          }
-          setMobileOpen((value) => !value);
-        }}
-      >
-        {mobileChatOpen ? <ArrowLeft size={20} /> : <Menu size={20} />}
-      </button>
-
-      {mobileChatOpen ? (
-        <button
-          type="button"
-          className="mobile-chat-menu-button"
-          aria-label="Open navigation"
-          onClick={() => setMobileOpen(true)}
-        >
-          <MoreHorizontal size={20} />
-        </button>
-      ) : null}
-
-      {mobileOpen ? (
-        <button
-          type="button"
-          className="mobile-sidebar-backdrop"
-          aria-label="Close navigation"
-          onClick={() => setMobileOpen(false)}
-        />
-      ) : null}
-
-      <aside
-        className={sidebarClass}
-        style={props.collapsed ? undefined : { width: props.width }}
-        aria-hidden={mobileLayout && !mobileOpen ? true : undefined}
-      >
-        <div className="sidebar-header">
-          <div className="brand">
-            <img className="brand-mark" src="/icon.png" alt="OpenMindAI" />
-            {!props.collapsed ? (
-              <div>
-                <strong>OpenMindAI</strong>
-                <small>Your AI. Your Models. Your Way.</small>
-              </div>
-            ) : null}
-          </div>
+    <aside
+      className={props.collapsed ? "sidebar collapsed" : resizing ? "sidebar resizing" : "sidebar"}
+      style={props.collapsed ? undefined : { width: props.width }}
+    >
+      <div className="sidebar-header">
+        <div className="brand">
+          <img className="brand-mark" src="/icon.png" alt="OpenMindAI" />
           {!props.collapsed ? (
-            <div className="sidebar-header-actions">
-              <button
-                className="icon-button"
-                title="Search chats (Ctrl+K)"
-                onClick={() => runMobileAction(props.onOpenSearch)}
-              >
-                <Search size={16} />
-              </button>
-              <button
-                className="icon-button sidebar-collapse-toggle"
-                title="Collapse sidebar"
-                onClick={props.onToggleCollapsed}
-              >
-                <PanelLeftClose size={16} />
-              </button>
-            </div>
-          ) : (
-            <button
-              className="icon-button sidebar-collapse-toggle"
-              title="Expand sidebar"
-              onClick={props.onToggleCollapsed}
-            >
-              <PanelLeftOpen size={16} />
-            </button>
-          )}
-        </div>
-
-        <button
-          className="primary-command"
-          onClick={() => runMobileAction(props.onNewChat)}
-          title="New chat"
-        >
-          <SquarePen size={18} /> {!props.collapsed ? "New Chat" : null}
-        </button>
-
-        <nav className="sidebar-nav desktop-sidebar-nav">
-          <button className="nav-button" onClick={() => runMobileAction(props.onOpenLibrary)} title="Library">
-            <LibraryBig size={18} /> {!props.collapsed ? "Library" : null}
-          </button>
-          <button className="nav-button" onClick={() => runMobileAction(props.onOpenModels)} title="Models">
-            <Database size={18} /> {!props.collapsed ? "Models" : null}
-          </button>
-          <button
-            className={props.view === "tools" ? "nav-button active" : "nav-button"}
-            onClick={() => runMobileAction(props.onOpenTools)}
-            title="Tools"
-          >
-            <Wrench size={18} /> {!props.collapsed ? "Tools" : null}
-          </button>
-          <button
-            className="nav-button"
-            onClick={() => runMobileAction(props.onOpenLibrary)}
-            title="Files & Artifacts"
-          >
-            <FolderOpen size={18} /> {!props.collapsed ? "Files & Artifacts" : null}
-          </button>
-          <button
-            className={props.view === "projects" ? "nav-button active" : "nav-button"}
-            onClick={() => runMobileAction(props.onOpenProjects)}
-            title="Projects"
-          >
-            <FolderKanban size={18} /> {!props.collapsed ? "Projects" : null}
-          </button>
-          <button
-            className={props.view === "settings" ? "nav-button active" : "nav-button"}
-            onClick={() => runMobileAction(() => props.onOpenSettings())}
-            title="More"
-          >
-            <MoreHorizontal size={18} /> {!props.collapsed ? "More" : null}
-          </button>
-        </nav>
-
-        <nav className="sidebar-nav mobile-drawer-nav">
-          <button
-            className={props.view === "projects" ? "nav-button active" : "nav-button"}
-            onClick={() => runMobileAction(props.onOpenProjects)}
-          >
-            <FolderKanban size={18} /> <span>Projects</span>
-          </button>
-          <button className="nav-button" onClick={() => runMobileAction(props.onOpenModels)}>
-            <Bot size={18} /> <span>Models</span>
-          </button>
-          <button className="nav-button" onClick={() => runMobileAction(() => props.onOpenSettings("apps"))}>
-            <PlugZap size={18} /> <span>Connected Apps</span>
-          </button>
-          <button className="nav-button" onClick={() => runMobileAction(props.onOpenLibrary)}>
-            <FileBox size={18} /> <span>Artifacts</span>
-          </button>
-          <button
-            className={props.view === "settings" ? "nav-button active" : "nav-button"}
-            onClick={() => runMobileAction(() => props.onOpenSettings())}
-          >
-            <Settings size={18} /> <span>Settings</span>
-          </button>
-          <button className="nav-button" onClick={() => runMobileAction(() => props.onOpenSettings("about"))}>
-            <CircleHelp size={18} /> <span>Help & Docs</span>
-          </button>
-          <button className="nav-button" onClick={() => runMobileAction(() => props.onOpenSettings("about"))}>
-            <Info size={18} /> <span>About OpenMindAI</span>
-          </button>
-        </nav>
-
-        <ChatHistoryList
-          conversations={props.conversations}
-          activeId={props.activeId}
-          collapsed={props.collapsed}
-          onOpen={(id) => runMobileAction(() => props.onOpenConversation(id))}
-          onRename={(conversation) => runMobileAction(() => props.onRename(conversation))}
-          onTogglePin={props.onTogglePin}
-          onArchive={props.onArchive}
-          onDelete={props.onDelete}
-          onDuplicate={props.onDuplicate}
-        />
-
-        <div className="sidebar-footer" ref={profileMenuRef}>
-          <div className="sidebar-profile">
-            <button
-              className="profile-trigger"
-              title={displayName}
-              onClick={() =>
-                props.collapsed
-                  ? runMobileAction(() => props.onOpenSettings())
-                  : setProfileMenuOpen((value) => !value)
-              }
-            >
-              <span className="profile-avatar">
-                {props.userProfile?.avatarDataUrl ? (
-                  <img src={props.userProfile.avatarDataUrl} alt="" />
-                ) : (
-                  displayName.charAt(0).toUpperCase() || "?"
-                )}
-              </span>
-              {!props.collapsed ? (
-                <span className="profile-text">
-                  <span className="profile-name">{displayName}</span>
-                  <span className="profile-role">v{packageJson.version}</span>
-                </span>
-              ) : null}
-            </button>
-            {!props.collapsed ? (
-              <button
-                className="profile-menu-trigger"
-                title="Profile options"
-                onClick={() => setProfileMenuOpen((value) => !value)}
-              >
-                <MoreHorizontal size={16} />
-              </button>
-            ) : null}
-          </div>
-          {profileMenuOpen ? (
-            <div className="profile-menu" role="menu">
-              <button
-                role="menuitem"
-                onClick={() => {
-                  runMobileAction(() => props.onOpenSettings("general"));
-                  setProfileMenuOpen(false);
-                }}
-              >
-                Settings
-              </button>
-              <button
-                role="menuitem"
-                onClick={() => {
-                  runMobileAction(() => props.onOpenSettings("personalization"));
-                  setProfileMenuOpen(false);
-                }}
-              >
-                Personalization
-              </button>
-              <button
-                role="menuitem"
-                onClick={() => {
-                  runMobileAction(() => props.onOpenSettings("appearance"));
-                  setProfileMenuOpen(false);
-                }}
-              >
-                Appearance
-              </button>
-              <button
-                role="menuitem"
-                onClick={() => {
-                  runMobileAction(() => props.onOpenSettings("about"));
-                  setProfileMenuOpen(false);
-                }}
-              >
-                About
-              </button>
+            <div>
+              <strong>OpenMindAI</strong>
+              <small>Your AI. Your Models. Your Way.</small>
             </div>
           ) : null}
         </div>
         {!props.collapsed ? (
-          <div
-            className={resizing ? "sidebar-resize-handle active" : "sidebar-resize-handle"}
-            onMouseDown={(event) => {
-              event.preventDefault();
-              setResizing(true);
-            }}
-          />
-        ) : null}
-      </aside>
+          <div className="sidebar-header-actions">
+            <button
+              className="icon-button"
+              title="Search chats (Ctrl+K)"
+              onClick={props.onOpenSearch}
+            >
+              <Search size={16} />
+            </button>
+            <button
+              className="icon-button sidebar-collapse-toggle"
+              title="Collapse sidebar"
+              onClick={props.onToggleCollapsed}
+            >
+              <PanelLeftClose size={16} />
+            </button>
+          </div>
+        ) : (
+          <button
+            className="icon-button sidebar-collapse-toggle"
+            title="Expand sidebar"
+            onClick={props.onToggleCollapsed}
+          >
+            <PanelLeftOpen size={16} />
+          </button>
+        )}
+      </div>
 
-      <nav className="mobile-tabbar" aria-label="Mobile navigation">
-        <button
-          type="button"
-          className={props.view === "chat" ? "mobile-tab active" : "mobile-tab"}
-          onClick={props.onNewChat}
-        >
-          <MessageSquareText size={20} />
-          <span>Chats</span>
+      <button className="primary-command" onClick={props.onNewChat} title="New chat">
+        <SquarePen size={18} /> {!props.collapsed ? "New Chat" : null}
+      </button>
+
+      <nav className="sidebar-nav">
+        <button className="nav-button" onClick={props.onOpenLibrary} title="Library">
+          <LibraryBig size={18} /> {!props.collapsed ? "Library" : null}
+        </button>
+        <button className="nav-button" onClick={props.onOpenModels} title="Models">
+          <Database size={18} /> {!props.collapsed ? "Models" : null}
         </button>
         <button
-          type="button"
-          className={props.view === "projects" ? "mobile-tab active" : "mobile-tab"}
+          className={props.view === "tools" ? "nav-button active" : "nav-button"}
+          onClick={props.onOpenTools}
+          title="Tools"
+        >
+          <Wrench size={18} /> {!props.collapsed ? "Tools" : null}
+        </button>
+        <button className="nav-button" onClick={props.onOpenLibrary} title="Files & Artifacts">
+          <FolderOpen size={18} /> {!props.collapsed ? "Files & Artifacts" : null}
+        </button>
+        <button
+          className={props.view === "projects" ? "nav-button active" : "nav-button"}
           onClick={props.onOpenProjects}
+          title="Projects"
         >
-          <FolderKanban size={20} />
-          <span>Projects</span>
-        </button>
-        <button type="button" className="mobile-tab" onClick={props.onOpenModels}>
-          <Database size={20} />
-          <span>Models</span>
+          <FolderKanban size={18} /> {!props.collapsed ? "Projects" : null}
         </button>
         <button
-          type="button"
-          className={props.view === "settings" ? "mobile-tab active" : "mobile-tab"}
+          className={props.view === "settings" ? "nav-button active" : "nav-button"}
           onClick={() => props.onOpenSettings()}
+          title="More"
         >
-          <Settings size={20} />
-          <span>Settings</span>
+          <MoreHorizontal size={18} /> {!props.collapsed ? "More" : null}
         </button>
       </nav>
-    </>
+
+      <ChatHistoryList
+        conversations={props.conversations}
+        activeId={props.activeId}
+        collapsed={props.collapsed}
+        onOpen={props.onOpenConversation}
+        onRename={props.onRename}
+        onTogglePin={props.onTogglePin}
+        onArchive={props.onArchive}
+        onDelete={props.onDelete}
+        onDuplicate={props.onDuplicate}
+      />
+
+      <div className="sidebar-footer" ref={profileMenuRef}>
+        <div className="sidebar-profile">
+          <button
+            className="profile-trigger"
+            title={displayName}
+            onClick={() =>
+              props.collapsed ? props.onOpenSettings() : setProfileMenuOpen((value) => !value)
+            }
+          >
+            <span className="profile-avatar">
+              {props.userProfile?.avatarDataUrl ? (
+                <img src={props.userProfile.avatarDataUrl} alt="" />
+              ) : (
+                displayName.charAt(0).toUpperCase() || "?"
+              )}
+            </span>
+            {!props.collapsed ? (
+              <span className="profile-text">
+                <span className="profile-name">{displayName}</span>
+                <span className="profile-role">v{packageJson.version}</span>
+              </span>
+            ) : null}
+          </button>
+          {!props.collapsed ? (
+            <button
+              className="profile-menu-trigger"
+              title="Profile options"
+              onClick={() => setProfileMenuOpen((value) => !value)}
+            >
+              <MoreHorizontal size={16} />
+            </button>
+          ) : null}
+        </div>
+        {profileMenuOpen ? (
+          <div className="profile-menu" role="menu">
+            <button
+              role="menuitem"
+              onClick={() => {
+                props.onOpenSettings("general");
+                setProfileMenuOpen(false);
+              }}
+            >
+              Settings
+            </button>
+            <button
+              role="menuitem"
+              onClick={() => {
+                props.onOpenSettings("personalization");
+                setProfileMenuOpen(false);
+              }}
+            >
+              Personalization
+            </button>
+            <button
+              role="menuitem"
+              onClick={() => {
+                props.onOpenSettings("appearance");
+                setProfileMenuOpen(false);
+              }}
+            >
+              Appearance
+            </button>
+            <button
+              role="menuitem"
+              onClick={() => {
+                props.onOpenSettings("about");
+                setProfileMenuOpen(false);
+              }}
+            >
+              About
+            </button>
+          </div>
+        ) : null}
+      </div>
+      {!props.collapsed ? (
+        <div
+          className={resizing ? "sidebar-resize-handle active" : "sidebar-resize-handle"}
+          onMouseDown={(event) => {
+            event.preventDefault();
+            setResizing(true);
+          }}
+        />
+      ) : null}
+    </aside>
   );
 }
