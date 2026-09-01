@@ -1,6 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
 
 const _appId = 'com.openmindai.mobile';
+const _firebaseProjectId = 'open-mind-ai-b38e2';
+const _androidFirebaseAppId =
+    '1:369874806080:android:f0749aaa2cc210d95c86a5';
+const _iosFirebaseAppId = '1:369874806080:ios:65c7b85e4f5ff5775c86a5';
 
 Future<void> main() async {
   await _patchAndroidManifest();
@@ -11,8 +16,9 @@ Future<void> main() async {
   await _patchIosInfoPlist();
   await _patchIosDeploymentTarget();
   await _patchIosBundleIdentifiers();
+  await _validateFirebaseConfiguration();
   stdout.writeln(
-    'OpenMindAI mobile platform configuration is ready for local builds.',
+    'OpenMindAI mobile platform configuration and Firebase identity are ready for local builds.',
   );
 }
 
@@ -20,7 +26,7 @@ Future<void> _patchAndroidManifest() async {
   final file = File('android/app/src/main/AndroidManifest.xml');
   if (!await file.exists()) {
     throw StateError(
-      'Android host is missing. Run flutter create --platforms=android,ios . first.',
+      'Android host is missing. Restore the committed android/ host before building.',
     );
   }
   var value = await file.readAsString();
@@ -52,7 +58,9 @@ Future<void> _patchAndroidManifest() async {
 
 Future<void> _patchAndroidBuild() async {
   final file = File('android/app/build.gradle.kts');
-  if (!await file.exists()) return;
+  if (!await file.exists()) {
+    throw StateError('Android Gradle app configuration is missing.');
+  }
   var value = await file.readAsString();
 
   if (!value.contains('id("com.google.gms.google-services")')) {
@@ -70,11 +78,11 @@ Future<void> _patchAndroidBuild() async {
     'applicationId = "$_appId"',
   );
   value = value.replaceFirst(
-    RegExp(r'compileSdk\s*=\s*flutter\.compileSdkVersion'),
+    RegExp(r'compileSdk\s*=\s*(?:flutter\.compileSdkVersion|\d+)'),
     'compileSdk = 37',
   );
   value = value.replaceFirst(
-    RegExp(r'ndkVersion\s*=\s*flutter\.ndkVersion'),
+    RegExp(r'ndkVersion\s*=\s*(?:flutter\.ndkVersion|"[^"]+")'),
     'ndkVersion = "29.0.13113456"',
   );
   value = value.replaceFirst(
@@ -115,7 +123,9 @@ dependencies {
 
 Future<void> _patchAndroidSettings() async {
   final file = File('android/settings.gradle.kts');
-  if (!await file.exists()) return;
+  if (!await file.exists()) {
+    throw StateError('Android Gradle settings are missing.');
+  }
   var value = await file.readAsString();
   if (!value.contains('com.google.gms.google-services')) {
     value = value.replaceFirst(
@@ -167,7 +177,7 @@ Future<void> _patchIosInfoPlist() async {
   final file = File('ios/Runner/Info.plist');
   if (!await file.exists()) {
     throw StateError(
-      'iOS host is missing. Run flutter create --platforms=android,ios . first.',
+      'iOS host is missing. Restore the committed ios/ host before building.',
     );
   }
   var value = await file.readAsString();
@@ -228,7 +238,9 @@ Future<void> _patchIosDeploymentTarget() async {
 
 Future<void> _patchIosBundleIdentifiers() async {
   final project = File('ios/Runner.xcodeproj/project.pbxproj');
-  if (!await project.exists()) return;
+  if (!await project.exists()) {
+    throw StateError('iOS Xcode project configuration is missing.');
+  }
   var value = await project.readAsString();
   value = value.replaceAll(
     RegExp(
@@ -241,4 +253,109 @@ Future<void> _patchIosBundleIdentifiers() async {
     'PRODUCT_BUNDLE_IDENTIFIER = $_appId;',
   );
   await project.writeAsString(value);
+}
+
+Future<void> _validateFirebaseConfiguration() async {
+  await _validateAndroidFirebase();
+  await _validateIosFirebase();
+  await _validateDartFirebaseOptions();
+}
+
+Future<void> _validateAndroidFirebase() async {
+  final file = File('android/app/google-services.json');
+  if (!await file.exists()) {
+    throw StateError(
+      'Firebase Android configuration is missing: android/app/google-services.json',
+    );
+  }
+
+  final decoded = jsonDecode(await file.readAsString());
+  if (decoded is! Map<String, dynamic>) {
+    throw StateError('Firebase Android configuration is not valid JSON.');
+  }
+
+  final projectInfo = decoded['project_info'];
+  if (projectInfo is! Map<String, dynamic> ||
+      projectInfo['project_id'] != _firebaseProjectId) {
+    throw StateError(
+      'Firebase Android project ID does not match $_firebaseProjectId.',
+    );
+  }
+
+  final clients = decoded['client'];
+  if (clients is! List) {
+    throw StateError('Firebase Android configuration has no client list.');
+  }
+
+  Map<String, dynamic>? matchingClient;
+  for (final value in clients) {
+    if (value is! Map<String, dynamic>) continue;
+    final clientInfo = value['client_info'];
+    if (clientInfo is! Map<String, dynamic>) continue;
+    final androidInfo = clientInfo['android_client_info'];
+    if (androidInfo is Map<String, dynamic> &&
+        androidInfo['package_name'] == _appId) {
+      matchingClient = value;
+      break;
+    }
+  }
+
+  if (matchingClient == null) {
+    throw StateError(
+      'Firebase Android configuration has no client for $_appId.',
+    );
+  }
+
+  final clientInfo = matchingClient['client_info'];
+  if (clientInfo is! Map<String, dynamic> ||
+      clientInfo['mobilesdk_app_id'] != _androidFirebaseAppId) {
+    throw StateError('Firebase Android app ID does not match this app.');
+  }
+}
+
+Future<void> _validateIosFirebase() async {
+  final file = File('ios/Runner/GoogleService-Info.plist');
+  if (!await file.exists()) {
+    throw StateError(
+      'Firebase iOS configuration is missing: ios/Runner/GoogleService-Info.plist',
+    );
+  }
+
+  final value = await file.readAsString();
+  _requirePlistValue(value, 'BUNDLE_ID', _appId);
+  _requirePlistValue(value, 'PROJECT_ID', _firebaseProjectId);
+  _requirePlistValue(value, 'GOOGLE_APP_ID', _iosFirebaseAppId);
+}
+
+void _requirePlistValue(String plist, String key, String expected) {
+  final expression = RegExp(
+    '<key>${RegExp.escape(key)}</key>\\s*<string>${RegExp.escape(expected)}</string>',
+  );
+  if (!expression.hasMatch(plist)) {
+    throw StateError(
+      'Firebase iOS $key does not match the expected OpenMindAI configuration.',
+    );
+  }
+}
+
+Future<void> _validateDartFirebaseOptions() async {
+  final file = File('lib/firebase_options.dart');
+  if (!await file.exists()) {
+    throw StateError('lib/firebase_options.dart is missing.');
+  }
+
+  final value = await file.readAsString();
+  final requiredValues = <String>[
+    "projectId: '$_firebaseProjectId'",
+    "appId: '$_androidFirebaseAppId'",
+    "appId: '$_iosFirebaseAppId'",
+    "iosBundleId: '$_appId'",
+  ];
+  for (final requiredValue in requiredValues) {
+    if (!value.contains(requiredValue)) {
+      throw StateError(
+        'lib/firebase_options.dart does not match the committed Firebase configuration.',
+      );
+    }
+  }
 }
