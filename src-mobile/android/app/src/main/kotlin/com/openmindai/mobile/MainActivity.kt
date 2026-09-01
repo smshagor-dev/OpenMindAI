@@ -1,4 +1,4 @@
-package com.openmindai.openmindai_mobile
+package com.openmindai.mobile
 
 import io.flutter.embedding.android.FlutterActivity
 

@@ -10,14 +10,25 @@ void main() {
     }
   });
 
-  test('device recommendation scales with RAM', () {
+  test('first-run install stays on the storage-saving Nano model', () {
+    const gib = 1024 * 1024 * 1024;
+    expect(
+      MobileModelCatalog.initialInstallModel(
+        ramGb: 16,
+        freeDiskBytes: 64 * gib,
+      ).name,
+      'OpenMindAI Nano',
+    );
+  });
+
+  test('device capability recommendation scales with RAM', () {
     expect(MobileModelCatalog.recommendForRam(4).name, 'OpenMindAI Nano');
     expect(MobileModelCatalog.recommendForRam(6).name, 'OpenMindAI Swift');
     expect(MobileModelCatalog.recommendForRam(8).name, 'OpenMindAI Core');
     expect(MobileModelCatalog.recommendForRam(16).name, 'OpenMindAI Titan');
   });
 
-  test('device recommendation downgrades when storage is tight', () {
+  test('device capability recommendation downgrades when storage is tight', () {
     const gib = 1024 * 1024 * 1024;
     expect(
       MobileModelCatalog.recommendForDevice(

@@ -1,11 +1,16 @@
 import 'dart:io';
 
+const _appId = 'com.openmindai.mobile';
+
 Future<void> main() async {
   await _patchAndroidManifest();
   await _patchAndroidBuild();
+  await _patchAndroidSettings();
+  await _patchAndroidMainActivity();
   await _writeAndroidNotificationIcon();
   await _patchIosInfoPlist();
   await _patchIosDeploymentTarget();
+  await _patchIosBundleIdentifiers();
   stdout.writeln(
     'OpenMindAI mobile platform configuration is ready for local builds.',
   );
@@ -50,6 +55,20 @@ Future<void> _patchAndroidBuild() async {
   if (!await file.exists()) return;
   var value = await file.readAsString();
 
+  if (!value.contains('id("com.google.gms.google-services")')) {
+    value = value.replaceFirst(
+      'id("com.android.application")',
+      'id("com.android.application")\n    id("com.google.gms.google-services")',
+    );
+  }
+  value = value.replaceFirst(
+    RegExp(r'namespace\s*=\s*"[^"]+"'),
+    'namespace = "$_appId"',
+  );
+  value = value.replaceFirst(
+    RegExp(r'applicationId\s*=\s*"[^"]+"'),
+    'applicationId = "$_appId"',
+  );
   value = value.replaceFirst(
     RegExp(r'compileSdk\s*=\s*flutter\.compileSdkVersion'),
     'compileSdk = 37',
@@ -59,8 +78,8 @@ Future<void> _patchAndroidBuild() async {
     'ndkVersion = "29.0.13113456"',
   );
   value = value.replaceFirst(
-    RegExp(r'minSdk\s*=\s*flutter\.minSdkVersion'),
-    'minSdk = 21',
+    RegExp(r'minSdk\s*=\s*(?:flutter\.minSdkVersion|\d+)'),
+    'minSdk = 23',
   );
   value = value.replaceAll('JavaVersion.VERSION_1_8', 'JavaVersion.VERSION_17');
   value = value.replaceAll('JavaVersion.VERSION_11', 'JavaVersion.VERSION_17');
@@ -92,6 +111,38 @@ dependencies {
   }
 
   await file.writeAsString(value);
+}
+
+Future<void> _patchAndroidSettings() async {
+  final file = File('android/settings.gradle.kts');
+  if (!await file.exists()) return;
+  var value = await file.readAsString();
+  if (!value.contains('com.google.gms.google-services')) {
+    value = value.replaceFirst(
+      'id("com.android.application")',
+      'id("com.google.gms.google-services") version "4.5.0" apply false\n    id("com.android.application")',
+    );
+  }
+  await file.writeAsString(value);
+}
+
+Future<void> _patchAndroidMainActivity() async {
+  final newDirectory = Directory(
+    'android/app/src/main/kotlin/com/openmindai/mobile',
+  );
+  await newDirectory.create(recursive: true);
+  final newFile = File('${newDirectory.path}/MainActivity.kt');
+  await newFile.writeAsString('''package $_appId
+
+import io.flutter.embedding.android.FlutterActivity
+
+class MainActivity : FlutterActivity()
+''');
+
+  final oldFile = File(
+    'android/app/src/main/kotlin/com/openmindai/openmindai_mobile/MainActivity.kt',
+  );
+  if (await oldFile.exists()) await oldFile.delete();
 }
 
 Future<void> _writeAndroidNotificationIcon() async {
@@ -173,4 +224,21 @@ Future<void> _patchIosDeploymentTarget() async {
     );
     await frameworkInfo.writeAsString(value);
   }
+}
+
+Future<void> _patchIosBundleIdentifiers() async {
+  final project = File('ios/Runner.xcodeproj/project.pbxproj');
+  if (!await project.exists()) return;
+  var value = await project.readAsString();
+  value = value.replaceAll(
+    RegExp(
+      r'PRODUCT_BUNDLE_IDENTIFIER = com\.openmindai\.[A-Za-z0-9_]+\.RunnerTests;',
+    ),
+    'PRODUCT_BUNDLE_IDENTIFIER = $_appId.RunnerTests;',
+  );
+  value = value.replaceAll(
+    RegExp(r'PRODUCT_BUNDLE_IDENTIFIER = com\.openmindai\.[A-Za-z0-9_]+;'),
+    'PRODUCT_BUNDLE_IDENTIFIER = $_appId;',
+  );
+  await project.writeAsString(value);
 }
