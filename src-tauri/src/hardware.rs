@@ -10,6 +10,7 @@ use windows::Win32::Graphics::Dxgi::{
 };
 
 static DETECTED_HARDWARE: OnceLock<RwLock<Option<HardwareProfile>>> = OnceLock::new();
+#[cfg(not(test))]
 static BACKGROUND_SCAN_STARTED: OnceLock<()> = OnceLock::new();
 
 #[derive(Debug, Serialize)]
@@ -132,7 +133,7 @@ impl HardwareProfiler {
     pub fn detect() -> HardwareProfile {
         #[cfg(test)]
         {
-            return detect_full();
+            detect_full()
         }
 
         #[cfg(not(test))]
@@ -163,6 +164,7 @@ fn latest_detected_hardware() -> Option<HardwareProfile> {
         .and_then(|profile| profile.as_ref().map(HardwareProfile::clone_fields))
 }
 
+#[cfg(not(test))]
 fn startup_snapshot() -> HardwareProfile {
     let logical_threads = std::thread::available_parallelism()
         .map(|value| value.get())
@@ -434,8 +436,18 @@ mod tests {
                 is_software: false,
                 available_backends: vec![BackendKind::Cpu, BackendKind::Cuda],
                 recommended_backend: BackendKind::Cuda,
+            }],
+            primary_gpu: Some("gpu0".to_string()),
+            recommended_inference_gpu: Some("gpu0".to_string()),
+            backends: BackendProfile {
+                cpu: true,
+                cuda: false,
+                vulkan: true,
+                sycl: false,
+                hip: false,
+                metal: false,
             },
-        ];
+        };
 
         assert_eq!(choose_recommended_gpu(&gpus).unwrap().id, "nvidia");
     }
