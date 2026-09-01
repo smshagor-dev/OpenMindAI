@@ -145,15 +145,43 @@ impl HardwareProfiler {
             if BACKGROUND_SCAN_STARTED.set(()).is_ok() {
                 std::thread::spawn(|| {
                     let profile = detect_full();
-                    let cache = DETECTED_HARDWARE.get_or_init(|| RwLock::new(None));
-                    if let Ok(mut current) = cache.write() {
-                        *current = Some(profile);
-                    }
+                    store_detected_hardware(profile);
                 });
             }
 
             startup_snapshot()
         }
+    }
+
+    /// Inference must never launch from the lightweight startup placeholder.
+    /// If the background scan has not completed yet, finish one real profile
+    /// synchronously here. This cost is paid only when a prompt races startup,
+    /// and prevents an entire session from being pinned to CPU because the
+    /// first model was launched before DXGI/GPU discovery completed.
+    pub fn for_inference(fallback: &HardwareProfile) -> HardwareProfile {
+        #[cfg(test)]
+        {
+            return fallback.clone_fields();
+        }
+
+        #[cfg(not(test))]
+        {
+            if let Some(profile) = latest_detected_hardware() {
+                return profile;
+            }
+
+            let profile = detect_full();
+            let return_value = profile.clone_fields();
+            store_detected_hardware(profile);
+            return_value
+        }
+    }
+}
+
+fn store_detected_hardware(profile: HardwareProfile) {
+    let cache = DETECTED_HARDWARE.get_or_init(|| RwLock::new(None));
+    if let Ok(mut current) = cache.write() {
+        *current = Some(profile);
     }
 }
 
@@ -287,6 +315,10 @@ fn choose_recommended_gpu(gpus: &[GpuInfo]) -> Option<&GpuInfo> {
 fn recommended_backend(vendor: &GpuVendor, has_vulkan: bool) -> BackendKind {
     match vendor {
         GpuVendor::Nvidia => BackendKind::Cuda,
+        // The packaged Windows llama.cpp path is Vulkan-first for AMD. HIP
+        // remains discoverable as an alternative, but choosing it here when
+        // only a Vulkan runtime is installed creates a mismatched launch plan.
+        GpuVendor::Amd if has_vulkan => BackendKind::Vulkan,
         GpuVendor::Amd => BackendKind::Hip,
         GpuVendor::Intel => BackendKind::Sycl,
         GpuVendor::Unknown if has_vulkan => BackendKind::Vulkan,
@@ -399,6 +431,11 @@ mod tests {
     }
 
     #[test]
+    fn windows_amd_prefers_vulkan_launch_plan() {
+        assert_eq!(recommended_backend(&GpuVendor::Amd, true), BackendKind::Vulkan);
+    }
+
+    #[test]
     fn represents_multiple_adapters() {
         let gpus = vec![
             GpuInfo {
@@ -436,18 +473,8 @@ mod tests {
                 is_software: false,
                 available_backends: vec![BackendKind::Cpu, BackendKind::Cuda],
                 recommended_backend: BackendKind::Cuda,
-            }],
-            primary_gpu: Some("gpu0".to_string()),
-            recommended_inference_gpu: Some("gpu0".to_string()),
-            backends: BackendProfile {
-                cpu: true,
-                cuda: false,
-                vulkan: true,
-                sycl: false,
-                hip: false,
-                metal: false,
             },
-        };
+        ];
 
         assert_eq!(choose_recommended_gpu(&gpus).unwrap().id, "nvidia");
     }
