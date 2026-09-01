@@ -57,7 +57,10 @@ export function MessageItem(props: {
   };
 
   return (
-    <article className={`message ${message.role}`}>
+    <article
+      className={`message ${message.role}`}
+      style={message.role === "user" ? { flexDirection: "column", alignItems: "flex-end" } : undefined}
+    >
       {isAssistant ? (
         <div className="assistant-header">
           <img className="assistant-icon" src="/icon.png" alt="" />
