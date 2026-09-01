@@ -14,7 +14,11 @@ class NotificationService {
     if (_initialized) return;
     const settings = InitializationSettings(
       android: AndroidInitializationSettings('openmindai_notification'),
-      iOS: DarwinInitializationSettings(),
+      iOS: DarwinInitializationSettings(
+        requestAlertPermission: false,
+        requestBadgePermission: false,
+        requestSoundPermission: false,
+      ),
     );
     await _plugin.initialize(settings: settings);
     _initialized = true;
