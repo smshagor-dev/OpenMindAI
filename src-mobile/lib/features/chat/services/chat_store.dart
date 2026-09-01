@@ -174,7 +174,8 @@ class ChatStore {
   Future<int> sizeBytes() async {
     final db = await _database();
     final file = File(db.path);
-    return await file.exists() ? file.length() : 0;
+    if (!await file.exists()) return 0;
+    return await file.length();
   }
 
   Future<String> exportJson() async {
