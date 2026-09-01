@@ -75,7 +75,7 @@ export function StartupOverlay() {
     };
     if (detectAppReady()) return;
 
-    const observer = new MutationObserver(() => {
+    const observer = new window.MutationObserver(() => {
       if (detectAppReady()) observer.disconnect();
     });
     observer.observe(document.body, { childList: true, subtree: true });
