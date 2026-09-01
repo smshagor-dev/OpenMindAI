@@ -16,7 +16,7 @@ class NotificationService {
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
       iOS: DarwinInitializationSettings(),
     );
-    await _plugin.initialize(settings);
+    await _plugin.initialize(settings: settings);
     _initialized = true;
   }
 
@@ -34,12 +34,12 @@ class NotificationService {
     );
     final title = conversationTitle?.trim();
     await _plugin.show(
-      _nextId++,
-      'OpenMindAI response ready',
-      title == null || title.isEmpty
+      id: _nextId++,
+      title: 'OpenMindAI response ready',
+      body: title == null || title.isEmpty
           ? 'Your local AI response has finished.'
           : '$title is ready to read.',
-      details,
+      notificationDetails: details,
     );
   }
 }
