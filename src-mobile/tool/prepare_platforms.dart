@@ -3,6 +3,7 @@ import 'dart:io';
 Future<void> main() async {
   await _patchAndroidManifest();
   await _patchAndroidBuild();
+  await _writeAndroidNotificationIcon();
   await _patchIosInfoPlist();
   await _patchIosDeploymentTarget();
   stdout.writeln('OpenMindAI mobile platform configuration is ready for local builds.');
@@ -86,6 +87,24 @@ dependencies {
   }
 
   await file.writeAsString(value);
+}
+
+Future<void> _writeAndroidNotificationIcon() async {
+  final directory = Directory('android/app/src/main/res/drawable');
+  await directory.create(recursive: true);
+  final file = File('${directory.path}/openmindai_notification.xml');
+  if (await file.exists()) return;
+  await file.writeAsString('''<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,2A10,10 0,1 0,12 22A10,10 0,0 0,12 2M7,12A5,5 0,0 1,17 12A5,5 0,0 1,7 12M12,8A4,4 0,1 0,12 16A4,4 0,0 0,12 8" />
+</vector>
+''');
 }
 
 Future<void> _patchIosInfoPlist() async {
