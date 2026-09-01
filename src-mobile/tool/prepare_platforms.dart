@@ -231,11 +231,13 @@ Future<void> _patchIosBundleIdentifiers() async {
   if (!await project.exists()) return;
   var value = await project.readAsString();
   value = value.replaceAll(
-    RegExp(r'PRODUCT_BUNDLE_IDENTIFIER = com\.openmindai\.[^;]+\.RunnerTests;'),
+    RegExp(
+      r'PRODUCT_BUNDLE_IDENTIFIER = com\.openmindai\.[A-Za-z0-9_]+\.RunnerTests;',
+    ),
     'PRODUCT_BUNDLE_IDENTIFIER = $_appId.RunnerTests;',
   );
   value = value.replaceAll(
-    RegExp(r'PRODUCT_BUNDLE_IDENTIFIER = com\.openmindai\.[^;]+;'),
+    RegExp(r'PRODUCT_BUNDLE_IDENTIFIER = com\.openmindai\.[A-Za-z0-9_]+;'),
     'PRODUCT_BUNDLE_IDENTIFIER = $_appId;',
   );
   await project.writeAsString(value);
