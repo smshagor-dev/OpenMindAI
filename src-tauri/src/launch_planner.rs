@@ -6,6 +6,9 @@ use crate::{
     performance::{PerformanceProfile, PerformanceProfileManager},
 };
 
+const ACCELERATOR_FULL_OFFLOAD_HEADROOM_BYTES: u64 = 1024 * 1024 * 1024;
+const DISPLAY_GPU_FULL_OFFLOAD_HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelLaunchConfig {
@@ -81,9 +84,21 @@ impl ModelLaunchPlanner {
         let total_estimate = estimated_model_bytes
             .saturating_add(estimated_context_bytes)
             .saturating_add(768 * 1024 * 1024);
+        let full_offload_headroom = match backend {
+            BackendKind::Vulkan | BackendKind::Sycl => DISPLAY_GPU_FULL_OFFLOAD_HEADROOM_BYTES,
+            BackendKind::Cuda | BackendKind::Hip | BackendKind::Metal => {
+                ACCELERATOR_FULL_OFFLOAD_HEADROOM_BYTES
+            }
+            BackendKind::Cpu => 0,
+        };
+        let full_offload_requirement = total_estimate.saturating_add(full_offload_headroom);
+        let partial_vulkan_requirement = estimated_model_bytes
+            .saturating_add(estimated_context_bytes / 2)
+            .saturating_add(512 * 1024 * 1024);
+
         let gpu_layers = match (backend.clone(), dedicated_vram_budget_bytes) {
             (BackendKind::Cuda | BackendKind::Hip | BackendKind::Metal, Some(budget))
-                if budget > total_estimate =>
+                if budget > full_offload_requirement =>
             {
                 999
             }
@@ -94,9 +109,14 @@ impl ModelLaunchPlanner {
             }
             (BackendKind::Cuda | BackendKind::Hip | BackendKind::Metal, Some(_)) => 16,
             (BackendKind::Vulkan | BackendKind::Sycl, Some(budget))
-                if budget > total_estimate =>
+                if budget > full_offload_requirement =>
             {
                 999
+            }
+            (BackendKind::Vulkan | BackendKind::Sycl, Some(budget))
+                if budget > partial_vulkan_requirement =>
+            {
+                32
             }
             (BackendKind::Vulkan | BackendKind::Sycl, Some(budget))
                 if budget > estimated_model_bytes / 2 =>
@@ -111,6 +131,10 @@ impl ModelLaunchPlanner {
         notes.push("Initial context is capped at 8192 tokens for milestone stability.".to_string());
         notes.push(
             "Dedicated VRAM only is used for GPU placement; shared memory is not counted."
+                .to_string(),
+        );
+        notes.push(
+            "Full GPU offload requires extra VRAM headroom so the desktop compositor stays responsive."
                 .to_string(),
         );
         if matches!(backend, BackendKind::Vulkan) {
@@ -166,18 +190,26 @@ mod tests {
     use crate::hardware::{BackendProfile, CpuProfile, GpuInfo, GpuVendor, MemoryProfile};
 
     #[test]
-    fn uses_dedicated_vram_only_for_gpu_plan() {
+    fn preserves_display_headroom_on_8gb_vulkan_gpu() {
         let hardware = hardware_with_vram(8 * 1024 * 1024 * 1024, 32 * 1024 * 1024 * 1024);
         let model = model(2_497_280_256);
         let plan = ModelLaunchPlanner::plan(&model, &hardware, 8080);
         assert_eq!(plan.config.backend, BackendKind::Vulkan);
         assert!(plan.dedicated_vram_budget_bytes.unwrap() < 8 * 1024 * 1024 * 1024);
-        assert_eq!(plan.config.gpu_layers, 999);
+        assert_eq!(plan.config.gpu_layers, 32);
         assert_eq!(plan.estimated_context_bytes, 8192 * 192 * 1024);
         assert_ne!(
             plan.dedicated_vram_budget_bytes.unwrap(),
             40 * 1024 * 1024 * 1024
         );
+    }
+
+    #[test]
+    fn allows_full_vulkan_offload_when_vram_has_large_headroom() {
+        let hardware = hardware_with_vram(12 * 1024 * 1024 * 1024, 16 * 1024 * 1024 * 1024);
+        let plan = ModelLaunchPlanner::plan(&model(2_497_280_256), &hardware, 8080);
+        assert_eq!(plan.config.backend, BackendKind::Vulkan);
+        assert_eq!(plan.config.gpu_layers, 999);
     }
 
     #[test]
