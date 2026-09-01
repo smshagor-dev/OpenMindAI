@@ -39,7 +39,7 @@ class DeviceProfileService {
         osVersion: info.version.release,
         ramMb: ramMb,
         freeDiskBytes: freeDiskBytes,
-        recommendedModel: MobileModelCatalog.recommendForDevice(
+        recommendedModel: MobileModelCatalog.initialInstallModel(
           ramGb: _ramGb(ramMb),
           freeDiskBytes: freeDiskBytes,
         ),
@@ -56,7 +56,7 @@ class DeviceProfileService {
         osVersion: info.systemVersion,
         ramMb: ramMb,
         freeDiskBytes: freeDiskBytes,
-        recommendedModel: MobileModelCatalog.recommendForDevice(
+        recommendedModel: MobileModelCatalog.initialInstallModel(
           ramGb: _ramGb(ramMb),
           freeDiskBytes: freeDiskBytes,
         ),
