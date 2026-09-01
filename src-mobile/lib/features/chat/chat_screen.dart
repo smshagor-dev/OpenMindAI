@@ -1087,6 +1087,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 subtitle: Text('Core chat stays on this device'),
               ),
             ),
+            const OpenMindAppFooter(),
           ],
         ),
       ),

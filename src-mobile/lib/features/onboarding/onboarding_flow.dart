@@ -143,6 +143,7 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
                 child: KeyedSubtree(key: ValueKey(_step), child: pages[_step]),
               ),
             ),
+            const OpenMindAppFooter(),
           ],
         ),
       ),

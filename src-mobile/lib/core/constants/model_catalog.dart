@@ -90,7 +90,8 @@ class MobileModelCatalog {
       kind: 'Reasoning',
       minRamGb: 16,
       sizeBytes: 4680000000,
-      description: 'Deeper optional local reasoning for analysis, math, and coding.',
+      description:
+          'Deeper optional local reasoning for analysis, math, and coding.',
       repository: 'lmstudio-community/DeepSeek-R1-Distill-Qwen-7B-GGUF',
       filenameContains: ['Q4_K_M', '.gguf'],
     ),

@@ -109,7 +109,9 @@ class _ModelManagerSheetState extends State<_ModelManagerSheet> {
                 ramGb: profile.ramGb,
                 freeDiskBytes: profile.freeDiskBytes,
               );
-        final recommendedIds = recommendedModels.map((model) => model.id).toSet();
+        final recommendedIds = recommendedModels
+            .map((model) => model.id)
+            .toSet();
         final sortedModels = [
           ...recommendedModels,
           ...MobileModelCatalog.models.where(

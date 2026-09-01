@@ -87,7 +87,7 @@ Future<void> _patchAndroidBuild() async {
   );
   value = value.replaceFirst(
     RegExp(r'minSdk\s*=\s*(?:flutter\.minSdkVersion|\d+)'),
-    'minSdk = 23',
+    'minSdk = 28',
   );
   value = value.replaceAll('JavaVersion.VERSION_1_8', 'JavaVersion.VERSION_17');
   value = value.replaceAll('JavaVersion.VERSION_11', 'JavaVersion.VERSION_17');

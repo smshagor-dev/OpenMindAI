@@ -5,21 +5,17 @@ import 'app_theme.dart';
 class OpenMindBrandMark extends StatelessWidget {
   const OpenMindBrandMark({super.key, this.size = 52, this.compact = false});
 
+  static const assetPath = 'assets/icon.png';
+
   final double size;
   final bool compact;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: size,
-      height: size,
+    final radius = BorderRadius.circular(compact ? size * .3 : size * .34);
+    return DecoratedBox(
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [AppTheme.accentSoft, AppTheme.accent],
-        ),
-        borderRadius: BorderRadius.circular(compact ? size * .3 : size * .34),
+        borderRadius: radius,
         boxShadow: [
           BoxShadow(
             color: AppTheme.accent.withValues(alpha: .22),
@@ -29,10 +25,64 @@ class OpenMindBrandMark extends StatelessWidget {
           ),
         ],
       ),
-      child: Icon(
-        Icons.psychology_alt_rounded,
-        size: size * .56,
-        color: Colors.white,
+      child: ClipRRect(
+        borderRadius: radius,
+        child: Image.asset(
+          assetPath,
+          width: size,
+          height: size,
+          fit: BoxFit.cover,
+          filterQuality: FilterQuality.high,
+          errorBuilder: (context, error, stackTrace) => Container(
+            width: size,
+            height: size,
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [AppTheme.accentSoft, AppTheme.accent],
+              ),
+              borderRadius: radius,
+            ),
+            child: Icon(
+              Icons.psychology_alt_rounded,
+              size: size * .56,
+              color: Colors.white,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class OpenMindAppFooter extends StatelessWidget {
+  const OpenMindAppFooter({super.key});
+
+  static const versionName = 'OpenMindAI v0.4.0';
+  static const copyright = 'Copyright 2026 Md Shahanur Islam Shagor';
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    final color = Theme.of(context).colorScheme.onSurfaceVariant;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(18, 8, 18, 14),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            versionName,
+            textAlign: TextAlign.center,
+            style: textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            copyright,
+            textAlign: TextAlign.center,
+            style: textTheme.bodySmall?.copyWith(color: color),
+          ),
+        ],
       ),
     );
   }

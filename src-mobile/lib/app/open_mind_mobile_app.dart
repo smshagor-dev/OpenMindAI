@@ -4,6 +4,7 @@ import '../core/services/notification_service.dart';
 import '../core/storage/app_settings_controller.dart';
 import '../core/storage/onboarding_store.dart';
 import '../core/theme/app_theme.dart';
+import '../core/theme/openmind_ui.dart';
 import '../features/chat/chat_screen.dart';
 import '../features/onboarding/onboarding_flow.dart';
 
@@ -65,7 +66,25 @@ class _BootScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const Scaffold(
-      body: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+      body: SafeArea(
+        child: Column(
+          children: [
+            Expanded(
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    OpenMindBrandMark(size: 86),
+                    SizedBox(height: 22),
+                    CircularProgressIndicator(strokeWidth: 2),
+                  ],
+                ),
+              ),
+            ),
+            OpenMindAppFooter(),
+          ],
+        ),
+      ),
     );
   }
 }
