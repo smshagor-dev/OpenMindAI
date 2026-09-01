@@ -57,10 +57,7 @@ export function MessageItem(props: {
   };
 
   return (
-    <article
-      className={`message ${message.role}`}
-      style={message.role === "user" ? { flexDirection: "column", alignItems: "flex-end" } : undefined}
-    >
+    <article className={`message ${message.role}`}>
       {isAssistant ? (
         <div className="assistant-header">
           <img className="assistant-icon" src="/icon.png" alt="" />
@@ -68,7 +65,42 @@ export function MessageItem(props: {
         </div>
       ) : null}
 
-      {isThinking ? (
+      {message.role === "user" ? (
+        <div className="user-message-stack">
+          {renderedContent.trim() ? (
+            <MessageContent
+              content={renderedContent}
+              role={message.role}
+              markdown={props.markdown}
+              codeCopyButtons={props.codeCopyButtons}
+              onSaveCode={props.onCreateArtifact}
+              onPreview={props.onPreview}
+            />
+          ) : null}
+
+          <div className="message-actions-row message-actions-user">
+            <button
+              className="message-action-pill"
+              title="Copy"
+              onClick={() => void copyMessage()}
+            >
+              <Copy size={14} /> {copied ? "Copied" : "Copy"}
+            </button>
+            {canEditUser ? (
+              <button
+                className="message-action-pill"
+                title="Edit and resend"
+                onClick={() => props.onEditUser?.(userDisplay?.prompt ?? "")}
+              >
+                <Pencil size={14} /> Edit
+              </button>
+            ) : null}
+            <span className="message-timestamp message-timestamp-user">
+              {formatTime(message.createdAt)} <CheckCheck size={13} />
+            </span>
+          </div>
+        </div>
+      ) : isThinking ? (
         <div className="thinking-indicator">
           Thinking...
           <span className="thinking-dots">
@@ -93,30 +125,6 @@ export function MessageItem(props: {
       ) : null}
       {isAssistant && message.status === "failed" ? (
         <div className="muted">Generation failed. You can retry this response.</div>
-      ) : null}
-
-      {message.role === "user" ? (
-        <div className="message-actions-row message-actions-user">
-          <button
-            className="message-action-pill"
-            title="Copy"
-            onClick={() => void copyMessage()}
-          >
-            <Copy size={14} /> {copied ? "Copied" : "Copy"}
-          </button>
-          {canEditUser ? (
-            <button
-              className="message-action-pill"
-              title="Edit and resend"
-              onClick={() => props.onEditUser?.(userDisplay?.prompt ?? "")}
-            >
-              <Pencil size={14} /> Edit
-            </button>
-          ) : null}
-          <span className="message-timestamp message-timestamp-user">
-            {formatTime(message.createdAt)} <CheckCheck size={13} />
-          </span>
-        </div>
       ) : null}
 
       {props.artifacts.length > 0 ? (
