@@ -1,3 +1,5 @@
+use std::sync::{OnceLock, RwLock};
+
 use serde::{Deserialize, Serialize};
 use sysinfo::System;
 
@@ -7,7 +9,10 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_ERROR_NOT_FOUND,
 };
 
-#[derive(Debug, Clone, Serialize)]
+static DETECTED_HARDWARE: OnceLock<RwLock<Option<HardwareProfile>>> = OnceLock::new();
+static BACKGROUND_SCAN_STARTED: OnceLock<()> = OnceLock::new();
+
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HardwareProfile {
     pub operating_system: String,
@@ -18,6 +23,35 @@ pub struct HardwareProfile {
     pub primary_gpu: Option<String>,
     pub recommended_inference_gpu: Option<String>,
     pub backends: BackendProfile,
+}
+
+impl HardwareProfile {
+    fn clone_fields(&self) -> Self {
+        Self {
+            operating_system: self.operating_system.clone(),
+            architecture: self.architecture.clone(),
+            cpu: self.cpu.clone(),
+            memory: self.memory.clone(),
+            gpus: self.gpus.clone(),
+            primary_gpu: self.primary_gpu.clone(),
+            recommended_inference_gpu: self.recommended_inference_gpu.clone(),
+            backends: self.backends.clone(),
+        }
+    }
+
+    fn latest_or_self(&self) -> Self {
+        if let Some(profile) = latest_detected_hardware() {
+            profile
+        } else {
+            self.clone_fields()
+        }
+    }
+}
+
+impl Clone for HardwareProfile {
+    fn clone(&self) -> Self {
+        self.latest_or_self()
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -91,60 +125,123 @@ pub struct BackendProfile {
 pub struct HardwareProfiler;
 
 impl HardwareProfiler {
-    /// Fast startup snapshot. This path deliberately avoids spawning external
-    /// tools such as `vulkaninfo` or `nvidia-smi`; those probes used to run
-    /// before Tauri created the window and could delay first paint noticeably.
-    /// Vendor/DXGI data is enough for launch planning, while the runtime itself
-    /// remains the source of truth when a model is actually activated.
+    /// Returns immediately with a minimal startup snapshot and starts the real
+    /// CPU/RAM/GPU profile on a background thread. AppState can safely keep the
+    /// startup value because cloning HardwareProfile automatically picks up the
+    /// completed background profile when it becomes available.
     pub fn detect() -> HardwareProfile {
-        let mut system = System::new_all();
-        system.refresh_all();
-        let cpus = system.cpus();
-        let cpu_name = cpus
-            .first()
-            .map(|cpu| cpu.brand().to_string())
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "Unknown CPU".to_string());
-
-        let gpus = enumerate_gpus();
-        let primary_gpu = gpus.first().map(|gpu| gpu.id.clone());
-        let recommended_inference_gpu = choose_recommended_gpu(&gpus).map(|gpu| gpu.id.clone());
-        let has_nvidia = gpus
-            .iter()
-            .any(|gpu| gpu.vendor == GpuVendor::Nvidia && !gpu.is_software);
-        let has_amd = gpus
-            .iter()
-            .any(|gpu| gpu.vendor == GpuVendor::Amd && !gpu.is_software);
-        let has_intel = gpus
-            .iter()
-            .any(|gpu| gpu.vendor == GpuVendor::Intel && !gpu.is_software);
-        let has_hardware_gpu = gpus.iter().any(|gpu| !gpu.is_software);
-
-        HardwareProfile {
-            operating_system: System::long_os_version()
-                .unwrap_or_else(|| std::env::consts::OS.to_string()),
-            architecture: std::env::consts::ARCH.to_string(),
-            cpu: CpuProfile {
-                name: cpu_name,
-                physical_cores: system.physical_core_count(),
-                logical_threads: cpus.len(),
-            },
-            memory: MemoryProfile {
-                total_bytes: system.total_memory(),
-                available_bytes: system.available_memory(),
-            },
-            gpus,
-            primary_gpu,
-            recommended_inference_gpu,
-            backends: BackendProfile {
-                cpu: true,
-                cuda: has_nvidia,
-                vulkan: cfg!(target_os = "windows") && has_hardware_gpu,
-                sycl: has_intel,
-                hip: has_amd,
-                metal: cfg!(target_os = "macos"),
-            },
+        #[cfg(test)]
+        {
+            return detect_full();
         }
+
+        #[cfg(not(test))]
+        {
+            if let Some(profile) = latest_detected_hardware() {
+                return profile;
+            }
+
+            if BACKGROUND_SCAN_STARTED.set(()).is_ok() {
+                std::thread::spawn(|| {
+                    let profile = detect_full();
+                    let cache = DETECTED_HARDWARE.get_or_init(|| RwLock::new(None));
+                    if let Ok(mut current) = cache.write() {
+                        *current = Some(profile);
+                    }
+                });
+            }
+
+            startup_snapshot()
+        }
+    }
+}
+
+fn latest_detected_hardware() -> Option<HardwareProfile> {
+    DETECTED_HARDWARE
+        .get()
+        .and_then(|cache| cache.read().ok())
+        .and_then(|profile| profile.as_ref().map(HardwareProfile::clone_fields))
+}
+
+fn startup_snapshot() -> HardwareProfile {
+    let logical_threads = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(1);
+
+    HardwareProfile {
+        operating_system: std::env::consts::OS.to_string(),
+        architecture: std::env::consts::ARCH.to_string(),
+        cpu: CpuProfile {
+            name: "Detecting hardware".to_string(),
+            physical_cores: None,
+            logical_threads,
+        },
+        memory: MemoryProfile {
+            total_bytes: 0,
+            available_bytes: 0,
+        },
+        gpus: Vec::new(),
+        primary_gpu: None,
+        recommended_inference_gpu: None,
+        backends: BackendProfile {
+            cpu: true,
+            cuda: false,
+            vulkan: false,
+            sycl: false,
+            hip: false,
+            metal: cfg!(target_os = "macos"),
+        },
+    }
+}
+
+fn detect_full() -> HardwareProfile {
+    let mut system = System::new_all();
+    system.refresh_all();
+    let cpus = system.cpus();
+    let cpu_name = cpus
+        .first()
+        .map(|cpu| cpu.brand().to_string())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Unknown CPU".to_string());
+
+    let gpus = enumerate_gpus();
+    let primary_gpu = gpus.first().map(|gpu| gpu.id.clone());
+    let recommended_inference_gpu = choose_recommended_gpu(&gpus).map(|gpu| gpu.id.clone());
+    let has_nvidia = gpus
+        .iter()
+        .any(|gpu| gpu.vendor == GpuVendor::Nvidia && !gpu.is_software);
+    let has_amd = gpus
+        .iter()
+        .any(|gpu| gpu.vendor == GpuVendor::Amd && !gpu.is_software);
+    let has_intel = gpus
+        .iter()
+        .any(|gpu| gpu.vendor == GpuVendor::Intel && !gpu.is_software);
+    let has_hardware_gpu = gpus.iter().any(|gpu| !gpu.is_software);
+
+    HardwareProfile {
+        operating_system: System::long_os_version()
+            .unwrap_or_else(|| std::env::consts::OS.to_string()),
+        architecture: std::env::consts::ARCH.to_string(),
+        cpu: CpuProfile {
+            name: cpu_name,
+            physical_cores: system.physical_core_count(),
+            logical_threads: cpus.len(),
+        },
+        memory: MemoryProfile {
+            total_bytes: system.total_memory(),
+            available_bytes: system.available_memory(),
+        },
+        gpus,
+        primary_gpu,
+        recommended_inference_gpu,
+        backends: BackendProfile {
+            cpu: true,
+            cuda: has_nvidia,
+            vulkan: cfg!(target_os = "windows") && has_hardware_gpu,
+            sycl: has_intel,
+            hip: has_amd,
+            metal: cfg!(target_os = "macos"),
+        },
     }
 }
 
@@ -202,9 +299,8 @@ fn enumerate_gpus() -> Vec<GpuInfo> {
         Err(_) => return Vec::new(),
     };
 
-    // Do not shell out to `vulkaninfo` on the critical startup path. A real
-    // hardware adapter on Windows is treated as Vulkan-capable for planning;
-    // installed runtime validation still decides what can actually launch.
+    // External probes are intentionally not used. Runtime validation remains
+    // the source of truth for the exact backend that can be launched.
     let mut gpus = Vec::new();
     let mut index = 0;
     loop {
