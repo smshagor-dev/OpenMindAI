@@ -432,7 +432,10 @@ mod tests {
 
     #[test]
     fn windows_amd_prefers_vulkan_launch_plan() {
-        assert_eq!(recommended_backend(&GpuVendor::Amd, true), BackendKind::Vulkan);
+        assert_eq!(
+            recommended_backend(&GpuVendor::Amd, true),
+            BackendKind::Vulkan
+        );
     }
 
     #[test]
