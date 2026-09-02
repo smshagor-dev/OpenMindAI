@@ -82,12 +82,7 @@ impl InferenceBackend for NativeBackend {
             .map_err(InferenceError::InvalidConfig)?;
         let config = request.config.normalized();
         self.engine
-            .generate_boxed(
-                &request.prompt,
-                &request.system_prompt,
-                config,
-                on_token,
-            )
+            .generate_boxed(&request.prompt, &request.system_prompt, config, on_token)
             .map_err(|error| InferenceError::Generation(error.to_string()))
     }
 
