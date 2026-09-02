@@ -17,13 +17,9 @@ jobs:
         with:
           ref: feature/cxx-llama-native-bridge
           fetch-depth: 0
-      - name: Install Linux system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - uses: dtolnay/rust-toolchain@stable
       - name: Resolve only newly required lock entries
-        run: cargo check --manifest-path src-tauri/Cargo.toml --lib
+        run: cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1 > /dev/null
       - name: Commit lockfile when changed
         shell: bash
         run: |
