@@ -7,6 +7,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../../core/constants/model_catalog.dart';
 import '../../core/services/attachment_storage_service.dart';
+import '../../core/services/model_router_service.dart';
 import '../../core/services/model_storage_service.dart';
 import '../../core/services/notification_service.dart';
 import '../../core/storage/app_settings_controller.dart';
@@ -46,6 +47,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final _voice = VoiceInputService();
   final _speech = SpeechOutputService();
 
+  late final MobileModelRouter _modelRouter;
   late final NativeMobileInferenceService _inference;
   StreamSubscription<String>? _generationSubscription;
   StreamSubscription<VoiceTranscriptEvent>? _voiceSubscription;
@@ -88,7 +90,11 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    _inference = NativeMobileInferenceService(storage: _modelStorage);
+    _modelRouter = MobileModelRouter(storage: _modelStorage);
+    _inference = NativeMobileInferenceService(
+      storage: _modelStorage,
+      router: _modelRouter,
+    );
     _voiceSubscription = _voice.events.listen(
       (event) {
         if (!mounted) return;
@@ -324,6 +330,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _showError('The selected attachment is no longer available.');
       return;
     }
+    if (!await _ensureModelReadyForSend(attachments)) return;
 
     _haptic(strong: true);
     final conversation = _ensureConversation();
@@ -437,9 +444,10 @@ class _ChatScreenState extends State<ChatScreen> {
               final inferenceError = error is MobileInferenceException
                   ? error
                   : null;
+              final message = inferenceError?.message ?? error.toString();
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
-                  content: Text(error.toString()),
+                  content: Text(message),
                   action: inferenceError?.shouldOpenModels ?? true
                       ? SnackBarAction(label: 'Models', onPressed: _openModels)
                       : null,
@@ -451,6 +459,41 @@ class _ChatScreenState extends State<ChatScreen> {
           onDone: () async => finish(successful: true),
           cancelOnError: true,
         );
+  }
+
+  Future<bool> _ensureModelReadyForSend(List<String> attachments) async {
+    try {
+      final selection = await _modelRouter.resolve(
+        requestedModelId: _selectedModelId,
+        needsVision: _hasImageAttachment(attachments),
+        taskType: _mode,
+      );
+      if (selection.model.id != _selectedModelId) {
+        await _inference.shutdown();
+        await _onboardingStore.setSelectedModelId(selection.model.id);
+        if (mounted) setState(() => _selectedModelId = selection.model.id);
+      }
+      return true;
+    } on MobileModelRoutingException catch (error) {
+      if (!mounted) return false;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error.message),
+          action: SnackBarAction(label: 'Models', onPressed: _openModels),
+        ),
+      );
+      return false;
+    }
+  }
+
+  bool _hasImageAttachment(List<String> paths) {
+    return paths.any((path) {
+      final value = path.toLowerCase();
+      return value.endsWith('.png') ||
+          value.endsWith('.jpg') ||
+          value.endsWith('.jpeg') ||
+          value.endsWith('.webp');
+    });
   }
 
   Future<void> _stopGeneration() async {
@@ -643,6 +686,17 @@ class _ChatScreenState extends State<ChatScreen> {
     if (selected == null || !mounted) return;
     _haptic();
     await _stopSpeech();
+    final model = MobileModelCatalog.byId(selected);
+    if (!await _modelStorage.isInstalled(model)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${model.name} is not installed yet.'),
+          action: SnackBarAction(label: 'Install', onPressed: _openModels),
+        ),
+      );
+      return;
+    }
     if (selected != _selectedModelId) await _inference.shutdown();
     await _onboardingStore.setSelectedModelId(selected);
     if (mounted) setState(() => _selectedModelId = selected);

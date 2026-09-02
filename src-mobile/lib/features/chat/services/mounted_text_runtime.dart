@@ -52,7 +52,13 @@ class MountedTextRuntime {
         request.headers.contentType = ContentType.json;
         request.headers.set(HttpHeaders.acceptHeader, 'text/event-stream');
         request.write(
-          jsonEncode({'model': modelId, 'messages': messages, 'stream': true}),
+          jsonEncode({
+            'model': modelId,
+            'messages': messages,
+            'stream': true,
+            'max_tokens': 512,
+            'temperature': 0.7,
+          }),
         );
 
         final response = await request.close();
@@ -80,6 +86,15 @@ class MountedTextRuntime {
           final decoded = jsonDecode(data);
           if (decoded is! Map) {
             continue;
+          }
+          final error = decoded['error'];
+          if (error is Map) {
+            final message = error['message']?.toString();
+            throw StateError(
+              message == null || message.isEmpty
+                  ? 'Local runtime returned an error.'
+                  : message,
+            );
           }
           final choices = decoded['choices'];
           if (choices is! List || choices.isEmpty || choices.first is! Map) {
@@ -122,14 +137,36 @@ class MountedTextRuntime {
 
     await unmount();
     final server = LlamaHttpServer.open(
-      config: LlamaServerConfig(model: modelId, modelPath: modelPath, port: 0),
+      config: LlamaServerConfig(
+        model: modelId,
+        modelPath: modelPath,
+        port: 0,
+        ctxSize: 2048,
+        pollTimeout: const Duration(milliseconds: 50),
+      ),
     );
     final address = await server.start();
     _server = server;
     _mountedModelId = modelId;
     _mountedModelPath = modelPath;
     _baseUri = Uri.parse('http://${address.host}:${address.port}/v1/');
+    await _healthCheck(_baseUri!);
     return _baseUri!;
+  }
+
+  Future<void> _healthCheck(Uri baseUri) async {
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 10);
+    try {
+      final request = await client.getUrl(baseUri.replace(path: '/healthz'));
+      final response = await request.close();
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw StateError('Local runtime health check failed.');
+      }
+      await response.drain<void>();
+    } finally {
+      client.close(force: true);
+    }
   }
 
   Future<void> cancel() async {

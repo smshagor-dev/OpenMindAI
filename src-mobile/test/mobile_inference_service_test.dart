@@ -109,6 +109,29 @@ void main() {
     expect(runtime.modelAttempts, ['qwen3-17b-q4km', 'qwen3-06b-q4']);
     expect(runtime.unmounts, 1);
   });
+
+  test('single installed model runtime failure is not reported as missing', () {
+    final storage = _FakeModelStorage(tempDir);
+    final model = MobileModelCatalog.byId('qwen3-06b-q4');
+    final runtime = _FakeRuntime({
+      'qwen3-06b-q4': StateError('server failed to start'),
+    });
+    final service = _service(storage, runtime, profile);
+
+    expect(
+      () async {
+        await storage.add(model);
+        await service.generate(_request(model.id));
+      }(),
+      throwsA(
+        isA<MobileInferenceException>().having(
+          (error) => error.code,
+          'code',
+          MobileInferenceErrorCode.runtimeStartFailed,
+        ),
+      ),
+    );
+  });
 }
 
 MobileInferenceRequest _request(String preferredModelId) {

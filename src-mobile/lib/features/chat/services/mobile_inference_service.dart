@@ -90,13 +90,19 @@ class NativeMobileInferenceService implements MobileInferenceService {
     Object? firstRuntimeError;
 
     for (var attempt = 0; attempt < 2; attempt++) {
-      final selection = await _router.resolve(
-        requestedModelId: attempt == 0 ? request.preferredModelId : null,
-        needsVision: needsVision,
-        taskType: request.mode,
-        deviceProfile: profile,
-        excludedModelIds: excluded,
-      );
+      final MobileModelSelection selection;
+      try {
+        selection = await _router.resolve(
+          requestedModelId: attempt == 0 ? request.preferredModelId : null,
+          needsVision: needsVision,
+          taskType: request.mode,
+          deviceProfile: profile,
+          excludedModelIds: excluded,
+        );
+      } on MobileModelRoutingException {
+        if (firstRuntimeError != null) throw firstRuntimeError;
+        rethrow;
+      }
       await _validateSelection(selection, profile, needsVision);
 
       var emitted = false;

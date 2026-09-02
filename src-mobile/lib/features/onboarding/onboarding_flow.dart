@@ -531,10 +531,15 @@ class _RecommendationPageState extends State<_RecommendationPage> {
       );
       if (mounted) widget.onReady(profile);
     } catch (error) {
-      if (mounted) setState(() => _error = error.toString());
+      if (mounted) setState(() => _error = _installErrorMessage(error));
     } finally {
       if (mounted) setState(() => _installing = false);
     }
+  }
+
+  String _installErrorMessage(Object error) {
+    if (error is ModelInstallException) return error.message;
+    return 'The model download was interrupted. Progress is saved; tap Install again to resume.';
   }
 
   @override
@@ -652,7 +657,13 @@ class _RecommendationPageState extends State<_RecommendationPage> {
                       children: [
                         const Icon(Icons.error_outline_rounded),
                         const SizedBox(width: 9),
-                        Expanded(child: Text(_error!)),
+                        Expanded(
+                          child: Text(
+                            _error!,
+                            maxLines: 4,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
                       ],
                     ),
                   ),

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/constants/model_catalog.dart';
@@ -36,6 +38,8 @@ class _ModelManagerSheetState extends State<_ModelManagerSheet> {
   late final Future<MobileDeviceProfile> _profileFuture;
   final Map<String, bool> _installed = {};
   final Map<String, ModelInstallProgress> _progress = {};
+  final Map<String, StreamSubscription<ModelInstallProgress>>
+  _progressSubscriptions = {};
   final Set<String> _busy = {};
   String? _error;
 
@@ -43,19 +47,61 @@ class _ModelManagerSheetState extends State<_ModelManagerSheet> {
   void initState() {
     super.initState();
     _profileFuture = DeviceProfileService().read();
+    _watchModelInstalls();
     _refresh();
+  }
+
+  @override
+  void dispose() {
+    for (final subscription in _progressSubscriptions.values) {
+      unawaited(subscription.cancel());
+    }
+    super.dispose();
+  }
+
+  void _watchModelInstalls() {
+    for (final model in MobileModelCatalog.models) {
+      _progressSubscriptions[model.id] = widget.storage
+          .watchInstall(model.id)
+          .listen((value) {
+            if (!mounted) return;
+            setState(() {
+              if (value.progress >= 1 && value.stage == 'Ready') {
+                _installed[model.id] = true;
+                _progress.remove(model.id);
+                _busy.remove(model.id);
+              } else {
+                _progress[model.id] = value;
+                _busy.add(model.id);
+              }
+            });
+          });
+    }
   }
 
   Future<void> _refresh() async {
     final values = <String, bool>{};
+    final progress = <String, ModelInstallProgress>{};
+    final busy = <String>{};
     for (final model in MobileModelCatalog.models) {
       values[model.id] = await widget.storage.isInstalled(model);
+      final activeProgress = widget.storage.activeProgress(model.id);
+      if (widget.storage.isInstalling(model.id)) {
+        busy.add(model.id);
+        if (activeProgress != null) progress[model.id] = activeProgress;
+      }
     }
     if (!mounted) return;
     setState(() {
       _installed
         ..clear()
         ..addAll(values);
+      _progress
+        ..clear()
+        ..addAll(progress);
+      _busy
+        ..clear()
+        ..addAll(busy);
     });
   }
 
@@ -79,10 +125,15 @@ class _ModelManagerSheetState extends State<_ModelManagerSheet> {
       });
       widget.onModelReady?.call(model.id);
     } catch (error) {
-      if (mounted) setState(() => _error = error.toString());
+      if (mounted) setState(() => _error = _installErrorMessage(error));
     } finally {
       if (mounted) setState(() => _busy.remove(model.id));
     }
+  }
+
+  String _installErrorMessage(Object error) {
+    if (error is ModelInstallException) return error.message;
+    return 'The model download was interrupted. Progress is saved; tap Install again to resume.';
   }
 
   Future<void> _delete(MobileModel model) async {
@@ -146,7 +197,13 @@ class _ModelManagerSheetState extends State<_ModelManagerSheet> {
                       children: [
                         const Icon(Icons.error_outline_rounded),
                         const SizedBox(width: 10),
-                        Expanded(child: Text(_error!)),
+                        Expanded(
+                          child: Text(
+                            _error!,
+                            maxLines: 4,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
                         IconButton(
                           onPressed: () => setState(() => _error = null),
                           icon: const Icon(Icons.close_rounded),
@@ -176,6 +233,10 @@ class _ModelManagerSheetState extends State<_ModelManagerSheet> {
                       onInstall: () => _install(model),
                       onDelete: () => _delete(model),
                       onCancel: () => widget.storage.cancelInstall(model.id),
+                      onReady: () {
+                        widget.onModelReady?.call(model.id);
+                        Navigator.pop(context);
+                      },
                     ),
                   );
                 },
@@ -198,6 +259,7 @@ class _ModelCard extends StatelessWidget {
     required this.onInstall,
     required this.onDelete,
     required this.onCancel,
+    required this.onReady,
   });
 
   final MobileModel model;
@@ -208,6 +270,7 @@ class _ModelCard extends StatelessWidget {
   final VoidCallback onInstall;
   final VoidCallback onDelete;
   final VoidCallback onCancel;
+  final VoidCallback onReady;
 
   IconData get _icon => switch (model.kind) {
     'Reasoning' => Icons.psychology_outlined,
@@ -318,7 +381,7 @@ class _ModelCard extends StatelessWidget {
               else ...[
                 Expanded(
                   child: FilledButton.tonalIcon(
-                    onPressed: () => Navigator.pop(context),
+                    onPressed: onReady,
                     icon: const Icon(Icons.check_rounded),
                     label: const Text('Ready'),
                   ),

@@ -39,13 +39,29 @@ class ModelInstallProgress {
 }
 
 class ModelStorageService {
-  ModelStorageService({Dio? dio}) : _dio = dio ?? Dio();
+  ModelStorageService({Dio? dio}) : _dio = dio ?? _sharedDio;
 
   static const int _freeSpaceReserveBytes = 768 * 1024 * 1024;
   static const int _maxDownloadAttempts = 4;
+  static final Dio _sharedDio = Dio();
+  static final Map<String, CancelToken> _cancelTokens = {};
+  static final Map<String, Future<InstalledMobileModel>> _activeInstalls = {};
+  static final Map<String, StreamController<ModelInstallProgress>>
+  _progressControllers = {};
+  static final Map<String, ModelInstallProgress> _lastProgress = {};
 
   final Dio _dio;
-  final Map<String, CancelToken> _cancelTokens = {};
+
+  bool isInstalling(String modelId) => _activeInstalls.containsKey(modelId);
+
+  ModelInstallProgress? activeProgress(String modelId) =>
+      _lastProgress[modelId];
+
+  Stream<ModelInstallProgress> watchInstall(String modelId) async* {
+    final progress = _lastProgress[modelId];
+    if (progress != null) yield progress;
+    yield* _progressController(modelId).stream;
+  }
 
   Future<Directory> _modelDirectory(MobileModel model) async {
     final support = await getApplicationSupportDirectory();
@@ -104,12 +120,75 @@ class ModelStorageService {
     return await installed(model) != null;
   }
 
+  Future<void> resumeIncompleteInstalls({
+    void Function(ModelInstallProgress progress)? onProgress,
+  }) async {
+    for (final model in MobileModelCatalog.models) {
+      if (isInstalling(model.id) || await isInstalled(model)) continue;
+      if (!await _hasPartialInstall(model)) continue;
+      unawaited(
+        install(model, onProgress: onProgress ?? (_) {}).catchError((_) {
+          return InstalledMobileModel(model: model, modelPath: '');
+        }),
+      );
+    }
+  }
+
   Future<InstalledMobileModel> install(
     MobileModel model, {
     required void Function(ModelInstallProgress progress) onProgress,
   }) async {
+    final progressSubscription = watchInstall(model.id).listen(onProgress);
     final existing = await installed(model);
     if (existing != null) {
+      final size = await File(existing.modelPath).length();
+      _emitProgress(
+        ModelInstallProgress(
+          modelId: model.id,
+          stage: 'Ready',
+          progress: 1,
+          receivedBytes: size,
+          totalBytes: size,
+        ),
+      );
+      await progressSubscription.cancel();
+      return existing;
+    }
+
+    final activeInstall = _activeInstalls[model.id];
+    if (activeInstall != null) {
+      try {
+        return await activeInstall;
+      } finally {
+        await progressSubscription.cancel();
+      }
+    }
+
+    final install = _installFresh(model);
+    _activeInstalls[model.id] = install;
+    try {
+      return await install;
+    } finally {
+      if (identical(_activeInstalls[model.id], install)) {
+        _activeInstalls.remove(model.id);
+      }
+      await progressSubscription.cancel();
+    }
+  }
+
+  Future<InstalledMobileModel> _installFresh(MobileModel model) async {
+    final existing = await installed(model);
+    if (existing != null) {
+      final size = await File(existing.modelPath).length();
+      _emitProgress(
+        ModelInstallProgress(
+          modelId: model.id,
+          stage: 'Ready',
+          progress: 1,
+          receivedBytes: size,
+          totalBytes: size,
+        ),
+      );
       return existing;
     }
 
@@ -129,7 +208,7 @@ class ModelStorageService {
         destinationPath: weightPath,
         stage: 'Downloading model',
         token: token,
-        onProgress: onProgress,
+        onProgress: _emitProgress,
       );
 
       String? mmprojPath;
@@ -141,7 +220,7 @@ class ModelStorageService {
           destinationPath: mmprojPath,
           stage: 'Downloading vision projector',
           token: token,
-          onProgress: onProgress,
+          onProgress: _emitProgress,
         );
       }
 
@@ -152,7 +231,7 @@ class ModelStorageService {
         mmproj: artifacts.mmproj,
         mmprojPath: mmprojPath,
       );
-      onProgress(
+      _emitProgress(
         ModelInstallProgress(
           modelId: model.id,
           stage: 'Ready',
@@ -175,6 +254,10 @@ class ModelStorageService {
       throw ModelInstallException(
         'Could not download or resolve ${model.name}. Check your internet connection and try again.',
       );
+    } on HttpException {
+      throw ModelInstallException(
+        'Connection interrupted while downloading ${model.name}. Progress is saved; tap Install again to resume.',
+      );
     } on SocketException {
       throw ModelInstallException(
         'Could not download ${model.name}. Check your internet connection and try again.',
@@ -190,10 +273,44 @@ class ModelStorageService {
 
   Future<void> delete(MobileModel model) async {
     cancelInstall(model.id);
+    final activeInstall = _activeInstalls[model.id];
+    if (activeInstall != null) {
+      try {
+        await activeInstall;
+      } catch (_) {
+        // A cancelled or failed install can still leave partial files to clear.
+      }
+    }
     final directory = await _modelDirectory(model);
     if (await directory.exists()) {
       await directory.delete(recursive: true);
     }
+    _lastProgress.remove(model.id);
+  }
+
+  Future<bool> _hasPartialInstall(MobileModel model) async {
+    final directory = await _modelDirectory(model);
+    if (!await directory.exists()) return false;
+    await for (final entity in directory.list()) {
+      if (entity is File && entity.path.toLowerCase().endsWith('.part')) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static StreamController<ModelInstallProgress> _progressController(
+    String modelId,
+  ) {
+    return _progressControllers.putIfAbsent(
+      modelId,
+      () => StreamController<ModelInstallProgress>.broadcast(),
+    );
+  }
+
+  static void _emitProgress(ModelInstallProgress progress) {
+    _lastProgress[progress.modelId] = progress;
+    _progressController(progress.modelId).add(progress);
   }
 
   Future<void> _ensureEnoughFreeSpace(
@@ -353,6 +470,8 @@ class ModelStorageService {
       } on DioException catch (error) {
         if (CancelToken.isCancel(error) || token.isCancelled) rethrow;
         lastError = error;
+      } on HttpException catch (error) {
+        lastError = error;
       } on SocketException catch (error) {
         lastError = error;
       }
@@ -361,7 +480,7 @@ class ModelStorageService {
         onProgress(
           ModelInstallProgress(
             modelId: modelId,
-            stage: 'Connection interrupted. Resuming…',
+            stage: 'Connection interrupted. Resuming...',
             progress: artifact.size > 0 && await partFile.exists()
                 ? ((await partFile.length()) / artifact.size)
                       .clamp(0, 1)
