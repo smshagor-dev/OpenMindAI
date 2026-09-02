@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - feature/cxx-llama-native-bridge
+      - feature/native-*
     paths:
       - "src-tauri/native/**"
       - "src-tauri/src/native_bridge.rs"
+      - "src-tauri/src/native_inference.rs"
       - "src-tauri/Cargo.toml"
       - "src-tauri/Cargo.lock"
       - "src-tauri/build.rs"
@@ -15,6 +17,7 @@ on:
     paths:
       - "src-tauri/native/**"
       - "src-tauri/src/native_bridge.rs"
+      - "src-tauri/src/native_inference.rs"
       - "src-tauri/Cargo.toml"
       - "src-tauri/Cargo.lock"
       - "src-tauri/build.rs"
@@ -81,6 +84,7 @@ jobs:
           rm -rf native-smoke
           mkdir -p native-smoke/src native-smoke/native
           cp src-tauri/src/native_bridge.rs native-smoke/src/native_bridge.rs
+          cp src-tauri/src/native_inference.rs native-smoke/src/native_inference.rs
           cp src-tauri/native/inference.cpp native-smoke/native/inference.cpp
           cp src-tauri/native/inference.h native-smoke/native/inference.h
           cat > native-smoke/Cargo.toml <<'EOF'
@@ -98,6 +102,7 @@ jobs:
           EOF
           cat > native-smoke/src/lib.rs <<'EOF'
           pub mod native_bridge;
+          pub mod native_inference;
           EOF
           cat > native-smoke/build.rs <<'EOF'
           use std::{env, path::PathBuf};
