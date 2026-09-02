@@ -18,7 +18,7 @@ mod ffi {
 
     extern "Rust" {
         type TokenSink;
-        fn on_token(sink: &mut TokenSink, token: &str) -> bool;
+        fn on_token(sink: &mut TokenSink, token: &[u8]) -> bool;
     }
 
     unsafe extern "C++" {
@@ -109,6 +109,8 @@ impl GenerationConfig {
 
 pub struct TokenSink {
     callback: Box<dyn FnMut(&str) -> bool + Send>,
+    pending: Vec<u8>,
+    stopped: bool,
 }
 
 impl TokenSink {
@@ -116,18 +118,69 @@ impl TokenSink {
     where
         F: FnMut(&str) -> bool + Send + 'static,
     {
-        Self {
-            callback: Box::new(callback),
-        }
+        Self::from_boxed(Box::new(callback))
     }
 
     pub fn from_boxed(callback: Box<dyn FnMut(&str) -> bool + Send>) -> Self {
-        Self { callback }
+        Self {
+            callback,
+            pending: Vec::new(),
+            stopped: false,
+        }
+    }
+
+    fn emit(&mut self, text: &str) -> bool {
+        if self.stopped {
+            return false;
+        }
+        self.stopped = !(self.callback)(text);
+        !self.stopped
+    }
+
+    fn finish(&mut self) {
+        // Only a normal end may replace a truncated final code point. A stopped
+        // stream must never call the consumer again or invent cancelled output.
+        if !self.stopped && !self.pending.is_empty() {
+            let remaining = String::from_utf8_lossy(&self.pending).into_owned();
+            self.pending.clear();
+            self.emit(&remaining);
+        }
     }
 }
 
-fn on_token(sink: &mut TokenSink, token: &str) -> bool {
-    (sink.callback)(token)
+fn on_token(sink: &mut TokenSink, token: &[u8]) -> bool {
+    if sink.stopped {
+        return false;
+    }
+    // llama token pieces may end in the middle of a UTF-8 code point. Never
+    // construct a Rust str on the C++ side before the bytes have been validated.
+    sink.pending.extend_from_slice(token);
+    let mut text = String::new();
+    let mut consumed = 0;
+    while consumed < sink.pending.len() {
+        match std::str::from_utf8(&sink.pending[consumed..]) {
+            Ok(valid) => {
+                text.push_str(valid);
+                consumed = sink.pending.len();
+            }
+            Err(error) => {
+                let valid_end = consumed + error.valid_up_to();
+                text.push_str(std::str::from_utf8(&sink.pending[consumed..valid_end]).unwrap());
+                consumed = valid_end;
+                match error.error_len() {
+                    Some(length) => {
+                        text.push('\u{fffd}');
+                        consumed += length;
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+    sink.pending.drain(..consumed);
+    // Empty text is also a cooperative cancellation poll during prompt decode
+    // and when a token contains only the beginning of a multi-byte character.
+    sink.emit(&text)
 }
 
 pub struct NativeInferenceEngine {
@@ -187,9 +240,14 @@ impl NativeInferenceEngine {
         callback: Box<dyn FnMut(&str) -> bool + Send>,
     ) -> Result<(), cxx::Exception> {
         let mut sink = TokenSink::from_boxed(callback);
-        self.inner
+        let result = self
+            .inner
             .pin_mut()
-            .generate_messages(messages, &config, &mut sink)
+            .generate_messages(messages, &config, &mut sink);
+        if result.is_ok() {
+            sink.finish();
+        }
+        result
     }
 
     pub fn clear_kv_cache(&mut self) {
@@ -200,6 +258,67 @@ impl NativeInferenceEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    fn recording_sink() -> (TokenSink, Arc<Mutex<String>>) {
+        let output = Arc::new(Mutex::new(String::new()));
+        let captured = Arc::clone(&output);
+        let sink = TokenSink::new(move |text| {
+            captured.lock().unwrap().push_str(text);
+            true
+        });
+        (sink, output)
+    }
+
+    #[test]
+    fn unicode_survives_every_token_boundary() {
+        let expected = "বাংলা: ভালো আছি 🦀🙂 café 中文";
+        for split in 0..=expected.len() {
+            let (mut sink, output) = recording_sink();
+            assert!(on_token(&mut sink, &expected.as_bytes()[..split]));
+            assert!(on_token(&mut sink, &expected.as_bytes()[split..]));
+            sink.finish();
+            assert_eq!(*output.lock().unwrap(), expected, "split {split}");
+        }
+        let (mut sink, output) = recording_sink();
+        for byte in expected.as_bytes() {
+            assert!(on_token(&mut sink, &[*byte]));
+            assert!(sink.pending.len() <= 3);
+        }
+        sink.finish();
+        assert_eq!(*output.lock().unwrap(), expected);
+    }
+
+    #[test]
+    fn malformed_bytes_are_replaced_without_losing_following_text() {
+        let bytes = b"ok\xff\xe2\x82next\xf0\x9f\x99\x82";
+        for split in 0..=bytes.len() {
+            let (mut sink, output) = recording_sink();
+            on_token(&mut sink, &bytes[..split]);
+            on_token(&mut sink, &bytes[split..]);
+            sink.finish();
+            assert_eq!(*output.lock().unwrap(), String::from_utf8_lossy(bytes));
+        }
+    }
+
+    #[test]
+    fn incomplete_final_character_is_flushed_once() {
+        let (mut sink, output) = recording_sink();
+        on_token(&mut sink, b"ok\xe2\x82");
+        assert_eq!(*output.lock().unwrap(), "ok");
+        sink.finish();
+        sink.finish();
+        assert_eq!(*output.lock().unwrap(), "ok\u{fffd}");
+    }
+
+    #[test]
+    fn cancellation_poll_does_not_flush_incomplete_character() {
+        let mut sink = TokenSink::new(|_| false);
+        assert!(!on_token(&mut sink, b"\xe2"));
+        sink.finish();
+        assert!(sink.stopped);
+        assert!(!on_token(&mut sink, b"\x82\xac"));
+    }
 
     #[test]
     fn token_sink_can_cancel_streaming() {
@@ -209,8 +328,9 @@ mod tests {
             token != "stop"
         });
 
-        assert!(on_token(&mut sink, "one"));
-        assert!(!on_token(&mut sink, "stop"));
+        assert!(on_token(&mut sink, b"one"));
+        assert!(!on_token(&mut sink, b"stop"));
+        assert!(!on_token(&mut sink, b"ignored"));
     }
 
     #[test]

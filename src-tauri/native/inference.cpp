@@ -275,7 +275,7 @@ private:
 
         ensure_context(desired_context, desired_batch, desired_threads);
         llama_memory_clear(llama_get_memory(context_.get()), true);
-        decode_prompt(prompt_tokens, desired_batch);
+        if (!decode_prompt(prompt_tokens, desired_batch, sink)) return;
 
         SamplerPtr sampler;
         if (config.temperature <= 0.0F) {
@@ -291,11 +291,13 @@ private:
         if (!sampler) throw std::runtime_error("failed to create sampler");
 
         for (std::uint32_t produced = 0; produced < config.max_tokens; ++produced) {
+            if (!on_token(sink, rust::Slice<const std::uint8_t>())) return;
             const llama_token token = llama_sampler_sample(sampler.get(), context_.get(), -1);
             if (llama_vocab_is_eog(vocab_, token)) break;
 
             const auto piece = token_piece(vocab_, token);
-            if (!on_token(sink, rust::Str(piece.data(), piece.size()))) break;
+            if (!on_token(sink, rust::Slice<const std::uint8_t>(
+                    reinterpret_cast<const std::uint8_t*>(piece.data()), piece.size()))) return;
 
             auto next = token;
             const auto batch = llama_batch_get_one(&next, 1);
@@ -327,9 +329,10 @@ private:
         thread_count_ = n_threads;
     }
 
-    void decode_prompt(const std::vector<llama_token>& tokens, std::uint32_t n_batch) {
+    bool decode_prompt(const std::vector<llama_token>& tokens, std::uint32_t n_batch, TokenSink& sink) {
         std::size_t offset = 0;
         while (offset < tokens.size()) {
+            if (!on_token(sink, rust::Slice<const std::uint8_t>())) return false;
             const auto remaining = tokens.size() - offset;
             const auto chunk = static_cast<std::int32_t>(
                 std::min<std::size_t>(remaining, static_cast<std::size_t>(n_batch)));
@@ -338,6 +341,7 @@ private:
                 throw std::runtime_error("llama_decode failed while processing prompt");
             offset += static_cast<std::size_t>(chunk);
         }
+        return true;
     }
 
     llama_model* model_ = nullptr;

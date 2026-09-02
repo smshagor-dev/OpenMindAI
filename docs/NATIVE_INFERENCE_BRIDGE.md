@@ -130,6 +130,26 @@ A mutex serializes generation and KV-clear operations on one engine because one 
 
 Large project files should still use retrieval/chunking and bounded token budgets; dynamic KV sizing is not a substitute for context construction.
 
+## Streaming and cancellation guarantees
+
+llama.cpp token pieces cross CXX as byte slices. Rust validates UTF-8 and keeps an
+incomplete code point until the next piece arrives, so Bengali, emoji, and other
+multi-byte text are not damaged at token boundaries. Invalid byte sequences are
+replaced with U+FFFD. An incomplete final character is replaced only on normal
+completion, never after the consumer stops or generation fails.
+
+The low-level callback can receive an empty string as a cancellation poll before
+prompt batches and between generated tokens. Return `false` to stop. The desktop
+adapter filters empty polls before its bounded token channel, UI, and database.
+Stop wakes the receiver even before the first token and closes the channel before
+waiting for the worker, releasing a producer blocked by backpressure. A request
+guard cancels the worker and clears active conversation state on every exit,
+including a dropped async request. Queued cancelled requests skip model loading.
+
+Cancellation is cooperative between native calls; it cannot interrupt a model
+load or a single running `llama_decode` call. No real-GPU inference or hard timeout
+guarantee follows from compile/link and synthetic streaming tests.
+
 ## Rust API
 
 The low-level bridge remains available:

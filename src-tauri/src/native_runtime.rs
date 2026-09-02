@@ -26,11 +26,10 @@ pub enum NativeRuntimeBackend {
 
 impl NativeRuntimeBackend {
     pub fn supports(self, backend: &BackendKind) -> bool {
-        match (self, backend) {
-            (_, BackendKind::Cpu) => true,
-            (Self::Vulkan, BackendKind::Vulkan) => true,
-            _ => false,
-        }
+        matches!(
+            (self, backend),
+            (_, BackendKind::Cpu) | (Self::Vulkan, BackendKind::Vulkan)
+        )
     }
 }
 
@@ -100,18 +99,20 @@ pub fn detect_installed() -> Result<InstalledNativeRuntime, String> {
 }
 
 fn installed_manifest_path() -> Result<PathBuf, String> {
-    let executable = env::current_exe()
-        .map_err(|error| format!("cannot resolve OpenMindAI executable path: {error}"))?;
-    let app_dir = executable
-        .parent()
-        .ok_or_else(|| "OpenMindAI executable has no parent directory".to_string())?;
-
     #[cfg(target_os = "windows")]
-    return Ok(app_dir
-        .join("resources")
-        .join("native-runtime")
-        .join("windows-x86_64")
-        .join("native-runtime-manifest.json"));
+    {
+        let executable = env::current_exe()
+            .map_err(|error| format!("cannot resolve OpenMindAI executable path: {error}"))?;
+        let app_dir = executable
+            .parent()
+            .ok_or_else(|| "OpenMindAI executable has no parent directory".to_string())?;
+
+        Ok(app_dir
+            .join("resources")
+            .join("native-runtime")
+            .join("windows-x86_64")
+            .join("native-runtime-manifest.json"))
+    }
 
     #[cfg(not(target_os = "windows"))]
     Err("packaged native runtime discovery is currently implemented for Windows".to_string())
