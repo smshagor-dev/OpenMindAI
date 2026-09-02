@@ -1,3 +1,5 @@
+import unittest
+
 from openmind_personalization import (
     LearningExample,
     LearningPolicy,
@@ -16,35 +18,38 @@ def make_example(index: int) -> LearningExample:
     )
 
 
-def test_split_is_deterministic() -> None:
-    examples = [make_example(index) for index in range(100)]
-    first = split_examples(examples)
-    second = split_examples(examples)
-    assert first == second
-    assert first[0]
-    assert first[1]
+class PersonalizationContractTests(unittest.TestCase):
+    def test_split_is_deterministic(self) -> None:
+        examples = [make_example(index) for index in range(100)]
+        first = split_examples(examples)
+        second = split_examples(examples)
+        self.assertEqual(first, second)
+        self.assertTrue(first[0])
+        self.assertTrue(first[1])
+
+    def test_learning_waits_for_enough_explicit_feedback(self) -> None:
+        decision = evaluate_training_readiness(
+            LearningPolicy(),
+            train_examples=10,
+            holdout_examples=20,
+            machine_idle=True,
+            free_ram_gb=8.0,
+            on_ac_power=True,
+        )
+        self.assertFalse(decision.ready)
+        self.assertIn("approved training examples", decision.reason)
+
+    def test_learning_can_start_only_after_resource_and_data_gates(self) -> None:
+        decision = evaluate_training_readiness(
+            LearningPolicy(),
+            train_examples=80,
+            holdout_examples=20,
+            machine_idle=True,
+            free_ram_gb=8.0,
+            on_ac_power=True,
+        )
+        self.assertTrue(decision.ready)
 
 
-def test_learning_waits_for_enough_explicit_feedback() -> None:
-    decision = evaluate_training_readiness(
-        LearningPolicy(),
-        train_examples=10,
-        holdout_examples=20,
-        machine_idle=True,
-        free_ram_gb=8.0,
-        on_ac_power=True,
-    )
-    assert not decision.ready
-    assert "approved training examples" in decision.reason
-
-
-def test_learning_can_start_only_after_resource_and_data_gates() -> None:
-    decision = evaluate_training_readiness(
-        LearningPolicy(),
-        train_examples=80,
-        holdout_examples=20,
-        machine_idle=True,
-        free_ram_gb=8.0,
-        on_ac_power=True,
-    )
-    assert decision.ready
+if __name__ == "__main__":
+    unittest.main()
