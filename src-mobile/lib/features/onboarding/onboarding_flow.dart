@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../core/constants/model_catalog.dart';
 import '../../core/services/device_profile_service.dart';
 import '../../core/services/model_storage_service.dart';
 import '../../core/services/permission_service.dart';
@@ -92,8 +93,8 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
       _RecommendationPage(
         profileFuture: _profileFuture,
         storage: _modelStorage,
-        onReady: (profile) async {
-          await _store.complete(selectedModelId: profile.recommendedModel.id);
+        onReady: (modelId) async {
+          await _store.complete(selectedModelId: modelId);
           if (mounted) widget.onFinished();
         },
       ),
@@ -505,35 +506,35 @@ class _RecommendationPage extends StatefulWidget {
 
   final Future<MobileDeviceProfile> profileFuture;
   final ModelStorageService storage;
-  final ValueChanged<MobileDeviceProfile> onReady;
+  final ValueChanged<String> onReady;
 
   @override
   State<_RecommendationPage> createState() => _RecommendationPageState();
 }
 
 class _RecommendationPageState extends State<_RecommendationPage> {
-  ModelInstallProgress? _progress;
-  bool _installing = false;
+  final Map<String, ModelInstallProgress> _progress = {};
+  String? _installingModelId;
   String? _error;
 
-  Future<void> _install(MobileDeviceProfile profile) async {
-    if (_installing) return;
+  Future<void> _install(MobileModel model) async {
+    if (_installingModelId != null) return;
     setState(() {
-      _installing = true;
+      _installingModelId = model.id;
       _error = null;
     });
     try {
       await widget.storage.install(
-        profile.recommendedModel,
+        model,
         onProgress: (value) {
-          if (mounted) setState(() => _progress = value);
+          if (mounted) setState(() => _progress[model.id] = value);
         },
       );
-      if (mounted) widget.onReady(profile);
+      if (mounted) widget.onReady(model.id);
     } catch (error) {
       if (mounted) setState(() => _error = _installErrorMessage(error));
     } finally {
-      if (mounted) setState(() => _installing = false);
+      if (mounted) setState(() => _installingModelId = null);
     }
   }
 
@@ -541,6 +542,12 @@ class _RecommendationPageState extends State<_RecommendationPage> {
     if (error is ModelInstallException) return error.message;
     return 'The model download was interrupted. Progress is saved; tap Install again to resume.';
   }
+
+  IconData _modelIcon(MobileModel model) => switch (model.kind) {
+    'Reasoning' => Icons.psychology_outlined,
+    'Vision' => Icons.visibility_outlined,
+    _ => Icons.chat_bubble_outline_rounded,
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -553,7 +560,7 @@ class _RecommendationPageState extends State<_RecommendationPage> {
               icon: Icons.memory_rounded,
               title: 'Checking this device',
               description:
-                  'Reading available memory and storage to recommend a balanced local model.',
+                  'Reading available memory and storage to recommend balanced local models.',
               action: SizedBox(
                 width: 24,
                 height: 24,
@@ -571,79 +578,25 @@ class _RecommendationPageState extends State<_RecommendationPage> {
           }
 
           final profile = snapshot.data!;
-          final model = profile.recommendedModel;
-          final progress = _progress;
+          final models = MobileModelCatalog.recommendationsForDevice(
+            ramGb: profile.ramGb,
+            freeDiskBytes: profile.freeDiskBytes,
+          );
+
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const SizedBox(height: 8),
               OpenMindPageHeader(
-                title: 'Recommended model',
+                title: 'Recommended models',
                 subtitle:
                     '${profile.deviceName} · ${profile.platform} ${profile.osVersion}',
               ),
-              const SizedBox(height: 18),
-              OpenMindSectionCard(
-                padding: const EdgeInsets.all(18),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        const OpenMindFeatureIcon(Icons.auto_awesome_rounded),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const OpenMindStatusPill(
-                                label: 'Recommended',
-                                active: true,
-                              ),
-                              const SizedBox(height: 7),
-                              Text(
-                                model.name,
-                                style: Theme.of(context).textTheme.titleLarge,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Text(model.description),
-                    const SizedBox(height: 16),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        OpenMindStatusPill(
-                          label: '${profile.ramGb} GB RAM',
-                          icon: Icons.memory_rounded,
-                        ),
-                        OpenMindStatusPill(
-                          label:
-                              '${profile.freeDiskGb.toStringAsFixed(1)} GB free',
-                          icon: Icons.storage_rounded,
-                        ),
-                        OpenMindStatusPill(
-                          label:
-                              '~${model.sizeGb.toStringAsFixed(1)} GB download',
-                          icon: Icons.download_rounded,
-                        ),
-                      ],
-                    ),
-                    if (progress != null) ...[
-                      const SizedBox(height: 18),
-                      LinearProgressIndicator(
-                        value: progress.progress > 0 ? progress.progress : null,
-                        minHeight: 6,
-                        borderRadius: BorderRadius.circular(99),
-                      ),
-                      const SizedBox(height: 7),
-                      Text(progress.stage),
-                    ],
-                  ],
+              const SizedBox(height: 10),
+              Text(
+                '${models.length} compatible ${models.length == 1 ? 'model' : 'models'} found for ${profile.ramGb} GB RAM and ${profile.freeDiskGb.toStringAsFixed(1)} GB free. Choose one to install.',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
               ),
               if (_error != null) ...[
@@ -669,33 +622,122 @@ class _RecommendationPageState extends State<_RecommendationPage> {
                   ),
                 ),
               ],
-              const Spacer(),
-              SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  onPressed: _installing ? null : () => _install(profile),
-                  icon: Icon(
-                    _installing
-                        ? Icons.downloading_rounded
-                        : Icons.download_rounded,
-                  ),
-                  label: Text(
-                    _installing
-                        ? 'Installing local model…'
-                        : 'Install and open chat',
-                  ),
+              const SizedBox(height: 14),
+              Expanded(
+                child: ListView.separated(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  itemCount: models.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 12),
+                  itemBuilder: (context, index) {
+                    final model = models[index];
+                    final progress = _progress[model.id];
+                    final installing = _installingModelId == model.id;
+                    final blocked =
+                        _installingModelId != null && !installing;
+                    return OpenMindSectionCard(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              OpenMindFeatureIcon(_modelIcon(model)),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const OpenMindStatusPill(
+                                      label: 'Recommended',
+                                      icon: Icons.auto_awesome_rounded,
+                                      active: true,
+                                    ),
+                                    const SizedBox(height: 7),
+                                    Text(
+                                      model.name,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .titleLarge,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+                          Text(model.description),
+                          const SizedBox(height: 12),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              OpenMindStatusPill(
+                                label: model.kind,
+                                icon: _modelIcon(model),
+                              ),
+                              OpenMindStatusPill(
+                                label: '${model.minRamGb}+ GB RAM',
+                                icon: Icons.memory_rounded,
+                              ),
+                              OpenMindStatusPill(
+                                label:
+                                    '~${model.sizeGb.toStringAsFixed(1)} GB download',
+                                icon: Icons.download_rounded,
+                              ),
+                              if (model.supportsVision)
+                                const OpenMindStatusPill(
+                                  label: 'Vision',
+                                  icon: Icons.image_outlined,
+                                ),
+                            ],
+                          ),
+                          if (progress != null) ...[
+                            const SizedBox(height: 14),
+                            LinearProgressIndicator(
+                              value: progress.progress > 0
+                                  ? progress.progress
+                                  : null,
+                              minHeight: 6,
+                              borderRadius: BorderRadius.circular(99),
+                            ),
+                            const SizedBox(height: 7),
+                            Text(
+                              progress.stage,
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ],
+                          const SizedBox(height: 14),
+                          SizedBox(
+                            width: double.infinity,
+                            child: installing
+                                ? OutlinedButton.icon(
+                                    onPressed: () =>
+                                        widget.storage.cancelInstall(model.id),
+                                    icon: const Icon(
+                                      Icons.stop_circle_outlined,
+                                    ),
+                                    label: const Text('Cancel download'),
+                                  )
+                                : FilledButton.tonalIcon(
+                                    onPressed: blocked
+                                        ? null
+                                        : () => _install(model),
+                                    icon: const Icon(Icons.download_rounded),
+                                    label: const Text(
+                                      'Install and open chat',
+                                    ),
+                                  ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
               ),
-              if (_installing)
-                Center(
-                  child: TextButton(
-                    onPressed: () => widget.storage.cancelInstall(model.id),
-                    child: const Text('Cancel download'),
-                  ),
-                ),
-              const SizedBox(height: 7),
+              const SizedBox(height: 4),
               Text(
-                'The model is stored in app-private storage and verified before use.',
+                'Models are stored in app-private storage and verified before use.',
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodySmall,
               ),
