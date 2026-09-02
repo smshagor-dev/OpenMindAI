@@ -67,7 +67,11 @@ fn build_native_llama_bridge() {
     }
 
     if let Ok(extra) = env::var("OPENMINDAI_LLAMA_EXTRA_LIBS") {
-        for lib in extra.split([';', ',']).map(str::trim).filter(|value| !value.is_empty()) {
+        for lib in extra
+            .split([';', ','])
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
             println!("cargo:rustc-link-lib={lib}");
         }
     }
