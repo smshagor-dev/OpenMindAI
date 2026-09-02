@@ -66,9 +66,16 @@ Windows PowerShell:
 
 ```powershell
 $env:LLAMA_CPP_DIR = "C:\src\llama.cpp"
-$env:LLAMA_CPP_LIB_DIR = "C:\src\llama.cpp\build\bin\Release"
+$env:LLAMA_CPP_LIB_DIR = "C:\src\llama.cpp\build\src\Release"
+$env:PATH = "C:\src\llama.cpp\build\bin\Release;$env:PATH"
 cargo build --manifest-path src-tauri\Cargo.toml --features native-cxx-llama
 ```
+
+On Windows, `LLAMA_CPP_LIB_DIR` must contain the `llama.lib` import library.
+The DLL directory belongs on `PATH` for execution and is staged into the
+installer separately. The pinned Visual Studio build places these in
+`build/src/Release` and `build/bin/Release`, respectively. Native builds validate
+the import library before compiling the wrapper to avoid a late `LNK1181` failure.
 
 The default linker mode is dynamic. Static builds may require explicit ggml libraries through:
 
