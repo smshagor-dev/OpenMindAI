@@ -1,5 +1,11 @@
 #[cxx::bridge(namespace = "openmind")]
 mod ffi {
+    #[derive(Debug, Clone)]
+    struct ChatMessage {
+        role: String,
+        content: String,
+    }
+
     #[derive(Debug, Clone, Copy)]
     struct GenerationConfig {
         temperature: f32,
@@ -31,11 +37,39 @@ mod ffi {
             sink: &mut TokenSink,
         ) -> Result<()>;
 
+        fn generate_messages(
+            self: Pin<&mut InferenceEngine>,
+            messages: &[ChatMessage],
+            config: &GenerationConfig,
+            sink: &mut TokenSink,
+        ) -> Result<()>;
+
         fn clear_kv_cache(self: Pin<&mut InferenceEngine>);
     }
 }
 
-pub use ffi::GenerationConfig;
+pub use ffi::{ChatMessage, GenerationConfig};
+
+impl ChatMessage {
+    pub fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+        }
+    }
+
+    pub fn system(content: impl Into<String>) -> Self {
+        Self::new("system", content)
+    }
+
+    pub fn user(content: impl Into<String>) -> Self {
+        Self::new("user", content)
+    }
+
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self::new("assistant", content)
+    }
+}
 
 impl Default for GenerationConfig {
     fn default() -> Self {
@@ -134,10 +168,36 @@ impl NativeInferenceEngine {
         config: GenerationConfig,
         callback: Box<dyn FnMut(&str) -> bool + Send>,
     ) -> Result<(), cxx::Exception> {
+        let mut messages = Vec::with_capacity(if system_prompt.is_empty() { 1 } else { 2 });
+        if !system_prompt.is_empty() {
+            messages.push(ChatMessage::system(system_prompt));
+        }
+        messages.push(ChatMessage::user(prompt));
+        self.generate_messages_boxed(&messages, config, callback)
+    }
+
+    pub fn generate_messages<F>(
+        &mut self,
+        messages: &[ChatMessage],
+        config: GenerationConfig,
+        callback: F,
+    ) -> Result<(), cxx::Exception>
+    where
+        F: FnMut(&str) -> bool + Send + 'static,
+    {
+        self.generate_messages_boxed(messages, config, Box::new(callback))
+    }
+
+    pub fn generate_messages_boxed(
+        &mut self,
+        messages: &[ChatMessage],
+        config: GenerationConfig,
+        callback: Box<dyn FnMut(&str) -> bool + Send>,
+    ) -> Result<(), cxx::Exception> {
         let mut sink = TokenSink::from_boxed(callback);
         self.inner
             .pin_mut()
-            .generate(prompt, system_prompt, &config, &mut sink)
+            .generate_messages(messages, &config, &mut sink)
     }
 
     pub fn clear_kv_cache(&mut self) {
@@ -159,6 +219,18 @@ mod tests {
 
         assert!(on_token(&mut sink, "one"));
         assert!(!on_token(&mut sink, "stop"));
+    }
+
+    #[test]
+    fn chat_message_helpers_preserve_roles() {
+        let messages = [
+            ChatMessage::system("rules"),
+            ChatMessage::user("hello"),
+            ChatMessage::assistant("hi"),
+        ];
+        assert_eq!(messages[0].role, "system");
+        assert_eq!(messages[1].role, "user");
+        assert_eq!(messages[2].role, "assistant");
     }
 
     #[test]
