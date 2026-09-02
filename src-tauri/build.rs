@@ -20,9 +20,7 @@ fn main() {
     println!("cargo:rerun-if-changed=native/inference.cpp");
     println!("cargo:rerun-if-changed=native/inference.h");
     println!("cargo:rerun-if-changed=src/native_bridge.rs");
-    println!(
-        "cargo:rustc-env=OPENMINDAI_NATIVE_LLAMA_COMMIT={PINNED_LLAMA_CPP_COMMIT}"
-    );
+    println!("cargo:rustc-env=OPENMINDAI_NATIVE_LLAMA_COMMIT={PINNED_LLAMA_CPP_COMMIT}");
     println!(
         "cargo:rustc-env=OPENMINDAI_NATIVE_ABI_TAG=llama-cxx-{}",
         &PINNED_LLAMA_CPP_COMMIT[..12]
