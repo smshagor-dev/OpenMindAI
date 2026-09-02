@@ -7,9 +7,13 @@ on:
       - feature/native-*
     paths:
       - "src-tauri/native/**"
+      - "src-tauri/src/inference.rs"
+      - "src-tauri/src/inference_legacy.rs"
       - "src-tauri/src/native_bridge.rs"
       - "src-tauri/src/native_inference.rs"
+      - "src-tauri/src/native_stream.rs"
       - "src-tauri/src/native_supervisor.rs"
+      - "src-tauri/src/native_chat_router.rs"
       - "src-tauri/Cargo.toml"
       - "src-tauri/Cargo.lock"
       - "src-tauri/build.rs"
@@ -17,9 +21,13 @@ on:
   pull_request:
     paths:
       - "src-tauri/native/**"
+      - "src-tauri/src/inference.rs"
+      - "src-tauri/src/inference_legacy.rs"
       - "src-tauri/src/native_bridge.rs"
       - "src-tauri/src/native_inference.rs"
+      - "src-tauri/src/native_stream.rs"
       - "src-tauri/src/native_supervisor.rs"
+      - "src-tauri/src/native_chat_router.rs"
       - "src-tauri/Cargo.toml"
       - "src-tauri/Cargo.lock"
       - "src-tauri/build.rs"
@@ -49,6 +57,11 @@ jobs:
           ref: ${{ env.LLAMA_CPP_COMMIT }}
           path: vendor/llama.cpp
           fetch-depth: 1
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -142,3 +155,17 @@ jobs:
           LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
           LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
         run: cargo clippy --manifest-path native-smoke/Cargo.toml --lib -- -D warnings
+
+      - name: Native streaming router integration check
+        env:
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml --features native-cxx-llama --lib
+
+      - name: Native streaming router clippy
+        env:
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --features native-cxx-llama --lib -- -D warnings
