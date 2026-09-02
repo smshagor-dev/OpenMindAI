@@ -1,0 +1,64 @@
+name: Go inference API
+
+on:
+  push:
+    branches:
+      - main
+      - feature/go-inference-api
+    paths:
+      - "services/inference-api/**"
+      - ".github/workflows/go-inference-api-ci.yml"
+  pull_request:
+    paths:
+      - "services/inference-api/**"
+      - ".github/workflows/go-inference-api-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: go-inference-api-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Go API (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: services/inference-api
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: services/inference-api/go.mod
+          cache: false
+
+      - name: Format check
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [[ -n "$unformatted" ]]; then
+            echo "The following Go files are not gofmt clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Race tests
+        run: go test -race ./...
+
+      - name: Build API binary
+        run: go build ./cmd/openmind-api
