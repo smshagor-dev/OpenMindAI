@@ -8,7 +8,6 @@ mod ffi {
         n_ctx: u32,
         n_batch: u32,
         n_threads: i32,
-        n_gpu_layers: i32,
     }
 
     extern "Rust" {
@@ -38,6 +37,50 @@ mod ffi {
 
 pub use ffi::GenerationConfig;
 
+impl Default for GenerationConfig {
+    fn default() -> Self {
+        Self {
+            temperature: 0.7,
+            top_p: 0.9,
+            max_tokens: 512,
+            n_ctx: 8_192,
+            n_batch: 512,
+            n_threads: 1,
+        }
+    }
+}
+
+impl GenerationConfig {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if !self.temperature.is_finite() || self.temperature < 0.0 {
+            return Err("temperature must be finite and >= 0");
+        }
+        if !self.top_p.is_finite() || self.top_p <= 0.0 || self.top_p > 1.0 {
+            return Err("top_p must be finite and in (0, 1]");
+        }
+        if self.max_tokens == 0 {
+            return Err("max_tokens must be greater than 0");
+        }
+        if self.n_ctx != 0 && self.n_ctx < 512 {
+            return Err("n_ctx must be 0 (automatic) or at least 512");
+        }
+        if self.n_threads <= 0 {
+            return Err("n_threads must be greater than 0");
+        }
+        Ok(())
+    }
+
+    pub fn normalized(mut self) -> Self {
+        if self.n_ctx == 0 {
+            self.n_ctx = 8_192;
+        }
+        if self.n_batch == 0 {
+            self.n_batch = 512;
+        }
+        self
+    }
+}
+
 pub struct TokenSink {
     callback: Box<dyn FnMut(&str) -> bool + Send>,
 }
@@ -50,6 +93,10 @@ impl TokenSink {
         Self {
             callback: Box::new(callback),
         }
+    }
+
+    pub fn from_boxed(callback: Box<dyn FnMut(&str) -> bool + Send>) -> Self {
+        Self { callback }
     }
 }
 
@@ -77,7 +124,17 @@ impl NativeInferenceEngine {
     where
         F: FnMut(&str) -> bool + Send + 'static,
     {
-        let mut sink = TokenSink::new(callback);
+        self.generate_boxed(prompt, system_prompt, config, Box::new(callback))
+    }
+
+    pub fn generate_boxed(
+        &mut self,
+        prompt: &str,
+        system_prompt: &str,
+        config: GenerationConfig,
+        callback: Box<dyn FnMut(&str) -> bool + Send>,
+    ) -> Result<(), cxx::Exception> {
+        let mut sink = TokenSink::from_boxed(callback);
         self.inner
             .pin_mut()
             .generate(prompt, system_prompt, &config, &mut sink)
@@ -105,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn generation_config_is_plain_data() {
+    fn generation_config_validates_boundary_values() {
         let config = GenerationConfig {
             temperature: 0.7,
             top_p: 0.9,
@@ -113,9 +170,25 @@ mod tests {
             n_ctx: 8_192,
             n_batch: 512,
             n_threads: 8,
-            n_gpu_layers: -1,
         };
-        assert_eq!(config.max_tokens, 256);
+        assert_eq!(config.validate(), Ok(()));
+
+        let invalid = GenerationConfig {
+            top_p: 0.0,
+            ..config
+        };
+        assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn generation_config_normalizes_automatic_sizes() {
+        let config = GenerationConfig {
+            n_ctx: 0,
+            n_batch: 0,
+            ..GenerationConfig::default()
+        }
+        .normalized();
         assert_eq!(config.n_ctx, 8_192);
+        assert_eq!(config.n_batch, 512);
     }
 }
