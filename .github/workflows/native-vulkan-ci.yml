@@ -1,0 +1,184 @@
+name: Native Vulkan runtime
+
+on:
+  push:
+    branches:
+      - feature/native-vulkan-runtime-package
+  pull_request:
+    paths:
+      - ".github/workflows/native-vulkan-ci.yml"
+      - "scripts/prepare-native-runtime.ps1"
+      - "src-tauri/native/**"
+      - "src-tauri/src/native_bridge.rs"
+      - "src-tauri/src/native_inference.rs"
+      - "src-tauri/src/native_runtime.rs"
+      - "src-tauri/src/native_chat_router.rs"
+      - "src-tauri/src/native_stream.rs"
+      - "src-tauri/src/native_supervisor.rs"
+      - "src-tauri/build.rs"
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-vulkan-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LLAMA_CPP_COMMIT: 7798007a29a90e3053e799394da48cf53a2f8e0f
+  VULKAN_SDK_VERSION: 1.4.357.0
+  VULKAN_SDK_SHA256: 81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d
+
+jobs:
+  windows-vulkan-package:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout OpenMindAI
+        uses: actions/checkout@v7
+
+      - name: Checkout pinned llama.cpp
+        uses: actions/checkout@v7
+        with:
+          repository: ggml-org/llama.cpp
+          ref: ${{ env.LLAMA_CPP_COMMIT }}
+          path: vendor/llama.cpp
+          fetch-depth: 1
+
+      - name: Cache pinned Vulkan SDK
+        id: vulkan-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/OpenMindAI-VulkanSDK
+          key: vulkan-sdk-windows-x64-${{ env.VULKAN_SDK_VERSION }}
+
+      - name: Install pinned Vulkan SDK copy
+        if: steps.vulkan-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sdkRoot = Join-Path $env:RUNNER_TEMP 'OpenMindAI-VulkanSDK'
+          $installer = Join-Path $env:RUNNER_TEMP "vulkan-sdk-$env:VULKAN_SDK_VERSION.exe"
+          $uri = "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/vulkan_sdk.exe"
+          Invoke-WebRequest -UseBasicParsing -Uri $uri -OutFile $installer
+          $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:VULKAN_SDK_SHA256) {
+            throw "Vulkan SDK checksum mismatch: $hash"
+          }
+          & $installer --root $sdkRoot --accept-licenses --default-answer --confirm-command install copy_only=1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Vulkan SDK copy install failed with exit code $LASTEXITCODE"
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $sdkRoot 'Include\vulkan\vulkan.h'))) {
+            throw "Vulkan SDK headers were not installed under $sdkRoot"
+          }
+
+      - name: Export Vulkan SDK environment
+        shell: pwsh
+        run: |
+          $sdkRoot = Join-Path $env:RUNNER_TEMP 'OpenMindAI-VulkanSDK'
+          if (-not (Test-Path -LiteralPath (Join-Path $sdkRoot 'Include\vulkan\vulkan.h'))) {
+            throw "Cached Vulkan SDK is incomplete: $sdkRoot"
+          }
+          "VULKAN_SDK=$sdkRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          (Join-Path $sdkRoot 'Bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Cache pinned llama.cpp Vulkan build
+        id: llama-vulkan-cache
+        uses: actions/cache@v4
+        with:
+          path: vendor/llama.cpp/build-vulkan
+          key: llama-${{ runner.os }}-${{ env.LLAMA_CPP_COMMIT }}-vulkan-${{ env.VULKAN_SDK_VERSION }}-shared-v1
+
+      - name: Build pinned llama.cpp Vulkan shared runtime
+        if: steps.llama-vulkan-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          cmake -S vendor/llama.cpp -B vendor/llama.cpp/build-vulkan `
+            -DGGML_VULKAN=ON `
+            -DGGML_CUDA=OFF `
+            -DGGML_NATIVE=OFF `
+            -DBUILD_SHARED_LIBS=ON `
+            -DLLAMA_BUILD_TESTS=OFF `
+            -DLLAMA_BUILD_EXAMPLES=OFF `
+            -DLLAMA_BUILD_TOOLS=ON
+          cmake --build vendor/llama.cpp/build-vulkan --config Release --target llama-cli -j 2
+
+      - name: Stage ABI-locked Vulkan runtime
+        id: llama-lib
+        shell: pwsh
+        run: |
+          $llamaDll = Get-ChildItem -LiteralPath 'vendor/llama.cpp/build-vulkan' -Filter 'llama.dll' -File -Recurse |
+            Sort-Object FullName |
+            Select-Object -First 1
+          if ($null -eq $llamaDll) {
+            throw 'Unable to locate llama.dll in Vulkan build'
+          }
+          $libDir = $llamaDll.Directory.FullName
+          & ./scripts/prepare-native-runtime.ps1 `
+            -LlamaBuildDir 'vendor/llama.cpp/build-vulkan' `
+            -OutputDir 'native-vulkan-artifact' `
+            -Commit $env:LLAMA_CPP_COMMIT `
+            -Backend vulkan
+          $manifest = Get-Content -LiteralPath 'native-vulkan-artifact/native-runtime-manifest.json' -Raw | ConvertFrom-Json
+          if ($manifest.backend -ne 'vulkan') {
+            throw "Expected Vulkan manifest, got $($manifest.backend)"
+          }
+          if (-not (Test-Path -LiteralPath 'native-vulkan-artifact/ggml-vulkan.dll')) {
+            throw 'Staged Vulkan runtime is missing ggml-vulkan.dll'
+          }
+          "dir=$libDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          $libDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Probe llama Vulkan runtime without requiring a GPU
+        shell: pwsh
+        run: |
+          $cli = Get-ChildItem -LiteralPath 'vendor/llama.cpp/build-vulkan' -Filter 'llama-cli.exe' -File -Recurse |
+            Sort-Object FullName |
+            Select-Object -First 1
+          if ($null -eq $cli) {
+            throw 'Unable to locate llama-cli.exe in Vulkan build'
+          }
+          & $cli.FullName --list-devices
+          if ($LASTEXITCODE -ne 0) {
+            throw "Vulkan-enabled llama-cli failed to initialize with exit code $LASTEXITCODE"
+          }
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Compile OpenMindAI against Vulkan runtime
+        shell: pwsh
+        env:
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          LLAMA_CPP_COMMIT: ${{ env.LLAMA_CPP_COMMIT }}
+          OPENMINDAI_NATIVE_STRICT_ABI: "1"
+          OPENMINDAI_PORTABLE_BUILD: "1"
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml --features native-cxx-llama --lib
+
+      - name: Clippy OpenMindAI Vulkan native path
+        shell: pwsh
+        env:
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          LLAMA_CPP_COMMIT: ${{ env.LLAMA_CPP_COMMIT }}
+          OPENMINDAI_NATIVE_STRICT_ABI: "1"
+          OPENMINDAI_PORTABLE_BUILD: "1"
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --features native-cxx-llama --lib -- -D warnings
+
+      - name: Upload Vulkan runtime probe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openmindai-native-vulkan-${{ env.LLAMA_CPP_COMMIT }}
+          path: native-vulkan-artifact
+          if-no-files-found: error
+          retention-days: 3
