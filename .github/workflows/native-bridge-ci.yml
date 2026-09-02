@@ -11,12 +11,16 @@ on:
       - "src-tauri/src/inference_legacy.rs"
       - "src-tauri/src/native_bridge.rs"
       - "src-tauri/src/native_inference.rs"
+      - "src-tauri/src/native_runtime.rs"
       - "src-tauri/src/native_stream.rs"
       - "src-tauri/src/native_supervisor.rs"
       - "src-tauri/src/native_chat_router.rs"
       - "src-tauri/Cargo.toml"
       - "src-tauri/Cargo.lock"
       - "src-tauri/build.rs"
+      - "src-tauri/tauri.native-windows.conf.json"
+      - "src-tauri/windows/native-runtime-hooks.nsh"
+      - "scripts/prepare-native-runtime.ps1"
       - ".github/workflows/native-bridge-ci.yml"
   pull_request:
     paths:
@@ -25,12 +29,16 @@ on:
       - "src-tauri/src/inference_legacy.rs"
       - "src-tauri/src/native_bridge.rs"
       - "src-tauri/src/native_inference.rs"
+      - "src-tauri/src/native_runtime.rs"
       - "src-tauri/src/native_stream.rs"
       - "src-tauri/src/native_supervisor.rs"
       - "src-tauri/src/native_chat_router.rs"
       - "src-tauri/Cargo.toml"
       - "src-tauri/Cargo.lock"
       - "src-tauri/build.rs"
+      - "src-tauri/tauri.native-windows.conf.json"
+      - "src-tauri/windows/native-runtime-hooks.nsh"
+      - "scripts/prepare-native-runtime.ps1"
       - ".github/workflows/native-bridge-ci.yml"
 
 permissions:
@@ -58,6 +66,13 @@ jobs:
           path: vendor/llama.cpp
           fetch-depth: 1
 
+      - name: Cache pinned llama.cpp CPU build
+        id: llama-cache
+        uses: actions/cache@v4
+        with:
+          path: vendor/llama.cpp/build
+          key: llama-${{ runner.os }}-${{ env.LLAMA_CPP_COMMIT }}-cpu-shared-v2
+
       - name: Install Linux system dependencies
         run: |
           sudo apt-get update
@@ -69,6 +84,7 @@ jobs:
           components: clippy
 
       - name: Build llama.cpp shared CPU library
+        if: steps.llama-cache.outputs.cache-hit != 'true'
         run: |
           cmake -S vendor/llama.cpp -B vendor/llama.cpp/build \
             -DGGML_CUDA=OFF \
@@ -86,7 +102,7 @@ jobs:
           library="$(find vendor/llama.cpp/build \( -type f -o -type l \) \( -name 'libllama.so' -o -name 'libllama.dylib' -o -name 'llama.dll' \) -print -quit)"
           if [[ -z "$library" ]]; then
             echo "Unable to locate built llama shared library" >&2
-            find vendor/llama.cpp/build -maxdepth 3 \( -name 'libllama*' -o -name 'llama.dll' \) -print >&2 || true
+            find vendor/llama.cpp/build -maxdepth 4 \( -name 'libllama*' -o -name 'llama.dll' \) -print >&2 || true
             exit 1
           fi
           library="$(realpath "$library")"
@@ -160,6 +176,9 @@ jobs:
         env:
           LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
           LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          LLAMA_CPP_COMMIT: ${{ env.LLAMA_CPP_COMMIT }}
+          OPENMINDAI_NATIVE_STRICT_ABI: "1"
+          OPENMINDAI_PORTABLE_BUILD: "1"
           LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
         run: cargo check --locked --manifest-path src-tauri/Cargo.toml --features native-cxx-llama --lib
 
@@ -167,5 +186,8 @@ jobs:
         env:
           LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
           LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          LLAMA_CPP_COMMIT: ${{ env.LLAMA_CPP_COMMIT }}
+          OPENMINDAI_NATIVE_STRICT_ABI: "1"
+          OPENMINDAI_PORTABLE_BUILD: "1"
           LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
         run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --features native-cxx-llama --lib -- -D warnings
