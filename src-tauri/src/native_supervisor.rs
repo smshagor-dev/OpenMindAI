@@ -295,7 +295,7 @@ fn run_generation(
     let backend = loaded
         .as_mut()
         .expect("native model must be loaded before generation");
-    let generation = backend.generate(
+    let generation = backend.backend.generate(
         request,
         Box::new(move |token| {
             if worker_shutdown.load(Ordering::Acquire) || worker_cancellation.is_cancelled() {
