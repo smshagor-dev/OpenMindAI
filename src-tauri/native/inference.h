@@ -7,6 +7,7 @@
 
 namespace openmind {
 
+struct ChatMessage;
 struct GenerationConfig;
 struct TokenSink;
 
@@ -23,6 +24,11 @@ public:
     void generate(
         rust::Str prompt,
         rust::Str system_prompt,
+        const GenerationConfig& config,
+        TokenSink& sink);
+
+    void generate_messages(
+        rust::Slice<const ChatMessage> messages,
         const GenerationConfig& config,
         TokenSink& sink);
 
