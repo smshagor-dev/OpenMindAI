@@ -1,34 +1,40 @@
 # Native llama.cpp inference bridge
 
-This branch introduces an **optional** native inference path. The existing Tauri/Rust runtime remains the default until the new path is benchmarked and deliberately wired into chat routing.
+OpenMindAI has an **optional**, feature-gated native llama.cpp inference core. The existing production chat/model router remains the default until routing, streaming, packaging, and runtime benchmarks are completed.
 
-## Why this boundary
+## Architecture boundary
 
-`cxx` is used instead of raw `extern "C"` pointers. Rust owns the streaming callback (`TokenSink`), C++ receives it as an opaque CXX type, and strings cross the boundary as borrowed `rust::Str` / `&str`. The C++ engine is owned by Rust through `cxx::UniquePtr`, so model/context destruction follows RAII and no manual raw-pointer lifetime is exposed to application code.
+`cxx` owns the Rust↔C++ boundary. Rust owns streaming callbacks and the C++ engine is held through `cxx::UniquePtr`, so model/context destruction follows RAII without exposing raw C pointers to application code.
 
-The bridge currently passes:
+The native core now provides:
 
-- user prompt
-- system prompt
-- `temperature`
-- `top_p`
-- `max_tokens`
-- context/batch/thread sizing
-- GPU layer count at model load
+- GGUF model loading with GPU layer selection at **engine load**
+- model-native chat-template formatting through llama.cpp
+- user and system prompts
+- temperature/top-p/max-token configuration
+- dynamic context, batch, and thread sizing
+- reusable context allocation with KV reset between requests
+- synchronous token streaming with callback cancellation
+- serialized access to the mutable llama context
+- a reusable Rust `InferenceBackend` abstraction
 
-Tokens are returned synchronously, token-by-token, through `TokenSink::on_token`. Returning `false` from the Rust callback cancels generation without exposing a C function pointer or unsafe Rust callback trampoline.
+The feature is still opt-in:
+
+```text
+native-cxx-llama
+```
 
 ## Current layout
 
 ```text
 OpenMindAI/
 ├─ src-tauri/
-│  ├─ Cargo.toml
-│  ├─ build.rs
 │  ├─ native/
 │  │  ├─ inference.h
 │  │  └─ inference.cpp
 │  └─ src/
+│     ├─ inference/
+│     │  └─ mod.rs
 │     ├─ native_bridge.rs
 │     └─ ...existing Tauri/Rust core
 ├─ docs/
@@ -36,35 +42,17 @@ OpenMindAI/
 └─ ...existing React/Tauri UI
 ```
 
-Recommended workspace evolution when the Node/Next.js service is added:
-
-```text
-OpenMindAI/
-├─ crates/
-│  ├─ openmind-core/            # Rust orchestration, model/session API
-│  └─ openmind-node/            # napi-rs cdylib; depends on openmind-core
-├─ native/
-│  └─ llama/
-│     ├─ inference.h
-│     └─ inference.cpp
-├─ apps/
-│  ├─ desktop/                  # Tauri + React
-│  └─ web/
-│     └─ server/                # Node/TypeScript WebSocket backend
-└─ vendor/llama.cpp/            # pinned submodule or CI checkout
-```
-
-Do not make Tauri itself the Node ABI. Extract the reusable orchestration into `openmind-core`, then let both the Tauri application and `openmind-node` depend on that crate.
+The next application phase should route both the existing backend and this native backend behind one model router. Do not duplicate model ownership in React, Tauri commands, and C++.
 
 ## Build prerequisites
 
-The native bridge is feature-gated and does not affect normal builds:
+Normal builds do not require llama.cpp:
 
 ```bash
 cargo build --manifest-path src-tauri/Cargo.toml
 ```
 
-To enable it, build llama.cpp separately, then provide its source/include root and library output directory:
+To enable native inference, build the pinned/compatible llama.cpp library and provide its include/source root and library directory:
 
 ```bash
 export LLAMA_CPP_DIR=/absolute/path/to/llama.cpp
@@ -74,7 +62,7 @@ cargo build \
   --features native-cxx-llama
 ```
 
-On Windows PowerShell:
+Windows PowerShell:
 
 ```powershell
 $env:LLAMA_CPP_DIR = "C:\src\llama.cpp"
@@ -82,31 +70,18 @@ $env:LLAMA_CPP_LIB_DIR = "C:\src\llama.cpp\build\bin\Release"
 cargo build --manifest-path src-tauri\Cargo.toml --features native-cxx-llama
 ```
 
-The default linker mode is dynamic (`llama.dll`, `libllama.so`, or `libllama.dylib`). Override with:
+The default linker mode is dynamic. Static builds may require explicit ggml libraries through:
 
 ```text
 OPENMINDAI_LLAMA_LINK_KIND=static
-```
-
-Static llama.cpp builds normally need additional ggml libraries. Supply them explicitly, for example:
-
-```text
 OPENMINDAI_LLAMA_EXTRA_LIBS=ggml;ggml-base;ggml-cpu
 ```
 
-For a static CUDA build this commonly also includes `ggml-cuda`, plus CUDA runtime libraries required by the llama.cpp build.
-
 ## CUDA and CPU SIMD
 
-The wrapper is compiled at `-O3` (or `/O2` on MSVC). Non-portable local builds also request the host CPU ISA (`-march=native`, `-mcpu=native`, or `/arch:AVX2`). Set:
+The wrapper compiler flags do not enable llama.cpp kernels. CUDA, Vulkan/other ggml backends, AVX2/AVX512, and other optimized kernels must be enabled when llama.cpp itself is built.
 
-```text
-OPENMINDAI_PORTABLE_BUILD=1
-```
-
-for release artifacts that must run on older CPUs.
-
-Important: AVX2/AVX512 and CUDA kernels live in **llama.cpp/ggml**, not in the tiny OpenMindAI wrapper. `build.rs` cannot retrofit CUDA into an already-built llama library. Build llama.cpp itself with the intended backend, for example:
+Example CUDA build:
 
 ```bash
 cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" \
@@ -118,13 +93,30 @@ cmake -S "$LLAMA_CPP_DIR" -B "$LLAMA_CPP_DIR/build" \
 cmake --build "$LLAMA_CPP_DIR/build" --config Release -j
 ```
 
-For CPU-only portable builds, turn CUDA off and choose the SIMD baseline in the llama.cpp build rather than relying on the wrapper compiler flags.
+`OPENMINDAI_LLAMA_CUDA=1` tells the Rust build that the linked llama backend is CUDA-enabled and allows CUDA SDK library search paths to be added when available.
 
-`OPENMINDAI_LLAMA_CUDA=1` tells the Rust build that the linked llama backend is CUDA-enabled and adds CUDA SDK library search paths when `CUDA_PATH`/`CUDA_HOME` is available. The actual backend selection remains llama.cpp's responsibility.
+For portable release builds use:
 
-## Dynamic KV cache policy
+```text
+OPENMINDAI_PORTABLE_BUILD=1
+```
 
-`InferenceEngine` loads the GGUF model once. The llama context/KV cache is created on demand for each required context size and reused across generations when capacity is suitable.
+and choose the CPU ISA baseline in the llama.cpp build.
+
+## Model-native chat templates
+
+The native engine reads the GGUF model's default chat template with `llama_model_chat_template` and formats system/user messages using `llama_chat_apply_template`.
+
+This is intentionally different from hard-coding one global `System/User/Assistant` or ChatML layout. Qwen, Llama, Gemma, Mistral, and other models must receive the control tokens expected by their own template.
+
+If a GGUF model has no chat template:
+
+- a raw user prompt can still be used;
+- a system prompt is rejected instead of being silently injected using an invented generic format.
+
+If the template exists but is unsupported by the pinned llama.cpp build, generation returns an explicit error.
+
+## Dynamic context policy
 
 The target context is based on:
 
@@ -132,13 +124,15 @@ The target context is based on:
 max(configured_n_ctx, prompt_tokens + max_tokens + safety_margin)
 ```
 
-and rounded to a small allocation block. The context grows when needed and shrinks when it is more than twice the current requirement. Before a new generation, `llama_memory_clear` resets sequence memory while keeping the allocated context reusable.
+and rounded to a small allocation block. Context allocation is reused while capacity and execution parameters remain suitable. The KV memory is cleared before each new request.
 
-This avoids reserving a huge long-context KV cache for every short request while also avoiding a context rebuild on every message.
+A mutex serializes generation and KV-clear operations on one engine because one mutable llama context must never be used concurrently.
 
-For very large project files, the application layer should still use retrieval/chunking and a token budget. Dynamic KV allocation is not a substitute for bounded context construction.
+Large project files should still use retrieval/chunking and bounded token budgets; dynamic KV sizing is not a substitute for context construction.
 
-## Rust usage
+## Rust API
+
+The low-level bridge remains available:
 
 ```rust
 #[cfg(feature = "native-cxx-llama")]
@@ -152,7 +146,6 @@ let config = GenerationConfig {
     n_ctx: 8_192,
     n_batch: 512,
     n_threads: 8,
-    n_gpu_layers: -1,
 };
 
 engine.generate(
@@ -160,20 +153,38 @@ engine.generate(
     "You are a concise coding assistant.",
     config,
     |token| {
-        // Forward immediately to Tauri event, channel, or socket producer.
         print!("{token}");
-        true // false cancels generation
+        true
     },
 )?;
 ```
 
-For asynchronous application code, run the blocking llama generation on a dedicated worker thread / `spawn_blocking`; never block the Tokio async executor with token generation.
+GPU offload is intentionally configured only when the engine is loaded. It is not duplicated inside `GenerationConfig`.
+
+Application code should prefer the reusable backend boundary:
+
+```rust
+use open_mind_ai_lib::inference::{
+    InferenceBackend, InferenceRequest, NativeBackend,
+};
+
+let mut backend = NativeBackend::load(std::path::Path::new("models/qwen.gguf"), -1)?;
+let request = InferenceRequest::new(
+    "Explain this project",
+    "You are a concise coding assistant.",
+);
+
+backend.generate(request, Box::new(|token| {
+    print!("{token}");
+    true
+}))?;
+```
+
+Generation is blocking. Async Tauri/Node orchestration must run it on a dedicated worker or blocking pool rather than blocking an async executor.
 
 ## Node.js / TypeScript integration
 
-The cleanest boundary is **napi-rs**, not a second C ABI layer and not Node calling the C++ wrapper directly.
-
-Recommended flow:
+The recommended future boundary remains napi-rs:
 
 ```text
 Next.js client
@@ -182,57 +193,37 @@ Next.js client
 Node.js TypeScript server
     │ napi-rs ThreadsafeFunction / AsyncTask
     ▼
-openmind-node (Rust cdylib)
-    │ normal Rust API
+openmind-node
+    │ Rust backend API
     ▼
-openmind-core
+openmind-core / InferenceBackend
     │ cxx
     ▼
-inference.cpp -> llama.cpp -> CUDA / CPU
+inference.cpp -> llama.cpp -> hardware backend
 ```
 
-`openmind-node` should expose a `generate()` method that accepts JS options and a JS token callback. Inside the Rust N-API crate:
+Do not invoke V8/Node APIs directly from the inference thread. Use a threadsafe N-API callback and keep socket/session state in TypeScript.
 
-1. Convert the JS callback to a `ThreadsafeFunction<String>` (or napi-rs equivalent current API).
-2. Start blocking inference on a worker thread.
-3. Pass a Rust `TokenSink` closure into `NativeInferenceEngine::generate`.
-4. For every token, enqueue the token on the N-API threadsafe callback.
-5. The TypeScript layer forwards that token immediately over the request's WebSocket/SSE channel.
-6. An `AbortController`/request ID should flip an atomic cancellation flag; the `TokenSink` returns `false` on the next token.
+## Validation
 
-Do not invoke V8/Node APIs from the llama inference thread directly. The threadsafe N-API callback is the required hop back to the Node event loop.
+The dedicated native workflow pins llama.cpp commit:
 
-A minimal TypeScript boundary should look like:
-
-```ts
-native.generate(
-  {
-    modelPath,
-    prompt,
-    systemPrompt,
-    temperature: 0.7,
-    topP: 0.9,
-    maxTokens: 512,
-  },
-  (token: string) => socket.send(JSON.stringify({ type: "token", token })),
-);
+```text
+7798007a29a90e3053e799394da48cf53a2f8e0f
 ```
 
-Keep WebSocket connection state in TypeScript. Keep model ownership, context sizing, cancellation, and inference state in Rust/C++.
+It builds a shared CPU llama library and then compiles, links, tests, and runs Clippy against an isolated smoke crate containing both the bridge and reusable Rust inference module.
 
-## System prompt formatting
+## Remaining production work
 
-The initial wrapper deliberately keeps prompt composition simple and model-independent. Before this path becomes OpenMindAI's default chat runtime, route prompt construction through llama.cpp's model chat-template API (or the existing OpenMindAI model metadata) so Qwen, Llama, Gemma, Mistral, and other GGUF chat templates receive their native control tokens.
+Before native inference becomes OpenMindAI's default chat path:
 
-Do not hard-code one ChatML format globally.
-
-## Production checklist before routing real chat traffic
-
-- Pin a tested llama.cpp commit instead of building arbitrary `master`.
-- Add a CI job with a small test GGUF and the `native-cxx-llama` feature.
-- Add CUDA and CPU-only smoke matrices.
-- Add cancellation, long-context, invalid-model, and OOM tests.
-- Add model-template-aware prompt formatting.
-- Add bounded concurrent-generation scheduling; one mutable context must not be used concurrently.
-- Decide shared-library packaging/rpath/DLL deployment for each OS.
-- Benchmark the native path against the current llama runtime before replacing existing routing.
+- wire `InferenceBackend` into the real model router;
+- stream native tokens through the existing Tauri/React chat protocol;
+- add request-scoped cancellation and lifecycle state;
+- add invalid-model, OOM, long-context, multilingual, and repeated-generation runtime tests;
+- add Windows/macOS native compile and packaging checks;
+- validate CUDA and other supported GPU backends plus CPU fallback;
+- solve DLL/rpath/dylib release packaging;
+- benchmark model load, first-token latency, tokens/sec, RAM, VRAM, and cancellation latency;
+- only then consider enabling native inference by default.
