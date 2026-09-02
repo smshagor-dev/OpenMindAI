@@ -56,6 +56,8 @@ mod connector_input_guard;
 mod connector_stabilization;
 mod github_workspace;
 mod google_workspace;
+#[cfg(feature = "native-cxx-llama")]
+pub mod inference;
 mod local_agent;
 mod local_workspace;
 mod multimodal;
