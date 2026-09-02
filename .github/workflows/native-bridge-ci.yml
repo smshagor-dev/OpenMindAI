@@ -1,0 +1,95 @@
+name: Native CXX bridge
+
+on:
+  push:
+    branches:
+      - feature/cxx-llama-native-bridge
+    paths:
+      - "src-tauri/native/**"
+      - "src-tauri/src/native_bridge.rs"
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
+      - "src-tauri/build.rs"
+      - ".github/workflows/native-bridge-ci.yml"
+  pull_request:
+    paths:
+      - "src-tauri/native/**"
+      - "src-tauri/src/native_bridge.rs"
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
+      - "src-tauri/build.rs"
+      - ".github/workflows/native-bridge-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-cxx-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LLAMA_CPP_COMMIT: 7798007a29a90e3053e799394da48cf53a2f8e0f
+
+jobs:
+  linux-cpu-compile:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout OpenMindAI
+        uses: actions/checkout@v7
+
+      - name: Checkout pinned llama.cpp
+        uses: actions/checkout@v7
+        with:
+          repository: ggml-org/llama.cpp
+          ref: ${{ env.LLAMA_CPP_COMMIT }}
+          path: vendor/llama.cpp
+          fetch-depth: 1
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Build llama.cpp shared CPU library
+        run: |
+          cmake -S vendor/llama.cpp -B vendor/llama.cpp/build -G Ninja \
+            -DGGML_CUDA=OFF \
+            -DGGML_NATIVE=OFF \
+            -DBUILD_SHARED_LIBS=ON \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_TOOLS=OFF
+          cmake --build vendor/llama.cpp/build --target llama -j 2
+
+      - name: Locate llama shared library
+        id: llama-lib
+        shell: bash
+        run: |
+          library="$(find vendor/llama.cpp/build -type f \( -name 'libllama.so' -o -name 'libllama.dylib' -o -name 'llama.dll' \) -print -quit)"
+          if [[ -z "$library" ]]; then
+            echo "Unable to locate built llama shared library" >&2
+            exit 1
+          fi
+          echo "dir=$(dirname "$library")" >> "$GITHUB_OUTPUT"
+          echo "Using llama library: $library"
+
+      - name: Native bridge compile check
+        env:
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          OPENMINDAI_PORTABLE_BUILD: "1"
+          OPENMINDAI_LLAMA_LINK_KIND: dylib
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml --features native-cxx-llama
+
+      - name: Native bridge clippy
+        env:
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          OPENMINDAI_PORTABLE_BUILD: "1"
+          OPENMINDAI_LLAMA_LINK_KIND: dylib
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --lib --features native-cxx-llama -- -D warnings
