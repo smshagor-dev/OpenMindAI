@@ -59,6 +59,8 @@ mod google_workspace;
 mod local_agent;
 mod local_workspace;
 mod multimodal;
+#[cfg(feature = "native-cxx-llama")]
+pub mod native_bridge;
 mod pdf_ocr;
 mod speech_runtime;
 mod vision_batch;

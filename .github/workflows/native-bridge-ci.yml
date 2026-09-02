@@ -1,0 +1,134 @@
+name: Native CXX bridge
+
+on:
+  push:
+    branches:
+      - feature/cxx-llama-native-bridge
+    paths:
+      - "src-tauri/native/**"
+      - "src-tauri/src/native_bridge.rs"
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
+      - "src-tauri/build.rs"
+      - ".github/workflows/native-bridge-ci.yml"
+  pull_request:
+    paths:
+      - "src-tauri/native/**"
+      - "src-tauri/src/native_bridge.rs"
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
+      - "src-tauri/build.rs"
+      - ".github/workflows/native-bridge-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-cxx-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LLAMA_CPP_COMMIT: 7798007a29a90e3053e799394da48cf53a2f8e0f
+
+jobs:
+  linux-cpu-compile:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout OpenMindAI
+        uses: actions/checkout@v7
+
+      - name: Checkout pinned llama.cpp
+        uses: actions/checkout@v7
+        with:
+          repository: ggml-org/llama.cpp
+          ref: ${{ env.LLAMA_CPP_COMMIT }}
+          path: vendor/llama.cpp
+          fetch-depth: 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Build llama.cpp shared CPU library
+        run: |
+          cmake -S vendor/llama.cpp -B vendor/llama.cpp/build \
+            -DGGML_CUDA=OFF \
+            -DGGML_NATIVE=OFF \
+            -DBUILD_SHARED_LIBS=ON \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_TOOLS=OFF
+          cmake --build vendor/llama.cpp/build --target llama -j 2
+
+      - name: Locate llama shared library
+        id: llama-lib
+        shell: bash
+        run: |
+          library="$(find vendor/llama.cpp/build \( -type f -o -type l \) \( -name 'libllama.so' -o -name 'libllama.dylib' -o -name 'llama.dll' \) -print -quit)"
+          if [[ -z "$library" ]]; then
+            echo "Unable to locate built llama shared library" >&2
+            find vendor/llama.cpp/build -maxdepth 3 \( -name 'libllama*' -o -name 'llama.dll' \) -print >&2 || true
+            exit 1
+          fi
+          library="$(realpath "$library")"
+          echo "dir=$(dirname "$library")" >> "$GITHUB_OUTPUT"
+          echo "Using llama library: $library"
+
+      - name: Prepare isolated bridge smoke crate
+        shell: bash
+        run: |
+          rm -rf native-smoke
+          mkdir -p native-smoke/src native-smoke/native
+          cp src-tauri/src/native_bridge.rs native-smoke/src/native_bridge.rs
+          cp src-tauri/native/inference.cpp native-smoke/native/inference.cpp
+          cp src-tauri/native/inference.h native-smoke/native/inference.h
+          cat > native-smoke/Cargo.toml <<'EOF'
+          [package]
+          name = "openmind-native-bridge-smoke"
+          version = "0.0.0"
+          edition = "2021"
+          build = "build.rs"
+
+          [dependencies]
+          cxx = "1.0"
+
+          [build-dependencies]
+          cxx-build = "1.0"
+          EOF
+          cat > native-smoke/src/lib.rs <<'EOF'
+          pub mod native_bridge;
+          EOF
+          cat > native-smoke/build.rs <<'EOF'
+          use std::{env, path::PathBuf};
+
+          fn main() {
+              let llama_dir = PathBuf::from(env::var_os("LLAMA_CPP_DIR").expect("LLAMA_CPP_DIR"));
+              let llama_lib_dir = PathBuf::from(env::var_os("LLAMA_CPP_LIB_DIR").expect("LLAMA_CPP_LIB_DIR"));
+              cxx_build::CFG.include_prefix = "openmind";
+              cxx_build::bridge("src/native_bridge.rs")
+                  .file("native/inference.cpp")
+                  .include(".")
+                  .include(llama_dir.join("include"))
+                  .include(llama_dir.join("ggml/include"))
+                  .std("c++17")
+                  .flag("-O3")
+                  .flag_if_supported("-fPIC")
+                  .compile("openmind_llama_bridge");
+              println!("cargo:rustc-link-search=native={}", llama_lib_dir.display());
+              println!("cargo:rustc-link-lib=dylib=llama");
+          }
+          EOF
+
+      - name: Native bridge compile and link check
+        env:
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
+        run: cargo test --manifest-path native-smoke/Cargo.toml --no-run
+
+      - name: Native bridge clippy
+        env:
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+        run: cargo clippy --manifest-path native-smoke/Cargo.toml --lib -- -D warnings
