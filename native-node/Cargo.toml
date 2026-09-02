@@ -1,0 +1,17 @@
+[package]
+name = "openmind-native-node"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "3", features = ["napi8"] }
+napi-derive = "3"
+openmind-native-core = { path = "../native-core" }
+
+[build-dependencies]
+napi-build = "2"
