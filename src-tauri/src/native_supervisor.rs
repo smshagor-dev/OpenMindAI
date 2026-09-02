@@ -8,6 +8,8 @@ use std::{
     thread::{self, JoinHandle},
 };
 
+use tokio_util::sync::CancellationToken;
+
 use crate::native_inference::{
     InferenceBackend, InferenceError, InferenceRequest, NativeBackend, TokenCallback,
 };
@@ -65,7 +67,7 @@ impl From<InferenceError> for NativeSupervisorError {
 struct GenerationCommand {
     model: NativeModelSpec,
     request: InferenceRequest,
-    cancellation: Arc<AtomicBool>,
+    cancellation: CancellationToken,
     on_token: TokenCallback,
     result: SyncSender<Result<(), NativeSupervisorError>>,
 }
@@ -122,13 +124,13 @@ impl NativeInferenceSupervisor {
         &self,
         model: NativeModelSpec,
         request: InferenceRequest,
-        cancellation: Arc<AtomicBool>,
+        cancellation: CancellationToken,
         on_token: TokenCallback,
     ) -> Result<(), NativeSupervisorError> {
         if self.shutdown.load(Ordering::Acquire) {
             return Err(NativeSupervisorError::Stopped);
         }
-        if cancellation.load(Ordering::Acquire) {
+        if cancellation.is_cancelled() {
             return Err(NativeSupervisorError::Cancelled);
         }
         request.validate()?;
@@ -188,19 +190,7 @@ fn worker_loop(
         };
         match command {
             WorkerCommand::Generate(command) => {
-                let model_id = command.model.id.clone();
-                let result = run_generation(&mut loaded, &state, &shutdown, command);
-                if let Err(error) = &result {
-                    if !matches!(error, NativeSupervisorError::Cancelled) {
-                        set_state(
-                            &state,
-                            NativeSupervisorState::Error {
-                                model_id: Some(model_id),
-                                message: error.to_string(),
-                            },
-                        );
-                    }
-                }
+                run_generation(&mut loaded, &state, &shutdown, command);
             }
             WorkerCommand::Clear => {
                 if let Some(model) = loaded.as_mut() {
@@ -216,8 +206,7 @@ fn worker_loop(
             WorkerCommand::Shutdown => break,
         }
     }
-    loaded = None;
-    let _ = loaded;
+    drop(loaded);
     set_state(&state, NativeSupervisorState::Stopped);
 }
 
@@ -226,7 +215,7 @@ fn run_generation(
     state: &Arc<Mutex<NativeSupervisorState>>,
     shutdown: &Arc<AtomicBool>,
     command: GenerationCommand,
-) -> Result<(), NativeSupervisorError> {
+) {
     let GenerationCommand {
         model,
         request,
@@ -268,16 +257,22 @@ fn run_generation(
                 );
             }
             Err(error) => {
-                let failure = NativeSupervisorError::Inference(error);
-                let _ = result.send(Err(clone_error(&failure)));
-                return Err(failure);
+                set_state(
+                    state,
+                    NativeSupervisorState::Error {
+                        model_id: Some(model.id),
+                        message: error.to_string(),
+                    },
+                );
+                let _ = result.send(Err(NativeSupervisorError::Inference(error)));
+                return;
             }
         }
     }
 
-    if cancellation.load(Ordering::Acquire) || shutdown.load(Ordering::Acquire) {
+    if cancellation.is_cancelled() || shutdown.load(Ordering::Acquire) {
         let _ = result.send(Err(NativeSupervisorError::Cancelled));
-        return Err(NativeSupervisorError::Cancelled);
+        return;
     }
 
     set_state(
@@ -287,57 +282,57 @@ fn run_generation(
         },
     );
     let worker_shutdown = Arc::clone(shutdown);
-    let worker_cancellation = Arc::clone(&cancellation);
+    let worker_cancellation = cancellation.clone();
     let backend = loaded
         .as_mut()
         .expect("native model must be loaded before generation");
     let generation = backend.generate(
         request,
         Box::new(move |token| {
-            if worker_shutdown.load(Ordering::Acquire)
-                || worker_cancellation.load(Ordering::Acquire)
-            {
+            if worker_shutdown.load(Ordering::Acquire) || worker_cancellation.is_cancelled() {
                 return false;
             }
             on_token(token)
         }),
     );
 
-    let outcome = if cancellation.load(Ordering::Acquire) || shutdown.load(Ordering::Acquire) {
-        Err(NativeSupervisorError::Cancelled)
-    } else {
-        generation.map_err(NativeSupervisorError::Inference)
-    };
-
-    match &outcome {
-        Ok(()) | Err(NativeSupervisorError::Cancelled) => set_state(
+    if cancellation.is_cancelled() || shutdown.load(Ordering::Acquire) {
+        set_state(
             state,
             NativeSupervisorState::Ready {
-                model_id: model.id.clone(),
+                model_id: model.id,
             },
-        ),
-        Err(_) => {}
+        );
+        let _ = result.send(Err(NativeSupervisorError::Cancelled));
+        return;
     }
-    let result_copy = outcome.as_ref().map(|_| ()).map_err(clone_error);
-    let _ = result.send(result_copy);
-    outcome
+
+    match generation {
+        Ok(()) => {
+            set_state(
+                state,
+                NativeSupervisorState::Ready {
+                    model_id: model.id,
+                },
+            );
+            let _ = result.send(Ok(()));
+        }
+        Err(error) => {
+            set_state(
+                state,
+                NativeSupervisorState::Error {
+                    model_id: Some(model.id),
+                    message: error.to_string(),
+                },
+            );
+            let _ = result.send(Err(NativeSupervisorError::Inference(error)));
+        }
+    }
 }
 
 fn set_state(state: &Arc<Mutex<NativeSupervisorState>>, next: NativeSupervisorState) {
     if let Ok(mut current) = state.lock() {
         *current = next;
-    }
-}
-
-fn clone_error(error: &NativeSupervisorError) -> NativeSupervisorError {
-    match error {
-        NativeSupervisorError::Busy => NativeSupervisorError::Busy,
-        NativeSupervisorError::Stopped => NativeSupervisorError::Stopped,
-        NativeSupervisorError::Cancelled => NativeSupervisorError::Cancelled,
-        NativeSupervisorError::Inference(error) => {
-            NativeSupervisorError::Inference(InferenceError::Generation(error.to_string()))
-        }
-        NativeSupervisorError::WorkerDisconnected => NativeSupervisorError::WorkerDisconnected,
     }
 }
 
@@ -354,7 +349,8 @@ mod tests {
     #[test]
     fn cancelled_request_is_rejected_before_queueing() {
         let supervisor = NativeInferenceSupervisor::start();
-        let cancelled = Arc::new(AtomicBool::new(true));
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
         let result = supervisor.generate(
             NativeModelSpec {
                 id: "model".to_string(),
