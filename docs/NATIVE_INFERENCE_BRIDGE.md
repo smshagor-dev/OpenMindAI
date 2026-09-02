@@ -33,8 +33,8 @@ OpenMindAI/
 │  │  ├─ inference.h
 │  │  └─ inference.cpp
 │  └─ src/
-│     ├─ inference/
-│     │  └─ mod.rs
+│     ├─ inference.rs            # existing production HTTP/llama-server pipeline
+│     ├─ native_inference.rs     # reusable native backend abstraction
 │     ├─ native_bridge.rs
 │     └─ ...existing Tauri/Rust core
 ├─ docs/
@@ -161,10 +161,10 @@ engine.generate(
 
 GPU offload is intentionally configured only when the engine is loaded. It is not duplicated inside `GenerationConfig`.
 
-Application code should prefer the reusable backend boundary:
+Application code should prefer the reusable native backend boundary:
 
 ```rust
-use open_mind_ai_lib::inference::{
+use open_mind_ai_lib::native_inference::{
     InferenceBackend, InferenceRequest, NativeBackend,
 };
 
@@ -212,7 +212,7 @@ The dedicated native workflow pins llama.cpp commit:
 7798007a29a90e3053e799394da48cf53a2f8e0f
 ```
 
-It builds a shared CPU llama library and then compiles, links, tests, and runs Clippy against an isolated smoke crate containing both the bridge and reusable Rust inference module.
+It builds a shared CPU llama library and then compiles, links, tests, and runs Clippy against an isolated smoke crate containing both the bridge and reusable native Rust inference module.
 
 ## Remaining production work
 
