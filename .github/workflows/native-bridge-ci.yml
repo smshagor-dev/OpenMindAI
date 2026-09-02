@@ -99,6 +99,7 @@ jobs:
 
           [dependencies]
           cxx = "1.0"
+          tokio-util = "0.7"
 
           [build-dependencies]
           cxx-build = "1.0"
