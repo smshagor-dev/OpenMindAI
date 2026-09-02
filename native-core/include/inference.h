@@ -8,7 +8,9 @@
 namespace openmind::native {
 
 // Opaque Rust type declared by cxx. C++ only borrows it for the duration of a
-// synchronous generation call and returns each token through rust::Fn.
+// synchronous generation call and returns raw token bytes through rust::Fn.
+// Raw bytes are intentional: a llama token can split a multi-byte UTF-8 code
+// point, so Rust assembles valid UTF-8 chunks before forwarding them to UI.
 class TokenSink;
 
 class InferenceEngine final {
@@ -38,7 +40,7 @@ class InferenceEngine final {
       float top_p,
       std::uint32_t max_tokens,
       const TokenSink& sink,
-      rust::Fn<void(const TokenSink&, rust::Str)> on_token);
+      rust::Fn<void(const TokenSink&, rust::Slice<const std::uint8_t>)> on_token);
 };
 
 std::unique_ptr<InferenceEngine> load_model(
@@ -54,6 +56,6 @@ void generate_stream(
     float top_p,
     std::uint32_t max_tokens,
     const TokenSink& sink,
-    rust::Fn<void(const TokenSink&, rust::Str)> on_token);
+    rust::Fn<void(const TokenSink&, rust::Slice<const std::uint8_t>)> on_token);
 
 }  // namespace openmind::native
