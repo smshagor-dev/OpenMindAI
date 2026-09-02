@@ -225,7 +225,7 @@ public:
             }
 
             const auto piece = token_piece(vocab_, token);
-            if (!sink.on_token(rust::Str(piece))) {
+            if (!on_token(sink, rust::Str(piece.data(), piece.size()))) {
                 break;
             }
 
