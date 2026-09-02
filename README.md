@@ -1,40 +1,159 @@
 # OpenMindAI
 
 <p align="center">
-  <strong>A local-first AI desktop workstation that runs useful AI on your own computer.</strong>
+  <strong>Local-first AI for desktop, now expanding to mobile.</strong>
 </p>
 
 <p align="center">
-  OpenMindAI combines local AI chat, model and runtime management, active project workspaces, local agents, connected apps, media tools, portable storage, and maintenance workflows in one desktop application. Core AI inference and local data stay under your control instead of depending on a recurring cloud AI subscription.
+  OpenMindAI is a user-controlled AI workstation built around local inference, local data, portable model storage, active project work, connected apps, and offline-capable workflows. The stable desktop application remains the primary public release, while a separately maintained Flutter mobile application is now available as an unofficial development preview line.
 </p>
 
 <p align="center">
   <a href="https://github.com/smshagor-dev/OpenMindAI/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/smshagor-dev/OpenMindAI/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <a href="https://github.com/smshagor-dev/OpenMindAI/actions/workflows/security.yml"><img alt="Security" src="https://github.com/smshagor-dev/OpenMindAI/actions/workflows/security.yml/badge.svg?branch=main"></a>
   <a href="https://github.com/smshagor-dev/OpenMindAI/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/smshagor-dev/OpenMindAI?display_name=tag&sort=semver"></a>
+  <img alt="Mobile preview" src="https://img.shields.io/badge/mobile-v3.1.0--unofficial.1-orange">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/smshagor-dev/OpenMindAI"></a>
-  <a href="https://github.com/smshagor-dev/OpenMindAI"><img alt="Platform" src="https://img.shields.io/badge/desktop-Windows%20%7C%20Linux%20%7C%20macOS-informational"></a>
 </p>
 
 <p align="center">
+  <img alt="Desktop" src="https://img.shields.io/badge/Desktop-Windows%20%7C%20Linux%20%7C%20macOS-informational">
+  <img alt="Mobile" src="https://img.shields.io/badge/Mobile-Android%20%7C%20iOS-informational">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white">
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white">
-  <img alt="React" src="https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=111111">
+  <img alt="Flutter" src="https://img.shields.io/badge/Flutter-Mobile-02569B?logo=flutter&logoColor=white">
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white">
-  <img alt="Vite" src="https://img.shields.io/badge/Vite-6-646CFF?logo=vite&logoColor=white">
   <img alt="SQLite" src="https://img.shields.io/badge/SQLite-local-003B57?logo=sqlite&logoColor=white">
 </p>
 
 ---
 
-## OpenMindAI v3.0.0
+## Release status
 
-**Current source version:** `v3.0.0`  
-**Latest public release:** [v3.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v3.0.0)
+| Product line | Version | Status |
+| --- | --- | --- |
+| OpenMindAI Desktop | `v3.0.0` | Stable public release |
+| OpenMindAI Mobile | `v3.1.0-unofficial.1` | Unofficial development preview / pre-release |
 
-v3.0.0 moves OpenMindAI beyond local chat and model management into an active local AI workstation. Projects can now work with real folders, a local Project Agent can inspect and modify code, terminal-assisted workflows can detect failures and retry repairs, and connected services can be used from normal conversations without turning the application into a collection of raw API consoles.
+The mobile preview label intentionally does **not** replace the stable desktop `v3.0.0` application version. If a mobile binary is published under `v3.1.0-unofficial.1`, it should be treated as a GitHub **pre-release**, not as a production-ready mobile release.
 
-### Download
+For the mobile preview release summary, see [`.github/releases/v3.1.0-unofficial.1.txt`](.github/releases/v3.1.0-unofficial.1.txt).
+
+---
+
+## OpenMindAI Mobile — Unofficial Preview
+
+**Preview label:** `v3.1.0-unofficial.1`  
+**Platforms:** Android and iOS  
+**Status:** Unofficial / pre-release / active development  
+**Architecture:** Flutter + local llama.cpp runtime  
+**Public source policy:** The mobile application is maintained separately and is not included in this public desktop source repository.
+
+OpenMindAI Mobile brings the same local-first philosophy to phones and tablets: model files are downloaded to the device, inference runs locally through llama.cpp, and ordinary local chat does not require a paid model API.
+
+### Current mobile capabilities
+
+- Local chat with streamed responses.
+- Chat and Thinking modes with model-aware prompting.
+- Local model switching using canonical model IDs.
+- Hardware-aware model recommendations based on RAM, storage, and CPU architecture.
+- Model Manager grouping by provider.
+- Compatibility states for **Compatible**, **High memory requirement**, **Not recommended**, **Insufficient storage**, and **Unsupported**.
+- Resumable downloads using `.part` files.
+- Real download percentage, transferred bytes, total size, and download speed.
+- Retry and cancellation support for model downloads.
+- Size and install validation before a model is considered ready.
+- Direct-native llama.cpp inference with a local llama server fallback path.
+- Automatic fallback to another compatible installed model when appropriate.
+- Local vision model support through OpenMindAI Lens.
+- Local attachment/document context workflows.
+- No paid inference API requirement for supported local models.
+
+### Mobile local model pack
+
+The current mobile catalog includes the following families:
+
+| Provider | Models |
+| --- | --- |
+| OpenMindAI / Alibaba Qwen | OpenMindAI Nano — Qwen3 0.6B, OpenMindAI Swift — Qwen3 1.7B, OpenMindAI Core — Qwen3 4B, OpenMindAI Titan — Qwen3 8B |
+| OpenMindAI Vision | OpenMindAI Lens — Qwen2.5-VL 3B |
+| DeepSeek | DeepSeek R1 Distill Qwen 1.5B, DeepSeek R1 Distill Qwen 7B |
+| OpenAI | GPT OSS 20B, GPT OSS 120B |
+| Google | Gemma 3 1B, Gemma 3 4B, Gemma 3 12B, Gemma 3 27B |
+| Microsoft | Phi-4 Mini Instruct |
+| Hugging Face | SmolLM3 3B |
+| IBM | Granite 3.3 2B Instruct, Granite 3.3 8B Instruct |
+| Meta | Llama 3.2 1B Instruct, Llama 3.2 3B Instruct |
+| Mistral AI | Mistral 7B Instruct v0.3, Mistral Small 3.1 24B |
+| AI2 | OLMo 2 7B Instruct |
+
+Model Manager does not assume that every visible model is suitable for every phone. Large or license-sensitive models can remain visible for manual installation while being excluded from normal automatic recommendations.
+
+Examples include GPT OSS 120B, Gemma 27B, Mistral Small 24B, and other memory-heavy models that are unrealistic for ordinary mobile devices.
+
+### Mobile runtime and routing
+
+The mobile application uses one canonical model architecture from install through inference:
+
+```text
+MobileModelCatalog
+      ↓
+Device compatibility
+      ↓
+Model Manager / Onboarding
+      ↓
+Hugging Face artifact resolution
+      ↓
+Resumable download + validation
+      ↓
+App-private model storage
+      ↓
+Model router
+      ↓
+lib_llama_cpp / llama.cpp
+      ↓
+Local streamed reply
+```
+
+The runtime includes model-specific handling where needed. Qwen3 supports `/think` and `/no_think`; SmolLM3 receives its reasoning-mode directive and recommended sampling behavior; reasoning-focused families receive appropriate generation budgets; and Mistral 7B v0.3 receives prompt normalization because its chat template does not natively accept the same system-role shape as every other model family.
+
+### Android device coverage
+
+The Android build packages the local llama runtime for these supported ABIs:
+
+- `armeabi-v7a`
+- `arm64-v8a`
+- `x86_64`
+
+This covers modern ARM phones/tablets, supported 32-bit ARM targets, and x86_64 Android emulator environments. The mobile CI checks that the packaged APK contains the llama native library for all three supported ABIs.
+
+The application still performs device-level checks because ABI support alone does not mean a model will fit in memory or available storage.
+
+### Mobile licensing note
+
+The OpenMindAI source repository uses Apache-2.0, but downloaded model weights keep their own upstream licenses and usage terms.
+
+Examples:
+
+- GPT OSS — Apache-2.0 upstream model terms.
+- Phi-4 Mini — MIT upstream model terms.
+- Granite and many Mistral/SmolLM entries — Apache-2.0 upstream terms.
+- Gemma — Google Gemma terms.
+- Meta Llama — Llama Community License.
+- OLMo and other models with additional upstream conditions remain subject to those terms.
+
+OpenMindAI surfaces model license metadata rather than presenting all model weights as if they shared the desktop application's Apache-2.0 source license.
+
+---
+
+## OpenMindAI Desktop v3.0.0
+
+**Current desktop source version:** `v3.0.0`  
+**Latest stable public release:** [v3.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v3.0.0)
+
+v3.0.0 moves OpenMindAI beyond local chat and model management into an active local AI workstation. Projects can work with real folders, a local Project Agent can inspect and modify code, terminal-assisted workflows can detect failures and retry repairs, and connected services can be used from normal conversations without turning the application into a collection of raw API consoles.
+
+### Desktop download
 
 | Platform | Installation path | Status |
 | --- | --- | --- |
@@ -44,52 +163,57 @@ v3.0.0 moves OpenMindAI beyond local chat and model management into an active lo
 | macOS | [Command bootstrap](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.0/OpenMindAI-Setup.command) | Available; hardware coverage continues to expand |
 | Linux ARM64 | — | Not currently supported |
 
-Use the official [Releases](https://github.com/smshagor-dev/OpenMindAI/releases) page for release notes and downloadable assets.
+Use the official [Releases](https://github.com/smshagor-dev/OpenMindAI/releases) page for stable desktop release notes and downloadable assets.
 
-### What changed in v3.0.0
+### What changed in desktop v3.0.0
 
 - Projects now include active local workspaces instead of acting only as passive context containers.
 - Existing folders can be opened directly as OpenMindAI Projects.
 - Project Agent can inspect, create, edit, rename, and delete scoped project files.
 - Project Agent can use explicitly permitted terminal commands, observe failures, repair changes, and validate the result.
-- Git-aware status and diff inspection are available behind the Full PC + Terminal permission boundary.
+- Git-aware status and diff inspection is available behind the Full PC + Terminal permission boundary.
 - Local AI requests can use chat, thinking, vision, web search, and research-oriented workflows.
 - Connected Apps integrate Google Workspace, GitHub, Microsoft 365, Slack, Notion, Dropbox, and MCP servers.
 - Local document, image, video, voice, and sound-generation entry points are integrated with the artifact library.
 - Model downloads, runtime installation, hardware-aware launch planning, diagnostics, backup, repair, and updater workflows remain part of the same desktop application.
 - CI, security checks, release validation, installer workflows, and version-consistency gates were expanded for the v3 release line.
 
-For the focused release summary, see [`.github/releases/v3.0.0.txt`](.github/releases/v3.0.0.txt).
+For the stable desktop release summary, see [`.github/releases/v3.0.0.txt`](.github/releases/v3.0.0.txt).
+
+---
 
 ## Why OpenMindAI
 
-Many desktop AI tools still depend on a remote service for the part that matters most: inference. OpenMindAI takes a different approach. The application, conversations, models, runtime, projects, and generated working data can live on storage you control while the primary AI runtime executes locally on your machine.
+Many AI applications still depend on a remote service for the part that matters most: inference. OpenMindAI takes a different approach. Conversations, models, runtimes, projects, and generated working data can live on storage you control while supported AI inference runs locally on your own hardware.
 
-The project is built around five practical goals:
+The project is built around these practical goals:
 
-- **Local-first operation** — core AI inference and chat history stay on the machine after setup.
-- **Portable storage** — models and application data can live on a secondary drive, external SSD, or portable installation root.
-- **Hardware-aware execution** — the application detects the host system and prepares a suitable local inference path instead of assuming identical hardware everywhere.
-- **Active project work** — AI can work with real local projects and files while keeping explicit filesystem and terminal permission boundaries.
-- **One desktop workflow** — chat, projects, models, connected apps, artifacts, diagnostics, updates, maintenance, and storage management live in one product.
+- **Local-first operation** — core AI inference and history can stay on the device after setup.
+- **Portable storage** — desktop models and application data can live on a secondary drive or external SSD.
+- **Hardware-aware execution** — model/runtime selection accounts for the current device instead of assuming identical hardware everywhere.
+- **Active project work** — desktop AI can work with real local projects and files while keeping explicit filesystem and terminal permission boundaries.
+- **Cross-device direction** — the desktop workstation and mobile companion follow the same privacy-first, local-model design philosophy.
+- **No recurring inference subscription requirement** — supported local models run without a paid inference API.
 
-## Core Capabilities
+---
+
+## Desktop core capabilities
 
 ### Local AI chat
 
-OpenMindAI runs supported open-weight language models locally and stores conversation history in a local SQLite database. Once the required model and runtime are installed, normal local chat does not require an internet connection.
+OpenMindAI Desktop runs supported open-weight language models locally and stores conversation history in a local SQLite database. Once the required model and runtime are installed, normal local chat does not require an internet connection.
 
-The chat system supports streamed responses, cancellation, model selection, conversation history, message regeneration, editing, attachments, and local context persistence.
+The desktop chat system supports streamed responses, cancellation, model selection, conversation history, message regeneration, editing, attachments, and local context persistence.
 
 ### Thinking, vision, search, and research modes
 
-OpenMindAI can route different requests through specialized local flows. Image attachments can be passed to compatible local vision models, while Web Search and Deep Research modes can retrieve current public web evidence and provide it to the local model as external context.
+OpenMindAI can route different requests through specialized flows. Image attachments can be passed to compatible local vision models, while Web Search and Deep Research modes can retrieve current public web evidence and provide it to the local model as external context.
 
-Web retrieval is treated as untrusted data rather than executable instruction, and current-source claims should remain grounded in retrieved evidence.
+Web retrieval is treated as untrusted data rather than executable instruction.
 
 ### Model and runtime management
 
-The application includes a local model catalog and lifecycle management for:
+The desktop application includes lifecycle management for:
 
 - model discovery;
 - download and progress tracking;
@@ -106,13 +230,13 @@ Large model downloads remain explicit user actions.
 
 ### Hardware-aware execution
 
-OpenMindAI detects CPU, memory, and available graphics hardware and uses that profile when choosing runtime and model launch settings. The goal is graceful compatibility across different machines instead of assuming a single GPU vendor or fixed workstation specification.
+OpenMindAI detects CPU, memory, and available graphics hardware and uses that profile when choosing runtime and model launch settings. When acceleration is unavailable, compatible CPU execution remains the broad fallback path.
 
-When acceleration is unavailable, compatible CPU execution remains the fallback path.
+---
 
 ## Projects and Project Agent
 
-v3.0.0 makes Projects a first-class local development workspace.
+Desktop v3.0.0 makes Projects a first-class local development workspace.
 
 A Project can contain:
 
@@ -127,8 +251,6 @@ A Project can contain:
 ### Open Folder as Project
 
 An existing local folder can be opened and attached to a Project. OpenMindAI creates the durable project/chat relationship and keeps workspace access scoped to the attached folder by default.
-
-This is intended for real applications, repositories, research code, websites, scripts, documents, and other local work rather than isolated demo folders.
 
 ### Local Project Agent
 
@@ -151,11 +273,11 @@ The agent uses the configured local OpenMindAI model/runtime rather than requiri
 
 ### Full PC + Terminal permission boundary
 
-Filesystem and terminal access are deliberately separated from ordinary chat capability.
+Attached project folders can be used as scoped workspaces. Broader **Full PC + Terminal** access must be explicitly approved before the project can execute terminal commands through that permission path.
 
-Attached project folders can be used as scoped workspaces. Broader **Full PC + Terminal** access must be explicitly approved before the project can execute terminal commands through that permission path. Direct local file mutations also use approval checks in the desktop backend.
+The agent uses bounded execution, command-length limits, output limits, timeouts, duplicate-action protection, failure budgets, and validation requirements to reduce runaway behavior.
 
-The agent avoids interactive command flows and uses bounded execution, command-length limits, output limits, timeouts, duplicate-action protection, failure budgets, and validation requirements to reduce runaway behavior.
+---
 
 ## Connected Apps
 
@@ -171,17 +293,15 @@ Supported app families include:
 - **Dropbox**
 - **MCP servers**
 
-Connections are managed under **Settings → Apps**. Users interact through normal Chat or Project Work instead of selecting raw provider actions manually.
-
-Connection secrets and OAuth tokens are kept out of chat history and stored through the operating-system credential path used by the application. Remote mutating actions remain subject to backend approval and provider permission checks.
+Connections are managed under **Settings → Apps**. Connection secrets and OAuth tokens are kept out of chat history and stored through the operating-system credential path used by the application.
 
 See [`docs/CONNECTED_APPS.md`](docs/CONNECTED_APPS.md) for the connected-app UX and security contract.
 
+---
+
 ## Artifacts and Media
 
-OpenMindAI can create and track local artifacts associated with conversations.
-
-Supported artifact paths include:
+OpenMindAI Desktop can create and track local artifacts associated with conversations, including:
 
 - plain text;
 - Markdown;
@@ -195,11 +315,11 @@ Supported artifact paths include:
 
 Media capability depends on the required local model/runtime being installed and compatible with the current hardware. Missing dependencies are surfaced instead of silently switching to a paid cloud generation API.
 
-Generated artifacts are tracked in the local library and can be opened or revealed from the desktop application.
+---
 
 ## Architecture
 
-OpenMindAI uses a web-based desktop interface with a native Rust backend.
+### Desktop
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
@@ -217,28 +337,44 @@ OpenMindAI uses a web-based desktop interface with a native Rust backend.
 └───────────────────────────────┴─────────────────────────────────┘
 ```
 
+### Mobile preview
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│                       OpenMindAI Mobile                      │
+├──────────────────────────────────────────────────────────────┤
+│ Flutter / Dart                                              │
+│ Chat · Model Manager · Downloads · Settings · Local context │
+├──────────────────────────────────────────────────────────────┤
+│ Device profile + model router + local storage               │
+├──────────────────────────────────────────────────────────────┤
+│ lib_llama_cpp / llama.cpp                                   │
+├──────────────────────────────────────────────────────────────┤
+│ Local GGUF model files                                      │
+└──────────────────────────────────────────────────────────────┘
+```
+
 ### Main technologies
 
 | Area | Technology |
 | --- | --- |
 | Desktop shell | Tauri 2 |
-| Native backend | Rust 2021 |
-| Frontend | React 18 + TypeScript |
-| Build tooling | Vite 6 |
-| Local database | SQLite via `rusqlite` |
-| Async/runtime work | Tokio |
-| Networking/downloads | Reqwest |
-| Local LLM interface | llama-compatible OpenAI-style endpoint |
-| Markdown/code rendering | Marked + Highlight.js |
-| PDF handling | PDF.js + Rust document tooling |
-| Speech/audio | Whisper + local TTS/audio tooling |
-| Updates | Tauri updater |
+| Desktop backend | Rust 2021 |
+| Desktop frontend | React 18 + TypeScript + Vite 6 |
+| Mobile | Flutter + Dart |
+| Mobile local LLM bridge | `lib_llama_cpp` / llama.cpp |
+| Local database | SQLite |
+| Networking/downloads | Reqwest on desktop; mobile-native Flutter networking stack |
+| Local model format | GGUF for supported LLM families |
+| Updates | Tauri updater on desktop; mobile release packaging remains preview-stage |
 | CI | GitHub Actions |
 | Security scanning | CodeQL, `npm audit`, `cargo audit` |
 
+---
+
 ## First Run
 
-The first-run flow prepares a local AI environment rather than asking for a cloud AI account:
+### Desktop
 
 1. Install or launch OpenMindAI.
 2. Choose where OpenMindAI AI data should live.
@@ -249,15 +385,27 @@ The first-run flow prepares a local AI environment rather than asking for a clou
 7. The model is verified before it is treated as ready.
 8. OpenMindAI opens into the desktop workspace.
 
-Internet access is needed for initial source/runtime/model downloads and for features that explicitly use online services. Once the local components are present, local chat, history, settings, project work, diagnostics, and inference can continue without a cloud AI service.
+### Mobile preview
 
-## Storage and Portability
+1. Install the mobile preview build.
+2. OpenMindAI reads the mobile device profile.
+3. Onboarding recommends models that fit the detected RAM/storage/architecture.
+4. Select a local model.
+5. Watch real download progress and speed.
+6. The model is validated before installation is considered complete.
+7. Chat runs locally through the bundled llama.cpp runtime.
 
-OpenMindAI separates the desktop application from the user's AI data. The selected storage root, referred to internally as `OPENMINDAI_ROOT`, can contain:
+Internet access is needed for initial runtime/model downloads and features that explicitly use online services. Once the required local components are installed, local inference can continue offline.
+
+---
+
+## Storage and portability
+
+OpenMindAI Desktop separates the application from the user's AI data. The selected storage root, referred to internally as `OPENMINDAI_ROOT`, can contain:
 
 - model files;
 - AI runtimes;
-- the SQLite database;
+- SQLite database;
 - cache;
 - logs;
 - generated artifacts;
@@ -265,60 +413,62 @@ OpenMindAI separates the desktop application from the user's AI data. The select
 - knowledge data;
 - backups.
 
-This makes it possible to keep a large AI environment on a secondary drive or external SSD and reduces the risk of losing models or history when the desktop application is updated or reinstalled.
+When an `openmindai.marker` file is present at the portable root, OpenMindAI can resolve its data location relative to that root, making external-drive workflows more reliable.
 
-### Portable mode
+Mobile models use app-private device storage rather than the desktop portable-root system.
 
-When an `openmindai.marker` file is present at the portable root, OpenMindAI can resolve its data location relative to that root. This avoids coupling a portable installation to one fixed Windows drive letter and makes external-drive workflows more reliable.
+---
 
-A configured storage location that is temporarily unavailable should be reported instead of silently replaced by a new empty data directory. An unplugged external drive must not look like lost history or a fresh installation.
+## Default local models
 
-## Default Local Model
+The stable desktop `v3.0.0` baseline targets **Qwen3 4B (`Q4_K_M`)** as the default local language model.
 
-The v3.0.0 baseline setup targets **Qwen3 4B (`Q4_K_M`)** as the default local language model.
+The mobile preview starts from smaller hardware-aware options such as **OpenMindAI Nano (Qwen3 0.6B)** and then exposes larger compatible models in Model Manager according to device capability.
 
-Model weights are deliberately excluded from this repository. They are downloaded separately and stored under the selected AI data root, keeping multi-gigabyte model binaries out of normal Git history.
+Model weights are deliberately excluded from this public repository. They are downloaded separately and remain subject to upstream model licenses.
 
-Actual inference performance depends on CPU, GPU, available memory, model size, quantization, context length, and backend support.
+Actual inference performance depends on CPU, GPU/NPU support where applicable, available RAM, model size, quantization, context length, thermal limits, and runtime backend support.
 
-## Offline and Online Behavior
+---
 
-OpenMindAI is local-first, not network-blind. Features that genuinely require external data still use a network connection.
+## Offline and online behavior
+
+OpenMindAI is local-first, not network-blind.
 
 ### Designed to work offline after local setup
 
 - local AI inference;
 - normal chat and conversation history;
 - local settings and profile data;
-- Projects and attached local workspaces;
-- Project Agent file operations;
 - installed model/runtime management;
-- local document and supported media generation;
-- diagnostics, maintenance, and local backups.
+- desktop Projects and attached local workspaces;
+- desktop Project Agent file operations;
+- local diagnostics and maintenance;
+- supported local document/media workflows.
 
 ### Requires network access when used
 
 - initial bootstrap/source downloads;
-- runtime downloads;
-- model downloads;
+- runtime/model downloads;
 - application and model update checks;
 - Web Search and Deep Research retrieval;
-- Google Workspace, GitHub, Microsoft 365, Slack, Notion, Dropbox, and MCP connections where applicable.
+- connected external services;
+- mobile preview binary distribution/update checks when enabled.
 
-A temporary inability to reach GitHub or another external provider should not make an already-prepared local AI workstation unusable for its offline capabilities.
+A temporary inability to reach GitHub or another external provider should not make an already-prepared local AI environment unusable for its offline capabilities.
+
+---
 
 ## Development
 
-### Requirements
+### Desktop requirements
 
-- **Node.js 24** (the version used by CI)
+- **Node.js 24**
 - npm
 - a current stable Rust toolchain
 - platform-specific Tauri build dependencies
 
-Windows development requires the Microsoft C++/MSVC toolchain used by Tauri. Linux requires the WebKitGTK/AppIndicator development packages expected by Tauri 2.
-
-### Run locally
+### Run desktop locally
 
 ```bash
 git clone https://github.com/smshagor-dev/OpenMindAI.git
@@ -343,113 +493,127 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -
 cargo test --manifest-path src-tauri/Cargo.toml --all-features
 ```
 
-### Production build
+The desktop application version is synchronized across `package.json`, the Rust crate, and Tauri configuration. The unofficial mobile preview label is documentation/release metadata and does not change those stable desktop version files.
 
-```bash
-npm run build
-npm run tauri -- build
-```
-
-The application version is synchronized across `package.json`, the Rust crate, and the Tauri configuration. `npm run check:version` is part of the validation path so version drift is caught before release work.
+---
 
 ## Continuous Integration
 
-The main CI workflow validates both the web frontend and native Rust application.
+Desktop CI validates frontend build quality, Rust formatting/lint/tests, release consistency, and security workflows.
 
-### Frontend
+The separately maintained mobile CI validates:
 
-- clean dependency installation with `npm ci`;
-- release-version consistency check;
-- ESLint;
-- TypeScript compilation;
-- Vite production build.
+- Dart formatting;
+- Flutter static analysis;
+- Flutter tests;
+- Android debug APK build;
+- bundled llama runtime coverage for `armeabi-v7a`, `arm64-v8a`, and `x86_64`.
 
-### Rust
-
-- Linux, Windows, and macOS runners;
-- `rustfmt` check;
-- Clippy with warnings treated as errors;
-- Rust test suite with all features enabled.
-
-See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
-
-Additional workflows cover project-workspace preflight, local-agent checks, release readiness, security, and release packaging.
+---
 
 ## Security
 
-OpenMindAI gives a local AI system meaningful access to files, optional terminal commands, and connected services, so permission boundaries are part of the product rather than documentation-only guidance.
+OpenMindAI gives local AI meaningful access to files, optional terminal commands, local model runtimes, and optional connected services, so permission boundaries are part of the product.
 
-Key controls include:
+Key desktop controls include:
 
 - explicit Tauri capability configuration;
-- a restrictive desktop Content Security Policy;
+- restrictive Content Security Policy;
 - scoped project folder access by default;
 - explicit approval for Full PC + Terminal access;
 - approval guards for direct workspace mutations and remote mutating actions;
-- bounded agent steps, failures, repeated actions, command length, output, and timeouts;
-- validation requirements after workspace changes;
+- bounded agent steps and terminal execution;
 - secret/token storage outside conversation history;
 - external provider data treated as untrusted input;
 - local model/runtime binaries excluded from source control;
 - `npm audit`, `cargo audit`, and CodeQL security checks.
 
-See [`SECURITY.md`](SECURITY.md) and [`.github/workflows/security.yml`](.github/workflows/security.yml).
+Mobile security focuses on app-private model storage, local inference, explicit compatibility checks, and avoiding hidden fallback to paid cloud inference APIs for supported local model flows.
 
-## Release Pipeline
+See [`SECURITY.md`](SECURITY.md) for desktop security policy.
 
-Tagged releases use the dedicated release workflow in [`.github/workflows/release.yml`](.github/workflows/release.yml).
+---
 
-The release path checks version consistency, application builds, installer output, updater configuration, release metadata, and other release-readiness requirements. Signing and trust requirements are handled by the production release workflow rather than being embedded in source code or committed secrets.
+## Release pipeline
 
-For v3.0.0 release expectations and validation scope, see [`.github/releases/v3.0.0.txt`](.github/releases/v3.0.0.txt).
+### Stable desktop release
 
-## Platform Notes
+Tagged desktop releases use [`.github/workflows/release.yml`](.github/workflows/release.yml). The release path checks version consistency, application builds, installer output, updater configuration, release metadata, and other release-readiness requirements.
+
+### Unofficial mobile preview
+
+`v3.1.0-unofficial.1` is a **preview identifier**, not the new stable desktop application version.
+
+If a binary is published under this label:
+
+- mark it as a **GitHub pre-release**;
+- clearly label it **Unofficial Mobile Preview**;
+- do not replace the stable `v3.0.0` desktop installer links;
+- do not describe it as production-ready Android/iOS distribution;
+- note that device/model compatibility varies by RAM, storage, CPU architecture, and model size;
+- preserve upstream model licensing notices.
+
+Release notes are prepared in [`.github/releases/v3.1.0-unofficial.1.txt`](.github/releases/v3.1.0-unofficial.1.txt).
+
+---
+
+## Platform notes
 
 ### Windows
 
-Windows x64 is the primary packaged and tested platform for v3.0.0. The desktop release uses a Tauri NSIS installer. GPU/runtime behavior depends on installed hardware and backend support, while CPU execution remains the compatibility path when acceleration is unavailable.
+Windows x64 is the primary packaged and tested desktop platform for `v3.0.0`. The release uses a Tauri NSIS installer.
 
 ### Linux
 
-The Linux bootstrap supports the source/bootstrap installation path and the Linux dependency path is exercised by CI. Desktop environments and GPU stacks vary considerably, so hardware-specific validation continues to expand.
+The Linux bootstrap supports the source/bootstrap installation path. Desktop environments and GPU stacks vary, so hardware-specific validation continues to expand.
 
 ### macOS
 
-The macOS bootstrap supports the source/bootstrap path and handles Intel/Apple Silicon environments. Distribution signing and notarization are separate concerns from source-level compatibility.
+The macOS bootstrap supports Intel/Apple Silicon source/bootstrap environments. Distribution signing and notarization remain separate from source-level compatibility.
+
+### Android preview
+
+The current Android mobile runtime supports `armeabi-v7a`, `arm64-v8a`, and `x86_64`. Model compatibility is still constrained by available RAM and storage.
+
+### iOS preview
+
+The Flutter mobile application includes an iOS target, but the `v3.1.0-unofficial.1` label remains a development preview rather than a production App Store release.
+
+---
 
 ## Troubleshooting
 
 ### Setup cannot download a model
 
-Check network access and available space in the selected AI storage root, then retry. Interrupted large downloads should not require deleting the entire installation.
+Check network access and available storage, then retry. Interrupted downloads are designed to resume instead of forcing a full restart where supported.
 
-### The configured storage drive is missing
+### A mobile model is visible but cannot be installed
 
-Reconnect the drive or restore the configured location. OpenMindAI should not silently create a second unrelated data root because that can make existing history and models appear to have disappeared.
+The model may exceed the device RAM/storage requirement, may require a 64-bit runtime, or may be intentionally marked manual/not-recommended because of size or upstream licensing terms.
+
+### Local inference cannot start on Android
+
+Confirm the installed APK matches a supported ABI and that the selected model is fully installed. Current Android builds cover `armeabi-v7a`, `arm64-v8a`, and `x86_64`.
+
+### The configured desktop storage drive is missing
+
+Reconnect the drive or restore the configured location. OpenMindAI should not silently create a second unrelated data root.
 
 ### GPU acceleration is unavailable
 
-Use a compatible fallback backend where available. Local CPU inference is slower but remains the broad compatibility path for supported models.
+Use a compatible fallback backend where available. Local CPU inference is slower but remains the broad desktop compatibility path for supported models.
 
 ### Project Agent cannot run terminal commands
 
-Terminal execution is intentionally disabled until **Full PC + Terminal** access is explicitly enabled for the project. Normal scoped project file access does not automatically grant terminal permission.
+Terminal execution is intentionally disabled until **Full PC + Terminal** access is explicitly enabled for the project.
 
-### A connected app is unavailable
+---
 
-Open **Settings → Apps** and confirm that the provider is configured and connected. Some providers require OAuth/client configuration for this self-hosted desktop application.
+## Repository policy
 
-### Windows shows a SmartScreen warning
+This public repository contains the **OpenMindAI Desktop** source code, build configuration, bootstrap tooling, documentation, workflow configuration, and small project assets.
 
-Confirm that the installer came from the official OpenMindAI GitHub release. Release trust and signing state can vary between development and production artifacts, so do not use installers from third-party mirrors.
-
-### A source build fails on a new machine
-
-Confirm Node.js, Rust, and the platform-specific Tauri prerequisites first. Then run the frontend and Rust validation commands separately to determine whether the failure belongs to the web frontend, native toolchain, or operating-system dependency layer.
-
-## Repository Policy
-
-This repository contains source code, build configuration, bootstrap tooling, documentation, workflow configuration, and small project assets. Machine-local runtime state does not belong in Git.
+The separately maintained mobile application source is not included in this public repository.
 
 Do not commit:
 
@@ -464,11 +628,13 @@ Do not commit:
 - signing keys;
 - large model formats such as GGUF or SafeTensors.
 
+---
+
 ## Contributing
 
-OpenMindAI is under active development. Useful contributions include reproducible bug reports, platform validation, performance measurements, security improvements, documentation fixes, connector improvements, and focused code changes.
+OpenMindAI is under active development. Useful contributions include reproducible bug reports, platform validation, performance measurements, security improvements, documentation fixes, connector improvements, and focused desktop code changes.
 
-Before opening a pull request, run the same core checks used by CI:
+Before opening a desktop pull request, run the same core checks used by CI:
 
 ```bash
 npm ci
@@ -480,15 +646,19 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -
 cargo test --manifest-path src-tauri/Cargo.toml --all-features
 ```
 
-Please keep pull requests focused and do not commit local runtime data, model binaries, credentials, or user project data.
-
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution guidance.
+
+---
 
 ## License
 
-OpenMindAI is released under the [Apache License 2.0](LICENSE).
+OpenMindAI Desktop source code in this repository is released under the [Apache License 2.0](LICENSE).
 
 Third-party components and attribution notices are documented in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).
+
+Downloaded AI models are governed by their respective upstream licenses and are not relicensed by this repository.
+
+---
 
 ## Maintainer
 
