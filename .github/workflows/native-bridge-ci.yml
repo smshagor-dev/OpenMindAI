@@ -159,12 +159,12 @@ jobs:
           }
           EOF
 
-      - name: Native bridge compile and link check
+      - name: Native bridge compile, link and regression tests
         env:
           LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
           LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
           LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
-        run: cargo test --manifest-path native-smoke/Cargo.toml --no-run
+        run: cargo test --manifest-path native-smoke/Cargo.toml
 
       - name: Native bridge clippy
         env:
@@ -191,3 +191,13 @@ jobs:
           OPENMINDAI_PORTABLE_BUILD: "1"
           LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
         run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --features native-cxx-llama --lib -- -D warnings
+
+      - name: Native streaming cancellation and runtime tests
+        env:
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          LLAMA_CPP_COMMIT: ${{ env.LLAMA_CPP_COMMIT }}
+          OPENMINDAI_NATIVE_STRICT_ABI: "1"
+          OPENMINDAI_PORTABLE_BUILD: "1"
+          LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features native-cxx-llama --lib native_

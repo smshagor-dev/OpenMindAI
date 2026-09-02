@@ -66,9 +66,16 @@ Windows PowerShell:
 
 ```powershell
 $env:LLAMA_CPP_DIR = "C:\src\llama.cpp"
-$env:LLAMA_CPP_LIB_DIR = "C:\src\llama.cpp\build\bin\Release"
+$env:LLAMA_CPP_LIB_DIR = "C:\src\llama.cpp\build\src\Release"
+$env:PATH = "C:\src\llama.cpp\build\bin\Release;$env:PATH"
 cargo build --manifest-path src-tauri\Cargo.toml --features native-cxx-llama
 ```
+
+On Windows, `LLAMA_CPP_LIB_DIR` must contain the `llama.lib` import library.
+The DLL directory belongs on `PATH` for execution and is staged into the
+installer separately. The pinned Visual Studio build places these in
+`build/src/Release` and `build/bin/Release`, respectively. Native builds validate
+the import library before compiling the wrapper to avoid a late `LNK1181` failure.
 
 The default linker mode is dynamic. Static builds may require explicit ggml libraries through:
 
@@ -129,6 +136,26 @@ and rounded to a small allocation block. Context allocation is reused while capa
 A mutex serializes generation and KV-clear operations on one engine because one mutable llama context must never be used concurrently.
 
 Large project files should still use retrieval/chunking and bounded token budgets; dynamic KV sizing is not a substitute for context construction.
+
+## Streaming and cancellation guarantees
+
+llama.cpp token pieces cross CXX as byte slices. Rust validates UTF-8 and keeps an
+incomplete code point until the next piece arrives, so Bengali, emoji, and other
+multi-byte text are not damaged at token boundaries. Invalid byte sequences are
+replaced with U+FFFD. An incomplete final character is replaced only on normal
+completion, never after the consumer stops or generation fails.
+
+The low-level callback can receive an empty string as a cancellation poll before
+prompt batches and between generated tokens. Return `false` to stop. The desktop
+adapter filters empty polls before its bounded token channel, UI, and database.
+Stop wakes the receiver even before the first token and closes the channel before
+waiting for the worker, releasing a producer blocked by backpressure. A request
+guard cancels the worker and clears active conversation state on every exit,
+including a dropped async request. Queued cancelled requests skip model loading.
+
+Cancellation is cooperative between native calls; it cannot interrupt a model
+load or a single running `llama_decode` call. No real-GPU inference or hard timeout
+guarantee follows from compile/link and synthetic streaming tests.
 
 ## Rust API
 

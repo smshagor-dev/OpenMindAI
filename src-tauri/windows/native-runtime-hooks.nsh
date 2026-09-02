@@ -1,9 +1,11 @@
 !macro NSIS_HOOK_POSTINSTALL
   DetailPrint "Installing OpenMindAI native llama runtime"
+  ClearErrors
   CopyFiles /SILENT "$INSTDIR\resources\native-runtime\windows-x86_64\*.dll" "$INSTDIR"
   ${If} ${Errors}
-    DetailPrint "WARNING: native llama runtime DLL copy reported an error; llama-server fallback remains available"
-    ClearErrors
+    DetailPrint "ERROR: required native llama runtime DLLs could not be installed"
+    SetErrorLevel 1
+    Abort "Required native runtime DLL installation failed"
   ${EndIf}
 !macroend
 
@@ -13,4 +15,5 @@
   Delete "$INSTDIR\ggml-base.dll"
   Delete "$INSTDIR\ggml-cpu.dll"
   Delete "$INSTDIR\ggml-rpc.dll"
+  Delete "$INSTDIR\ggml-vulkan.dll"
 !macroend

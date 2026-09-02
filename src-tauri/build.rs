@@ -42,6 +42,13 @@ fn build_native_llama_bridge() {
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let portable = env_flag("OPENMINDAI_PORTABLE_BUILD");
 
+    if target_env == "msvc" && !llama_lib_dir.join("llama.lib").is_file() {
+        panic!(
+            "LLAMA_CPP_LIB_DIR must contain llama.lib for MSVC linking, not just llama.dll: {}",
+            llama_lib_dir.display()
+        );
+    }
+
     cxx_build::CFG.include_prefix = "openmind";
 
     let mut build = cxx_build::bridge("src/native_bridge.rs");

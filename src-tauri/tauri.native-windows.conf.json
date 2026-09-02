@@ -1,7 +1,7 @@
 {
   "bundle": {
     "resources": {
-      "native-runtime/windows-x86_64/": "native-runtime/windows-x86_64/"
+      "native-runtime/windows-x86_64/": "resources/native-runtime/windows-x86_64/"
     },
     "windows": {
       "nsis": {

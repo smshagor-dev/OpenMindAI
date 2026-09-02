@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use tauri::{AppHandle, Emitter};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     app_error::AppError,
@@ -52,6 +53,35 @@ impl NativeStreamError {
     }
 }
 
+// Release the conversation on every exit, including DB/event errors and a
+// dropped request future. Cancelling also stops a worker whose consumer left.
+struct ActiveNativeGeneration<'a> {
+    active: &'a ActiveGenerations,
+    conversation_id: &'a str,
+    cancellation: CancellationToken,
+}
+
+impl Drop for ActiveNativeGeneration<'_> {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+        self.active.finish(self.conversation_id);
+    }
+}
+
+async fn next_token(
+    receiver: &mut tokio::sync::mpsc::Receiver<String>,
+    cancellation: &CancellationToken,
+) -> Option<String> {
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => {
+            receiver.close();
+            None
+        },
+        token = receiver.recv() => token,
+    }
+}
+
 pub async fn stream_native_completion(
     request: NativeStreamRequest<'_>,
 ) -> Result<InferenceMetrics, NativeStreamError> {
@@ -66,6 +96,11 @@ pub async fn stream_native_completion(
         .active
         .start(request.conversation_id)
         .map_err(NativeStreamError::before_output)?;
+    let _active_generation = ActiveNativeGeneration {
+        active: request.active,
+        conversation_id: request.conversation_id,
+        cancellation: cancellation.clone(),
+    };
     let started = Instant::now();
     let (token_tx, mut token_rx) = tokio::sync::mpsc::channel::<String>(TOKEN_CHANNEL_CAPACITY);
     let supervisor = Arc::clone(&request.supervisor);
@@ -76,7 +111,9 @@ pub async fn stream_native_completion(
             model,
             inference_request,
             worker_cancellation,
-            Box::new(move |token| token_tx.blocking_send(token.to_string()).is_ok()),
+            Box::new(move |token| {
+                token.is_empty() || token_tx.blocking_send(token.to_string()).is_ok()
+            }),
         )
     });
 
@@ -85,10 +122,7 @@ pub async fn stream_native_completion(
     let mut generated_chars = 0usize;
     let mut first_token_at = None;
 
-    while let Some(token) = token_rx.recv().await {
-        if cancellation.is_cancelled() {
-            break;
-        }
+    while let Some(token) = next_token(&mut token_rx, &cancellation).await {
         if token.is_empty() {
             continue;
         }
@@ -100,7 +134,6 @@ pub async fn stream_native_completion(
         if ui_buffer.len() >= UI_STREAM_CHUNK_BYTES {
             if let Err(error) = emit_stream_chunk(&request, &mut ui_buffer) {
                 cancellation.cancel();
-                request.active.finish(request.conversation_id);
                 return Err(NativeStreamError {
                     error,
                     emitted_output: generated_chars > 0,
@@ -110,7 +143,6 @@ pub async fn stream_native_completion(
         if flush_buffer.len() >= DB_STREAM_FLUSH_BYTES {
             if let Err(error) = flush(request.database, &request.assistant.id, &mut flush_buffer) {
                 cancellation.cancel();
-                request.active.finish(request.conversation_id);
                 return Err(NativeStreamError {
                     error,
                     emitted_output: generated_chars > 0,
@@ -119,6 +151,9 @@ pub async fn stream_native_completion(
         }
     }
 
+    // A bounded sender may be blocked when Stop is pressed. Close before joining
+    // the worker so blocking_send wakes even though we stopped draining tokens.
+    token_rx.close();
     let worker_result = worker.await.map_err(|error| NativeStreamError {
         error: AppError::InferenceFailed(format!("native inference worker join failed: {error}")),
         emitted_output: generated_chars > 0,
@@ -158,12 +193,9 @@ pub async fn stream_native_completion(
                 elapsed_ms: started.elapsed().as_millis(),
             })
         }
-        Err(error) if generated_chars == 0 => {
-            request.active.finish(request.conversation_id);
-            Err(NativeStreamError::before_output(map_supervisor_error(
-                error,
-            )))
-        }
+        Err(error) if generated_chars == 0 => Err(NativeStreamError::before_output(
+            map_supervisor_error(error),
+        )),
         Err(error) => {
             finalize(&request, "failed")?;
             Err(NativeStreamError::after_output(map_supervisor_error(error)))
@@ -281,7 +313,6 @@ fn finalize(request: &NativeStreamRequest<'_>, status: &str) -> Result<(), Nativ
         .map_err(|error| {
             NativeStreamError::after_output(AppError::StreamFailed(error.to_string()))
         })?;
-    request.active.finish(request.conversation_id);
     Ok(())
 }
 
@@ -297,5 +328,72 @@ fn map_supervisor_error(error: NativeSupervisorError) -> AppError {
             AppError::InferenceServerUnavailable(error.to_string())
         }
         NativeSupervisorError::Inference(error) => AppError::InferenceFailed(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::time::timeout;
+
+    #[tokio::test]
+    async fn stop_unblocks_a_full_token_queue() {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        sender.send("first".to_string()).await.unwrap();
+        let producer = tokio::task::spawn_blocking(move || sender.blocking_send("second".into()));
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        assert!(next_token(&mut receiver, &cancellation).await.is_none());
+        assert!(timeout(Duration::from_secs(2), producer)
+            .await
+            .expect("producer stayed blocked after Stop")
+            .unwrap()
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn stop_wakes_receiver_before_first_token() {
+        let (_sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let cancellation = CancellationToken::new();
+        let cancel = cancellation.clone();
+        let stop = async move {
+            tokio::task::yield_now().await;
+            cancel.cancel();
+        };
+        let wait = async {
+            assert!(next_token(&mut receiver, &cancellation).await.is_none());
+        };
+        timeout(Duration::from_secs(2), async {
+            tokio::join!(stop, wait);
+        })
+        .await
+        .expect("receiver waited for output after Stop");
+    }
+
+    #[tokio::test]
+    async fn dropped_request_releases_conversation_and_cancels_worker() {
+        let active = Arc::new(ActiveGenerations::default());
+        let cancellation = active.start("conversation").unwrap();
+        let worker_cancellation = cancellation.clone();
+        let task_active = Arc::clone(&active);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let request = tokio::spawn(async move {
+            let _guard = ActiveNativeGeneration {
+                active: &task_active,
+                conversation_id: "conversation",
+                cancellation,
+            };
+            started_tx.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        started_rx.await.unwrap();
+        assert!(!active.is_idle());
+        request.abort();
+        assert!(request.await.unwrap_err().is_cancelled());
+        assert!(worker_cancellation.is_cancelled());
+        assert!(active.is_idle());
+        assert!(active.start("conversation").is_ok());
     }
 }

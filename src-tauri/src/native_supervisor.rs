@@ -235,6 +235,13 @@ fn run_generation(
         result,
     } = command;
 
+    // A queued request may have been cancelled while another model was running.
+    // Do not load or evict a model for a request which has already gone away.
+    if cancellation.is_cancelled() || shutdown.load(Ordering::Acquire) {
+        let _ = result.send(Err(NativeSupervisorError::Cancelled));
+        return;
+    }
+
     let model_changed = loaded.as_ref().is_none_or(|current| current.spec != model);
     if model_changed {
         if let Some(current) = loaded.as_ref() {

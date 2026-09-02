@@ -43,9 +43,8 @@ pub async fn try_stream_native(
         Err(error) => return Some(Err(before_output(error))),
     };
 
-    let supervisor = Arc::clone(
-        NATIVE_SUPERVISOR.get_or_init(|| Arc::new(NativeInferenceSupervisor::start())),
-    );
+    let supervisor =
+        Arc::clone(NATIVE_SUPERVISOR.get_or_init(|| Arc::new(NativeInferenceSupervisor::start())));
     let first = stream_native_completion(NativeStreamRequest {
         app: request.app,
         database: request.database,
@@ -139,7 +138,9 @@ fn prepare_native_request(request: &StreamRequest<'_>) -> Result<PreparedNativeR
         )));
     }
 
-    let n_threads = i32::try_from(plan.config.threads).unwrap_or(i32::MAX).max(1);
+    let n_threads = i32::try_from(plan.config.threads)
+        .unwrap_or(i32::MAX)
+        .max(1);
     let config = GenerationConfig {
         temperature: 0.6,
         top_p: 0.95,
