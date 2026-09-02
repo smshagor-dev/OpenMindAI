@@ -29,14 +29,6 @@ mod ffi {
         fn create_engine(model_path: &str, n_gpu_layers: i32)
             -> Result<UniquePtr<InferenceEngine>>;
 
-        fn generate(
-            self: Pin<&mut InferenceEngine>,
-            prompt: &str,
-            system_prompt: &str,
-            config: &GenerationConfig,
-            sink: &mut TokenSink,
-        ) -> Result<()>;
-
         fn generate_messages(
             self: Pin<&mut InferenceEngine>,
             messages: &[ChatMessage],

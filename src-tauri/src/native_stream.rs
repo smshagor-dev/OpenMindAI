@@ -58,9 +58,9 @@ pub async fn stream_native_completion(
     let messages = build_text_context(request.database, request.conversation_id)
         .map_err(NativeStreamError::before_output)?;
     let inference_request = InferenceRequest::from_messages(messages).with_config(request.config);
-    inference_request
-        .validate()
-        .map_err(|error| NativeStreamError::before_output(AppError::InferenceFailed(error.to_string())))?;
+    inference_request.validate().map_err(|error| {
+        NativeStreamError::before_output(AppError::InferenceFailed(error.to_string()))
+    })?;
 
     let cancellation = request
         .active
@@ -119,11 +119,9 @@ pub async fn stream_native_completion(
         }
     }
 
-    let worker_result = worker.await.map_err(|error| {
-        NativeStreamError {
-            error: AppError::InferenceFailed(format!("native inference worker join failed: {error}")),
-            emitted_output: generated_chars > 0,
-        }
+    let worker_result = worker.await.map_err(|error| NativeStreamError {
+        error: AppError::InferenceFailed(format!("native inference worker join failed: {error}")),
+        emitted_output: generated_chars > 0,
     })?;
 
     if !ui_buffer.is_empty() {
@@ -141,7 +139,8 @@ pub async fn stream_native_completion(
         })?;
     }
 
-    if cancellation.is_cancelled() || matches!(worker_result, Err(NativeSupervisorError::Cancelled)) {
+    if cancellation.is_cancelled() || matches!(worker_result, Err(NativeSupervisorError::Cancelled))
+    {
         finalize(&request, "cancelled")?;
         return Ok(InferenceMetrics {
             time_to_first_token_ms: first_token_at,
@@ -161,7 +160,9 @@ pub async fn stream_native_completion(
         }
         Err(error) if generated_chars == 0 => {
             request.active.finish(request.conversation_id);
-            Err(NativeStreamError::before_output(map_supervisor_error(error)))
+            Err(NativeStreamError::before_output(map_supervisor_error(
+                error,
+            )))
         }
         Err(error) => {
             finalize(&request, "failed")?;
@@ -260,10 +261,9 @@ fn flush(
 
 fn finalize(request: &NativeStreamRequest<'_>, status: &str) -> Result<(), NativeStreamError> {
     {
-        let db = request
-            .database
-            .lock()
-            .map_err(|_| NativeStreamError::after_output(AppError::internal("database lock poisoned")))?;
+        let db = request.database.lock().map_err(|_| {
+            NativeStreamError::after_output(AppError::internal("database lock poisoned"))
+        })?;
         ChatRepository::new(&db)
             .set_message_status(&request.assistant.id, status)
             .map_err(NativeStreamError::after_output)?;

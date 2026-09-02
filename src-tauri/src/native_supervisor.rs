@@ -27,11 +27,22 @@ pub struct NativeModelSpec {
 pub enum NativeSupervisorState {
     Unavailable,
     Idle,
-    Loading { model_id: String },
-    Ready { model_id: String },
-    Generating { model_id: String },
-    Recovering { model_id: String },
-    Error { model_id: Option<String>, message: String },
+    Loading {
+        model_id: String,
+    },
+    Ready {
+        model_id: String,
+    },
+    Generating {
+        model_id: String,
+    },
+    Recovering {
+        model_id: String,
+    },
+    Error {
+        model_id: Option<String>,
+        message: String,
+    },
     Stopped,
 }
 
@@ -224,9 +235,7 @@ fn run_generation(
         result,
     } = command;
 
-    let model_changed = loaded
-        .as_ref()
-        .is_none_or(|current| current.spec != model);
+    let model_changed = loaded.as_ref().is_none_or(|current| current.spec != model);
     if model_changed {
         if let Some(current) = loaded.as_ref() {
             set_state(
@@ -286,7 +295,7 @@ fn run_generation(
     let backend = loaded
         .as_mut()
         .expect("native model must be loaded before generation");
-    let generation = backend.generate(
+    let generation = backend.backend.generate(
         request,
         Box::new(move |token| {
             if worker_shutdown.load(Ordering::Acquire) || worker_cancellation.is_cancelled() {
@@ -297,24 +306,14 @@ fn run_generation(
     );
 
     if cancellation.is_cancelled() || shutdown.load(Ordering::Acquire) {
-        set_state(
-            state,
-            NativeSupervisorState::Ready {
-                model_id: model.id,
-            },
-        );
+        set_state(state, NativeSupervisorState::Ready { model_id: model.id });
         let _ = result.send(Err(NativeSupervisorError::Cancelled));
         return;
     }
 
     match generation {
         Ok(()) => {
-            set_state(
-                state,
-                NativeSupervisorState::Ready {
-                    model_id: model.id,
-                },
-            );
+            set_state(state, NativeSupervisorState::Ready { model_id: model.id });
             let _ = result.send(Ok(()));
         }
         Err(error) => {
