@@ -1,0 +1,19 @@
+[package]
+name = "openmind-native-core"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Memory-safe Rust/C++ llama.cpp bridge for OpenMindAI"
+build = "build.rs"
+
+[lib]
+name = "openmind_native_core"
+crate-type = ["rlib"]
+
+[dependencies]
+cxx = "1.0.199"
+thiserror = "2"
+
+[build-dependencies]
+cmake = "0.1"
+cxx-build = "1.0.199"
