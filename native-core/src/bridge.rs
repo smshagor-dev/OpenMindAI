@@ -65,7 +65,7 @@ impl TokenSink {
     }
 }
 
-fn push_token(sink: &TokenSink, token: &[u8]) {
+pub(crate) fn push_token(sink: &TokenSink, token: &[u8]) {
     let Ok(mut state) = sink.state.lock() else {
         return;
     };
