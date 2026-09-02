@@ -23,10 +23,8 @@ mod ffi {
 
         type InferenceEngine;
 
-        fn create_engine(
-            model_path: &str,
-            n_gpu_layers: i32,
-        ) -> Result<UniquePtr<InferenceEngine>>;
+        fn create_engine(model_path: &str, n_gpu_layers: i32)
+            -> Result<UniquePtr<InferenceEngine>>;
 
         fn generate(
             self: Pin<&mut InferenceEngine>,
