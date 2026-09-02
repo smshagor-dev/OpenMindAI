@@ -15,7 +15,7 @@ mod ffi {
 
     extern "Rust" {
         type TokenSink;
-        fn on_token(self: &mut TokenSink, token: &str) -> bool;
+        fn on_token(sink: &mut TokenSink, token: &str) -> bool;
     }
 
     unsafe extern "C++" {
@@ -55,10 +55,10 @@ impl TokenSink {
             callback: Box::new(callback),
         }
     }
+}
 
-    fn on_token(&mut self, token: &str) -> bool {
-        (self.callback)(token)
-    }
+fn on_token(sink: &mut TokenSink, token: &str) -> bool {
+    (sink.callback)(token)
 }
 
 pub struct NativeInferenceEngine {
@@ -104,8 +104,8 @@ mod tests {
             token != "stop"
         });
 
-        assert!(sink.on_token("one"));
-        assert!(!sink.on_token("stop"));
+        assert!(on_token(&mut sink, "one"));
+        assert!(!on_token(&mut sink, "stop"));
     }
 
     #[test]
