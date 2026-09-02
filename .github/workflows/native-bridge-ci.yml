@@ -9,6 +9,7 @@ on:
       - "src-tauri/native/**"
       - "src-tauri/src/native_bridge.rs"
       - "src-tauri/src/native_inference.rs"
+      - "src-tauri/src/native_supervisor.rs"
       - "src-tauri/Cargo.toml"
       - "src-tauri/Cargo.lock"
       - "src-tauri/build.rs"
@@ -18,6 +19,7 @@ on:
       - "src-tauri/native/**"
       - "src-tauri/src/native_bridge.rs"
       - "src-tauri/src/native_inference.rs"
+      - "src-tauri/src/native_supervisor.rs"
       - "src-tauri/Cargo.toml"
       - "src-tauri/Cargo.lock"
       - "src-tauri/build.rs"
@@ -85,6 +87,7 @@ jobs:
           mkdir -p native-smoke/src native-smoke/native
           cp src-tauri/src/native_bridge.rs native-smoke/src/native_bridge.rs
           cp src-tauri/src/native_inference.rs native-smoke/src/native_inference.rs
+          cp src-tauri/src/native_supervisor.rs native-smoke/src/native_supervisor.rs
           cp src-tauri/native/inference.cpp native-smoke/native/inference.cpp
           cp src-tauri/native/inference.h native-smoke/native/inference.h
           cat > native-smoke/Cargo.toml <<'EOF'
@@ -96,6 +99,7 @@ jobs:
 
           [dependencies]
           cxx = "1.0"
+          tokio-util = "0.7"
 
           [build-dependencies]
           cxx-build = "1.0"
@@ -103,6 +107,7 @@ jobs:
           cat > native-smoke/src/lib.rs <<'EOF'
           pub mod native_bridge;
           pub mod native_inference;
+          pub mod native_supervisor;
           EOF
           cat > native-smoke/build.rs <<'EOF'
           use std::{env, path::PathBuf};

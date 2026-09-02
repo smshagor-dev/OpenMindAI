@@ -63,6 +63,10 @@ mod multimodal;
 pub mod native_bridge;
 #[cfg(feature = "native-cxx-llama")]
 pub mod native_inference;
+#[cfg(feature = "native-cxx-llama")]
+pub mod native_stream;
+#[cfg(feature = "native-cxx-llama")]
+pub mod native_supervisor;
 mod pdf_ocr;
 mod speech_runtime;
 mod vision_batch;

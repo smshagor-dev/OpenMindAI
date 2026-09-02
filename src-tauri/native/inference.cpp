@@ -27,6 +27,10 @@ std::string to_string(rust::Str value) {
     return std::string(value.data(), value.size());
 }
 
+std::string to_string(const rust::String& value) {
+    return std::string(value.data(), value.size());
+}
+
 std::uint32_t round_context(std::uint64_t value) {
     constexpr std::uint64_t kBlock = 256;
     const auto rounded = ((value + kBlock - 1) / kBlock) * kBlock;
@@ -36,25 +40,34 @@ std::uint32_t round_context(std::uint64_t value) {
     return static_cast<std::uint32_t>(rounded);
 }
 
-std::string format_prompt(
+bool supported_role(const std::string& role) {
+    return role == "system" || role == "user" || role == "assistant";
+}
+
+std::string apply_chat_template(
     const llama_model* model,
-    const std::string& prompt,
-    const std::string& system_prompt) {
+    const std::vector<std::pair<std::string, std::string>>& owned_messages) {
+    if (owned_messages.empty()) {
+        throw std::runtime_error("chat history must contain at least one message");
+    }
+
     const char* chat_template = llama_model_chat_template(model, nullptr);
     if (chat_template == nullptr || chat_template[0] == '\0') {
-        if (!system_prompt.empty()) {
-            throw std::runtime_error(
-                "model has no chat template; refusing to inject a generic system prompt");
+        if (owned_messages.size() == 1U && owned_messages.front().first == "user") {
+            return owned_messages.front().second;
         }
-        return prompt;
+        throw std::runtime_error(
+            "model has no chat template; refusing to flatten multi-turn role history");
     }
 
     std::vector<llama_chat_message> messages;
-    messages.reserve(system_prompt.empty() ? 1U : 2U);
-    if (!system_prompt.empty()) {
-        messages.push_back({"system", system_prompt.c_str()});
+    messages.reserve(owned_messages.size());
+    for (const auto& message : owned_messages) {
+        if (!supported_role(message.first)) {
+            throw std::runtime_error("unsupported chat message role: " + message.first);
+        }
+        messages.push_back({message.first.c_str(), message.second.c_str()});
     }
-    messages.push_back({"user", prompt.c_str()});
 
     int32_t required = llama_chat_apply_template(
         chat_template,
@@ -93,6 +106,30 @@ std::string format_prompt(
     }
 
     return std::string(formatted.data(), static_cast<std::size_t>(written));
+}
+
+std::string format_prompt(
+    const llama_model* model,
+    const std::string& prompt,
+    const std::string& system_prompt) {
+    std::vector<std::pair<std::string, std::string>> messages;
+    messages.reserve(system_prompt.empty() ? 1U : 2U);
+    if (!system_prompt.empty()) {
+        messages.emplace_back("system", system_prompt);
+    }
+    messages.emplace_back("user", prompt);
+    return apply_chat_template(model, messages);
+}
+
+std::string format_messages(
+    const llama_model* model,
+    rust::Slice<const ChatMessage> messages) {
+    std::vector<std::pair<std::string, std::string>> owned_messages;
+    owned_messages.reserve(messages.size());
+    for (const auto& message : messages) {
+        owned_messages.emplace_back(to_string(message.role), to_string(message.content));
+    }
+    return apply_chat_template(model, owned_messages);
 }
 
 std::vector<llama_token> tokenize(
@@ -196,6 +233,26 @@ public:
         rust::Str system_prompt,
         const GenerationConfig& config,
         TokenSink& sink) {
+        generate_formatted(format_prompt(model_, to_string(prompt), to_string(system_prompt)), config, sink);
+    }
+
+    void generate_messages(
+        rust::Slice<const ChatMessage> messages,
+        const GenerationConfig& config,
+        TokenSink& sink) {
+        generate_formatted(format_messages(model_, messages), config, sink);
+    }
+
+    void clear_kv_cache() {
+        std::lock_guard<std::mutex> guard(inference_mutex_);
+        if (context_) llama_memory_clear(llama_get_memory(context_.get()), true);
+    }
+
+private:
+    void generate_formatted(
+        const std::string& formatted_prompt,
+        const GenerationConfig& config,
+        TokenSink& sink) {
         std::lock_guard<std::mutex> guard(inference_mutex_);
         if (config.max_tokens == 0) return;
         if (!std::isfinite(config.temperature) || config.temperature < 0.0F)
@@ -204,8 +261,7 @@ public:
             throw std::runtime_error("top_p must be finite and in (0, 1]");
         if (config.n_threads <= 0) throw std::runtime_error("n_threads must be greater than 0");
 
-        const auto merged = format_prompt(model_, to_string(prompt), to_string(system_prompt));
-        auto prompt_tokens = tokenize(vocab_, merged, true);
+        auto prompt_tokens = tokenize(vocab_, formatted_prompt, true);
         if (prompt_tokens.empty()) throw std::runtime_error("prompt produced no tokens");
 
         const std::uint64_t required =
@@ -248,12 +304,6 @@ public:
         }
     }
 
-    void clear_kv_cache() {
-        std::lock_guard<std::mutex> guard(inference_mutex_);
-        if (context_) llama_memory_clear(llama_get_memory(context_.get()), true);
-    }
-
-private:
     void ensure_context(std::uint32_t n_ctx, std::uint32_t n_batch, std::int32_t n_threads) {
         const bool shrink = context_capacity_ > 0 && n_ctx < context_capacity_ / 2U;
         const bool must_rebuild =
@@ -311,6 +361,13 @@ void InferenceEngine::generate(
     const GenerationConfig& config,
     TokenSink& sink) {
     impl_->generate(prompt, system_prompt, config, sink);
+}
+
+void InferenceEngine::generate_messages(
+    rust::Slice<const ChatMessage> messages,
+    const GenerationConfig& config,
+    TokenSink& sink) {
+    impl_->generate_messages(messages, config, sink);
 }
 
 void InferenceEngine::clear_kv_cache() { impl_->clear_kv_cache(); }
