@@ -31,11 +31,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install experiment package
-        run: python -m pip install --no-deps -e experiments/python
-
       - name: Compile experiment sources
         run: python -m compileall -q experiments/python/openmind_personalization
 
       - name: Run safety contract tests
+        env:
+          PYTHONPATH: experiments/python
         run: python -m unittest discover -s experiments/python/tests -p "test_*.py"
