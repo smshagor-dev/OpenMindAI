@@ -557,6 +557,8 @@ class ModelStorageService {
     final sink = partFile.openWrite(
       mode: existingBytes > 0 ? FileMode.append : FileMode.write,
     );
+    final speedTimer = Stopwatch()..start();
+    final speedStartBytes = existingBytes;
     var received = existingBytes;
     try {
       await for (final chunk in body.stream) {
@@ -571,22 +573,59 @@ class ModelStorageService {
         final expected = artifact.size > 0
             ? artifact.size
             : existingBytes + body.contentLength;
+        final progress = expected > 0
+            ? (received / expected).clamp(0, 1).toDouble()
+            : 0.0;
+        final elapsedSeconds =
+            speedTimer.elapsedMicroseconds / Duration.microsecondsPerSecond;
+        final transferredBytes = received - speedStartBytes;
+        final bytesPerSecond = elapsedSeconds > 0
+            ? transferredBytes / elapsedSeconds
+            : 0.0;
+        final baseStage = existingBytes > 0
+            ? 'Resuming model download'
+            : stage;
         onProgress(
           ModelInstallProgress(
             modelId: modelId,
-            stage: existingBytes > 0 ? 'Resuming model download' : stage,
-            progress: expected > 0
-                ? (received / expected).clamp(0, 1).toDouble()
-                : 0,
+            stage: _downloadStageLabel(
+              stage: baseStage,
+              progress: progress,
+              bytesPerSecond: bytesPerSecond,
+            ),
+            progress: progress,
             receivedBytes: received,
             totalBytes: expected,
           ),
         );
       }
     } finally {
+      speedTimer.stop();
       await sink.flush();
       await sink.close();
     }
+  }
+
+  String _downloadStageLabel({
+    required String stage,
+    required double progress,
+    required double bytesPerSecond,
+  }) {
+    final percent = '${(progress * 100).clamp(0, 100).toStringAsFixed(1)}%';
+    final speed = _formatTransferRate(bytesPerSecond);
+    return '$stage · $percent · $speed';
+  }
+
+  String _formatTransferRate(double bytesPerSecond) {
+    const kib = 1024.0;
+    const mib = 1024.0 * 1024.0;
+    if (bytesPerSecond >= mib) {
+      return '${(bytesPerSecond / mib).toStringAsFixed(2)} MB/s';
+    }
+    if (bytesPerSecond >= kib) {
+      return '${(bytesPerSecond / kib).toStringAsFixed(1)} KB/s';
+    }
+    return '${bytesPerSecond.toStringAsFixed(0)} B/s';
   }
 
   Future<void> _verifyAndCommit({
