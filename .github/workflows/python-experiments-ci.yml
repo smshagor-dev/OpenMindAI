@@ -1,0 +1,41 @@
+name: Python personalization experiments
+
+on:
+  push:
+    branches:
+      - "feature/native-*"
+    paths:
+      - "experiments/python/**"
+      - ".github/workflows/python-experiments-ci.yml"
+  pull_request:
+    paths:
+      - "experiments/python/**"
+      - ".github/workflows/python-experiments-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-personalization-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stdlib-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install experiment package
+        run: python -m pip install --no-deps -e experiments/python
+
+      - name: Compile experiment sources
+        run: python -m compileall -q experiments/python/openmind_personalization
+
+      - name: Run safety contract tests
+        run: python -m unittest discover -s experiments/python/tests -p "test_*.py"
