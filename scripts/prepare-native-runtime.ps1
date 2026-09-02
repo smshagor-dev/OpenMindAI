@@ -9,6 +9,9 @@ param(
   [ValidatePattern('^[0-9a-fA-F]{40}$')]
   [string]$Commit,
 
+  [ValidateSet('cpu', 'vulkan')]
+  [string]$Backend = 'cpu',
+
   [string]$Platform = 'windows',
   [string]$Architecture = 'x86_64'
 )
@@ -27,10 +30,13 @@ if ($null -eq $llamaDll) {
 
 $libraryDir = $llamaDll.Directory.FullName
 $required = @('llama.dll', 'ggml.dll', 'ggml-base.dll', 'ggml-cpu.dll')
+if ($Backend -eq 'vulkan') {
+  $required += 'ggml-vulkan.dll'
+}
 foreach ($name in $required) {
   $path = Join-Path $libraryDir $name
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-    throw "Native runtime is incomplete: missing $name beside $($llamaDll.FullName)"
+    throw "Native runtime is incomplete for backend '$Backend': missing $name beside $($llamaDll.FullName)"
   }
 }
 
@@ -62,6 +68,7 @@ $manifest = [ordered]@{
   schemaVersion = 1
   abiTag = $abiTag
   llamaCppCommit = $normalizedCommit
+  backend = $Backend
   platform = $Platform
   architecture = $Architecture
   linkMode = 'shared'
@@ -71,7 +78,7 @@ $manifest = [ordered]@{
 $manifestPath = Join-Path $OutputDir 'native-runtime-manifest.json'
 $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding utf8
 
-Write-Host "Prepared native runtime: $abiTag"
+Write-Host "Prepared native runtime: $abiTag ($Backend)"
 Write-Host "Library directory: $libraryDir"
 Write-Host "Bundle directory: $OutputDir"
 Write-Host "Manifest: $manifestPath"
