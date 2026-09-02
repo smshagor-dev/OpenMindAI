@@ -128,13 +128,19 @@ fn validate_windows_files(backend: NativeRuntimeBackend) -> Result<(), String> {
         for required in WINDOWS_REQUIRED_DLLS {
             let path = app_dir.join(required);
             if !path.is_file() {
-                return Err(format!("native runtime library missing: {}", path.display()));
+                return Err(format!(
+                    "native runtime library missing: {}",
+                    path.display()
+                ));
             }
         }
         if backend == NativeRuntimeBackend::Vulkan {
             let path = app_dir.join(WINDOWS_VULKAN_DLL);
             if !path.is_file() {
-                return Err(format!("native Vulkan runtime library missing: {}", path.display()));
+                return Err(format!(
+                    "native Vulkan runtime library missing: {}",
+                    path.display()
+                ));
             }
         }
     }
