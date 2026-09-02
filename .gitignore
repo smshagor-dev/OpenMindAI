@@ -16,6 +16,18 @@
 /config/**
 /app/**
 
+# Generated native inference build/runtime bundles. Source and manifests are
+# produced by CI; compiled libraries never belong in the repository.
+/src-tauri/native-runtime/
+/vendor/llama.cpp/
+
+# Python personalization experiments stay isolated from the production app.
+/experiments/python/.venv/
+/experiments/python/.pytest_cache/
+/experiments/python/**/__pycache__/
+/experiments/python/output/
+/experiments/python/user-data/
+
 # Legacy/development fallback runtime root.
 OpenMindAI/
 

@@ -1,0 +1,16 @@
+[project]
+name = "openmindai-personalization-experiments"
+version = "0.1.0"
+description = "Offline, opt-in evaluation and per-user personalization experiments for OpenMindAI"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.openmindai]
+production_dependency = false
+base_model_immutable = true
+requires_explicit_feedback = true
+idle_only_training = true
+require_holdout_improvement = true
+
+[tool.ruff]
+line-length = 100

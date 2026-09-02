@@ -1,8 +1,16 @@
-use std::{env, path::PathBuf};
+use std::{
+    env,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+const PINNED_LLAMA_CPP_COMMIT: &str = "7798007a29a90e3053e799394da48cf53a2f8e0f";
 
 fn main() {
     println!("cargo:rerun-if-env-changed=LLAMA_CPP_DIR");
     println!("cargo:rerun-if-env-changed=LLAMA_CPP_LIB_DIR");
+    println!("cargo:rerun-if-env-changed=LLAMA_CPP_COMMIT");
+    println!("cargo:rerun-if-env-changed=OPENMINDAI_NATIVE_STRICT_ABI");
     println!("cargo:rerun-if-env-changed=OPENMINDAI_LLAMA_LINK_KIND");
     println!("cargo:rerun-if-env-changed=OPENMINDAI_LLAMA_EXTRA_LIBS");
     println!("cargo:rerun-if-env-changed=OPENMINDAI_LLAMA_CUDA");
@@ -12,6 +20,11 @@ fn main() {
     println!("cargo:rerun-if-changed=native/inference.cpp");
     println!("cargo:rerun-if-changed=native/inference.h");
     println!("cargo:rerun-if-changed=src/native_bridge.rs");
+    println!("cargo:rustc-env=OPENMINDAI_NATIVE_LLAMA_COMMIT={PINNED_LLAMA_CPP_COMMIT}");
+    println!(
+        "cargo:rustc-env=OPENMINDAI_NATIVE_ABI_TAG=llama-cxx-{}",
+        &PINNED_LLAMA_CPP_COMMIT[..12]
+    );
 
     if env::var_os("CARGO_FEATURE_NATIVE_CXX_LLAMA").is_some() {
         build_native_llama_bridge();
@@ -23,6 +36,8 @@ fn main() {
 fn build_native_llama_bridge() {
     let llama_dir = required_path("LLAMA_CPP_DIR");
     let llama_lib_dir = required_path("LLAMA_CPP_LIB_DIR");
+    validate_llama_abi(&llama_dir);
+
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let portable = env_flag("OPENMINDAI_PORTABLE_BUILD");
@@ -55,8 +70,8 @@ fn build_native_llama_bridge() {
     }
 
     // This compiles only OpenMindAI's thin wrapper. CUDA/AVX kernels are compiled
-    // inside llama.cpp itself, so build llama.cpp with GGML_CUDA=ON / native CPU
-    // flags and point this crate at that output directory.
+    // inside llama.cpp itself, so build llama.cpp with the desired backend and
+    // point this crate at that exact ABI-compatible output directory.
     build.compile("openmind_llama_bridge");
 
     println!("cargo:rustc-link-search=native={}", llama_lib_dir.display());
@@ -79,6 +94,45 @@ fn build_native_llama_bridge() {
     if env_flag("OPENMINDAI_LLAMA_CUDA") {
         configure_cuda_link_search(&target_env);
         println!("cargo:rustc-cfg=openmind_llama_cuda");
+    }
+}
+
+fn validate_llama_abi(llama_dir: &Path) {
+    let strict = env_flag("OPENMINDAI_NATIVE_STRICT_ABI");
+    match env::var("LLAMA_CPP_COMMIT") {
+        Ok(commit) if commit.eq_ignore_ascii_case(PINNED_LLAMA_CPP_COMMIT) => {}
+        Ok(commit) => panic!(
+            "native llama ABI mismatch: build declares {commit}, OpenMindAI requires {PINNED_LLAMA_CPP_COMMIT}"
+        ),
+        Err(_) if strict => panic!(
+            "LLAMA_CPP_COMMIT is required when OPENMINDAI_NATIVE_STRICT_ABI=1; expected {PINNED_LLAMA_CPP_COMMIT}"
+        ),
+        Err(_) => println!(
+            "cargo:warning=LLAMA_CPP_COMMIT is not set; native ABI source revision is not declared"
+        ),
+    }
+
+    let revision = Command::new("git")
+        .arg("-C")
+        .arg(llama_dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    if let Some(revision) = revision {
+        if !revision.eq_ignore_ascii_case(PINNED_LLAMA_CPP_COMMIT) {
+            panic!(
+                "native llama source revision mismatch: {revision}; expected {PINNED_LLAMA_CPP_COMMIT}"
+            );
+        }
+    } else if strict {
+        println!(
+            "cargo:warning=unable to read llama.cpp git revision; strict ABI is relying on LLAMA_CPP_COMMIT"
+        );
     }
 }
 
