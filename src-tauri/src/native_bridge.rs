@@ -1,5 +1,3 @@
-use std::pin::Pin;
-
 #[cxx::bridge(namespace = "openmind")]
 mod ffi {
     #[derive(Debug, Clone, Copy)]
