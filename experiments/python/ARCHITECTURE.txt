@@ -1,0 +1,41 @@
+OpenMindAI Python Personalization Experiments
+============================================
+
+Purpose
+-------
+This directory is an isolated, optional research subsystem. It is not imported by the
+Tauri/Rust/C++ production application and is not shipped as a mandatory runtime.
+
+The goal is to reduce repeated work for the main model by learning a local user's
+explicit preferences and corrections without modifying the base GGUF model in place.
+
+Planned pipeline
+----------------
+1. Explicit feedback/corrections are stored locally as structured examples.
+2. Memory/retrieval and prompt-profile updates are tried before any training.
+3. When enough high-quality examples exist, an offline per-user adapter experiment may run.
+4. Training runs only while the machine is idle and within CPU/RAM/VRAM limits.
+5. The base model remains immutable. New adapters are versioned and reversible.
+6. A candidate adapter is evaluated on a held-out local set before activation.
+7. If quality, latency, or stability regresses, the candidate is rejected automatically.
+8. Accepted adapters are consumed by the native inference layer only after an explicit
+   product integration phase adds a compatible, validated adapter-loading contract.
+
+Pressure reduction strategy
+---------------------------
+- Reuse deterministic user preferences through a small local profile.
+- Retrieve relevant prior corrections instead of asking the base model to rediscover them.
+- Cache repeatable transformations/results where safe.
+- Prefer small per-user LoRA/adapter updates over retraining or rewriting the base model.
+- Perform conversion/quantization experiments offline, then hand validated GGUF artifacts
+  back to the C++/llama.cpp runtime.
+
+Safety/stability rules
+----------------------
+- No silent autonomous mutation of the base model.
+- No training directly from every conversation by default.
+- Only explicit feedback/corrections become training candidates.
+- Personalization data stays local to the selected user profile.
+- Every adapter must have a baseline score, candidate score, version, and rollback path.
+- Training and conversion are lower-priority background experiments, never part of the
+  chat request critical path.
