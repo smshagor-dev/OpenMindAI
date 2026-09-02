@@ -2,9 +2,12 @@
 mod legacy;
 
 pub use legacy::{
-    ActiveGenerations, ChatGenerationConfig, InferenceMedia, InferenceMetrics, InferenceMode,
-    StreamChunkEvent, StreamDoneEvent, StreamRequest, StreamStartedEvent,
+    ActiveGenerations, InferenceMedia, InferenceMode, StreamChunkEvent, StreamDoneEvent,
+    StreamRequest, StreamStartedEvent,
 };
+
+#[cfg(feature = "native-cxx-llama")]
+pub use legacy::InferenceMetrics;
 
 #[cfg(feature = "native-cxx-llama")]
 #[path = "native_chat_router.rs"]
