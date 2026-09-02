@@ -1,0 +1,22 @@
+{
+  "name": "@openmindai/native-llama",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "artifacts": "napi artifacts"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.0.0"
+  },
+  "napi": {
+    "name": "openmind_native_node",
+    "triples": {
+      "defaults": true
+    }
+  }
+}
