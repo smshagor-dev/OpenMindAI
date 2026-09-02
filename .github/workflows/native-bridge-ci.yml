@@ -65,9 +65,10 @@ jobs:
         id: llama-lib
         shell: bash
         run: |
-          library="$(find vendor/llama.cpp/build -type f \( -name 'libllama.so' -o -name 'libllama.dylib' -o -name 'llama.dll' \) -print -quit)"
+          library="$(find vendor/llama.cpp/build \( -type f -o -type l \) \( -name 'libllama.so' -o -name 'libllama.dylib' -o -name 'llama.dll' \) -print -quit)"
           if [[ -z "$library" ]]; then
             echo "Unable to locate built llama shared library" >&2
+            find vendor/llama.cpp/build -maxdepth 3 \( -name 'libllama*' -o -name 'llama.dll' \) -print >&2 || true
             exit 1
           fi
           echo "dir=$(dirname "$library")" >> "$GITHUB_OUTPUT"
