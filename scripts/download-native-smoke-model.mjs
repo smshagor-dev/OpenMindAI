@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 import { readFile, writeFile, mkdir, rename, rm, stat } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
+import { URL } from 'node:url';
 
 const lock = JSON.parse(await readFile(new URL('./native-smoke-model.json', import.meta.url), 'utf8'));
 const destination = resolve(process.argv[2] ?? 'native-smoke-model.gguf');
@@ -16,7 +18,7 @@ if (cached && valid(cached)) {
   console.log(`Verified cached smoke fixture: ${destination}`);
 } else {
   const url = `https://huggingface.co/${lock.repository}/resolve/${lock.revision}/${lock.file}`;
-  const response = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+  const response = await globalThis.fetch(url, { signal: globalThis.AbortSignal.timeout(120_000) });
   if (!response.ok || !response.body) throw new Error(`Smoke fixture download failed: HTTP ${response.status}`);
   const chunks = [];
   let size = 0;
