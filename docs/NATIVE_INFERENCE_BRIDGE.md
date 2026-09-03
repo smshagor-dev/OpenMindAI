@@ -241,6 +241,37 @@ The dedicated native workflow pins llama.cpp commit:
 
 It builds a shared CPU llama library and then compiles, links, tests, and runs Clippy against an isolated smoke crate containing both the bridge and reusable native Rust inference module.
 
+### Windows Vulkan package isolation
+
+`Native Vulkan runtime` also downloads the staged DLL artifact on a fresh Windows
+runner. `scripts/test-native-runtime.ps1` verifies the manifest commit, ABI tag,
+file set, sizes and SHA256 hashes before running each loader scenario in a separate
+PowerShell process with a 30-second timeout. No Vulkan SDK is installed by this job.
+The probe removes SDK/build paths and Vulkan environment overrides. Its Windows
+DLL search is restricted to the bundle directory and System32 using
+[`LoadLibraryExW`](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibraryexw).
+
+The complete bundle must load, initialize llama.cpp, and allocate/free a 4 KiB CPU
+backend buffer. Then copies with each required DLL removed must fail with Win32
+error 126. Fresh child processes prevent an already-loaded DLL from hiding a
+missing dependency. Loaded llama/ggml/Vulkan module paths are printed in CI logs.
+
+Run the same check on a Windows x64 machine with PowerShell 7:
+
+```powershell
+./scripts/test-native-runtime.ps1 -RuntimeDir ./native-vulkan-artifact `
+  -ExpectedCommit 7798007a29a90e3053e799394da48cf53a2f8e0f
+```
+
+This checks SDK-independent package loading with the host's system runtime/driver
+libraries available. It does not prove that Vulkan runtime prerequisites are absent,
+run a GGUF model, exercise GPU inference, or test the application's CPU retry.
+The CPU buffer check only verifies that the CPU backend in the Vulkan bundle is usable.
+With the current linked DLL layout, a missing Vulkan dependency can prevent app
+startup before Rust routing executes; the pre-token CPU retry handles errors after
+successful loading, not Windows loader failures. Production Vulkan enablement still
+requires resolving that startup dependency and real-device model/fallback tests.
+
 ## Remaining production work
 
 Before native inference becomes OpenMindAI's default chat path:
