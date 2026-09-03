@@ -7,6 +7,22 @@ use crate::hardware::BackendKind;
 pub const LLAMA_CPP_COMMIT: &str = env!("OPENMINDAI_NATIVE_LLAMA_COMMIT");
 pub const ABI_TAG: &str = env!("OPENMINDAI_NATIVE_ABI_TAG");
 
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BackendLoading {
+    #[default]
+    Linked,
+    Dynamic,
+}
+
+fn compiled_backend_loading() -> BackendLoading {
+    if option_env!("OPENMINDAI_NATIVE_BACKEND_LOADING") == Some("dynamic") {
+        BackendLoading::Dynamic
+    } else {
+        BackendLoading::Linked
+    }
+}
+
 pub const WINDOWS_REQUIRED_DLLS: &[&str] =
     &["llama.dll", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll"];
 pub const WINDOWS_VULKAN_DLL: &str = "ggml-vulkan.dll";
@@ -40,6 +56,8 @@ pub struct InstalledNativeRuntime {
     pub abi_tag: String,
     pub llama_cpp_commit: String,
     pub backend: NativeRuntimeBackend,
+    #[serde(default)]
+    pub backend_loading: BackendLoading,
 }
 
 impl InstalledNativeRuntime {
@@ -62,6 +80,11 @@ impl InstalledNativeRuntime {
                 self.llama_cpp_commit
             ));
         }
+        if self.backend_loading != compiled_backend_loading() {
+            return Err(
+                "native runtime backend loading mode does not match this application".into(),
+            );
+        }
         Ok(())
     }
 }
@@ -81,6 +104,7 @@ pub fn detect_installed() -> Result<InstalledNativeRuntime, String> {
             abi_tag: ABI_TAG.to_string(),
             llama_cpp_commit: LLAMA_CPP_COMMIT.to_string(),
             backend,
+            backend_loading: compiled_backend_loading(),
         });
     }
 
@@ -94,7 +118,7 @@ pub fn detect_installed() -> Result<InstalledNativeRuntime, String> {
     let runtime: InstalledNativeRuntime = serde_json::from_str(&manifest)
         .map_err(|error| format!("invalid native runtime manifest: {error}"))?;
     runtime.validate()?;
-    validate_windows_files(runtime.backend)?;
+    validate_windows_files(runtime.backend, runtime.backend_loading)?;
     Ok(runtime)
 }
 
@@ -118,7 +142,10 @@ fn installed_manifest_path() -> Result<PathBuf, String> {
     Err("packaged native runtime discovery is currently implemented for Windows".to_string())
 }
 
-fn validate_windows_files(backend: NativeRuntimeBackend) -> Result<(), String> {
+fn validate_windows_files(
+    backend: NativeRuntimeBackend,
+    loading: BackendLoading,
+) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let executable = env::current_exe()
@@ -135,7 +162,7 @@ fn validate_windows_files(backend: NativeRuntimeBackend) -> Result<(), String> {
                 ));
             }
         }
-        if backend == NativeRuntimeBackend::Vulkan {
+        if backend == NativeRuntimeBackend::Vulkan && loading == BackendLoading::Linked {
             let path = app_dir.join(WINDOWS_VULKAN_DLL);
             if !path.is_file() {
                 return Err(format!(
@@ -147,7 +174,7 @@ fn validate_windows_files(backend: NativeRuntimeBackend) -> Result<(), String> {
     }
 
     #[cfg(not(target_os = "windows"))]
-    let _ = backend;
+    let _ = (backend, loading);
 
     Ok(())
 }
@@ -163,6 +190,35 @@ fn parse_backend(value: &str) -> Result<NativeRuntimeBackend, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loading_mode_mismatch_is_rejected() {
+        let mut runtime = InstalledNativeRuntime {
+            schema_version: 1,
+            abi_tag: ABI_TAG.to_string(),
+            llama_cpp_commit: LLAMA_CPP_COMMIT.to_string(),
+            backend: NativeRuntimeBackend::Vulkan,
+            backend_loading: compiled_backend_loading(),
+        };
+        assert!(runtime.validate().is_ok());
+        runtime.backend_loading = match runtime.backend_loading {
+            BackendLoading::Linked => BackendLoading::Dynamic,
+            BackendLoading::Dynamic => BackendLoading::Linked,
+        };
+        assert!(runtime.validate().unwrap_err().contains("loading mode"));
+    }
+
+    #[test]
+    fn old_manifests_default_to_linked_backends() {
+        let runtime: InstalledNativeRuntime = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "abiTag": ABI_TAG,
+            "llamaCppCommit": LLAMA_CPP_COMMIT,
+            "backend": "cpu"
+        }))
+        .unwrap();
+        assert_eq!(runtime.backend_loading, BackendLoading::Linked);
+    }
 
     #[test]
     fn abi_tag_is_derived_from_pinned_commit() {

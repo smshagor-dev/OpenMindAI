@@ -12,6 +12,8 @@ param(
   [ValidateSet('cpu', 'vulkan')]
   [string]$Backend = 'cpu',
 
+  [switch]$DynamicBackends,
+
   [string]$Platform = 'windows',
   [string]$Architecture = 'x86_64'
 )
@@ -69,6 +71,7 @@ $manifest = [ordered]@{
   abiTag = $abiTag
   llamaCppCommit = $normalizedCommit
   backend = $Backend
+  backendLoading = $(if ($DynamicBackends) { 'dynamic' } else { 'linked' })
   platform = $Platform
   architecture = $Architecture
   linkMode = 'shared'

@@ -6,7 +6,9 @@ param(
   [string]$ExpectedCommit,
 
   # Internal child mode: each loader scenario needs a fresh process/module cache.
-  [switch]$Probe
+  [switch]$Probe,
+  [switch]$DynamicBackends,
+  [switch]$CpuOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,13 +19,16 @@ if (-not $IsWindows -or -not [Environment]::Is64BitProcess) {
 $runtimeRoot = (Resolve-Path -LiteralPath $RuntimeDir).Path
 if ($Probe) {
   Add-Type -Path (Join-Path $PSScriptRoot 'native-runtime-probe.cs')
-  exit [NativeRuntimeProbe]::Run($runtimeRoot)
+  exit [NativeRuntimeProbe]::Run($runtimeRoot, $DynamicBackends, $CpuOnly)
 }
 if (-not $ExpectedCommit) {
   throw 'ExpectedCommit is required for package validation'
 }
 
 $manifest = Get-Content -LiteralPath (Join-Path $runtimeRoot 'native-runtime-manifest.json') -Raw | ConvertFrom-Json
+$loading = if ($manifest.PSObject.Properties['backendLoading']) { $manifest.backendLoading } else { 'linked' }
+if ($loading -notin @('linked', 'dynamic')) { throw "Unsupported backend loading mode: $loading" }
+$DynamicBackends = $loading -eq 'dynamic'
 $commit = $ExpectedCommit.ToLowerInvariant()
 if ($manifest.schemaVersion -ne 1 -or $manifest.llamaCppCommit -ne $commit -or
     $manifest.abiTag -ne "llama-cxx-$($commit.Substring(0, 12))" -or
@@ -58,16 +63,25 @@ $scratch = Join-Path ([IO.Path]::GetTempPath()) ("openmind-runtime-probe-" + [Gu
 New-Item -ItemType Directory -Path $scratch | Out-Null
 $shell = (Get-Process -Id $PID).Path
 
-function Invoke-IsolatedProbe([string]$Directory, [int]$ExpectedExit, [string]$Scenario) {
+function Invoke-IsolatedProbe([string]$Directory, [int]$ExpectedExit, [string]$Scenario,
+                              [string]$ExpectedOutput = '', [switch]$OnlyCpu,
+                              [string]$WrapperMode = '') {
   $start = [Diagnostics.ProcessStartInfo]::new()
   $start.FileName = $shell
   $start.UseShellExecute = $false
   $start.RedirectStandardOutput = $true
   $start.RedirectStandardError = $true
   $start.WorkingDirectory = $scratch
-  foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $PSCommandPath,
+  if ($WrapperMode) {
+    $start.FileName = Join-Path $Directory 'native-backend-probe.exe'
+    $start.ArgumentList.Add($WrapperMode)
+  } else {
+    foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $PSCommandPath,
                           '-RuntimeDir', $Directory, '-Probe')) {
-    $start.ArgumentList.Add($argument)
+      $start.ArgumentList.Add($argument)
+    }
+    if ($DynamicBackends) { $start.ArgumentList.Add('-DynamicBackends') }
+    if ($OnlyCpu) { $start.ArgumentList.Add('-CpuOnly') }
   }
   # Keep OS/driver support, but remove all SDK/build paths and Vulkan overrides.
   $start.Environment['PATH'] = "$env:SystemRoot\System32;$env:SystemRoot"
@@ -87,10 +101,14 @@ function Invoke-IsolatedProbe([string]$Directory, [int]$ExpectedExit, [string]$S
       $process.WaitForExit()
       throw "Runtime probe timed out: $Scenario"
     }
-    Write-Host $stdout.GetAwaiter().GetResult()
+    $output = $stdout.GetAwaiter().GetResult()
+    Write-Host $output
     Write-Host $stderr.GetAwaiter().GetResult()
     if ($process.ExitCode -ne $ExpectedExit) {
       throw "$Scenario failed: exit $($process.ExitCode), expected $ExpectedExit. Check packaged DLLs and system runtime prerequisites."
+    }
+    if ($ExpectedOutput -and -not $output.Contains($ExpectedOutput)) {
+      throw "$Scenario did not exercise the expected fallback: $ExpectedOutput"
     }
     Write-Host "runtime.scenario: $Scenario passed"
   }
@@ -100,6 +118,10 @@ function Invoke-IsolatedProbe([string]$Directory, [int]$ExpectedExit, [string]$S
 try {
   # The positive probe must pass before missing-DLL negatives can count as success.
   Invoke-IsolatedProbe $runtimeRoot 0 'packaged runtime without SDK search paths'
+  if ($DynamicBackends) {
+    Invoke-IsolatedProbe $runtimeRoot 0 'CPU-only initialization does not load Vulkan' -OnlyCpu
+    Invoke-IsolatedProbe $runtimeRoot 0 'actual CXX CPU initialization' -WrapperMode cpu
+  }
   foreach ($missing in $required) {
     $damaged = Join-Path $scratch "missing-$missing"
     New-Item -ItemType Directory -Path $damaged | Out-Null
@@ -108,7 +130,30 @@ try {
         Copy-Item -LiteralPath (Join-Path $runtimeRoot $name) -Destination $damaged
       }
     }
-    Invoke-IsolatedProbe $damaged 20 "missing $missing is detected by loader"
+    if ($DynamicBackends -and $missing -eq 'ggml-vulkan.dll') {
+      Copy-Item -LiteralPath (Join-Path $runtimeRoot 'native-backend-probe.exe') -Destination $damaged
+      Invoke-IsolatedProbe $damaged 0 'missing Vulkan plugin preserves CPU' 'runtime.vulkan: unavailable'
+      Invoke-IsolatedProbe $damaged 0 'CXX reports missing Vulkan before model load' -WrapperMode gpu-unavailable
+      Invoke-IsolatedProbe $damaged 0 'CXX CPU works without Vulkan plugin' -WrapperMode cpu
+    } else {
+      Invoke-IsolatedProbe $damaged 20 "missing $missing is detected by loader"
+    }
+  }
+  if ($DynamicBackends -and $manifest.backend -eq 'vulkan') {
+    $damaged = Join-Path $scratch 'missing-vulkan-loader'
+    New-Item -ItemType Directory -Path $damaged | Out-Null
+    foreach ($name in $names) {
+      Copy-Item -LiteralPath (Join-Path $runtimeRoot $name) -Destination $damaged
+    }
+    if (Test-Path -LiteralPath (Join-Path $env:SystemRoot 'System32/omai-mis.dll')) {
+      throw 'Fault injection DLL name unexpectedly exists on this host'
+    }
+    Add-Type -Path (Join-Path $PSScriptRoot 'native-runtime-probe.cs')
+    [NativeRuntimeProbe]::BreakVulkanImport((Join-Path $damaged 'ggml-vulkan.dll'))
+    Copy-Item -LiteralPath (Join-Path $runtimeRoot 'native-backend-probe.exe') -Destination $damaged
+    Invoke-IsolatedProbe $damaged 0 'missing Vulkan loader preserves CPU' 'runtime.vulkan: unavailable'
+    Invoke-IsolatedProbe $damaged 0 'CXX reports missing Vulkan loader before model load' -WrapperMode gpu-unavailable
+    Invoke-IsolatedProbe $damaged 0 'CXX CPU works without Vulkan loader' -WrapperMode cpu
   }
 }
 finally { Remove-Item -LiteralPath $scratch -Recurse -Force }

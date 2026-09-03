@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -14,13 +15,94 @@
 #include <utility>
 #include <vector>
 
+#ifdef OPENMINDAI_DYNAMIC_BACKENDS
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <filesystem>
+#include "ggml-backend.h"
+#endif
+
 namespace openmind {
 namespace {
 
 std::once_flag g_backend_once;
 
-void ensure_backend_initialized() {
+#ifdef OPENMINDAI_DYNAMIC_BACKENDS
+std::once_flag g_vulkan_once;
+bool g_vulkan_available = false;
+std::filesystem::path g_backend_directory;
+
+std::filesystem::path backend_directory() {
+    // Development override is a single explicit directory, never a search path.
+    const auto needed = GetEnvironmentVariableW(L"OPENMINDAI_NATIVE_BACKEND_DIR", nullptr, 0);
+    if (needed > 0) {
+        std::wstring value(needed, L'\0');
+        const auto length = GetEnvironmentVariableW(
+            L"OPENMINDAI_NATIVE_BACKEND_DIR", value.data(), needed);
+        if (length == 0 || length >= needed) {
+            throw std::runtime_error("native backend directory changed while reading environment");
+        }
+        value.resize(length);
+        const std::filesystem::path path(value);
+        if (!path.is_absolute()) throw std::runtime_error("native backend directory must be absolute");
+        return std::filesystem::canonical(path);
+    }
+    std::wstring path(32768, L'\0');
+    const auto length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (length == 0 || length >= path.size()) {
+        throw std::runtime_error("cannot locate executable directory for native backends");
+    }
+    path.resize(length);
+    return std::filesystem::canonical(std::filesystem::path(path).parent_path());
+}
+
+ggml_backend_reg_t load_backend(const wchar_t* name) {
+    const auto path = g_backend_directory / name;
+    // Preload dependencies using only this directory and System32. ggml then
+    // acquires its own module reference without searching PATH or the CWD.
+    DWORD previous_mode = 0;
+    const bool changed_mode = SetThreadErrorMode(SEM_FAILCRITICALERRORS, &previous_mode) != 0;
+    const auto module = LoadLibraryExW(path.c_str(), nullptr,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (changed_mode) SetThreadErrorMode(previous_mode, nullptr);
+    if (module == nullptr) return nullptr;
+    struct ModuleGuard {
+        HMODULE value;
+        ~ModuleGuard() { FreeLibrary(value); }
+    } guard{module};
+    return ggml_backend_load(path.u8string().c_str());
+}
+#endif
+
+void ensure_backend_initialized(std::int32_t n_gpu_layers) {
+#ifdef OPENMINDAI_DYNAMIC_BACKENDS
+    std::call_once(g_backend_once, [] {
+        g_backend_directory = backend_directory();
+        auto* cpu = load_backend(L"ggml-cpu.dll");
+        if (cpu == nullptr || ggml_backend_reg_dev_count(cpu) == 0) {
+            throw std::runtime_error("native CPU backend is unavailable");
+        }
+        // Register CPU first: llama_backend_init must not scan arbitrary backend
+        // directories through ggml_backend_load_all or GGML_BACKEND_PATH.
+        llama_backend_init();
+    });
+    if (n_gpu_layers != 0) {
+        std::call_once(g_vulkan_once, [] {
+            if (std::getenv("GGML_DISABLE_VULKAN") != nullptr) return;
+            auto* vulkan = load_backend(L"ggml-vulkan.dll");
+            g_vulkan_available = vulkan != nullptr && ggml_backend_reg_dev_count(vulkan) > 0;
+        });
+        if (!g_vulkan_available) {
+            // The Rust router retries with n_gpu_layers=0 before emitting output.
+            throw std::runtime_error("native Vulkan backend is unavailable; CPU retry required");
+        }
+    }
+#else
+    (void)n_gpu_layers;
     std::call_once(g_backend_once, [] { llama_backend_init(); });
+#endif
 }
 
 std::string to_string(rust::Str value) {
@@ -210,7 +292,7 @@ using SamplerPtr = std::unique_ptr<llama_sampler, SamplerDeleter>;
 class InferenceEngine::Impl final {
 public:
     Impl(rust::Str model_path, std::int32_t n_gpu_layers) {
-        ensure_backend_initialized();
+        ensure_backend_initialized(n_gpu_layers);
         auto params = llama_model_default_params();
         params.n_gpu_layers = n_gpu_layers;
         model_ = llama_model_load_from_file(to_string(model_path).c_str(), params);
