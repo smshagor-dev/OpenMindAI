@@ -42,7 +42,8 @@ impl NativeStreamError {
         !self.emitted_output
             && !matches!(
                 &self.error,
-                AppError::InferenceTimeout(_)
+                AppError::PersonalizationRejected(_)
+                    | AppError::InferenceTimeout(_)
                     | AppError::InferenceCancelled(_)
                     | AppError::ContextOverflow(_)
                     | AppError::ModelOutOfMemory(_)
@@ -396,7 +397,9 @@ fn map_supervisor_error(error: NativeSupervisorError) -> AppError {
         }
         NativeSupervisorError::Inference(error) => {
             let message = error.to_string();
-            if message.contains("deadline exceeded") {
+            if message.contains("adapter") {
+                AppError::PersonalizationRejected(message)
+            } else if message.contains("deadline exceeded") {
                 AppError::InferenceTimeout(message)
             } else if message.contains("KV memory budget exceeded") {
                 AppError::ModelOutOfMemory(message)

@@ -1,3 +1,6 @@
+#[path = "native_adapter.rs"]
+pub mod native_adapter;
+
 use std::{
     path::PathBuf,
     sync::{
@@ -22,6 +25,7 @@ pub struct NativeModelSpec {
     pub id: String,
     pub path: PathBuf,
     pub n_gpu_layers: i32,
+    pub adapter: Option<native_adapter::NativeAdapterSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,7 +94,7 @@ struct GenerationCommand {
 }
 
 enum WorkerCommand {
-    Generate(GenerationCommand),
+    Generate(Box<GenerationCommand>),
     Clear(SyncSender<()>),
     Shutdown,
 }
@@ -166,13 +170,13 @@ impl NativeInferenceSupervisor {
         let deadline = Instant::now() + Duration::from_millis(u64::from(request.config.timeout_ms));
         let cancellation_signal = cancellation.clone();
         let (result_tx, result_rx) = mpsc::sync_channel(1);
-        let command = WorkerCommand::Generate(GenerationCommand {
+        let command = WorkerCommand::Generate(Box::new(GenerationCommand {
             model,
             request,
             cancellation,
             on_token,
             result: result_tx,
-        });
+        }));
         match self.commands.try_send(command) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => return Err(NativeSupervisorError::Busy),
@@ -263,7 +267,7 @@ fn worker_loop(
         };
         match command {
             WorkerCommand::Generate(command) => {
-                run_generation(&mut loaded, &state, &shutdown, command);
+                run_generation(&mut loaded, &state, &shutdown, *command);
             }
             WorkerCommand::Clear(completed) => {
                 if let Some(model) = loaded.as_mut() {
@@ -323,7 +327,24 @@ fn run_generation(
             },
         );
         match NativeBackend::load(&model.path, model.n_gpu_layers) {
-            Ok(backend) => {
+            Ok(mut backend) => {
+                if let Some(adapter) = &model.adapter {
+                    let activation = adapter
+                        .verify(&model.path)
+                        .map_err(InferenceError::ModelLoad)
+                        .and_then(|_| backend.load_adapter(&adapter.path));
+                    if let Err(error) = activation {
+                        set_state(
+                            state,
+                            NativeSupervisorState::Error {
+                                model_id: Some(model.id.clone()),
+                                message: error.to_string(),
+                            },
+                        );
+                        let _ = result.send(Err(NativeSupervisorError::Inference(error)));
+                        return;
+                    }
+                }
                 *loaded = Some(LoadedModel {
                     spec: model.clone(),
                     backend,
@@ -419,6 +440,7 @@ mod tests {
                 id: "x".into(),
                 path: PathBuf::from("missing.gguf"),
                 n_gpu_layers: 0,
+                adapter: None,
             },
             InferenceRequest::new("hi", ""),
             CancellationToken::new(),
@@ -443,6 +465,7 @@ mod tests {
                 id: "model".to_string(),
                 path: PathBuf::from("missing.gguf"),
                 n_gpu_layers: 0,
+                adapter: None,
             },
             InferenceRequest::new("hello", ""),
             cancelled,

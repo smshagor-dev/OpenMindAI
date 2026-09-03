@@ -31,6 +31,7 @@ const MAX_LINE: u64 = 1024 * 1024;
 #[serde(deny_unknown_fields)]
 struct Model {
     path: PathBuf,
+    personalization: Option<PathBuf>,
     #[serde(default)]
     gpu_layers: i32,
     #[serde(default = "context_default")]
@@ -185,7 +186,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if loading {
             cpu_only = false;
         }
+        let adapter = match &model.personalization {
+            Some(path) => match native_supervisor::native_adapter::resolve(path, &req.model) {
+                Ok(value) => value,
+                Err(_) => {
+                    event(
+                        json!({"id":req.id,"type":"error","code":"adapter_rejected","message":"personalization activation failed validation"}),
+                    );
+                    continue;
+                }
+            },
+            None => None,
+        };
         let mut spec = NativeModelSpec {
+            adapter,
             id: req.model.clone(),
             path: model.path.clone(),
             n_gpu_layers: if cpu_only { 0 } else { model.gpu_layers },

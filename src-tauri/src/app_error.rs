@@ -5,6 +5,8 @@ use thiserror::Error;
 #[derive(Debug, Error, Serialize)]
 #[serde(tag = "code", content = "message")]
 pub enum AppError {
+    #[error("Personalization rejected: {0}")]
+    PersonalizationRejected(String),
     #[error("ROOT_NOT_WRITABLE: {0}")]
     RootNotWritable(String),
     #[error("DATABASE_INIT_FAILED: {0}")]

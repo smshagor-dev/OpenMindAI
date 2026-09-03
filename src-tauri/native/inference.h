@@ -33,6 +33,7 @@ public:
         TokenSink& sink);
 
     void clear_kv_cache();
+    void load_adapter(rust::Str path);
 
 private:
     class Impl;

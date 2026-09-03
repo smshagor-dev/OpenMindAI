@@ -308,6 +308,7 @@ public:
 
     ~Impl() {
         context_.reset();
+        if (adapter_ != nullptr) llama_adapter_lora_free(adapter_);
         if (model_ != nullptr) llama_model_free(model_);
     }
 
@@ -324,6 +325,15 @@ public:
         const GenerationConfig& config,
         TokenSink& sink) {
         generate_formatted(format_messages(model_, messages), config, sink);
+    }
+
+    void load_adapter(rust::Str path) {
+        std::lock_guard<std::mutex> guard(inference_mutex_);
+        context_.reset();
+        context_capacity_ = batch_capacity_ = 0;
+        if (adapter_ != nullptr) { llama_adapter_lora_free(adapter_); adapter_ = nullptr; }
+        adapter_ = llama_adapter_lora_init(model_, to_string(path).c_str());
+        if (adapter_ == nullptr) throw std::runtime_error("failed to load native LoRA adapter");
     }
 
     void clear_kv_cache() {
@@ -447,6 +457,11 @@ private:
         context_capacity_ = batch_capacity_ = 0;
         ContextPtr replacement(llama_init_from_model(model_, params));
         if (!replacement) throw std::runtime_error("failed to create llama.cpp context / KV cache");
+        if (adapter_ != nullptr) {
+            float scale = 1.0F;
+            if (llama_set_adapters_lora(replacement.get(), &adapter_, 1, &scale) != 0)
+                throw std::runtime_error("failed to activate native LoRA adapter");
+        }
         context_ = std::move(replacement);
         context_capacity_ = n_ctx;
         batch_capacity_ = n_batch;
@@ -469,6 +484,7 @@ private:
     }
 
     llama_model* model_ = nullptr;
+    llama_adapter_lora* adapter_ = nullptr;
     const llama_vocab* vocab_ = nullptr;
     ContextPtr context_;
     std::uint32_t context_capacity_ = 0;
@@ -480,6 +496,7 @@ private:
 InferenceEngine::InferenceEngine(rust::Str model_path, std::int32_t n_gpu_layers)
     : impl_(std::make_unique<Impl>(model_path, n_gpu_layers)) {}
 InferenceEngine::~InferenceEngine() = default;
+void InferenceEngine::load_adapter(rust::Str path) { impl_->load_adapter(path); }
 InferenceEngine::InferenceEngine(InferenceEngine&&) noexcept = default;
 InferenceEngine& InferenceEngine::operator=(InferenceEngine&&) noexcept = default;
 

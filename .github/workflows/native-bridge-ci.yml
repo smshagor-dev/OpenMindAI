@@ -6,6 +6,7 @@ on:
       - feature/cxx-llama-native-bridge
       - feature/native-*
     paths:
+      - "experiments/python/**"
       - "services/native-worker/**"
       - "services/inference-api/**"
       - "src-tauri/native/**"
@@ -16,6 +17,7 @@ on:
       - "src-tauri/src/native_runtime.rs"
       - "src-tauri/src/native_stream.rs"
       - "src-tauri/src/native_supervisor.rs"
+      - "src-tauri/src/native_adapter.rs"
       - "src-tauri/src/native_chat_router.rs"
       - "src-tauri/Cargo.toml"
       - "src-tauri/Cargo.lock"
@@ -29,6 +31,7 @@ on:
       - ".github/workflows/native-bridge-ci.yml"
   pull_request:
     paths:
+      - "experiments/python/**"
       - "services/native-worker/**"
       - "services/inference-api/**"
       - "src-tauri/native/**"
@@ -39,6 +42,7 @@ on:
       - "src-tauri/src/native_runtime.rs"
       - "src-tauri/src/native_stream.rs"
       - "src-tauri/src/native_supervisor.rs"
+      - "src-tauri/src/native_adapter.rs"
       - "src-tauri/src/native_chat_router.rs"
       - "src-tauri/Cargo.toml"
       - "src-tauri/Cargo.lock"
@@ -127,6 +131,7 @@ jobs:
           cp src-tauri/src/native_bridge.rs native-smoke/src/native_bridge.rs
           cp src-tauri/src/native_inference.rs native-smoke/src/native_inference.rs
           cp src-tauri/src/native_supervisor.rs native-smoke/src/native_supervisor.rs
+          cp src-tauri/src/native_adapter.rs native-smoke/src/native_adapter.rs
           cp src-tauri/native/inference.cpp native-smoke/native/inference.cpp
           cp src-tauri/native/inference.h native-smoke/native/inference.h
           cat > native-smoke/Cargo.toml <<'EOF'
@@ -144,6 +149,8 @@ jobs:
           cxx = "1.0"
           tokio-util = "0.7"
           serde_json = "1"
+          serde = { version = "1", features = ["derive"] }
+          sha2 = "0.10"
 
           [build-dependencies]
           cxx-build = "1.0"
@@ -226,6 +233,28 @@ jobs:
           OPENMINDAI_TEST_MODEL: ${{ github.workspace }}/native-smoke-model.gguf
           LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
         run: go test -race ./...
+
+      - name: Setup Python for adapter integration
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install optional CPU training dependencies
+        run: |
+          python -m pip install torch==2.14.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install transformers==4.57.6 peft==0.18.1 psutil==7.2.2 sentencepiece==0.2.2 protobuf==7.36.1
+
+      - name: Train, evaluate, convert, activate and rollback a real adapter
+        timeout-minutes: 5
+        env:
+          PYTHONPATH: experiments/python
+          OPENMINDAI_TRAINING_INTEGRATION: "1"
+          OPENMINDAI_TEST_NATIVE_WORKER: ${{ github.workspace }}/services/native-worker/target/debug/openmind-native-worker
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+        run: python -m unittest discover -s experiments/python/tests -v
 
       - name: Native streaming router integration check
         env:
