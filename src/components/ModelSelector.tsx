@@ -125,6 +125,17 @@ function modelNameByRepo(repo: string | null): string | null {
     "Qwen/Qwen3-4B-GGUF": "OpenMindAI Core",
     "Qwen/Qwen3-8B-GGUF": "OpenMindAI Titan",
     "ggml-org/Qwen2.5-VL-3B-Instruct-GGUF": "OpenMindAI Lens",
+    "ggml-org/gpt-oss-20b-GGUF": "OpenMindAI Forge",
+    "ggml-org/gpt-oss-120b-GGUF": "OpenMindAI Forge Max",
+    "ggml-org/gemma-4-E2B-it-GGUF": "OpenMindAI Flash",
+    "ggml-org/gemma-4-E4B-it-GGUF": "OpenMindAI Flash Plus",
+    "ggml-org/gemma-4-12B-it-GGUF": "OpenMindAI Vision",
+    "ggml-org/gemma-4-26B-A4B-it-GGUF": "OpenMindAI Vision Pro",
+    "ggml-org/gemma-4-31B-it-GGUF": "OpenMindAI Vision Max",
+    "nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF": "OpenMindAI Agent Lite",
+    "ggml-org/NVIDIA-Nemotron-3-Nano-30B-A3B-GGUF": "OpenMindAI Agent",
+    "ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF": "OpenMindAI Agent Lightning",
+    "ggml-org/Nemotron-3-Super-120B-GGUF": "OpenMindAI Agent Pro",
   };
   return repo ? names[repo] ?? null : null;
 }
@@ -134,5 +145,18 @@ function modelNameByPath(path: string): string | null {
   if (normalized.includes("/qwen3-4b/")) return "OpenMindAI Core";
   if (normalized.includes("/qwen3-8b/")) return "OpenMindAI Titan";
   if (normalized.includes("/qwen2.5-vl-3b/")) return "OpenMindAI Lens";
+  if (normalized.includes("/forge-max/") || normalized.includes("gpt-oss-120b")) return "OpenMindAI Forge Max";
+  if (normalized.includes("/forge/") || normalized.includes("gpt-oss-20b")) return "OpenMindAI Forge";
+  if (normalized.includes("/flash-plus/") || normalized.includes("gemma-4-e4b")) return "OpenMindAI Flash Plus";
+  if (normalized.includes("/flash/") || normalized.includes("gemma-4-e2b")) return "OpenMindAI Flash";
+  if (normalized.includes("/vision-max/") || normalized.includes("gemma-4-31b")) return "OpenMindAI Vision Max";
+  if (normalized.includes("/vision-pro/") || normalized.includes("gemma-4-26b")) return "OpenMindAI Vision Pro";
+  if (normalized.includes("/vision/") || normalized.includes("gemma-4-12b")) return "OpenMindAI Vision";
+  if (normalized.includes("/agent-lightning/") || normalized.includes("nemotron-3.5-lightning")) {
+    return "OpenMindAI Agent Lightning";
+  }
+  if (normalized.includes("/agent-pro/") || normalized.includes("nemotron-3-super")) return "OpenMindAI Agent Pro";
+  if (normalized.includes("/agent-lite/") || normalized.includes("nemotron3-nano-4b")) return "OpenMindAI Agent Lite";
+  if (normalized.includes("/agent/") || normalized.includes("nemotron-3-nano-30b")) return "OpenMindAI Agent";
   return null;
 }

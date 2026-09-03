@@ -314,8 +314,9 @@ function CatalogModelCard(props: {
           {props.item.installed ? <CheckCircle2 size={15} /> : null}
         </strong>
         <span>
-          OpenMindAI local package · {entry.quantization} · {entry.runtime} · {formatBytes(entry.sizeBytes)} · {licenseLabel(entry.license)}
+          OpenMindAI local package · {formatBytes(entry.sizeBytes)} · {licenseLabel(entry.license)}
         </span>
+        <small>{entry.capabilities.map(capabilityLabel).join(" · ")}</small>
         <small>{entry.description}</small>
       </div>
       <div className="download-progress">
@@ -380,7 +381,8 @@ function collectionLabel(kind: string) {
   const labels: Record<string, string> = {
     chat: "OpenMindAI Core",
     reasoning: "OpenMindAI Reasoning",
-    vision: "OpenMindAI Lens",
+    agent: "OpenMindAI Agent",
+    vision: "OpenMindAI Vision",
     "speech-to-text": "OpenMindAI Hear",
     "text-to-speech": "OpenMindAI Speak",
     image: "OpenMindAI Canvas",
@@ -404,14 +406,9 @@ function recommendedModelIds(entries: ModelCatalogStatus[], hardware: HardwarePr
   const hasLargeMemory = totalRam >= 32 * 1024 * 1024 * 1024 || maxVram >= 12 * 1024 * 1024 * 1024;
 
   addFirstAvailable(ids, compatible, chatPreferenceOrder(totalRam, maxVram));
-  addFirstAvailable(
-    ids,
-    compatible,
-    totalRam >= 16 * 1024 * 1024 * 1024
-      ? ["deepseek-r1-7b-q4km", "deepseek-r1-15b-q4km"]
-      : ["deepseek-r1-15b-q4km", "deepseek-r1-7b-q4km"],
-  );
-  addPreferred(ids, compatible, "vision", "qwen25-vl-3b-q4km");
+  addFirstAvailable(ids, compatible, reasoningPreferenceOrder(totalRam, maxVram));
+  addFirstAvailable(ids, compatible, visionPreferenceOrder(totalRam, maxVram));
+  addFirstAvailable(ids, compatible, agentPreferenceOrder(totalRam, maxVram));
   addPreferred(ids, compatible, "speech-to-text", "whisper-large-v3-turbo-q5");
   addPreferred(ids, compatible, "text-to-speech", "kokoro-82m-onnx");
   addPreferred(ids, compatible, "image", hasNvidia && hasLargeMemory ? "flux1-schnell" : "sdxl-base-1");
@@ -441,6 +438,51 @@ function chatPreferenceOrder(totalRam: number, maxVram: number) {
     return ["qwen3-17b-q4km", "qwen3-06b-q4"];
   }
   return ["qwen3-06b-q4", "qwen3-17b-q4km"];
+}
+
+function reasoningPreferenceOrder(totalRam: number, maxVram: number) {
+  const gib = 1024 * 1024 * 1024;
+  const memoryClass = Math.max(totalRam, maxVram);
+  if (memoryClass >= 96 * gib) {
+    return ["gpt-oss-120b-mxfp4", "gpt-oss-20b-mxfp4", "deepseek-r1-7b-q4km", "deepseek-r1-15b-q4km"];
+  }
+  if (memoryClass >= 32 * gib) {
+    return ["gpt-oss-20b-mxfp4", "deepseek-r1-7b-q4km", "deepseek-r1-15b-q4km"];
+  }
+  if (memoryClass >= 16 * gib) {
+    return ["deepseek-r1-7b-q4km", "gpt-oss-20b-mxfp4", "deepseek-r1-15b-q4km"];
+  }
+  return ["deepseek-r1-15b-q4km", "deepseek-r1-7b-q4km"];
+}
+
+function visionPreferenceOrder(totalRam: number, maxVram: number) {
+  const gib = 1024 * 1024 * 1024;
+  const memoryClass = Math.max(totalRam, maxVram);
+  if (memoryClass >= 32 * gib) {
+    return ["gemma4-31b-q4", "gemma4-26b-a4b-q4", "gemma4-12b-q4", "gemma4-e4b-q4", "gemma4-e2b-q4", "qwen25-vl-3b-q4km"];
+  }
+  if (memoryClass >= 24 * gib) {
+    return ["gemma4-26b-a4b-q4", "gemma4-12b-q4", "gemma4-e4b-q4", "gemma4-e2b-q4", "qwen25-vl-3b-q4km"];
+  }
+  if (memoryClass >= 16 * gib) {
+    return ["gemma4-12b-q4", "gemma4-e4b-q4", "gemma4-e2b-q4", "qwen25-vl-3b-q4km"];
+  }
+  if (memoryClass >= 12 * gib) {
+    return ["gemma4-e4b-q4", "gemma4-e2b-q4", "qwen25-vl-3b-q4km"];
+  }
+  return ["gemma4-e2b-q4", "qwen25-vl-3b-q4km"];
+}
+
+function agentPreferenceOrder(totalRam: number, maxVram: number) {
+  const gib = 1024 * 1024 * 1024;
+  const memoryClass = Math.max(totalRam, maxVram);
+  if (memoryClass >= 96 * gib) {
+    return ["nemotron3-super-120b-q4k", "nemotron35-lightning-30b-a3b-q4", "nemotron3-nano-30b-a3b-q4km", "nemotron3-nano-4b-q4km"];
+  }
+  if (memoryClass >= 32 * gib) {
+    return ["nemotron35-lightning-30b-a3b-q4", "nemotron3-nano-30b-a3b-q4km", "nemotron3-nano-4b-q4km"];
+  }
+  return ["nemotron3-nano-4b-q4km"];
 }
 
 function addFirstAvailable(ids: Set<string>, entries: ModelCatalogStatus[], preferredIds: string[]) {
@@ -492,14 +534,44 @@ function systemFitLabel(item: ModelCatalogStatus) {
   return "Ready for this PC";
 }
 
+function capabilityLabel(capability: string) {
+  const labels: Record<string, string> = {
+    chat: "Chat",
+    reasoning: "Reasoning",
+    code: "Code",
+    math: "Math",
+    agent: "Agent",
+    "tool-use": "Tools",
+    "long-context": "Long context",
+    vision: "Vision",
+    ocr: "OCR",
+    "image-review": "Image review",
+    transcription: "Transcription",
+    translation: "Translation",
+    audio: "Audio",
+    tts: "Voice output",
+    voice: "Voice",
+    "text-to-image": "Image generation",
+    image: "Image",
+    "text-to-audio": "Audio generation",
+    music: "Music",
+    sound: "Sound",
+    "text-to-video": "Video generation",
+    video: "Video",
+  };
+  return labels[capability] ?? capability;
+}
+
 function licenseLabel(license: string) {
   const labels: Record<string, string> = {
     "apache-2.0": "Apache 2.0",
     mit: "MIT",
-    gemma: "Gemma terms",
-    "llama-3.2-community": "Llama 3.2 terms",
+    gemma: "Upstream terms",
+    "llama-3.2-community": "Community terms",
+    "nvidia-nemotron-open-model-license": "Open Model License",
+    "openmdw-1.1": "OpenMDW 1.1",
     "openrail++": "OpenRAIL++",
-    "stability-ai-nc": "Stability AI Community",
+    "stability-ai-nc": "Community license",
   };
   return labels[license.toLowerCase()] ?? license;
 }

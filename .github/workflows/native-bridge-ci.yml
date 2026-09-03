@@ -1,0 +1,287 @@
+name: Native CXX bridge
+
+on:
+  push:
+    branches:
+      - feature/cxx-llama-native-bridge
+      - feature/native-*
+    paths:
+      - "experiments/python/**"
+      - "services/native-worker/**"
+      - "services/inference-api/**"
+      - "src-tauri/native/**"
+      - "src-tauri/src/inference.rs"
+      - "src-tauri/src/inference_legacy.rs"
+      - "src-tauri/src/native_bridge.rs"
+      - "src-tauri/src/native_inference.rs"
+      - "src-tauri/src/native_runtime.rs"
+      - "src-tauri/src/native_stream.rs"
+      - "src-tauri/src/native_supervisor.rs"
+      - "src-tauri/src/native_adapter.rs"
+      - "src-tauri/src/native_chat_router.rs"
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
+      - "src-tauri/build.rs"
+      - "src-tauri/tauri.native-windows.conf.json"
+      - "src-tauri/windows/native-runtime-hooks.nsh"
+      - "scripts/prepare-native-runtime.ps1"
+      - "scripts/native-inference-smoke.rs"
+      - "scripts/native-smoke-model.json"
+      - "scripts/download-native-smoke-model.mjs"
+      - ".github/workflows/native-bridge-ci.yml"
+  pull_request:
+    paths:
+      - "experiments/python/**"
+      - "services/native-worker/**"
+      - "services/inference-api/**"
+      - "src-tauri/native/**"
+      - "src-tauri/src/inference.rs"
+      - "src-tauri/src/inference_legacy.rs"
+      - "src-tauri/src/native_bridge.rs"
+      - "src-tauri/src/native_inference.rs"
+      - "src-tauri/src/native_runtime.rs"
+      - "src-tauri/src/native_stream.rs"
+      - "src-tauri/src/native_supervisor.rs"
+      - "src-tauri/src/native_adapter.rs"
+      - "src-tauri/src/native_chat_router.rs"
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
+      - "src-tauri/build.rs"
+      - "src-tauri/tauri.native-windows.conf.json"
+      - "src-tauri/windows/native-runtime-hooks.nsh"
+      - "scripts/prepare-native-runtime.ps1"
+      - "scripts/native-inference-smoke.rs"
+      - "scripts/native-smoke-model.json"
+      - "scripts/download-native-smoke-model.mjs"
+      - ".github/workflows/native-bridge-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-cxx-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LLAMA_CPP_COMMIT: 7798007a29a90e3053e799394da48cf53a2f8e0f
+
+jobs:
+  linux-cpu-compile:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout OpenMindAI
+        uses: actions/checkout@v7
+
+      - name: Checkout pinned llama.cpp
+        uses: actions/checkout@v7
+        with:
+          repository: ggml-org/llama.cpp
+          ref: ${{ env.LLAMA_CPP_COMMIT }}
+          path: vendor/llama.cpp
+          fetch-depth: 1
+
+      - name: Cache pinned llama.cpp CPU build
+        id: llama-cache
+        uses: actions/cache@v4
+        with:
+          path: vendor/llama.cpp/build
+          key: llama-${{ runner.os }}-${{ env.LLAMA_CPP_COMMIT }}-cpu-shared-v2
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Build llama.cpp shared CPU library
+        if: steps.llama-cache.outputs.cache-hit != 'true'
+        run: |
+          cmake -S vendor/llama.cpp -B vendor/llama.cpp/build \
+            -DGGML_CUDA=OFF \
+            -DGGML_NATIVE=OFF \
+            -DBUILD_SHARED_LIBS=ON \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_TOOLS=OFF
+          cmake --build vendor/llama.cpp/build --target llama -j 2
+
+      - name: Locate llama shared library
+        id: llama-lib
+        shell: bash
+        run: |
+          library="$(find vendor/llama.cpp/build \( -type f -o -type l \) \( -name 'libllama.so' -o -name 'libllama.dylib' -o -name 'llama.dll' \) -print -quit)"
+          if [[ -z "$library" ]]; then
+            echo "Unable to locate built llama shared library" >&2
+            find vendor/llama.cpp/build -maxdepth 4 \( -name 'libllama*' -o -name 'llama.dll' \) -print >&2 || true
+            exit 1
+          fi
+          library="$(realpath "$library")"
+          echo "dir=$(dirname "$library")" >> "$GITHUB_OUTPUT"
+          echo "Using llama library: $library"
+
+      - name: Prepare isolated bridge smoke crate
+        shell: bash
+        run: |
+          rm -rf native-smoke
+          mkdir -p native-smoke/src native-smoke/native
+          cp src-tauri/src/native_bridge.rs native-smoke/src/native_bridge.rs
+          cp src-tauri/src/native_inference.rs native-smoke/src/native_inference.rs
+          cp src-tauri/src/native_supervisor.rs native-smoke/src/native_supervisor.rs
+          cp src-tauri/src/native_adapter.rs native-smoke/src/native_adapter.rs
+          cp src-tauri/native/inference.cpp native-smoke/native/inference.cpp
+          cp src-tauri/native/inference.h native-smoke/native/inference.h
+          cat > native-smoke/Cargo.toml <<'EOF'
+          [package]
+          name = "openmind-native-bridge-smoke"
+          version = "0.0.0"
+          edition = "2021"
+          build = "build.rs"
+
+          [[bin]]
+          name = "native-inference-smoke"
+          path = "../scripts/native-inference-smoke.rs"
+
+          [dependencies]
+          cxx = "1.0"
+          tokio-util = "0.7"
+          serde_json = "1"
+          serde = { version = "1", features = ["derive"] }
+          sha2 = "0.10"
+
+          [build-dependencies]
+          cxx-build = "1.0"
+          EOF
+          cat > native-smoke/build.rs <<'EOF'
+          use std::{env, path::PathBuf};
+
+          fn main() {
+              let llama_dir = PathBuf::from(env::var_os("LLAMA_CPP_DIR").expect("LLAMA_CPP_DIR"));
+              let llama_lib_dir = PathBuf::from(env::var_os("LLAMA_CPP_LIB_DIR").expect("LLAMA_CPP_LIB_DIR"));
+              cxx_build::CFG.include_prefix = "openmind";
+              cxx_build::bridge("src/native_bridge.rs")
+                  .file("native/inference.cpp")
+                  .include(".")
+                  .include(llama_dir.join("include"))
+                  .include(llama_dir.join("ggml/include"))
+                  .std("c++17")
+                  .flag("-O3")
+                  .flag_if_supported("-fPIC")
+                  .compile("openmind_llama_bridge");
+              println!("cargo:rustc-link-search=native={}", llama_lib_dir.display());
+              println!("cargo:rustc-link-lib=dylib=llama");
+          }
+          EOF
+
+      - name: Native bridge compile, link and regression tests
+        env:
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
+        run: cargo test --manifest-path native-smoke/Cargo.toml
+
+      - name: Native bridge clippy
+        env:
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+        run: cargo clippy --manifest-path native-smoke/Cargo.toml --all-targets -- -D warnings
+
+      - name: Real GGUF generation, cancellation and recovery
+        timeout-minutes: 5
+        env:
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
+        run: |
+          node scripts/download-native-smoke-model.mjs native-smoke-model.gguf
+          cargo run --manifest-path native-smoke/Cargo.toml --bin native-inference-smoke -- \
+            --model native-smoke-model.gguf --report native-model-smoke.json
+
+      - name: Upload native model smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-model-smoke-linux
+          path: native-model-smoke.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Setup Go for native service integration
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: services/inference-api/go.mod
+          cache: false
+
+      - name: Native service compile and regression tests
+        env:
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
+        run: |
+          cargo fmt --manifest-path services/native-worker/Cargo.toml --check
+          cargo test --locked --manifest-path services/native-worker/Cargo.toml
+          cargo clippy --locked --manifest-path services/native-worker/Cargo.toml --all-targets -- -D warnings
+          cargo build --locked --manifest-path services/native-worker/Cargo.toml
+
+      - name: Go HTTP to Rust CXX real-model integration
+        working-directory: services/inference-api
+        env:
+          OPENMINDAI_TEST_NATIVE_WORKER: ${{ github.workspace }}/services/native-worker/target/debug/openmind-native-worker
+          OPENMINDAI_TEST_MODEL: ${{ github.workspace }}/native-smoke-model.gguf
+          LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
+        run: go test -race ./...
+
+      - name: Setup Python for adapter integration
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install optional CPU training dependencies
+        run: |
+          python -m pip install torch==2.14.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install transformers==4.57.6 peft==0.18.1 psutil==7.2.2 sentencepiece==0.2.2 protobuf==7.36.1
+
+      - name: Train, evaluate, convert, activate and rollback a real adapter
+        timeout-minutes: 5
+        env:
+          PYTHONPATH: experiments/python
+          OPENMINDAI_TRAINING_INTEGRATION: "1"
+          OPENMINDAI_TEST_NATIVE_WORKER: ${{ github.workspace }}/services/native-worker/target/debug/openmind-native-worker
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+        run: python -m unittest discover -s experiments/python/tests -v
+
+      - name: Native streaming router integration check
+        env:
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          LLAMA_CPP_COMMIT: ${{ env.LLAMA_CPP_COMMIT }}
+          OPENMINDAI_NATIVE_STRICT_ABI: "1"
+          OPENMINDAI_PORTABLE_BUILD: "1"
+          LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml --features native-cxx-llama --lib
+
+      - name: Native streaming router clippy
+        env:
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          LLAMA_CPP_COMMIT: ${{ env.LLAMA_CPP_COMMIT }}
+          OPENMINDAI_NATIVE_STRICT_ABI: "1"
+          OPENMINDAI_PORTABLE_BUILD: "1"
+          LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --features native-cxx-llama --lib -- -D warnings
+
+      - name: Native streaming cancellation and runtime tests
+        env:
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          LLAMA_CPP_COMMIT: ${{ env.LLAMA_CPP_COMMIT }}
+          OPENMINDAI_NATIVE_STRICT_ABI: "1"
+          OPENMINDAI_PORTABLE_BUILD: "1"
+          LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --features native-cxx-llama --lib native_

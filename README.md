@@ -501,3 +501,23 @@ Full-Stack Web Developer & AI Engineer
 ---
 
 If OpenMindAI is useful to you, consider starring the repository. It helps other developers find the project and supports continued work on practical, user-controlled local AI software.
+
+### Native service and resource limits
+
+The Go API can now launch the Rust/CXX worker directly with
+`OPENMINDAI_API_BACKEND=native`. This optional local mode supports text chat and
+SSE, keeps model paths in a local registry, and restarts the worker after a
+cancelled or failed request. See [native service setup](services/native-worker/README.md)
+for build commands, request fields, resource bounds and validation coverage.
+
+Native inference also enforces context and KV admission limits and generation
+deadlines. A stalled desktop native call quarantines the worker until restart.
+Production Vulkan/default-native rollout still requires real device validation;
+CPU recovery tests do not establish RX580 performance or reliability.
+
+The optional [personalization CLI](experiments/python/README.md) trains local
+LoRA adapters from approved corrections, evaluates held-out prompts, converts
+to GGUF and checks native generation before explicit activation. Versioned
+pointers support rollback in the Go worker and enabled native desktop chat.
+Synthetic CPU integration covers this pipeline; it does not certify quality or
+memory requirements for a user's Qwen3 model or add automatic background learning.

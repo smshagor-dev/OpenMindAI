@@ -9,17 +9,23 @@ edition = "2021"
 name = "open_mind_ai_lib"
 crate-type = ["rlib"]
 
+[features]
+default = []
+native-cxx-llama = ["dep:cxx"]
+
 [profile.release]
 lto = true
 codegen-units = 1
 strip = true
 
 [build-dependencies]
+cxx-build = "1.0"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
+cxx = { version = "1.0", optional = true }
 dirs = "5"
 docx-rs = "0.4.22"
 flate2 = "1"

@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "resources": {
+      "native-runtime/windows-x86_64/": "resources/native-runtime/windows-x86_64/"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "./windows/native-runtime-hooks.nsh"
+      }
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "repository": "ggml-org/test-model-stories260K",
+  "revision": "479896ec924af6d40fd419ab8f4d1eb2101de00d",
+  "file": "stories260K-f32.gguf",
+  "sha256": "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d",
+  "bytes": 1185376
+}

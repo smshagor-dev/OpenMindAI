@@ -1,0 +1,62 @@
+OpenMindAI Python Personalization Experiments
+============================================
+
+Purpose
+-------
+This directory is an isolated, optional research subsystem. It is not imported by the
+Tauri/Rust/C++ production application and is not shipped as a mandatory runtime.
+
+The goal is to reduce repeated work for the main model by learning a local user's
+explicit preferences and corrections without modifying the base GGUF model in place.
+
+Implemented pipeline
+----------------
+1. Explicit feedback/corrections are stored locally as structured examples.
+2. Memory/retrieval and prompt-profile updates are tried before any training.
+3. An explicit CLI command trains q_proj/v_proj LoRA weights on a local Hugging Face snapshot.
+4. CPU training requires a low CPU-load readiness check, AC power and RAM reserve; a parent process monitors time/RSS and stops when other CPU work resumes.
+5. The base model remains immutable. New adapters are versioned and reversible.
+6. A candidate adapter is evaluated on a held-out local set before activation.
+7. If quality, latency, or stability regresses, the candidate is rejected automatically.
+8. An explicit activation command verifies hashes and native generation before updating a per-profile pointer. Rust/CXX loads the GGUF adapter on the next model request; rollback restores the previous candidate or base model.
+
+Pressure reduction strategy
+---------------------------
+- Reuse deterministic user preferences through a small local profile.
+- Retrieve relevant prior corrections instead of asking the base model to rediscover them.
+- Cache repeatable transformations/results where safe.
+- Prefer small per-user LoRA/adapter updates over retraining or rewriting the base model.
+- Perform conversion/quantization experiments offline, then hand validated GGUF artifacts
+  back to the C++/llama.cpp runtime.
+
+Safety/stability rules
+----------------------
+- No silent autonomous mutation of the base model.
+- No training directly from every conversation by default.
+- Only explicit feedback/corrections become training candidates.
+- Personalization data stays local to the selected user profile.
+- Every adapter must have a baseline score, candidate score, version, and rollback path.
+- Training and conversion are lower-priority background experiments, never part of the
+  chat request critical path.
+
+Current scope
+-------------
+The optional CPU pipeline uses PEFT and Transformers, holds out prompts without
+cross-split duplicates, reports preferred-response token cross-entropy and
+relative evaluation latency, converts through pinned llama.cpp, and probes a
+real native generation before activation. These are acceptance checks, not a
+broad task-quality guarantee. Small synthetic CI models verify the mechanism.
+Actual user adapters still need representative quality evaluation.
+
+No conversations are harvested automatically. The CLI accepts only a separate
+JSONL of explicitly approved examples. The base HF snapshot and GGUF are hashed
+before and after training and never modified by the pipeline. Failed runs do
+not change activation. Training and activation are separate explicit commands.
+Activation affects only the selected local profile/model. Changing the pointer
+reloads the native model/adapter; already-running requests finish on their
+original adapter. Explicitly enabled adapters fail closed on validation error.
+
+Python remains an optional research dependency. There is no automatic desktop
+background scheduler, feedback UI or GPU/QLoRA trainer. Qwen3/RX580 memory and
+quality are not certified; FP32 CPU training may require much more RAM than
+quantized inference. See README.md in this directory for commands and limits.

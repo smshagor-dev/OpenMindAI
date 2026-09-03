@@ -4,6 +4,12 @@
 *.sh text eol=lf
 *.command text eol=lf
 
+# Go tooling expects gofmt output to remain byte-for-byte stable across
+# platforms, so keep Go source/module files normalized to LF on Windows too.
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+
 # Windows-native scripts keep their traditional CRLF.
 *.bat text eol=crlf
 *.ps1 text eol=crlf
