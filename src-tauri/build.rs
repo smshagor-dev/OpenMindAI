@@ -74,8 +74,10 @@ fn build_native_llama_bridge() {
 
     if dynamic_backends {
         let backend_lib_dir = required_path("LLAMA_CPP_BACKEND_LIB_DIR");
-        if !backend_lib_dir.join("ggml.lib").is_file() {
-            panic!("LLAMA_CPP_BACKEND_LIB_DIR must contain ggml.lib");
+        for library in ["ggml.lib", "ggml-base.lib"] {
+            if !backend_lib_dir.join(library).is_file() {
+                panic!("LLAMA_CPP_BACKEND_LIB_DIR must contain {library}");
+            }
         }
         build.define("OPENMINDAI_DYNAMIC_BACKENDS", None);
         println!(
@@ -83,6 +85,7 @@ fn build_native_llama_bridge() {
             backend_lib_dir.display()
         );
         println!("cargo:rustc-link-lib=dylib=ggml");
+        println!("cargo:rustc-link-lib=dylib=ggml-base");
     }
 
     if target_env == "msvc" {
