@@ -8,6 +8,8 @@ on:
     paths:
       - ".github/workflows/native-vulkan-ci.yml"
       - "scripts/prepare-native-runtime.ps1"
+      - "scripts/test-native-runtime.ps1"
+      - "scripts/native-runtime-probe.cs"
       - "src-tauri/native/**"
       - "src-tauri/src/native_bridge.rs"
       - "src-tauri/src/native_inference.rs"
@@ -188,3 +190,25 @@ jobs:
           path: native-vulkan-artifact
           if-no-files-found: error
           retention-days: 3
+
+  windows-vulkan-isolated-runtime:
+    needs: windows-vulkan-package
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout runtime validation scripts
+        uses: actions/checkout@v7
+
+      # Fresh runner: no llama build tree, cached SDK, Rust tools or exported PATH.
+      - name: Download the packaged Vulkan runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: openmindai-native-vulkan-${{ env.LLAMA_CPP_COMMIT }}
+          path: native-vulkan-artifact
+
+      - name: Verify isolated loading, CPU allocation and missing DLL failures
+        shell: pwsh
+        run: |
+          ./scripts/test-native-runtime.ps1 `
+            -RuntimeDir native-vulkan-artifact `
+            -ExpectedCommit $env:LLAMA_CPP_COMMIT
