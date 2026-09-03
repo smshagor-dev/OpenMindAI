@@ -288,7 +288,7 @@ device-level validation.
 The Vulkan validation build uses `-DGGML_BACKEND_DL=ON` so `llama.dll` and `ggml.dll`
 do not require the Vulkan plugin at process startup. Build the OpenMindAI wrapper
 with `OPENMINDAI_NATIVE_DYNAMIC_BACKENDS=1` and set `LLAMA_CPP_BACKEND_LIB_DIR` to
-the directory containing the matching `ggml.lib` import library, in addition to
+the directory containing the matching `ggml.lib` and `ggml-base.lib` import libraries, in addition to
 the existing `LLAMA_CPP_LIB_DIR` containing `llama.lib`. This mode currently supports
 Windows MSVC. Stage that build with `prepare-native-runtime.ps1 -DynamicBackends`.
 The manifest records `backendLoading: dynamic`; older manifests default to `linked`.

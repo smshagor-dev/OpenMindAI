@@ -240,6 +240,7 @@ jobs:
               }
               println!("cargo:rustc-link-lib=dylib=llama");
               println!("cargo:rustc-link-lib=dylib=ggml");
+              println!("cargo:rustc-link-lib=dylib=ggml-base");
           }
           '@ | Set-Content native-backend-smoke/build.rs
           cargo build --release --manifest-path native-backend-smoke/Cargo.toml
