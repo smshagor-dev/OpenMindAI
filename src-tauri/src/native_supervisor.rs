@@ -94,7 +94,7 @@ struct GenerationCommand {
 }
 
 enum WorkerCommand {
-    Generate(GenerationCommand),
+    Generate(Box<GenerationCommand>),
     Clear(SyncSender<()>),
     Shutdown,
 }
@@ -170,13 +170,13 @@ impl NativeInferenceSupervisor {
         let deadline = Instant::now() + Duration::from_millis(u64::from(request.config.timeout_ms));
         let cancellation_signal = cancellation.clone();
         let (result_tx, result_rx) = mpsc::sync_channel(1);
-        let command = WorkerCommand::Generate(GenerationCommand {
+        let command = WorkerCommand::Generate(Box::new(GenerationCommand {
             model,
             request,
             cancellation,
             on_token,
             result: result_tx,
-        });
+        }));
         match self.commands.try_send(command) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => return Err(NativeSupervisorError::Busy),
@@ -267,7 +267,7 @@ fn worker_loop(
         };
         match command {
             WorkerCommand::Generate(command) => {
-                run_generation(&mut loaded, &state, &shutdown, command);
+                run_generation(&mut loaded, &state, &shutdown, *command);
             }
             WorkerCommand::Clear(completed) => {
                 if let Some(model) = loaded.as_mut() {
