@@ -26,7 +26,7 @@ public static class NativeRuntimeProbe
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void VoidCall();
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate IntPtr CpuInit();
+    private delegate IntPtr BackendInit();
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate IntPtr AllocBuffer(IntPtr backend, UIntPtr size);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -107,8 +107,14 @@ public static class NativeRuntimeProbe
                     {
                         Console.WriteLine("runtime.vulkan: unavailable (Win32 126); CPU remains usable");
                     }
-                    if (vulkan != IntPtr.Zero && register(Path.Combine(directory, "ggml-vulkan.dll")) == IntPtr.Zero)
-                        throw new InvalidOperationException("Vulkan backend registration failed");
+                    if (vulkan != IntPtr.Zero)
+                    {
+                        // A loadable plugin may have no usable Vulkan driver/device.
+                        // Validate its entry point, then require CPU recovery below.
+                        Export<BackendInit>(vulkan, "ggml_backend_init");
+                        if (register(Path.Combine(directory, "ggml-vulkan.dll")) == IntPtr.Zero)
+                            Console.WriteLine("runtime.vulkan: unavailable (backend initialization); CPU remains usable");
+                    }
                 }
             }
             Export<VoidCall>(llama, "llama_backend_init")();
@@ -118,7 +124,7 @@ public static class NativeRuntimeProbe
             ggmlBase = Load(directory, "ggml-base.dll");
             var freeBackend = Export<Release>(ggmlBase, "ggml_backend_free");
             var freeBuffer = Export<Release>(ggmlBase, "ggml_backend_buffer_free");
-            IntPtr backend = Export<CpuInit>(cpu, "ggml_backend_cpu_init")();
+            IntPtr backend = Export<BackendInit>(cpu, "ggml_backend_cpu_init")();
             if (backend == IntPtr.Zero) throw new InvalidOperationException("CPU init failed");
             try
             {
