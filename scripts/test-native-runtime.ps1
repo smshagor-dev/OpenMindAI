@@ -5,6 +5,9 @@ param(
   [ValidatePattern('^[0-9a-fA-F]{40}$')]
   [string]$ExpectedCommit,
 
+  # Optional tiny GGUF suite; standalone smoke executable also supports chat models.
+  [string]$ModelPath,
+
   # Internal child mode: each loader scenario needs a fresh process/module cache.
   [switch]$Probe,
   [switch]$DynamicBackends,
@@ -23,6 +26,10 @@ if ($Probe) {
 }
 if (-not $ExpectedCommit) {
   throw 'ExpectedCommit is required for package validation'
+}
+if ($ModelPath) {
+  $ModelPath = (Resolve-Path -LiteralPath $ModelPath).Path
+  $reportRoot = New-Item -ItemType Directory -Force 'native-smoke-reports'
 }
 
 $manifest = Get-Content -LiteralPath (Join-Path $runtimeRoot 'native-runtime-manifest.json') -Raw | ConvertFrom-Json
@@ -65,14 +72,22 @@ $shell = (Get-Process -Id $PID).Path
 
 function Invoke-IsolatedProbe([string]$Directory, [int]$ExpectedExit, [string]$Scenario,
                               [string]$ExpectedOutput = '', [switch]$OnlyCpu,
-                              [string]$WrapperMode = '') {
+                              [string]$WrapperMode = '', [string]$InferenceReport = '',
+                              [switch]$ExpectGpuUnavailable) {
   $start = [Diagnostics.ProcessStartInfo]::new()
   $start.FileName = $shell
   $start.UseShellExecute = $false
   $start.RedirectStandardOutput = $true
   $start.RedirectStandardError = $true
   $start.WorkingDirectory = $scratch
-  if ($WrapperMode) {
+  if ($InferenceReport) {
+    $start.FileName = Join-Path $Directory 'native-inference-smoke.exe'
+    foreach ($argument in @('--model', $ModelPath, '--timeout-seconds', '25',
+                            '--report', (Join-Path $reportRoot.FullName $InferenceReport))) {
+      $start.ArgumentList.Add($argument)
+    }
+    if ($ExpectGpuUnavailable) { $start.ArgumentList.Add('--expect-gpu-unavailable') }
+  } elseif ($WrapperMode) {
     $start.FileName = Join-Path $Directory 'native-backend-probe.exe'
     $start.ArgumentList.Add($WrapperMode)
   } else {
@@ -122,6 +137,9 @@ try {
     Invoke-IsolatedProbe $runtimeRoot 0 'CPU-only initialization does not load Vulkan' -OnlyCpu
     Invoke-IsolatedProbe $runtimeRoot 0 'actual CXX CPU initialization' -WrapperMode cpu
   }
+  if ($ModelPath) {
+    Invoke-IsolatedProbe $runtimeRoot 0 'real GGUF CPU generation and cancellation' -InferenceReport 'cpu.json'
+  }
   foreach ($missing in $required) {
     $damaged = Join-Path $scratch "missing-$missing"
     New-Item -ItemType Directory -Path $damaged | Out-Null
@@ -135,6 +153,11 @@ try {
       Invoke-IsolatedProbe $damaged 0 'missing Vulkan plugin preserves CPU' 'runtime.vulkan: unavailable'
       Invoke-IsolatedProbe $damaged 0 'CXX reports missing Vulkan before model load' -WrapperMode gpu-unavailable
       Invoke-IsolatedProbe $damaged 0 'CXX CPU works without Vulkan plugin' -WrapperMode cpu
+      if ($ModelPath) {
+        Copy-Item -LiteralPath (Join-Path $runtimeRoot 'native-inference-smoke.exe') -Destination $damaged
+        Invoke-IsolatedProbe $damaged 0 'real generation after missing Vulkan plugin' `
+          -InferenceReport 'missing-vulkan.json' -ExpectGpuUnavailable
+      }
     } else {
       Invoke-IsolatedProbe $damaged 20 "missing $missing is detected by loader"
     }
@@ -154,6 +177,11 @@ try {
     Invoke-IsolatedProbe $damaged 0 'missing Vulkan loader preserves CPU' 'runtime.vulkan: unavailable'
     Invoke-IsolatedProbe $damaged 0 'CXX reports missing Vulkan loader before model load' -WrapperMode gpu-unavailable
     Invoke-IsolatedProbe $damaged 0 'CXX CPU works without Vulkan loader' -WrapperMode cpu
+    if ($ModelPath) {
+      Copy-Item -LiteralPath (Join-Path $runtimeRoot 'native-inference-smoke.exe') -Destination $damaged
+      Invoke-IsolatedProbe $damaged 0 'real generation after missing Vulkan loader' `
+        -InferenceReport 'missing-loader.json' -ExpectGpuUnavailable
+    }
   }
 }
 finally { Remove-Item -LiteralPath $scratch -Recurse -Force }

@@ -11,6 +11,9 @@ on:
       - "scripts/test-native-runtime.ps1"
       - "scripts/native-runtime-probe.cs"
       - "scripts/native-backend-probe.rs"
+      - "scripts/native-inference-smoke.rs"
+      - "scripts/native-smoke-model.json"
+      - "scripts/download-native-smoke-model.mjs"
       - "src-tauri/native/**"
       - "src-tauri/src/native_bridge.rs"
       - "src-tauri/src/native_inference.rs"
@@ -211,8 +214,13 @@ jobs:
           [[bin]]
           name = "native-backend-probe"
           path = "../scripts/native-backend-probe.rs"
+          [[bin]]
+          name = "native-inference-smoke"
+          path = "../scripts/native-inference-smoke.rs"
           [dependencies]
           cxx = "1.0"
+          tokio-util = "0.7"
+          serde_json = "1"
           [build-dependencies]
           cxx-build = "1.0"
           '@ | Set-Content native-backend-smoke/Cargo.toml
@@ -237,6 +245,7 @@ jobs:
           cargo build --release --manifest-path native-backend-smoke/Cargo.toml
           if ($LASTEXITCODE -ne 0) { throw 'Native backend probe build failed' }
           Copy-Item native-backend-smoke/target/release/native-backend-probe.exe native-vulkan-artifact
+          Copy-Item native-backend-smoke/target/release/native-inference-smoke.exe native-vulkan-artifact
 
       - name: Upload Vulkan runtime probe artifact
         uses: actions/upload-artifact@v4
@@ -261,9 +270,22 @@ jobs:
           name: openmindai-native-vulkan-${{ env.LLAMA_CPP_COMMIT }}
           path: native-vulkan-artifact
 
-      - name: Verify isolated loading, CPU allocation and missing DLL failures
+      - name: Download pinned real-model smoke fixture
+        run: node scripts/download-native-smoke-model.mjs native-smoke-model.gguf
+
+      - name: Verify isolated loading, real generation and missing DLL recovery
         shell: pwsh
         run: |
           ./scripts/test-native-runtime.ps1 `
             -RuntimeDir native-vulkan-artifact `
-            -ExpectedCommit $env:LLAMA_CPP_COMMIT
+            -ExpectedCommit $env:LLAMA_CPP_COMMIT `
+            -ModelPath native-smoke-model.gguf
+
+      - name: Upload Windows model smoke reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-model-smoke-windows
+          path: native-smoke-reports
+          if-no-files-found: ignore
+          retention-days: 7

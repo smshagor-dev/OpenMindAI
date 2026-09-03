@@ -233,6 +233,9 @@ Do not invoke V8/Node APIs directly from the inference thread. Use a threadsafe 
 
 ## Validation
 
+See [native GGUF smoke tests](#real-gguf-smoke-tests) for real generation,
+cancellation/recovery coverage and the Windows Qwen3 diagnostic commands.
+
 The dedicated native workflow pins llama.cpp commit:
 
 ```text
@@ -274,10 +277,11 @@ Run the same check on a Windows x64 machine with PowerShell 7:
   -ExpectedCommit 7798007a29a90e3053e799394da48cf53a2f8e0f
 ```
 
-This checks SDK-independent package loading with the host's system runtime/driver
-libraries available. It does not prove that Vulkan runtime prerequisites are absent,
-run a GGUF model, exercise GPU inference, or test the application's CPU retry.
-The CPU buffer check only verifies that the CPU backend in the Vulkan bundle is usable.
+The loader probe checks SDK-independent package loading with the host's system
+runtime/driver libraries available. Its CPU buffer check verifies allocation.
+The companion [GGUF smoke suite](#real-gguf-smoke-tests) then exercises generation,
+cancellation and recovery. Real GPU inference and the desktop router/UI still need
+device-level validation.
 
 ### Optional Vulkan loading on Windows
 
@@ -304,6 +308,79 @@ packaging is validated separately before release enablement. This change handles
 recoverable loading/availability failures, not native driver crashes or access
 violations. Real-device GGUF generation, cancellation, and GPU-to-CPU recovery still
 need validation before making Vulkan the default.
+
+## Real GGUF smoke tests
+
+`scripts/native-inference-smoke.rs` exercises the production Rust bridge, native
+backend and supervisor with a real GGUF file. Linux native CI runs the linked CPU
+build. The isolated Windows job runs the dynamic bundle normally, with the Vulkan
+plugin removed, and with its Vulkan loader import redirected to a missing DLL.
+
+The suite checks initial and repeated generation, cancellation after the first
+nonempty chunk, a Unicode prompt after cancellation, a longer prompt, generation
+after context reset, malformed-model rejection, model reload/recovery and worker
+shutdown. Chat mode adds a system prompt and multi-turn history. The missing-Vulkan
+cases require a GPU availability error before output, followed by successful CPU
+generation through the same worker. They do not invoke the desktop router or UI.
+
+### CI fixture and reports
+
+The fixture is [ggml-org/test-model-stories260K](https://huggingface.co/ggml-org/test-model-stories260K/tree/479896ec924af6d40fd419ab8f4d1eb2101de00d),
+pinned by revision, byte length and SHA256 in `scripts/native-smoke-model.json`.
+It is about 1.2 MB and tests execution, not chat quality. It is not added to the
+application's model catalog or release installer. The download helper verifies
+both fresh and cached files and refuses to overwrite a different existing file.
+
+```sh
+node scripts/download-native-smoke-model.mjs native-smoke-model.gguf
+```
+
+The workflow artifacts `native-model-smoke-linux` and `native-model-smoke-windows`
+contain JSON reports, including partial reports on ordinary failures. Each report
+records requested GPU layers, model filename/size, first-chunk and total latency,
+nonempty chunk count, output bytes, cancellation return latency, and worker state.
+Chunks can contain multiple token pieces; they are not a token count. No generated
+answer text is saved in the report. Timing is diagnostic, not a performance gate.
+
+The runner has a total timeout, including model loading and worker shutdown. A hung
+run exits with code 124; normal failures exit with code 1 and produce a report.
+A forced timeout may occur before the report can be written. Windows CI also
+supervises the process externally. No watchdog or test model is added to production.
+
+### Run Qwen3 on Windows
+
+Download and extract the `openmindai-native-vulkan-<llama-commit>` artifact from the
+new workflow run. Keep `native-inference-smoke.exe` beside the matching runtime
+DLLs. The diagnostic executable is included only in that CI artifact. Start with
+CPU, then request one GPU layer as a minimal Vulkan smoke check:
+
+```powershell
+.\native-inference-smoke.exe `
+  --model "G:\portable ai\models\llm\qwen\qwen3-4b\Qwen3-4B-Q4_K_M.gguf" `
+  --profile chat --gpu-layers 0 --timeout-seconds 600 --report qwen3-cpu.json
+
+.\native-inference-smoke.exe `
+  --model "G:\portable ai\models\llm\qwen\qwen3-4b\Qwen3-4B-Q4_K_M.gguf" `
+  --profile chat --gpu-layers 1 --timeout-seconds 600 --report qwen3-vulkan.json
+```
+
+Use `--profile raw` for completion-only models without chat-template metadata.
+Use `--expect-gpu-unavailable` only when deliberately testing a missing/disabled
+Vulkan backend; the subsequent generation must use CPU (`--gpu-layers 0`). An
+ordinary GPU run fails if the requested backend is unavailable instead of silently
+reporting CPU execution as a GPU success.
+
+Passing this suite does not prove response quality, full GPU offload, UI event/DB
+handling, a working Stop button, or recovery from a native driver crash. RX580 and
+Qwen3 results must come from that actual device/model combination. Release-default
+enablement still requires those checks and installer validation.
+
+### Context-reset ordering
+
+The real-model suite exposed a queue race: `clear_context()` returned while its
+command still occupied the bounded worker queue, so an immediate generation could
+fail with `Busy`. The worker now acknowledges completion before reset returns.
+Like synchronous generation, this method must be called outside token callbacks.
 
 ## Remaining production work
 

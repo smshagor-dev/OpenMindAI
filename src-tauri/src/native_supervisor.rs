@@ -85,7 +85,7 @@ struct GenerationCommand {
 
 enum WorkerCommand {
     Generate(GenerationCommand),
-    Clear,
+    Clear(SyncSender<()>),
     Shutdown,
 }
 
@@ -167,12 +167,23 @@ impl NativeInferenceSupervisor {
             .map_err(|_| NativeSupervisorError::WorkerDisconnected)?
     }
 
+    /// Waits for the worker to reset context; call from outside token callbacks.
     pub fn clear_context(&self) -> Result<(), NativeSupervisorError> {
-        match self.commands.try_send(WorkerCommand::Clear) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => Err(NativeSupervisorError::Busy),
-            Err(TrySendError::Disconnected(_)) => Err(NativeSupervisorError::WorkerDisconnected),
+        if self.shutdown.load(Ordering::Acquire) {
+            return Err(NativeSupervisorError::Stopped);
         }
+        let (done, completed) = mpsc::sync_channel(1);
+        match self.commands.try_send(WorkerCommand::Clear(done)) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => return Err(NativeSupervisorError::Busy),
+            Err(TrySendError::Disconnected(_)) => {
+                return Err(NativeSupervisorError::WorkerDisconnected)
+            }
+        }
+        // A following generation must not race a still-queued Clear command.
+        completed
+            .recv()
+            .map_err(|_| NativeSupervisorError::WorkerDisconnected)
     }
 }
 
@@ -203,7 +214,7 @@ fn worker_loop(
             WorkerCommand::Generate(command) => {
                 run_generation(&mut loaded, &state, &shutdown, command);
             }
-            WorkerCommand::Clear => {
+            WorkerCommand::Clear(completed) => {
                 if let Some(model) = loaded.as_mut() {
                     model.backend.clear_context();
                     set_state(
@@ -213,6 +224,7 @@ fn worker_loop(
                         },
                     );
                 }
+                let _ = completed.send(());
             }
             WorkerCommand::Shutdown => break,
         }

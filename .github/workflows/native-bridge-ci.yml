@@ -21,6 +21,9 @@ on:
       - "src-tauri/tauri.native-windows.conf.json"
       - "src-tauri/windows/native-runtime-hooks.nsh"
       - "scripts/prepare-native-runtime.ps1"
+      - "scripts/native-inference-smoke.rs"
+      - "scripts/native-smoke-model.json"
+      - "scripts/download-native-smoke-model.mjs"
       - ".github/workflows/native-bridge-ci.yml"
   pull_request:
     paths:
@@ -39,6 +42,9 @@ on:
       - "src-tauri/tauri.native-windows.conf.json"
       - "src-tauri/windows/native-runtime-hooks.nsh"
       - "scripts/prepare-native-runtime.ps1"
+      - "scripts/native-inference-smoke.rs"
+      - "scripts/native-smoke-model.json"
+      - "scripts/download-native-smoke-model.mjs"
       - ".github/workflows/native-bridge-ci.yml"
 
 permissions:
@@ -126,17 +132,17 @@ jobs:
           edition = "2021"
           build = "build.rs"
 
+          [[bin]]
+          name = "native-inference-smoke"
+          path = "../scripts/native-inference-smoke.rs"
+
           [dependencies]
           cxx = "1.0"
           tokio-util = "0.7"
+          serde_json = "1"
 
           [build-dependencies]
           cxx-build = "1.0"
-          EOF
-          cat > native-smoke/src/lib.rs <<'EOF'
-          pub mod native_bridge;
-          pub mod native_inference;
-          pub mod native_supervisor;
           EOF
           cat > native-smoke/build.rs <<'EOF'
           use std::{env, path::PathBuf};
@@ -170,7 +176,27 @@ jobs:
         env:
           LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
           LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
-        run: cargo clippy --manifest-path native-smoke/Cargo.toml --lib -- -D warnings
+        run: cargo clippy --manifest-path native-smoke/Cargo.toml --all-targets -- -D warnings
+
+      - name: Real GGUF generation, cancellation and recovery
+        timeout-minutes: 5
+        env:
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
+        run: |
+          node scripts/download-native-smoke-model.mjs native-smoke-model.gguf
+          cargo run --manifest-path native-smoke/Cargo.toml --bin native-inference-smoke -- \
+            --model native-smoke-model.gguf --report native-model-smoke.json
+
+      - name: Upload native model smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-model-smoke-linux
+          path: native-model-smoke.json
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Native streaming router integration check
         env:
