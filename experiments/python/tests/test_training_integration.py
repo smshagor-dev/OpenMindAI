@@ -51,7 +51,17 @@ class TrainingIntegration(unittest.TestCase):
                 "assistant_output": "red", "preferred_output": "blue blue",
                 "created_at": f"2026-09-03T00:{i % 60:02d}:00Z",
             }) for i in range(200)))
-            candidate = train_candidate(
+            # Exercise production process supervision when /proc exposes this
+            # PID. Restricted PID namespaces still exercise real training below.
+            import psutil
+            from openmind_personalization.__main__ import supervised_training
+            def run_training(**arguments):
+                try:
+                    psutil.Process().memory_info()
+                except psutil.NoSuchProcess:
+                    return train_candidate(**arguments)
+                return supervised_training(arguments)
+            candidate = run_training(
                 feedback=feedback, profile_id="test", model_id="nano", base=base,
                 base_gguf=gguf, output=root / "candidates", llama=llama,
                 policy=LearningPolicy(idle_only=False, min_free_ram_gb=0.1, require_ac_power=False),

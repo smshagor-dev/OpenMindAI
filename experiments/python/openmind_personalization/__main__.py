@@ -34,9 +34,21 @@ def supervised_training(arguments: dict) -> Path:
             child.join(0.5)
             if not child.is_alive():
                 break
-            processes = [watched, *watched.children(recursive=True)]
-            rss = sum(p.memory_info().rss for p in processes if p.is_running())
-            other_cpu = psutil.cpu_percent(interval=None) - sum(p.cpu_percent(interval=None) for p in processes if p.is_running()) / max(psutil.cpu_count() or 1, 1)
+            try:
+                processes = [watched, *watched.children(recursive=True)]
+            except psutil.NoSuchProcess:
+                child.join(0.1)
+                if child.is_alive():
+                    raise RuntimeError("training process telemetry became unavailable")
+                break
+            rss, own_cpu = 0, 0.0
+            for process in processes:
+                try:
+                    rss += process.memory_info().rss
+                    own_cpu += process.cpu_percent(interval=None)
+                except psutil.NoSuchProcess:
+                    pass  # A converter may exit between enumeration and sampling.
+            other_cpu = psutil.cpu_percent(interval=None) - own_cpu / max(psutil.cpu_count() or 1, 1)
             if arguments["policy"].idle_only and other_cpu >= 25:
                 raise RuntimeError("other CPU work resumed; training stopped")
             if time.monotonic() >= deadline or rss > arguments["options"].max_rss_gb * 2**30:
@@ -50,7 +62,11 @@ def supervised_training(arguments: dict) -> Path:
         return Path(value)
     finally:
         if child.is_alive():
-            for process in watched.children(recursive=True) if watched is not None else []:
+            try:
+                descendants = watched.children(recursive=True) if watched is not None else []
+            except psutil.NoSuchProcess:
+                descendants = []
+            for process in descendants:
                 try:
                     process.kill()
                 except psutil.NoSuchProcess:

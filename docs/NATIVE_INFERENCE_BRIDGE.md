@@ -345,7 +345,7 @@ answer text is saved in the report. Timing is diagnostic, not a performance gate
 The runner has a total timeout, including model loading and worker shutdown. A hung
 run exits with code 124; normal failures exit with code 1 and produce a report.
 A forced timeout may occur before the report can be written. Windows CI also
-supervises the process externally. No watchdog or test model is added to production.
+supervises the process externally. No test model is added to production. Production native requests now also have deadlines; the standalone smoke watchdog bounds the entire diagnostic run.
 
 ### Run Qwen3 on Windows
 
@@ -382,16 +382,26 @@ command still occupied the bounded worker queue, so an immediate generation coul
 fail with `Busy`. The worker now acknowledges completion before reset returns.
 Like synchronous generation, this method must be called outside token callbacks.
 
-## Remaining production work
+## Implementation and release gates
 
-Before native inference becomes OpenMindAI's default chat path:
+The native router, Tauri streaming/cancellation, CPU fallback, ABI-locked Windows
+packaging, SDK-free missing-DLL recovery, context admission and generation
+deadlines are implemented. Real-GGUF smoke covers repeated generation, reset,
+invalid models, Unicode prompts, context rejection, timeout and recovery.
+The Go service can use the persistent Rust worker directly; see
+[service setup](../services/native-worker/README.md). The optional
+[personalization pipeline](../experiments/python/README.md) trains/evaluates a
+local LoRA, converts it to GGUF, probes native generation, and activates or rolls
+back per-profile pointers without changing base model weights.
 
-- wire `InferenceBackend` into the real model router;
-- stream native tokens through the existing Tauri/React chat protocol;
-- add request-scoped cancellation and lifecycle state;
-- add invalid-model, OOM, long-context, multilingual, and repeated-generation runtime tests;
-- add Windows/macOS native compile and packaging checks;
-- validate CUDA and other supported GPU backends plus CPU fallback;
-- solve DLL/rpath/dylib release packaging;
-- benchmark model load, first-token latency, tokens/sec, RAM, VRAM, and cancellation latency;
-- only then consider enabling native inference by default.
+Before enabling native Vulkan as a production release default, collect results
+on the actual Qwen3/RX580 machine: CPU and GPU smoke reports, evidence of nonzero
+GPU layer offload, first-output and throughput measurements, RAM/VRAM behavior,
+Stop-button/UI/database recovery, and a clean installer/upgrade run. CPU and
+headless Windows CI cannot certify these device-specific properties. Native
+CUDA/macOS GPU packaging and large-model training are separate platform work.
+
+The KV estimate is a conservative admission budget, not a hard process/VRAM cap.
+Go can kill/restart its isolated worker on failure; a quarantined desktop native
+thread needs app restart because C++/driver calls cannot be safely terminated
+in process. Do not reinterpret synthetic model tests as task-quality benchmarks.
