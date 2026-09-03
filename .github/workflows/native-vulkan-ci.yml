@@ -10,6 +10,7 @@ on:
       - "scripts/prepare-native-runtime.ps1"
       - "scripts/test-native-runtime.ps1"
       - "scripts/native-runtime-probe.cs"
+      - "scripts/native-backend-probe.rs"
       - "src-tauri/native/**"
       - "src-tauri/src/native_bridge.rs"
       - "src-tauri/src/native_inference.rs"
@@ -91,7 +92,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: vendor/llama.cpp/build-vulkan
-          key: llama-${{ runner.os }}-${{ env.LLAMA_CPP_COMMIT }}-vulkan-${{ env.VULKAN_SDK_VERSION }}-shared-v1
+          key: llama-${{ runner.os }}-${{ env.LLAMA_CPP_COMMIT }}-vulkan-${{ env.VULKAN_SDK_VERSION }}-dynamic-v1
 
       - name: Build pinned llama.cpp Vulkan shared runtime
         if: steps.llama-vulkan-cache.outputs.cache-hit != 'true'
@@ -100,6 +101,7 @@ jobs:
           cmake -S vendor/llama.cpp -B vendor/llama.cpp/build-vulkan `
             -DGGML_VULKAN=ON `
             -DGGML_CUDA=OFF `
+            -DGGML_BACKEND_DL=ON `
             -DGGML_NATIVE=OFF `
             -DBUILD_SHARED_LIBS=ON `
             -DLLAMA_BUILD_TESTS=OFF `
@@ -124,11 +126,14 @@ jobs:
             throw "Expected one Release llama.lib import library, found $($llamaLibs.Count)"
           }
           $libDir = $llamaLibs[0].Directory.FullName
+          $ggmlLibs = @(Get-ChildItem -LiteralPath 'vendor/llama.cpp/build-vulkan' -Filter 'ggml.lib' -File -Recurse |
+            Where-Object { $_.Directory.Name -eq 'Release' })
+          if ($ggmlLibs.Count -ne 1) { throw 'Expected one Release ggml.lib import library' }
           & ./scripts/prepare-native-runtime.ps1 `
             -LlamaBuildDir 'vendor/llama.cpp/build-vulkan' `
             -OutputDir 'native-vulkan-artifact' `
             -Commit $env:LLAMA_CPP_COMMIT `
-            -Backend vulkan
+            -Backend vulkan -DynamicBackends
           $manifest = Get-Content -LiteralPath 'native-vulkan-artifact/native-runtime-manifest.json' -Raw | ConvertFrom-Json
           if ($manifest.backend -ne 'vulkan') {
             throw "Expected Vulkan manifest, got $($manifest.backend)"
@@ -137,6 +142,7 @@ jobs:
             throw 'Staged Vulkan runtime is missing ggml-vulkan.dll'
           }
           "dir=$libDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "backend-dir=$($ggmlLibs[0].Directory.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           $runtimeDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Probe llama Vulkan runtime without requiring a GPU
@@ -168,6 +174,8 @@ jobs:
         env:
           LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
           LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          LLAMA_CPP_BACKEND_LIB_DIR: ${{ steps.llama-lib.outputs.backend-dir }}
+          OPENMINDAI_NATIVE_DYNAMIC_BACKENDS: "1"
           LLAMA_CPP_COMMIT: ${{ env.LLAMA_CPP_COMMIT }}
           OPENMINDAI_NATIVE_STRICT_ABI: "1"
           OPENMINDAI_PORTABLE_BUILD: "1"
@@ -178,10 +186,57 @@ jobs:
         env:
           LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
           LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          LLAMA_CPP_BACKEND_LIB_DIR: ${{ steps.llama-lib.outputs.backend-dir }}
+          OPENMINDAI_NATIVE_DYNAMIC_BACKENDS: "1"
           LLAMA_CPP_COMMIT: ${{ env.LLAMA_CPP_COMMIT }}
           OPENMINDAI_NATIVE_STRICT_ABI: "1"
           OPENMINDAI_PORTABLE_BUILD: "1"
         run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --features native-cxx-llama --lib -- -D warnings
+
+      - name: Build actual CXX backend initialization probe
+        shell: pwsh
+        env:
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          LLAMA_CPP_BACKEND_LIB_DIR: ${{ steps.llama-lib.outputs.backend-dir }}
+        run: |
+          New-Item -ItemType Directory -Force native-backend-smoke/src, native-backend-smoke/native | Out-Null
+          Copy-Item src-tauri/src/native_bridge.rs native-backend-smoke/src/native_bridge.rs
+          Copy-Item src-tauri/native/inference.cpp, src-tauri/native/inference.h native-backend-smoke/native
+          @'
+          [package]
+          name = "native-backend-probe"
+          version = "0.0.0"
+          edition = "2021"
+          [[bin]]
+          name = "native-backend-probe"
+          path = "../scripts/native-backend-probe.rs"
+          [dependencies]
+          cxx = "1.0"
+          [build-dependencies]
+          cxx-build = "1.0"
+          '@ | Set-Content native-backend-smoke/Cargo.toml
+          @'
+          use std::{env, path::PathBuf};
+          fn main() {
+              let root = PathBuf::from(env::var_os("LLAMA_CPP_DIR").unwrap());
+              cxx_build::CFG.include_prefix = "openmind";
+              cxx_build::bridge("src/native_bridge.rs")
+                  .file("native/inference.cpp").include(".")
+                  .include(root.join("include")).include(root.join("ggml/include"))
+                  .std("c++17").flag("/O2").flag("/EHsc")
+                  .define("OPENMINDAI_DYNAMIC_BACKENDS", None)
+                  .compile("openmind_llama_bridge");
+              for name in ["LLAMA_CPP_LIB_DIR", "LLAMA_CPP_BACKEND_LIB_DIR"] {
+                  println!("cargo:rustc-link-search=native={}", env::var(name).unwrap());
+              }
+              println!("cargo:rustc-link-lib=dylib=llama");
+              println!("cargo:rustc-link-lib=dylib=ggml");
+          }
+          '@ | Set-Content native-backend-smoke/build.rs
+          cargo build --release --manifest-path native-backend-smoke/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw 'Native backend probe build failed' }
+          Copy-Item native-backend-smoke/target/release/native-backend-probe.exe native-vulkan-artifact
 
       - name: Upload Vulkan runtime probe artifact
         uses: actions/upload-artifact@v4

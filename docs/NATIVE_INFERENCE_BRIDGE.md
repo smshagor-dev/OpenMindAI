@@ -252,9 +252,20 @@ DLL search is restricted to the bundle directory and System32 using
 [`LoadLibraryExW`](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibraryexw).
 
 The complete bundle must load, initialize llama.cpp, and allocate/free a 4 KiB CPU
-backend buffer. Then copies with each required DLL removed must fail with Win32
-error 126. Fresh child processes prevent an already-loaded DLL from hiding a
-missing dependency. Loaded llama/ggml/Vulkan module paths are printed in CI logs.
+backend buffer. Copies with required core DLLs removed must fail with Win32 error
+126. For a dynamic Vulkan bundle, removing `ggml-vulkan.dll` must preserve CPU
+initialization and allocation. A separate fault-injection copy changes the Vulkan
+loader import name to a nonexistent DLL of the same byte length; CPU must still
+work when that transitive dependency cannot load. CPU-only initialization must not
+load Vulkan at all. Fresh child processes prevent an already-loaded DLL from
+hiding a missing dependency. Loaded module paths are printed in CI logs.
+
+The CI artifact also contains `native-backend-probe.exe`, built from the actual
+Rust bridge and C++ wrapper. On the complete bundle and both damaged Vulkan copies,
+CPU initialization must reach the expected nonexistent-GGUF error. GPU requests on
+the damaged copies must return the explicit Vulkan-unavailable error before model
+loading. This diagnostic executable is only added to the CI artifact, not staged
+by the production packaging script. It tests backend startup without downloading a model.
 
 Run the same check on a Windows x64 machine with PowerShell 7:
 
@@ -267,10 +278,32 @@ This checks SDK-independent package loading with the host's system runtime/drive
 libraries available. It does not prove that Vulkan runtime prerequisites are absent,
 run a GGUF model, exercise GPU inference, or test the application's CPU retry.
 The CPU buffer check only verifies that the CPU backend in the Vulkan bundle is usable.
-With the current linked DLL layout, a missing Vulkan dependency can prevent app
-startup before Rust routing executes; the pre-token CPU retry handles errors after
-successful loading, not Windows loader failures. Production Vulkan enablement still
-requires resolving that startup dependency and real-device model/fallback tests.
+
+### Optional Vulkan loading on Windows
+
+The Vulkan validation build uses `-DGGML_BACKEND_DL=ON` so `llama.dll` and `ggml.dll`
+do not require the Vulkan plugin at process startup. Build the OpenMindAI wrapper
+with `OPENMINDAI_NATIVE_DYNAMIC_BACKENDS=1` and set `LLAMA_CPP_BACKEND_LIB_DIR` to
+the directory containing the matching `ggml.lib` import library, in addition to
+the existing `LLAMA_CPP_LIB_DIR` containing `llama.lib`. This mode currently supports
+Windows MSVC. Stage that build with `prepare-native-runtime.ps1 -DynamicBackends`.
+The manifest records `backendLoading: dynamic`; older manifests default to `linked`.
+The application rejects a manifest whose loading mode does not match its build.
+
+The native wrapper explicitly registers `ggml-cpu.dll` from the executable directory
+before initializing llama.cpp. A development build can select one absolute directory
+with `OPENMINDAI_NATIVE_BACKEND_DIR`. It never scans the current working directory,
+PATH, or `GGML_BACKEND_PATH`. Plugin dependencies are preloaded using the plugin
+directory and System32. Vulkan is attempted only when GPU layers are requested.
+If the plugin, its loader, or a usable Vulkan device is unavailable, the wrapper
+returns an error before loading the model or emitting tokens. The existing Rust
+router then retries with zero GPU layers. Missing core/CPU libraries remain errors.
+
+The normal release workflow still produces the linked CPU baseline. Dynamic Vulkan
+packaging is validated separately before release enablement. This change handles
+recoverable loading/availability failures, not native driver crashes or access
+violations. Real-device GGUF generation, cancellation, and GPU-to-CPU recovery still
+need validation before making Vulkan the default.
 
 ## Remaining production work
 

@@ -9,6 +9,8 @@ const PINNED_LLAMA_CPP_COMMIT: &str = "7798007a29a90e3053e799394da48cf53a2f8e0f"
 fn main() {
     println!("cargo:rerun-if-env-changed=LLAMA_CPP_DIR");
     println!("cargo:rerun-if-env-changed=LLAMA_CPP_LIB_DIR");
+    println!("cargo:rerun-if-env-changed=LLAMA_CPP_BACKEND_LIB_DIR");
+    println!("cargo:rerun-if-env-changed=OPENMINDAI_NATIVE_DYNAMIC_BACKENDS");
     println!("cargo:rerun-if-env-changed=LLAMA_CPP_COMMIT");
     println!("cargo:rerun-if-env-changed=OPENMINDAI_NATIVE_STRICT_ABI");
     println!("cargo:rerun-if-env-changed=OPENMINDAI_LLAMA_LINK_KIND");
@@ -21,6 +23,12 @@ fn main() {
     println!("cargo:rerun-if-changed=native/inference.h");
     println!("cargo:rerun-if-changed=src/native_bridge.rs");
     println!("cargo:rustc-env=OPENMINDAI_NATIVE_LLAMA_COMMIT={PINNED_LLAMA_CPP_COMMIT}");
+    let backend_loading = if env_flag("OPENMINDAI_NATIVE_DYNAMIC_BACKENDS") {
+        "dynamic"
+    } else {
+        "linked"
+    };
+    println!("cargo:rustc-env=OPENMINDAI_NATIVE_BACKEND_LOADING={backend_loading}");
     println!(
         "cargo:rustc-env=OPENMINDAI_NATIVE_ABI_TAG=llama-cxx-{}",
         &PINNED_LLAMA_CPP_COMMIT[..12]
@@ -41,6 +49,10 @@ fn build_native_llama_bridge() {
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let portable = env_flag("OPENMINDAI_PORTABLE_BUILD");
+    let dynamic_backends = env_flag("OPENMINDAI_NATIVE_DYNAMIC_BACKENDS");
+    if dynamic_backends && target_env != "msvc" {
+        panic!("OPENMINDAI_NATIVE_DYNAMIC_BACKENDS currently requires Windows MSVC");
+    }
 
     if target_env == "msvc" && !llama_lib_dir.join("llama.lib").is_file() {
         panic!(
@@ -59,6 +71,19 @@ fn build_native_llama_bridge() {
         .include(llama_dir.join("ggml/include"))
         .std("c++17")
         .warnings(true);
+
+    if dynamic_backends {
+        let backend_lib_dir = required_path("LLAMA_CPP_BACKEND_LIB_DIR");
+        if !backend_lib_dir.join("ggml.lib").is_file() {
+            panic!("LLAMA_CPP_BACKEND_LIB_DIR must contain ggml.lib");
+        }
+        build.define("OPENMINDAI_DYNAMIC_BACKENDS", None);
+        println!(
+            "cargo:rustc-link-search=native={}",
+            backend_lib_dir.display()
+        );
+        println!("cargo:rustc-link-lib=dylib=ggml");
+    }
 
     if target_env == "msvc" {
         build.flag("/O2").flag("/EHsc");
