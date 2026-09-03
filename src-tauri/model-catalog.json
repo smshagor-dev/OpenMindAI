@@ -1,5 +1,5 @@
 {
-  "catalogVersion": 6,
+  "catalogVersion": 7,
   "models": [
     {
       "id": "qwen3-06b-q4",
@@ -85,7 +85,7 @@
       "minRamBytes": 8589934592,
       "minVramBytes": null,
       "license": "mit",
-      "description": "Compact Microsoft Phi reasoning model for structured answers, coding, and math-oriented local work.",
+      "description": "Compact local reasoning model for structured answers, coding, and math-oriented work.",
       "download": {
         "strategy": "singleFile",
         "filenamePattern": "*Q4_K_M*.gguf",
@@ -108,7 +108,7 @@
       "minRamBytes": 8589934592,
       "minVramBytes": null,
       "license": "llama-3.2-community",
-      "description": "Free-to-use Llama 3.2 local assistant. Upstream community license and attribution terms apply; install manually after accepting them.",
+      "description": "Compact local assistant. Upstream community license and attribution terms apply; install manually after accepting them.",
       "download": null
     },
     {
@@ -131,6 +131,144 @@
         "strategy": "singleFile",
         "filenamePattern": "*Q4_K_M*.gguf",
         "destinationDir": "models/llm/qwen/qwen3-8b",
+        "format": "gguf"
+      }
+    },
+    {
+      "id": "gpt-oss-20b-mxfp4",
+      "name": "OpenMindAI Forge",
+      "version": "1",
+      "family": "gpt-oss",
+      "kind": "reasoning",
+      "runtime": "llama.cpp",
+      "repo": "ggml-org/gpt-oss-20b-GGUF",
+      "quantization": "MXFP4",
+      "required": false,
+      "capabilities": ["chat", "reasoning", "code", "math", "agent", "tool-use"],
+      "sizeBytes": 12100000000,
+      "minRamBytes": 17179869184,
+      "minVramBytes": null,
+      "license": "apache-2.0",
+      "description": "Advanced local reasoning assistant for coding, analysis, math, tool-driven tasks, and structured problem solving.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "gpt-oss-20b-MXFP4.gguf",
+        "destinationDir": "models/llm/openmind/forge",
+        "format": "gguf"
+      }
+    },
+    {
+      "id": "gpt-oss-120b-mxfp4",
+      "name": "OpenMindAI Forge Max",
+      "version": "1",
+      "family": "gpt-oss",
+      "kind": "reasoning",
+      "runtime": "llama.cpp",
+      "repo": "ggml-org/gpt-oss-120b-GGUF",
+      "quantization": "MXFP4",
+      "required": false,
+      "capabilities": ["chat", "reasoning", "code", "math", "agent", "tool-use"],
+      "sizeBytes": 63400000000,
+      "minRamBytes": 85899345920,
+      "minVramBytes": null,
+      "license": "apache-2.0",
+      "description": "Maximum-capability local reasoning package for high-memory workstations, deep analysis, coding, and complex agent workflows.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "gpt-oss-120b-MXFP4.gguf",
+        "destinationDir": "models/llm/openmind/forge-max",
+        "format": "gguf"
+      }
+    },
+    {
+      "id": "nemotron3-nano-4b-q4km",
+      "name": "OpenMindAI Agent Lite",
+      "version": "1",
+      "family": "nemotron",
+      "kind": "agent",
+      "runtime": "llama.cpp",
+      "repo": "nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF",
+      "quantization": "Q4_K_M",
+      "required": false,
+      "capabilities": ["chat", "reasoning", "code", "agent", "tool-use"],
+      "sizeBytes": 2840000000,
+      "minRamBytes": 8589934592,
+      "minVramBytes": null,
+      "license": "nvidia-nemotron-open-model-license",
+      "description": "Lightweight agent-focused local model for tool use, coding, reasoning, and fast autonomous task execution.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf",
+        "destinationDir": "models/llm/openmind/agent-lite",
+        "format": "gguf"
+      }
+    },
+    {
+      "id": "nemotron3-nano-30b-a3b-q4km",
+      "name": "OpenMindAI Agent",
+      "version": "1",
+      "family": "nemotron",
+      "kind": "agent",
+      "runtime": "llama.cpp",
+      "repo": "ggml-org/NVIDIA-Nemotron-3-Nano-30B-A3B-GGUF",
+      "quantization": "Q4_K_M",
+      "required": false,
+      "capabilities": ["chat", "reasoning", "code", "agent", "tool-use"],
+      "sizeBytes": 22400000000,
+      "minRamBytes": 34359738368,
+      "minVramBytes": null,
+      "license": "nvidia-nemotron-open-model-license",
+      "description": "High-throughput local agent model for multi-step reasoning, coding, tool use, and autonomous workflows.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf",
+        "destinationDir": "models/llm/openmind/agent",
+        "format": "gguf"
+      }
+    },
+    {
+      "id": "nemotron35-lightning-30b-a3b-q4",
+      "name": "OpenMindAI Agent Lightning",
+      "version": "3.5",
+      "family": "nemotron",
+      "kind": "agent",
+      "runtime": "llama.cpp",
+      "repo": "ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
+      "quantization": "Q4_0",
+      "required": false,
+      "capabilities": ["chat", "reasoning", "code", "agent", "tool-use", "long-context"],
+      "sizeBytes": 18900000000,
+      "minRamBytes": 34359738368,
+      "minVramBytes": null,
+      "license": "openmdw-1.1",
+      "description": "Fast long-context agent model for autonomous workflows, sub-agents, coding, tool execution, and sustained reasoning.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf",
+        "destinationDir": "models/llm/openmind/agent-lightning",
+        "format": "gguf"
+      }
+    },
+    {
+      "id": "nemotron3-super-120b-q4k",
+      "name": "OpenMindAI Agent Pro",
+      "version": "3",
+      "family": "nemotron",
+      "kind": "agent",
+      "runtime": "llama.cpp",
+      "repo": "ggml-org/Nemotron-3-Super-120B-GGUF",
+      "quantization": "Q4_K",
+      "required": false,
+      "capabilities": ["chat", "reasoning", "code", "agent", "tool-use", "long-context"],
+      "sizeBytes": 69900000000,
+      "minRamBytes": 103079215104,
+      "minVramBytes": null,
+      "license": "nvidia-nemotron-open-model-license",
+      "description": "Large local agent model for advanced reasoning, collaborative agent workflows, coding, and high-complexity automation.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "Nemotron-3-Super-120B-Q4_K.gguf",
+        "destinationDir": "models/llm/openmind/agent-pro",
         "format": "gguf"
       }
     },
@@ -249,8 +387,163 @@
       "minRamBytes": 8589934592,
       "minVramBytes": 4294967296,
       "license": "gemma",
-      "description": "Free/open-weight Gemma 3 multimodal model. Google Gemma terms must be accepted upstream before manual installation.",
+      "description": "Multimodal local model available under upstream terms. Manual access is required before installation.",
       "download": null
+    },
+    {
+      "id": "gemma4-e2b-q4",
+      "name": "OpenMindAI Flash",
+      "version": "4",
+      "family": "gemma4",
+      "kind": "vision",
+      "runtime": "llama.cpp",
+      "repo": "ggml-org/gemma-4-E2B-it-GGUF",
+      "quantization": "Q4_0",
+      "required": false,
+      "capabilities": ["chat", "vision", "reasoning", "code", "ocr", "image-review"],
+      "sizeBytes": 2840000000,
+      "minRamBytes": 8589934592,
+      "minVramBytes": null,
+      "license": "apache-2.0",
+      "description": "Fast multimodal local assistant for everyday chat, visual understanding, OCR, reasoning, and coding on modest hardware.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "gemma-4-E2B-it-Q4_0.gguf",
+        "destinationDir": "models/vision/openmind/flash",
+        "format": "gguf",
+        "dependencies": [
+          {
+            "role": "mmproj",
+            "filenamePattern": "mmproj-gemma-4-E2B-it-Q8_0.gguf",
+            "format": "gguf",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "gemma4-e4b-q4",
+      "name": "OpenMindAI Flash Plus",
+      "version": "4",
+      "family": "gemma4",
+      "kind": "vision",
+      "runtime": "llama.cpp",
+      "repo": "ggml-org/gemma-4-E4B-it-GGUF",
+      "quantization": "Q4_0",
+      "required": false,
+      "capabilities": ["chat", "vision", "reasoning", "code", "ocr", "image-review"],
+      "sizeBytes": 4590000000,
+      "minRamBytes": 12884901888,
+      "minVramBytes": null,
+      "license": "apache-2.0",
+      "description": "Responsive multimodal assistant with stronger visual understanding, document reading, reasoning, writing, and coding.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "gemma-4-E4B-it-Q4_0.gguf",
+        "destinationDir": "models/vision/openmind/flash-plus",
+        "format": "gguf",
+        "dependencies": [
+          {
+            "role": "mmproj",
+            "filenamePattern": "mmproj-gemma-4-E4B-it-Q8_0.gguf",
+            "format": "gguf",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "gemma4-12b-q4",
+      "name": "OpenMindAI Vision",
+      "version": "4",
+      "family": "gemma4",
+      "kind": "vision",
+      "runtime": "llama.cpp",
+      "repo": "ggml-org/gemma-4-12B-it-GGUF",
+      "quantization": "Q4_0",
+      "required": false,
+      "capabilities": ["chat", "vision", "reasoning", "code", "ocr", "image-review"],
+      "sizeBytes": 7220000000,
+      "minRamBytes": 17179869184,
+      "minVramBytes": null,
+      "license": "apache-2.0",
+      "description": "Balanced high-quality multimodal model for screenshots, documents, OCR, reasoning, coding, and general chat.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "gemma-4-12B-it-Q4_0.gguf",
+        "destinationDir": "models/vision/openmind/vision",
+        "format": "gguf",
+        "dependencies": [
+          {
+            "role": "mmproj",
+            "filenamePattern": "mmproj-gemma-4-12B-it-Q8_0.gguf",
+            "format": "gguf",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "gemma4-26b-a4b-q4",
+      "name": "OpenMindAI Vision Pro",
+      "version": "4",
+      "family": "gemma4",
+      "kind": "vision",
+      "runtime": "llama.cpp",
+      "repo": "ggml-org/gemma-4-26B-A4B-it-GGUF",
+      "quantization": "Q4_0",
+      "required": false,
+      "capabilities": ["chat", "vision", "reasoning", "code", "ocr", "image-review"],
+      "sizeBytes": 14600000000,
+      "minRamBytes": 25769803776,
+      "minVramBytes": null,
+      "license": "apache-2.0",
+      "description": "High-capability multimodal model for complex visual analysis, document understanding, deep reasoning, and advanced coding.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "gemma-4-26B-A4B-it-Q4_0.gguf",
+        "destinationDir": "models/vision/openmind/vision-pro",
+        "format": "gguf",
+        "dependencies": [
+          {
+            "role": "mmproj",
+            "filenamePattern": "mmproj-gemma-4-26B-A4B-it-Q8_0.gguf",
+            "format": "gguf",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "gemma4-31b-q4",
+      "name": "OpenMindAI Vision Max",
+      "version": "4",
+      "family": "gemma4",
+      "kind": "vision",
+      "runtime": "llama.cpp",
+      "repo": "ggml-org/gemma-4-31B-it-GGUF",
+      "quantization": "Q4_0",
+      "required": false,
+      "capabilities": ["chat", "vision", "reasoning", "code", "ocr", "image-review"],
+      "sizeBytes": 18000000000,
+      "minRamBytes": 34359738368,
+      "minVramBytes": null,
+      "license": "apache-2.0",
+      "description": "Maximum-quality multimodal package for demanding visual analysis, long-form reasoning, document work, and coding.",
+      "download": {
+        "strategy": "singleFile",
+        "filenamePattern": "gemma-4-31B-it-Q4_0.gguf",
+        "destinationDir": "models/vision/openmind/vision-max",
+        "format": "gguf",
+        "dependencies": [
+          {
+            "role": "mmproj",
+            "filenamePattern": "mmproj-gemma-4-31B-it-Q8_0.gguf",
+            "format": "gguf",
+            "required": true
+          }
+        ]
+      }
     },
     {
       "id": "whisper-large-v3-turbo-q5",
@@ -290,7 +583,7 @@
       "minRamBytes": 4294967296,
       "minVramBytes": null,
       "license": "apache-2.0",
-      "description": "Native local Kokoro speech synthesis through Rust/Candle with in-process phonemization and verified voice weights.",
+      "description": "Native local speech synthesis with in-process phonemization and verified voice weights.",
       "download": {
         "strategy": "singleFile",
         "filenamePattern": "*kokoro-v1_0.pth",
@@ -327,7 +620,7 @@
       "minRamBytes": 17179869184,
       "minVramBytes": 8589934592,
       "license": "openrail++",
-      "description": "Balanced local SDXL generation package using the official base checkpoint with the stable 0.9 VAE, plus Vulkan, CUDA, Metal, or CPU execution.",
+      "description": "Balanced local image generation package with Vulkan, CUDA, Metal, or CPU execution.",
       "download": {
         "strategy": "singleFile",
         "filenamePattern": "*.safetensors",
@@ -392,7 +685,7 @@
       "minRamBytes": 17179869184,
       "minVramBytes": 6442450944,
       "license": "apache-2.0",
-      "description": "Local Wan2.1 1.3B text-to-video generation through stable-diffusion.cpp with WebM output and memory-aware offload.",
+      "description": "Local text-to-video generation with WebM output and memory-aware offload.",
       "download": {
         "strategy": "singleFile",
         "filenamePattern": "*wan2.1_t2v_1.3B_fp16.safetensors",
