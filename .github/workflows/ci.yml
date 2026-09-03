@@ -37,6 +37,9 @@ jobs:
       - name: Release and updater configuration
         run: npm run check:release
 
+      - name: Model catalog
+        run: npm run check:models
+
       - name: Lint
         run: npm run lint
 
