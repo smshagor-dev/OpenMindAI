@@ -83,3 +83,13 @@ The Native CXX workflow builds the worker and executes this integration with a
 checksum-pinned tiny GGUF. The native smoke runner also checks context rejection,
 generation deadlines and recovery. The tiny fixture tests mechanics, not answer
 quality or device performance.
+
+## Optional personal adapters
+
+A registry entry can set `personalization` to an absolute per-profile activation
+JSON path produced by the [personalization CLI](../../experiments/python/README.md).
+The worker reads the pointer on each request, checks profile/model evaluation
+metadata, and verifies exact base/adapter hashes when loading. Changes reload the
+resident model. A null candidate selects the base model. Invalid activation
+blocks the request. The CLI supports real CPU LoRA training, native activation
+probes and rollback; Python remains optional for inference.

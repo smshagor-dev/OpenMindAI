@@ -40,7 +40,8 @@ pub async fn try_stream_native(
 
     if NATIVE_SUPERVISOR.get().is_some_and(|s| s.is_quarantined()) {
         return Some(Err(before_output(AppError::InferenceTimeout(
-            "native runtime is quarantined after an unresponsive call; restart the app".into()))));
+            "native runtime is quarantined after an unresponsive call; restart the app".into(),
+        ))));
     }
 
     let prepared = match prepare_native_request(request) {
@@ -50,6 +51,7 @@ pub async fn try_stream_native(
 
     let supervisor =
         Arc::clone(NATIVE_SUPERVISOR.get_or_init(|| Arc::new(NativeInferenceSupervisor::start())));
+    let personalized = prepared.model.adapter.is_some();
     let first = stream_native_completion(NativeStreamRequest {
         app: request.app,
         database: request.database,
@@ -70,7 +72,7 @@ pub async fn try_stream_native(
         );
         let mut cpu_model = prepared.model;
         cpu_model.n_gpu_layers = 0;
-        return Some(
+        return Some(protect_adapter_result(
             stream_native_completion(NativeStreamRequest {
                 app: request.app,
                 database: request.database,
@@ -82,10 +84,23 @@ pub async fn try_stream_native(
                 config: prepared.config,
             })
             .await,
-        );
+            personalized,
+        ));
     }
 
-    Some(first)
+    Some(protect_adapter_result(first, personalized))
+}
+
+fn protect_adapter_result(
+    result: Result<InferenceMetrics, NativeStreamError>,
+    personalized: bool,
+) -> Result<InferenceMetrics, NativeStreamError> {
+    result.map_err(|mut error| {
+        if personalized {
+            error.error = AppError::PersonalizationRejected(error.error.to_string());
+        }
+        error
+    })
 }
 
 fn native_eligible(request: &StreamRequest<'_>) -> Result<bool, AppError> {
@@ -151,12 +166,31 @@ fn prepare_native_request(request: &StreamRequest<'_>) -> Result<PreparedNativeR
     let available = memory.available_memory();
     let resident = NATIVE_SUPERVISOR.get().is_some_and(|s| matches!(s.state(),
         crate::native_supervisor::NativeSupervisorState::Ready { model_id } if model_id == request.model));
-    let file_bytes = if resident { 0 } else { std::fs::metadata(&model_path)?.len() };
+    let file_bytes = if resident {
+        0
+    } else {
+        std::fs::metadata(&model_path)?.len()
+    };
     let reserve = 1024 * 1024 * 1024;
     let remaining = available.saturating_sub(file_bytes).saturating_sub(reserve);
     if remaining < 256 * 1024 * 1024 {
-        return Err(AppError::ModelOutOfMemory("insufficient free RAM for model, context and system reserve".into()));
+        return Err(AppError::ModelOutOfMemory(
+            "insufficient free RAM for model, context and system reserve".into(),
+        ));
     }
+    let adapter = if let Some(directory) = env::var_os("OPENMINDAI_NATIVE_ADAPTER_DIR") {
+        use sha2::{Digest, Sha256};
+        let activation = std::path::PathBuf::from(directory)
+            .join(format!("{:x}.json", Sha256::digest(model.id.as_bytes())));
+        if activation.exists() {
+            crate::native_supervisor::native_adapter::resolve(&activation, &model.id)
+                .map_err(AppError::PersonalizationRejected)?
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let config = GenerationConfig {
         temperature: 0.6,
         top_p: 0.95,
@@ -181,6 +215,7 @@ fn prepare_native_request(request: &StreamRequest<'_>) -> Result<PreparedNativeR
         model: NativeModelSpec {
             id: model.id,
             path: model_path,
+            adapter,
             n_gpu_layers,
         },
         config,
@@ -260,6 +295,7 @@ mod tests {
             model: NativeModelSpec {
                 id: "model".to_string(),
                 path: "model.gguf".into(),
+                adapter: None,
                 n_gpu_layers: 32,
             },
             config: GenerationConfig::default(),
@@ -273,11 +309,23 @@ mod tests {
     }
 
     #[test]
+    fn personalized_failure_never_retries_an_unpersonalized_backend() {
+        let result = protect_adapter_result(
+            Err(before_output(AppError::InferenceFailed(
+                "GPU unavailable".into(),
+            ))),
+            true,
+        );
+        assert!(!result.unwrap_err().can_retry());
+    }
+
+    #[test]
     fn cpu_runtime_never_enters_gpu_retry() {
         let prepared = PreparedNativeRequest {
             model: NativeModelSpec {
                 id: "model".to_string(),
                 path: "model.gguf".into(),
+                adapter: None,
                 n_gpu_layers: 0,
             },
             config: GenerationConfig::default(),

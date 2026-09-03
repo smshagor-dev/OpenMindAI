@@ -38,6 +38,8 @@ mod ffi {
             sink: &mut TokenSink,
         ) -> Result<()>;
 
+        fn load_adapter(self: Pin<&mut InferenceEngine>, path: &str) -> Result<()>;
+
         fn clear_kv_cache(self: Pin<&mut InferenceEngine>);
     }
 }
@@ -265,6 +267,10 @@ impl NativeInferenceEngine {
             sink.finish();
         }
         result
+    }
+
+    pub fn load_adapter(&mut self, path: &str) -> Result<(), cxx::Exception> {
+        self.inner.pin_mut().load_adapter(path)
     }
 
     pub fn clear_kv_cache(&mut self) {

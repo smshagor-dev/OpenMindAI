@@ -183,6 +183,7 @@ fn suite(options: &Options, checks: &mut Vec<Value>) -> SmokeResult<()> {
         id: "smoke-model".into(),
         path: options.model.clone(),
         n_gpu_layers: options.gpu_layers,
+        adapter: None,
     };
     let short = "Once upon a time, a child found a flower. The child";
     if options.expect_gpu_unavailable {

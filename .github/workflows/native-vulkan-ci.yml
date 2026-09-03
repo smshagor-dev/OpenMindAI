@@ -14,6 +14,7 @@ on:
       - "scripts/native-inference-smoke.rs"
       - "scripts/native-smoke-model.json"
       - "scripts/download-native-smoke-model.mjs"
+      - "services/native-worker/**"
       - "src-tauri/native/**"
       - "src-tauri/src/native_bridge.rs"
       - "src-tauri/src/native_inference.rs"
@@ -21,6 +22,7 @@ on:
       - "src-tauri/src/native_chat_router.rs"
       - "src-tauri/src/native_stream.rs"
       - "src-tauri/src/native_supervisor.rs"
+      - "src-tauri/src/native_adapter.rs"
       - "src-tauri/build.rs"
       - "src-tauri/Cargo.toml"
       - "src-tauri/Cargo.lock"
@@ -221,6 +223,8 @@ jobs:
           cxx = "1.0"
           tokio-util = "0.7"
           serde_json = "1"
+          serde = { version = "1", features = ["derive"] }
+          sha2 = "0.10"
           [build-dependencies]
           cxx-build = "1.0"
           '@ | Set-Content native-backend-smoke/Cargo.toml
@@ -247,6 +251,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Native backend probe build failed' }
           Copy-Item native-backend-smoke/target/release/native-backend-probe.exe native-vulkan-artifact
           Copy-Item native-backend-smoke/target/release/native-inference-smoke.exe native-vulkan-artifact
+
+      - name: Build persistent Rust worker against Windows dynamic runtime
+        shell: pwsh
+        env:
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          LLAMA_CPP_BACKEND_LIB_DIR: ${{ steps.llama-lib.outputs.backend-dir }}
+          OPENMINDAI_NATIVE_DYNAMIC_BACKENDS: "1"
+        run: |
+          cargo build --locked --release --manifest-path services/native-worker/Cargo.toml
+          if ($LASTEXITCODE -ne 0) { throw 'Native service worker build failed' }
+          Copy-Item services/native-worker/target/release/openmind-native-worker.exe native-vulkan-artifact
 
       - name: Upload Vulkan runtime probe artifact
         uses: actions/upload-artifact@v4
