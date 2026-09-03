@@ -1,11 +1,15 @@
+#[path = "native_adapter.rs"]
+pub mod native_adapter;
+
 use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, SyncSender, TrySendError},
+        mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
         Arc, Mutex,
     },
     thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use tokio_util::sync::CancellationToken;
@@ -21,6 +25,7 @@ pub struct NativeModelSpec {
     pub id: String,
     pub path: PathBuf,
     pub n_gpu_layers: i32,
+    pub adapter: Option<native_adapter::NativeAdapterSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,11 +58,16 @@ pub enum NativeSupervisorError {
     Cancelled,
     Inference(InferenceError),
     WorkerDisconnected,
+    TimedOut,
 }
 
 impl std::fmt::Display for NativeSupervisorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::TimedOut => write!(
+                f,
+                "native generation deadline exceeded; runtime quarantined"
+            ),
             Self::Busy => write!(f, "native inference worker is busy"),
             Self::Stopped => write!(f, "native inference worker is stopped"),
             Self::Cancelled => write!(f, "native inference was cancelled"),
@@ -84,7 +94,7 @@ struct GenerationCommand {
 }
 
 enum WorkerCommand {
-    Generate(GenerationCommand),
+    Generate(Box<GenerationCommand>),
     Clear(SyncSender<()>),
     Shutdown,
 }
@@ -121,6 +131,17 @@ impl NativeInferenceSupervisor {
         }
     }
 
+    /// Prevent further native work after an unresponsive call. The native thread
+    /// cannot safely be killed in-process; recovery requires application restart.
+    pub fn quarantine(&self) {
+        self.shutdown.store(true, Ordering::Release);
+        let _ = self.commands.try_send(WorkerCommand::Shutdown);
+    }
+
+    pub fn is_quarantined(&self) -> bool {
+        self.shutdown.load(Ordering::Acquire)
+    }
+
     pub fn state(&self) -> NativeSupervisorState {
         self.state
             .lock()
@@ -146,14 +167,16 @@ impl NativeInferenceSupervisor {
         }
         request.validate()?;
 
+        let deadline = Instant::now() + Duration::from_millis(u64::from(request.config.timeout_ms));
+        let cancellation_signal = cancellation.clone();
         let (result_tx, result_rx) = mpsc::sync_channel(1);
-        let command = WorkerCommand::Generate(GenerationCommand {
+        let command = WorkerCommand::Generate(Box::new(GenerationCommand {
             model,
             request,
             cancellation,
             on_token,
             result: result_tx,
-        });
+        }));
         match self.commands.try_send(command) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => return Err(NativeSupervisorError::Busy),
@@ -162,9 +185,36 @@ impl NativeInferenceSupervisor {
             }
         }
 
-        result_rx
-            .recv()
-            .map_err(|_| NativeSupervisorError::WorkerDisconnected)?
+        let mut stop_deadline = None;
+        let mut expired = false;
+        loop {
+            match result_rx.recv_timeout(Duration::from_millis(25)) {
+                Ok(result) => {
+                    if expired {
+                        return Err(NativeSupervisorError::Inference(
+                            InferenceError::Generation(
+                                "native generation deadline exceeded".into(),
+                            ),
+                        ));
+                    }
+                    return result;
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(NativeSupervisorError::WorkerDisconnected)
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+            expired |= Instant::now() >= deadline && !cancellation_signal.is_cancelled();
+            if cancellation_signal.is_cancelled() || expired {
+                cancellation_signal.cancel();
+                let limit =
+                    *stop_deadline.get_or_insert_with(|| Instant::now() + Duration::from_secs(1));
+                if Instant::now() >= limit {
+                    self.quarantine();
+                    return Err(NativeSupervisorError::TimedOut);
+                }
+            }
+        }
     }
 
     /// Waits for the worker to reset context; call from outside token callbacks.
@@ -189,11 +239,16 @@ impl NativeInferenceSupervisor {
 
 impl Drop for NativeInferenceSupervisor {
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Release);
+        let quarantined = self.shutdown.swap(true, Ordering::AcqRel);
         let _ = self.commands.try_send(WorkerCommand::Shutdown);
         if let Ok(mut worker) = self.worker.lock() {
             if let Some(handle) = worker.take() {
-                let _ = handle.join();
+                if !quarantined || handle.is_finished() {
+                    let _ = handle.join();
+                }
+                // Never block application shutdown on a native driver call.
+                // Dropping a JoinHandle detaches; the shutdown token stops it at
+                // the next cooperative boundary if it is still running.
             }
         }
         set_state(&self.state, NativeSupervisorState::Stopped);
@@ -212,7 +267,7 @@ fn worker_loop(
         };
         match command {
             WorkerCommand::Generate(command) => {
-                run_generation(&mut loaded, &state, &shutdown, command);
+                run_generation(&mut loaded, &state, &shutdown, *command);
             }
             WorkerCommand::Clear(completed) => {
                 if let Some(model) = loaded.as_mut() {
@@ -272,7 +327,24 @@ fn run_generation(
             },
         );
         match NativeBackend::load(&model.path, model.n_gpu_layers) {
-            Ok(backend) => {
+            Ok(mut backend) => {
+                if let Some(adapter) = &model.adapter {
+                    let activation = adapter
+                        .verify(&model.path)
+                        .map_err(InferenceError::ModelLoad)
+                        .and_then(|_| backend.load_adapter(&adapter.path));
+                    if let Err(error) = activation {
+                        set_state(
+                            state,
+                            NativeSupervisorState::Error {
+                                model_id: Some(model.id.clone()),
+                                message: error.to_string(),
+                            },
+                        );
+                        let _ = result.send(Err(NativeSupervisorError::Inference(error)));
+                        return;
+                    }
+                }
                 *loaded = Some(LoadedModel {
                     spec: model.clone(),
                     backend,
@@ -359,6 +431,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn quarantined_worker_rejects_new_work() {
+        let supervisor = NativeInferenceSupervisor::start();
+        supervisor.quarantine();
+        assert!(supervisor.is_quarantined());
+        let result = supervisor.generate(
+            NativeModelSpec {
+                id: "x".into(),
+                path: PathBuf::from("missing.gguf"),
+                n_gpu_layers: 0,
+                adapter: None,
+            },
+            InferenceRequest::new("hi", ""),
+            CancellationToken::new(),
+            Box::new(|_| true),
+        );
+        assert!(matches!(result, Err(NativeSupervisorError::Stopped)));
+    }
+
+    #[test]
     fn supervisor_starts_idle() {
         let supervisor = NativeInferenceSupervisor::start();
         assert_eq!(supervisor.state(), NativeSupervisorState::Idle);
@@ -374,6 +465,7 @@ mod tests {
                 id: "model".to_string(),
                 path: PathBuf::from("missing.gguf"),
                 n_gpu_layers: 0,
+                adapter: None,
             },
             InferenceRequest::new("hello", ""),
             cancelled,

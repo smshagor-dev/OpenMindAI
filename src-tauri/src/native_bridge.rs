@@ -14,6 +14,8 @@ mod ffi {
         n_ctx: u32,
         n_batch: u32,
         n_threads: i32,
+        kv_cache_limit_bytes: u64,
+        timeout_ms: u32,
     }
 
     extern "Rust" {
@@ -35,6 +37,8 @@ mod ffi {
             config: &GenerationConfig,
             sink: &mut TokenSink,
         ) -> Result<()>;
+
+        fn load_adapter(self: Pin<&mut InferenceEngine>, path: &str) -> Result<()>;
 
         fn clear_kv_cache(self: Pin<&mut InferenceEngine>);
     }
@@ -72,6 +76,8 @@ impl Default for GenerationConfig {
             n_ctx: 8_192,
             n_batch: 512,
             n_threads: 1,
+            kv_cache_limit_bytes: 2 * 1024 * 1024 * 1024,
+            timeout_ms: 120_000,
         }
     }
 }
@@ -86,6 +92,19 @@ impl GenerationConfig {
         }
         if self.max_tokens == 0 {
             return Err("max_tokens must be greater than 0");
+        }
+        if self.n_ctx > 32_768
+            || self.max_tokens > 8_192
+            || self.n_batch > 2_048
+            || self.n_threads > 256
+        {
+            return Err("generation resource limit exceeded");
+        }
+        if !(1..=3_600_000).contains(&self.timeout_ms) {
+            return Err("timeout_ms must be 1..3600000");
+        }
+        if !(16 * 1024 * 1024..=4 * 1024 * 1024 * 1024).contains(&self.kv_cache_limit_bytes) {
+            return Err("KV budget must be between 16 MiB and 4 GiB");
         }
         if self.n_ctx != 0 && self.n_ctx < 512 {
             return Err("n_ctx must be 0 (automatic) or at least 512");
@@ -250,6 +269,10 @@ impl NativeInferenceEngine {
         result
     }
 
+    pub fn load_adapter(&mut self, path: &str) -> Result<(), cxx::Exception> {
+        self.inner.pin_mut().load_adapter(path)
+    }
+
     pub fn clear_kv_cache(&mut self) {
         self.inner.pin_mut().clear_kv_cache();
     }
@@ -268,6 +291,30 @@ mod tests {
             true
         });
         (sink, output)
+    }
+
+    #[test]
+    fn resource_limits_reject_unbounded_configuration() {
+        for config in [
+            GenerationConfig {
+                n_ctx: 32769,
+                ..GenerationConfig::default()
+            },
+            GenerationConfig {
+                max_tokens: 8193,
+                ..GenerationConfig::default()
+            },
+            GenerationConfig {
+                timeout_ms: 0,
+                ..GenerationConfig::default()
+            },
+            GenerationConfig {
+                kv_cache_limit_bytes: 1,
+                ..GenerationConfig::default()
+            },
+        ] {
+            assert!(config.validate().is_err());
+        }
     }
 
     #[test]
@@ -354,6 +401,7 @@ mod tests {
             n_ctx: 8_192,
             n_batch: 512,
             n_threads: 8,
+            ..GenerationConfig::default()
         };
         assert_eq!(config.validate(), Ok(()));
 

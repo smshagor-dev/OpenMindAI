@@ -5,6 +5,8 @@ use thiserror::Error;
 #[derive(Debug, Error, Serialize)]
 #[serde(tag = "code", content = "message")]
 pub enum AppError {
+    #[error("Personalization rejected: {0}")]
+    PersonalizationRejected(String),
     #[error("ROOT_NOT_WRITABLE: {0}")]
     RootNotWritable(String),
     #[error("DATABASE_INIT_FAILED: {0}")]
@@ -31,6 +33,8 @@ pub enum AppError {
     InferenceFailed(String),
     #[error("INFERENCE_CANCELLED: {0}")]
     InferenceCancelled(String),
+    #[error("INFERENCE_TIMEOUT: {0}")]
+    InferenceTimeout(String),
     #[error("STREAM_FAILED: {0}")]
     StreamFailed(String),
     #[error("RUNTIME_NOT_FOUND: {0}")]

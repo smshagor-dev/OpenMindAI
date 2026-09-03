@@ -20,6 +20,7 @@ func main() {
 	}
 
 	api := gateway.New(cfg)
+	defer api.Close()
 	server := &http.Server{
 		Addr:              cfg.ListenAddress,
 		Handler:           api.Handler(),

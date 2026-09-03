@@ -40,6 +40,13 @@ impl InferenceRequest {
                 "chat history must contain at least one message",
             ));
         }
+        if self.messages.len() > 256
+            || self.messages.iter().map(|m| m.content.len()).sum::<usize>() > 1024 * 1024
+        {
+            return Err(InferenceError::InvalidRequest(
+                "chat history exceeds resource limit",
+            ));
+        }
         for message in &self.messages {
             if !matches!(message.role.as_str(), "system" | "user" | "assistant") {
                 return Err(InferenceError::InvalidRequest(
@@ -96,6 +103,15 @@ pub struct NativeBackend {
 }
 
 impl NativeBackend {
+    pub fn load_adapter(&mut self, path: &Path) -> Result<(), InferenceError> {
+        self.engine
+            .load_adapter(
+                path.to_str()
+                    .ok_or_else(|| InferenceError::ModelLoad("adapter path is not UTF-8".into()))?,
+            )
+            .map_err(|e| InferenceError::ModelLoad(e.to_string()))
+    }
+
     pub fn load(model_path: &Path, n_gpu_layers: i32) -> Result<Self, InferenceError> {
         let model_path = model_path
             .to_str()

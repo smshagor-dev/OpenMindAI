@@ -45,15 +45,22 @@ def split_examples(
     holdout: list[LearningExample] = []
     threshold = int(holdout_ratio * 10_000)
 
+    # Repeated/corrected copies of one prompt stay in one split. Timestamps or
+    # changed preferred answers must never leak the same prompt into holdout.
+    unique: dict[tuple[str, str], LearningExample] = {}
     for example in examples:
         example.validate()
+        key = (example.profile_id, " ".join(example.user_input.split()).casefold())
+        previous = unique.get(key)
+        if previous is None or example.created_at >= previous.created_at:
+            unique[key] = example
+
+    for (profile, prompt), example in sorted(unique.items()):
         digest = hashlib.sha256(
             "\x1f".join(
                 [
-                    example.profile_id,
-                    example.user_input,
-                    example.preferred_output,
-                    example.created_at,
+                    profile,
+                    prompt,
                 ]
             ).encode("utf-8")
         ).digest()
