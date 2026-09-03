@@ -6,6 +6,8 @@ on:
       - feature/cxx-llama-native-bridge
       - feature/native-*
     paths:
+      - "services/native-worker/**"
+      - "services/inference-api/**"
       - "src-tauri/native/**"
       - "src-tauri/src/inference.rs"
       - "src-tauri/src/inference_legacy.rs"
@@ -27,6 +29,8 @@ on:
       - ".github/workflows/native-bridge-ci.yml"
   pull_request:
     paths:
+      - "services/native-worker/**"
+      - "services/inference-api/**"
       - "src-tauri/native/**"
       - "src-tauri/src/inference.rs"
       - "src-tauri/src/inference_legacy.rs"
@@ -197,6 +201,31 @@ jobs:
           path: native-model-smoke.json
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Setup Go for native service integration
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: services/inference-api/go.mod
+          cache: false
+
+      - name: Native service compile and regression tests
+        env:
+          LLAMA_CPP_DIR: ${{ github.workspace }}/vendor/llama.cpp
+          LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
+          LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
+        run: |
+          cargo fmt --manifest-path services/native-worker/Cargo.toml --check
+          cargo test --locked --manifest-path services/native-worker/Cargo.toml
+          cargo clippy --locked --manifest-path services/native-worker/Cargo.toml --all-targets -- -D warnings
+          cargo build --locked --manifest-path services/native-worker/Cargo.toml
+
+      - name: Go HTTP to Rust CXX real-model integration
+        working-directory: services/inference-api
+        env:
+          OPENMINDAI_TEST_NATIVE_WORKER: ${{ github.workspace }}/services/native-worker/target/debug/openmind-native-worker
+          OPENMINDAI_TEST_MODEL: ${{ github.workspace }}/native-smoke-model.gguf
+          LD_LIBRARY_PATH: ${{ steps.llama-lib.outputs.dir }}
+        run: go test -race ./...
 
       - name: Native streaming router integration check
         env:

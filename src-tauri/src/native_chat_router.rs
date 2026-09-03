@@ -38,6 +38,11 @@ pub async fn try_stream_native(
         Ok(true) => {}
     }
 
+    if NATIVE_SUPERVISOR.get().is_some_and(|s| s.is_quarantined()) {
+        return Some(Err(before_output(AppError::InferenceTimeout(
+            "native runtime is quarantined after an unresponsive call; restart the app".into()))));
+    }
+
     let prepared = match prepare_native_request(request) {
         Ok(value) => value,
         Err(error) => return Some(Err(before_output(error))),
@@ -141,6 +146,17 @@ fn prepare_native_request(request: &StreamRequest<'_>) -> Result<PreparedNativeR
     let n_threads = i32::try_from(plan.config.threads)
         .unwrap_or(i32::MAX)
         .max(1);
+    let mut memory = sysinfo::System::new();
+    memory.refresh_memory();
+    let available = memory.available_memory();
+    let resident = NATIVE_SUPERVISOR.get().is_some_and(|s| matches!(s.state(),
+        crate::native_supervisor::NativeSupervisorState::Ready { model_id } if model_id == request.model));
+    let file_bytes = if resident { 0 } else { std::fs::metadata(&model_path)?.len() };
+    let reserve = 1024 * 1024 * 1024;
+    let remaining = available.saturating_sub(file_bytes).saturating_sub(reserve);
+    if remaining < 256 * 1024 * 1024 {
+        return Err(AppError::ModelOutOfMemory("insufficient free RAM for model, context and system reserve".into()));
+    }
     let config = GenerationConfig {
         temperature: 0.6,
         top_p: 0.95,
@@ -148,6 +164,8 @@ fn prepare_native_request(request: &StreamRequest<'_>) -> Result<PreparedNativeR
         n_ctx: plan.config.context_size,
         n_batch: plan.config.batch_size,
         n_threads,
+        kv_cache_limit_bytes: (remaining / 2).clamp(16 * 1024 * 1024, 2 * 1024 * 1024 * 1024),
+        ..GenerationConfig::default()
     };
     config
         .validate()
@@ -190,7 +208,7 @@ fn should_retry_cpu(
     prepared.runtime_backend == NativeRuntimeBackend::Vulkan
         && prepared.planned_backend == BackendKind::Vulkan
         && prepared.model.n_gpu_layers > 0
-        && matches!(result, Err(error) if !error.emitted_output)
+        && matches!(result, Err(error) if error.can_retry())
 }
 
 fn native_root() -> Result<&'static PortableRootManager, AppError> {

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
@@ -343,21 +344,55 @@ private:
             throw std::runtime_error("top_p must be finite and in (0, 1]");
         if (config.n_threads <= 0) throw std::runtime_error("n_threads must be greater than 0");
 
+        if (formatted_prompt.size() > 1024U * 1024U || config.n_ctx > 32768U ||
+            config.max_tokens > 8192U || config.n_batch > 2048U || config.n_threads > 256 ||
+            config.timeout_ms == 0 || config.timeout_ms > 3600000U ||
+            config.kv_cache_limit_bytes < 16ULL * 1024 * 1024 ||
+            config.kv_cache_limit_bytes > 4ULL * 1024 * 1024 * 1024)
+            throw std::runtime_error("native resource limit exceeded");
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(config.timeout_ms);
+        const auto check_deadline = [&] {
+            if (std::chrono::steady_clock::now() >= deadline)
+                throw std::runtime_error("native generation deadline exceeded");
+        };
+        check_deadline();
         auto prompt_tokens = tokenize(vocab_, formatted_prompt, true);
         if (prompt_tokens.empty()) throw std::runtime_error("prompt produced no tokens");
 
         const std::uint64_t required =
             static_cast<std::uint64_t>(prompt_tokens.size()) + config.max_tokens + 8ULL;
-        const std::uint32_t desired_context = round_context(
-            std::max<std::uint64_t>(std::max<std::uint32_t>(config.n_ctx, 512U), required));
+        const std::uint32_t context_limit = config.n_ctx == 0 ? 8192U : config.n_ctx;
+        if (required > context_limit || context_limit < 512U)
+            throw std::runtime_error("native context limit exceeded; shorten the conversation or increase its configured limit");
+        // Conservative dense F16 K+V estimate (GQA/sliding windows may use less).
+        // This is an admission budget, not an assertion about total process RSS.
+        const auto layers = std::max(llama_model_n_layer(model_), 1);
+        const auto width = std::max(llama_model_n_embd(model_), 1);
+        const auto per_token = static_cast<std::uint64_t>(layers) * width * 4ULL;
+        const auto budget_context = std::min<std::uint64_t>(context_limit,
+            config.kv_cache_limit_bytes / per_token) / 256U * 256U;
+        if (budget_context < round_context(required) || budget_context < 512U)
+            throw std::runtime_error("native KV memory budget exceeded");
+        const std::uint32_t desired_context = std::max<std::uint32_t>(512U, round_context(required));
         const std::uint32_t desired_batch = std::max<std::uint32_t>(
             32U,
             std::min<std::uint32_t>(config.n_batch == 0 ? 512U : config.n_batch, desired_context));
         const std::int32_t desired_threads = std::max<std::int32_t>(config.n_threads, 1);
 
+        check_deadline();
         ensure_context(desired_context, desired_batch, desired_threads);
+        struct AbortGuard {
+            llama_context* ctx;
+            ~AbortGuard() { llama_set_abort_callback(ctx, nullptr, nullptr); }
+        } abort_guard{context_.get()};
+        llama_set_abort_callback(context_.get(), [](void* data) {
+            return std::chrono::steady_clock::now() >= *static_cast<const std::chrono::steady_clock::time_point*>(data);
+        }, const_cast<std::chrono::steady_clock::time_point*>(&deadline));
         llama_memory_clear(llama_get_memory(context_.get()), true);
-        if (!decode_prompt(prompt_tokens, desired_batch, sink)) return;
+        try {
+            if (!decode_prompt(prompt_tokens, desired_batch, sink)) return;
+        } catch (...) { check_deadline(); throw; }
+        check_deadline();
 
         SamplerPtr sampler;
         if (config.temperature <= 0.0F) {
@@ -373,6 +408,7 @@ private:
         if (!sampler) throw std::runtime_error("failed to create sampler");
 
         for (std::uint32_t produced = 0; produced < config.max_tokens; ++produced) {
+            check_deadline();
             if (!on_token(sink, rust::Slice<const std::uint8_t>())) return;
             const llama_token token = llama_sampler_sample(sampler.get(), context_.get(), -1);
             if (llama_vocab_is_eog(vocab_, token)) break;
@@ -383,8 +419,10 @@ private:
 
             auto next = token;
             const auto batch = llama_batch_get_one(&next, 1);
-            if (llama_decode(context_.get(), batch) != 0)
+            if (llama_decode(context_.get(), batch) != 0) {
+                check_deadline();
                 throw std::runtime_error("llama_decode failed while generating token");
+            }
         }
     }
 
@@ -403,6 +441,10 @@ private:
         params.n_threads_batch = n_threads;
         params.no_perf = true;
 
+        // Release the old KV/compute buffers before allocating their replacement.
+        // Keeping both live during resize can double peak context memory.
+        context_.reset();
+        context_capacity_ = batch_capacity_ = 0;
         ContextPtr replacement(llama_init_from_model(model_, params));
         if (!replacement) throw std::runtime_error("failed to create llama.cpp context / KV cache");
         context_ = std::move(replacement);

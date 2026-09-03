@@ -21,8 +21,8 @@ Go inference API
       v
 OpenAI-compatible llama-server
 
-Future native service mode
-Web / external clients -> Go inference API -> local IPC -> Rust/native worker -> C++ llama.cpp
+Native service mode (implemented, opt-in)
+Local clients -> Go inference API -> private JSON pipes -> Rust/native worker -> C++ llama.cpp
 ```
 
 The Go layer owns API-facing concerns that should not live in the inference kernel:
@@ -100,12 +100,11 @@ The Go gateway can reduce API-side overhead through connection reuse, lightweigh
 
 For the desktop app, direct Rust/C++ inference remains the lowest-latency target. The Go API is valuable when there is a network/API boundary: web clients, local integrations, optional LAN service mode, automation, or a future browser UI.
 
-## Next integration phase
+## Native service mode
 
-After the native model router is production-connected, the external service path should stop depending on llama-server by introducing a local native worker boundary:
-
-```text
-Go API -> Unix domain socket / Windows named pipe -> Rust worker -> CXX -> llama.cpp
-```
-
-That keeps the Go process isolated from model memory while removing the legacy HTTP llama-server dependency from the native service mode. The IPC protocol should carry request IDs, generation configuration, token frames, cancellation, errors, and terminal status.
+Set `OPENMINDAI_API_BACKEND=native` to replace the HTTP upstream with the
+persistent Rust/CXX worker. The Go process owns private stdin/stdout pipes,
+request IDs, process cancellation and restart. This mode accepts a documented
+text-only chat subset, binds to loopback and serializes model requests.
+See [native service setup](../services/native-worker/README.md) for registry,
+build instructions, resource limits and real-model integration tests.

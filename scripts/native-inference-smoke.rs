@@ -106,6 +106,7 @@ fn request(chat: bool, prompt: &str) -> InferenceRequest {
         n_ctx: 512,
         n_batch: 64,
         n_threads: 2,
+        ..GenerationConfig::default()
     })
 }
 
@@ -243,14 +244,57 @@ fn suite(options: &Options, checks: &mut Vec<Value>) -> SmokeResult<()> {
         checks,
     )?;
     let long = "Once upon a time, a child found a flower. ".repeat(96);
-    generation(
-        &worker,
-        &model,
-        request(options.chat, &long),
-        "long_prompt",
-        false,
-        checks,
-    )?;
+    let mut long_request = request(options.chat, &long);
+    long_request.config.n_ctx = 4096;
+    generation(&worker, &model, long_request, "long_prompt", false, checks)?;
+    for (name, input, expected, delay) in [
+        (
+            "context_limit_rejection",
+            {
+                let mut input = request(options.chat, short);
+                input.config.max_tokens = 8192;
+                input
+            },
+            "context limit exceeded",
+            false,
+        ),
+        (
+            "generation_deadline",
+            {
+                let mut input = request(options.chat, short);
+                input.config.timeout_ms = 1;
+                input
+            },
+            "deadline exceeded",
+            true,
+        ),
+    ] {
+        let result = worker.generate(
+            model.clone(),
+            input,
+            CancellationToken::new(),
+            Box::new(move |chunk| {
+                if delay && !chunk.is_empty() {
+                    thread::sleep(Duration::from_millis(3));
+                }
+                true
+            }),
+        );
+        let error = result.err().map(|e| e.to_string()).unwrap_or_default();
+        let passed = error.contains(expected);
+        checks.push(json!({"name":name,"passed":passed,"error":error}));
+        if !passed {
+            return Err(format!("{name}: expected {expected}").into());
+        }
+        generation(
+            &worker,
+            &model,
+            request(options.chat, short),
+            &format!("after_{name}"),
+            false,
+            checks,
+        )?;
+    }
     worker.clear_context()?;
     generation(
         &worker,

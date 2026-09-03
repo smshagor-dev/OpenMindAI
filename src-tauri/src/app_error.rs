@@ -31,6 +31,8 @@ pub enum AppError {
     InferenceFailed(String),
     #[error("INFERENCE_CANCELLED: {0}")]
     InferenceCancelled(String),
+    #[error("INFERENCE_TIMEOUT: {0}")]
+    InferenceTimeout(String),
     #[error("STREAM_FAILED: {0}")]
     StreamFailed(String),
     #[error("RUNTIME_NOT_FOUND: {0}")]

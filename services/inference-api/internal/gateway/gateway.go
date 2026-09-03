@@ -9,12 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/smshagor-dev/OpenMindAI/services/inference-api/internal/config"
+	"github.com/smshagor-dev/OpenMindAI/services/inference-api/internal/nativeworker"
 )
 
 const (
@@ -24,12 +26,14 @@ const (
 )
 
 type Gateway struct {
-	upstream     *url.URL
-	client       *http.Client
-	slots        chan struct{}
-	queueTimeout time.Duration
-	readyTimeout time.Duration
-	maxBodyBytes int64
+	native            nativeBackend
+	generationTimeout time.Duration
+	upstream          *url.URL
+	client            *http.Client
+	slots             chan struct{}
+	queueTimeout      time.Duration
+	readyTimeout      time.Duration
+	maxBodyBytes      int64
 }
 
 func New(cfg config.Config) *Gateway {
@@ -51,7 +55,7 @@ func New(cfg config.Config) *Gateway {
 		DisableCompression:    true,
 	}
 
-	return &Gateway{
+	g := &Gateway{
 		upstream: cfg.UpstreamURL,
 		client: &http.Client{
 			Transport: transport,
@@ -61,6 +65,24 @@ func New(cfg config.Config) *Gateway {
 		readyTimeout: cfg.UpstreamReadyTimeout,
 		maxBodyBytes: cfg.MaxBodyBytes,
 	}
+	if cfg.Backend == "native" {
+		g.native = nativeworker.New(cfg.NativeWorker, "--models", cfg.NativeModels)
+		g.slots = make(chan struct{}, 1)
+		if g.maxBodyBytes > MaxNativeBody {
+			g.maxBodyBytes = MaxNativeBody
+		}
+	}
+	g.generationTimeout = cfg.GenerationTimeout
+	if g.generationTimeout == 0 {
+		g.generationTimeout = 120 * time.Second
+	}
+	return g
+}
+func (g *Gateway) Close() {
+	if g.native != nil {
+		g.native.Close()
+	}
+	g.client.CloseIdleConnections()
 }
 
 func (g *Gateway) Handler() http.Handler {
@@ -91,6 +113,14 @@ func (g *Gateway) handleReady(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), g.readyTimeout)
 	defer cancel()
 
+	if g.native != nil {
+		if err := g.native.Ready(ctx); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "not_ready", "backend": "native"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ready", "backend": "native"})
+		return
+	}
 	ready, detail := g.upstreamReady(ctx)
 	if !ready {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
@@ -113,6 +143,16 @@ func (g *Gateway) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if g.native != nil {
+		media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil || media != "application/json" {
+			writeError(w, http.StatusUnsupportedMediaType, "native chat requires application/json")
+			return
+		}
+		controller := http.NewResponseController(w)
+		_ = controller.SetReadDeadline(time.Now().Add(15 * time.Second))
+		defer func() { _ = controller.SetReadDeadline(time.Time{}) }()
+	}
 	body, err := readBoundedBody(r.Body, g.maxBodyBytes)
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
@@ -137,6 +177,10 @@ func (g *Gateway) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	defer g.release()
 
+	if g.native != nil {
+		g.handleNative(w, r, body)
+		return
+	}
 	target := g.resolve(chatPath)
 	upstreamRequest, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target.String(), bytes.NewReader(body))
 	if err != nil {

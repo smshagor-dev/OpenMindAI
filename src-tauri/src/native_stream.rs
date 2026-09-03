@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
@@ -38,6 +38,17 @@ pub struct NativeStreamError {
 }
 
 impl NativeStreamError {
+    pub fn can_retry(&self) -> bool {
+        !self.emitted_output
+            && !matches!(
+                &self.error,
+                AppError::InferenceTimeout(_)
+                    | AppError::InferenceCancelled(_)
+                    | AppError::ContextOverflow(_)
+                    | AppError::ModelOutOfMemory(_)
+            )
+    }
+
     fn before_output(error: AppError) -> Self {
         Self {
             error,
@@ -121,8 +132,24 @@ pub async fn stream_native_completion(
     let mut ui_buffer = String::new();
     let mut generated_chars = 0usize;
     let mut first_token_at = None;
+    let deadline = started + Duration::from_millis(u64::from(request.config.timeout_ms));
+    let mut timed_out = false;
 
-    while let Some(token) = next_token(&mut token_rx, &cancellation).await {
+    loop {
+        let token = match tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            next_token(&mut token_rx, &cancellation),
+        )
+        .await
+        {
+            Ok(Some(token)) => token,
+            Ok(None) => break,
+            Err(_) => {
+                timed_out = true;
+                cancellation.cancel();
+                break;
+            }
+        };
         if token.is_empty() {
             continue;
         }
@@ -154,7 +181,29 @@ pub async fn stream_native_completion(
     // A bounded sender may be blocked when Stop is pressed. Close before joining
     // the worker so blocking_send wakes even though we stopped draining tokens.
     token_rx.close();
-    let worker_result = worker.await.map_err(|error| NativeStreamError {
+    let joined = tokio::time::timeout(Duration::from_secs(2), worker).await;
+    let worker_result = match joined {
+        Ok(result) => result,
+        Err(_) => {
+            request.supervisor.quarantine();
+            if !flush_buffer.is_empty() {
+                flush(request.database, &request.assistant.id, &mut flush_buffer)
+                    .map_err(NativeStreamError::after_output)?;
+            }
+            if !ui_buffer.is_empty() {
+                emit_stream_chunk(&request, &mut ui_buffer)
+                    .map_err(NativeStreamError::after_output)?;
+            }
+            finalize(&request, "failed")?;
+            return Err(NativeStreamError {
+                emitted_output: generated_chars > 0,
+                error: AppError::InferenceTimeout(
+                    "native worker did not stop; restart the app to release its runtime".into(),
+                ),
+            });
+        }
+    }
+    .map_err(|error| NativeStreamError {
         error: AppError::InferenceFailed(format!("native inference worker join failed: {error}")),
         emitted_output: generated_chars > 0,
     })?;
@@ -174,6 +223,23 @@ pub async fn stream_native_completion(
         })?;
     }
 
+    if timed_out {
+        finalize(&request, "failed")?;
+        return Err(NativeStreamError {
+            emitted_output: generated_chars > 0,
+            error: AppError::InferenceTimeout("native generation deadline exceeded".into()),
+        });
+    }
+
+    if matches!(worker_result, Err(NativeSupervisorError::TimedOut)) {
+        finalize(&request, "failed")?;
+        return Err(NativeStreamError {
+            emitted_output: generated_chars > 0,
+            error: AppError::InferenceTimeout(
+                "native runtime did not stop; restart the app".into(),
+            ),
+        });
+    }
     if cancellation.is_cancelled() || matches!(worker_result, Err(NativeSupervisorError::Cancelled))
     {
         finalize(&request, "cancelled")?;
@@ -318,6 +384,7 @@ fn finalize(request: &NativeStreamRequest<'_>, status: &str) -> Result<(), Nativ
 
 fn map_supervisor_error(error: NativeSupervisorError) -> AppError {
     match error {
+        NativeSupervisorError::TimedOut => AppError::InferenceTimeout(error.to_string()),
         NativeSupervisorError::Cancelled => {
             AppError::InferenceCancelled("generation cancelled".to_string())
         }
@@ -327,7 +394,20 @@ fn map_supervisor_error(error: NativeSupervisorError) -> AppError {
         NativeSupervisorError::Stopped | NativeSupervisorError::WorkerDisconnected => {
             AppError::InferenceServerUnavailable(error.to_string())
         }
-        NativeSupervisorError::Inference(error) => AppError::InferenceFailed(error.to_string()),
+        NativeSupervisorError::Inference(error) => {
+            let message = error.to_string();
+            if message.contains("deadline exceeded") {
+                AppError::InferenceTimeout(message)
+            } else if message.contains("KV memory budget exceeded") {
+                AppError::ModelOutOfMemory(message)
+            } else if message.contains("context limit exceeded")
+                || message.contains("resource limit exceeded")
+            {
+                AppError::ContextOverflow(message)
+            } else {
+                AppError::InferenceFailed(message)
+            }
+        }
     }
 }
 
@@ -336,6 +416,25 @@ mod tests {
     use super::*;
     use std::time::Duration;
     use tokio::time::timeout;
+
+    #[test]
+    fn resource_and_timeout_errors_never_retry() {
+        for error in [
+            AppError::InferenceTimeout("timeout".into()),
+            AppError::ContextOverflow("limit".into()),
+            AppError::ModelOutOfMemory("budget".into()),
+        ] {
+            assert!(!NativeStreamError::before_output(error).can_retry());
+        }
+        assert!(NativeStreamError::before_output(AppError::InferenceFailed(
+            "GPU unavailable".into()
+        ))
+        .can_retry());
+        assert!(!NativeStreamError::after_output(AppError::InferenceFailed(
+            "GPU unavailable".into()
+        ))
+        .can_retry());
+    }
 
     #[tokio::test]
     async fn stop_unblocks_a_full_token_queue() {

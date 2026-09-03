@@ -40,6 +40,13 @@ impl InferenceRequest {
                 "chat history must contain at least one message",
             ));
         }
+        if self.messages.len() > 256
+            || self.messages.iter().map(|m| m.content.len()).sum::<usize>() > 1024 * 1024
+        {
+            return Err(InferenceError::InvalidRequest(
+                "chat history exceeds resource limit",
+            ));
+        }
         for message in &self.messages {
             if !matches!(message.role.as_str(), "system" | "user" | "assistant") {
                 return Err(InferenceError::InvalidRequest(

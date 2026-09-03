@@ -2,8 +2,10 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +17,10 @@ const (
 )
 
 type Config struct {
+	Backend              string
+	NativeWorker         string
+	NativeModels         string
+	GenerationTimeout    time.Duration
 	ListenAddress        string
 	UpstreamURL          *url.URL
 	MaxInflight          int
@@ -66,7 +72,37 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("OPENMINDAI_API_ADDR must not be empty")
 	}
 
+	backend := envOr("OPENMINDAI_API_BACKEND", "http")
+	if backend != "http" && backend != "native" {
+		return Config{}, fmt.Errorf("OPENMINDAI_API_BACKEND must be http or native")
+	}
+	generationTimeout, err := envDuration("OPENMINDAI_API_GENERATION_TIMEOUT", 120*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	if generationTimeout < time.Millisecond || generationTimeout > time.Hour {
+		return Config{}, fmt.Errorf("generation timeout must be 1ms..1h")
+	}
+	worker, models := os.Getenv("OPENMINDAI_NATIVE_WORKER"), os.Getenv("OPENMINDAI_NATIVE_MODELS")
+	if backend == "native" {
+		host, _, err := net.SplitHostPort(listenAddress)
+		ip := net.ParseIP(host)
+		if err != nil || ip == nil || !ip.IsLoopback() {
+			return Config{}, fmt.Errorf("native API requires a loopback IP listen address")
+		}
+		for _, path := range []string{worker, models} {
+			info, err := os.Stat(path)
+			if !filepath.IsAbs(path) || err != nil || !info.Mode().IsRegular() {
+				return Config{}, fmt.Errorf("native worker and model registry must be absolute existing files")
+			}
+		}
+		maxInflight = 1
+		if maxBodyBytes > (1<<20)-1024 {
+			maxBodyBytes = (1 << 20) - 1024
+		}
+	}
 	return Config{
+		Backend: backend, NativeWorker: worker, NativeModels: models, GenerationTimeout: generationTimeout,
 		ListenAddress:        listenAddress,
 		UpstreamURL:          upstream,
 		MaxInflight:          maxInflight,

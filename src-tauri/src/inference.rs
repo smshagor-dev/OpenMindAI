@@ -31,7 +31,7 @@ pub async fn stream_chat_completion(
                 );
                 return Ok(metrics);
             }
-            Err(error) if !error.emitted_output => {
+            Err(error) if error.can_retry() => {
                 tracing::warn!(
                     model = request.model,
                     error = %error.error,
