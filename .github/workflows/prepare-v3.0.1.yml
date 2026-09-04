@@ -1,0 +1,41 @@
+name: Prepare v3.0.1 release metadata
+
+on:
+  push:
+    branches:
+      - release/v3.0.1
+
+permissions:
+  contents: write
+
+concurrency:
+  group: prepare-v3.0.1
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release branch
+        uses: actions/checkout@v7
+        with:
+          ref: release/v3.0.1
+          fetch-depth: 0
+
+      - name: Apply synchronized v3.0.1 metadata
+        run: python scripts/prepare-v3.0.1.py
+
+      - name: Commit release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json README.md openmindai.marker OpenMindAI-Setup.bat OpenMindAI-Setup.command openmindai-setup.sh scripts/smoke-local-installer.ps1 scripts/check-version-consistency.mjs src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock .github/releases/v3.0.1.txt
+          if git diff --cached --quiet; then
+            echo "Release metadata already synchronized."
+            exit 0
+          fi
+          git commit -m "chore(release): prepare v3.0.1 metadata"
+          git push origin HEAD:release/v3.0.1
