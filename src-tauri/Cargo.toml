@@ -1,6 +1,6 @@
 [package]
 name = "open-mind-ai"
-version = "3.0.0"
+version = "3.0.1"
 description = "Local-first portable AI desktop workstation"
 authors = ["OpenMindAI"]
 edition = "2021"

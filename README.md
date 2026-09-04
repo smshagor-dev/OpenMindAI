@@ -27,39 +27,36 @@
 
 ---
 
-## OpenMindAI v3.0.0
+## OpenMindAI v3.0.1
 
-**Current source version:** `v3.0.0`  
-**Latest public release:** [v3.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v3.0.0)
+**Current source version:** `v3.0.1`  
+**Release target:** [v3.0.1](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v3.0.1)  
+**Previous stable release:** [v3.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v3.0.0)
 
-v3.0.0 moves OpenMindAI beyond local chat and model management into an active local AI workstation. Projects can now work with real folders, a local Project Agent can inspect and modify code, terminal-assisted workflows can detect failures and retry repairs, and connected services can be used from normal conversations without turning the application into a collection of raw API consoles.
+v3.0.1 is the maintenance release for the current OpenMindAI 3.x desktop line. It keeps the existing local-first architecture while consolidating the latest validated fixes, native runtime work, model routing improvements, and release-pipeline hardening on top of v3.0.0.
 
 ### Download
 
 | Platform | Installation path | Status |
 | --- | --- | --- |
-| Windows x64 | [OpenMindAI v3.0.0 installer](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.0/OpenMindAI_3.0.0_x64-setup.exe) | Primary packaged release |
-| Windows | [Bootstrap setup](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.0/OpenMindAI-Setup.bat) | Available |
-| Linux x64 | [Shell bootstrap](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.0/openmindai-setup.sh) | Available; hardware coverage continues to expand |
-| macOS | [Command bootstrap](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.0/OpenMindAI-Setup.command) | Available; hardware coverage continues to expand |
+| Windows x64 | [OpenMindAI v3.0.1 installer](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.1/OpenMindAI_3.0.1_x64-setup.exe) | Primary packaged release |
+| Windows | [Bootstrap setup](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.1/OpenMindAI-Setup.bat) | Release asset |
+| Linux x64 | [Shell bootstrap](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.1/openmindai-setup.sh) | Release asset; hardware coverage continues to expand |
+| macOS | [Command bootstrap](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.1/OpenMindAI-Setup.command) | Release asset; hardware coverage continues to expand |
 | Linux ARM64 | — | Not currently supported |
 
-Use the official [Releases](https://github.com/smshagor-dev/OpenMindAI/releases) page for release notes and downloadable assets.
+Use the official [Releases](https://github.com/smshagor-dev/OpenMindAI/releases) page for signed artifacts, checksums, updater metadata, and release notes.
 
-### What changed in v3.0.0
+### What changed in v3.0.1
 
-- Projects now include active local workspaces instead of acting only as passive context containers.
-- Existing folders can be opened directly as OpenMindAI Projects.
-- Project Agent can inspect, create, edit, rename, and delete scoped project files.
-- Project Agent can use explicitly permitted terminal commands, observe failures, repair changes, and validate the result.
-- Git-aware status and diff inspection are available behind the Full PC + Terminal permission boundary.
-- Local AI requests can use chat, thinking, vision, web search, and research-oriented workflows.
-- Connected Apps integrate Google Workspace, GitHub, Microsoft 365, Slack, Notion, Dropbox, and MCP servers.
-- Local document, image, video, voice, and sound-generation entry points are integrated with the artifact library.
-- Model downloads, runtime installation, hardware-aware launch planning, diagnostics, backup, repair, and updater workflows remain part of the same desktop application.
-- CI, security checks, release validation, installer workflows, and version-consistency gates were expanded for the v3 release line.
+- Synchronizes the desktop application, Tauri bundle, Rust crate, lockfiles, bootstrap launchers, and portable marker on version `3.0.1`.
+- Preserves the local-first desktop architecture and current native model/runtime behavior from the validated `main` branch.
+- Carries forward the native personalization and runtime integration work merged after v3.0.0.
+- Keeps CI, CodeQL, dependency auditing, multi-platform Rust validation, Windows Tauri build validation, and release-contract checks as release gates.
+- Adds explicit v3.0.0 → v3.0.1 upgrade validation in addition to clean-install validation.
+- Produces release-specific notes and installer naming for `v3.0.1` while retaining v3.0.0 as the upgrade source.
 
-For the focused release summary, see [`.github/releases/v3.0.0.txt`](.github/releases/v3.0.0.txt).
+For the focused release summary, see [`.github/releases/v3.0.1.txt`](.github/releases/v3.0.1.txt).
 
 ## Why OpenMindAI
 

@@ -58,7 +58,7 @@ function readRequestedTag() {
   const index = process.argv.indexOf("--tag");
   if (index === -1) return null;
   const value = process.argv[index + 1];
-  if (!value || value.startsWith("--")) fail("--tag requires a value such as v3.0.0");
+  if (!value || value.startsWith("--")) fail("--tag requires a value such as v3.0.1");
   return value;
 }
 
