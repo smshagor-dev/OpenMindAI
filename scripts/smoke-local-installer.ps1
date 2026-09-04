@@ -1,6 +1,6 @@
 param(
-  [string]$InstallerPath = (Join-Path $PSScriptRoot "..\release-output\OpenMindAI_3.0.0_x64-setup.exe"),
-  [string]$InstallRoot = (Join-Path $env:TEMP "OpenMindAI-v3-local-smoke"),
+  [string]$InstallerPath = (Join-Path $PSScriptRoot "..\release-output\OpenMindAI_3.0.1_x64-setup.exe"),
+  [string]$InstallRoot = (Join-Path $env:TEMP "OpenMindAI-v3.0.1-local-smoke"),
   [string]$ExpectedVersion,
   [switch]$ExerciseUpgrade
 )
