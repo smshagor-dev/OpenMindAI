@@ -123,7 +123,7 @@ for (const requiredAsset of [
 for (const releaseGate of [
   "Get-AuthenticodeSignature",
   "Invoke-SilentInstaller",
-  "OpenMindAI_2.0.0_x64-setup.exe",
+  "OpenMindAI_3.0.0_x64-setup.exe",
   ".github/releases/$tag.txt",
 ]) {
   if (!releaseWorkflow.includes(releaseGate)) {

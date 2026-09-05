@@ -1,0 +1,31 @@
+# OpenMindAI v3.0.1
+
+OpenMindAI v3.0.1 is a maintenance release for the 3.x desktop line. It packages the current validated `main` branch as a synchronized release and keeps v3.0.0 as the supported previous-release baseline for upgrade testing.
+
+## Release scope
+
+- Version metadata synchronized to `3.0.1` across Node, Tauri, Rust, lockfiles, portable marker, and platform bootstrap launchers.
+- Windows NSIS installer and updater metadata produced under the `v3.0.1` release contract.
+- Clean-install validation retained for the native Windows package.
+- Upgrade validation targets `v3.0.0` → `v3.0.1` so existing 3.0.0 installations can be tested before publication.
+- Native runtime ABI checks, application version checks, updater signature validation, checksums, and release-asset verification remain release gates.
+- CI, Rust formatting, Clippy, Rust tests, frontend validation, CodeQL, and dependency audits remain required before release.
+
+## Upgrade from v3.0.0
+
+Users on v3.0.0 should be able to install v3.0.1 over the existing installation. The release validation path verifies that the resulting executable reports `3.0.1` and that the packaged native runtime remains present and ABI-aligned.
+
+## Release assets
+
+The production release contract requires:
+
+- `OpenMindAI_3.0.1_x64-setup.exe`
+- `OpenMindAI_3.0.1_x64-setup.exe.sig`
+- `latest.json`
+- `SHA256SUMS.txt`
+- `OpenMindAI-Setup.bat`
+- `OpenMindAI-Setup.command`
+- `openmindai-setup.sh`
+- `openmindai.marker`
+
+The GitHub release should remain a draft until signing, updater metadata, checksums, clean installation, and v3.0.0 → v3.0.1 upgrade validation have passed.
