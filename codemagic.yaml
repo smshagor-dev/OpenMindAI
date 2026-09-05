@@ -1,0 +1,166 @@
+# OpenMindAI - Codemagic CI
+# macOS desktop builds (Tauri v2) for Apple Silicon, Intel, and Universal.
+#
+# Signing: ad-hoc only (signingIdentity "-" in src-tauri/tauri.macos.conf.json).
+# There is no Developer ID cert and no notarization, so first launch on a user's
+# machine needs a right-click > Open, or:
+#   xattr -dr com.apple.quarantine /Applications/OpenMindAI.app
+#
+# Trigger: manual builds, pushes to main, and v* tags (requires a Codemagic webhook).
+
+definitions:
+  cache_macos: &cache_macos
+    cache_paths:
+      - $HOME/.cargo/registry
+      - $HOME/.cargo/git
+      - $HOME/.npm
+      - $CM_BUILD_DIR/src-tauri/target
+
+workflows:
+  macos-desktop:
+    name: OpenMindAI macOS (arm64 + x86_64 + universal)
+    instance_type: mac_mini_m2
+    max_build_duration: 120
+
+    environment:
+      xcode: latest
+      node: 24
+      vars:
+        # arm64 macOS starts at 11.0; keeps both slices of the universal build consistent.
+        MACOSX_DEPLOYMENT_TARGET: "11.0"
+        TAURI_MAC_CONFIG: "src-tauri/tauri.macos.conf.json"
+        RUST_BACKTRACE: "1"
+        CARGO_TERM_COLOR: "always"
+        CI: "true"
+        CARGO_INCREMENTAL: "0"
+        # Tauri refuses to emit updater artifacts without a signing key, so the
+        # macOS config turns createUpdaterArtifacts off. Nothing to inject here.
+
+    triggering:
+      events:
+        - push
+        - tag
+      branch_patterns:
+        - pattern: "main"
+          include: true
+      tag_patterns:
+        - pattern: "v*"
+          include: true
+      cancel_previous_builds: false
+
+    cache:
+      <<: *cache_macos
+
+    scripts:
+      - name: Toolchain - Rust + macOS targets
+        script: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --default-toolchain stable --profile minimal --no-modify-path
+          fi
+          export PATH="$HOME/.cargo/bin:$PATH"
+          echo "PATH=$HOME/.cargo/bin:$PATH" >> "$CM_ENV"
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          rustc -V && cargo -V
+
+      - name: Toolchain - native build deps
+        script: |
+          set -euo pipefail
+          # whisper-rs and any-tts (kokoro) compile C/C++ through cmake.
+          command -v cmake >/dev/null 2>&1 || brew install cmake
+          command -v ninja >/dev/null 2>&1 || brew install ninja
+          cmake --version
+          xcodebuild -version
+
+      - name: Install frontend dependencies
+        script: |
+          set -euo pipefail
+          npm ci
+
+      - name: Validate version against tag
+        script: |
+          set -euo pipefail
+          if [ -n "${CM_TAG:-}" ]; then
+            npm run check:version -- --tag "$CM_TAG"
+          else
+            npm run check:version
+          fi
+
+      - name: Build - Apple Silicon (aarch64-apple-darwin)
+        script: |
+          set -euo pipefail
+          npm run tauri -- build --ci \
+            --target aarch64-apple-darwin \
+            --config "$TAURI_MAC_CONFIG" -- --locked
+
+      - name: Build - Intel (x86_64-apple-darwin)
+        script: |
+          set -euo pipefail
+          # Cross-compiled from the arm64 runner. cc/cmake pick the arch up from
+          # the cargo target triple; deployment target is pinned above.
+          npm run tauri -- build --ci \
+            --target x86_64-apple-darwin \
+            --config "$TAURI_MAC_CONFIG" -- --locked
+
+      - name: Build - Universal (universal-apple-darwin)
+        script: |
+          set -euo pipefail
+          # Reuses both per-arch target dirs and lipo-merges them.
+          npm run tauri -- build --ci \
+            --target universal-apple-darwin \
+            --config "$TAURI_MAC_CONFIG" -- --locked
+
+      - name: Collect and name artifacts
+        script: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          OUT="$CM_BUILD_DIR/build/macos"
+          mkdir -p "$OUT"
+
+          collect() {
+            triple="$1"
+            label="$2"
+            bundle_dir="src-tauri/target/$triple/release/bundle"
+
+            dmg=$(find "$bundle_dir/dmg" -maxdepth 1 -name '*.dmg' -type f | head -n 1 || true)
+            if [ -z "$dmg" ]; then
+              echo "No DMG produced for $triple" >&2
+              exit 1
+            fi
+            cp "$dmg" "$OUT/OpenMindAI_${VERSION}_${label}.dmg"
+
+            app=$(find "$bundle_dir/macos" -maxdepth 1 -name '*.app' -type d | head -n 1 || true)
+            if [ -z "$app" ]; then
+              echo "No app bundle produced for $triple" >&2
+              exit 1
+            fi
+            if [ -n "$app" ]; then
+              # Confirm the ad-hoc signature survived bundling.
+              codesign --verify --deep --strict --verbose=2 "$app"
+              executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")
+              case "$label" in
+                aarch64) architectures="arm64" ;;
+                x64) architectures="x86_64" ;;
+                universal) architectures="arm64 x86_64" ;;
+              esac
+              lipo "$app/Contents/MacOS/$executable" -verify_arch $architectures
+              ditto -c -k --sequesterRsrc --keepParent "$app" "$OUT/OpenMindAI_${VERSION}_${label}.app.zip"
+            fi
+          }
+
+          collect aarch64-apple-darwin  aarch64
+          collect x86_64-apple-darwin   x64
+          collect universal-apple-darwin universal
+
+          cd "$OUT"
+          shasum -a 256 ./*.dmg ./*.app.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          ls -lh
+
+    artifacts:
+      - build/macos/*.dmg
+      - build/macos/*.zip
+      - build/macos/SHA256SUMS.txt
