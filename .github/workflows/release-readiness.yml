@@ -51,7 +51,7 @@ jobs:
           bash -n bootstrap/macos/bootstrap.sh
 
   windows-nsis-smoke:
-    name: Windows NSIS native install and v2 upgrade smoke
+    name: Windows NSIS native install and v3.0.0 upgrade smoke
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -142,7 +142,7 @@ jobs:
             --config src-tauri/tauri.release-smoke.conf.json `
             --config src-tauri/tauri.native-windows.conf.json
 
-      - name: Verify clean native install and v2 to v3 upgrade
+      - name: Verify clean native install and v3.0.0 to current upgrade
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -231,32 +231,32 @@ jobs:
             }
           }
 
-          $v2Installer = Join-Path $env:RUNNER_TEMP 'OpenMindAI_2.0.0_x64-setup.exe'
-          Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/smshagor-dev/OpenMindAI/releases/download/v2.0.0/OpenMindAI_2.0.0_x64-setup.exe' -OutFile $v2Installer
-          if ((Get-Item -LiteralPath $v2Installer).Length -le 0) {
-            throw 'Downloaded v2.0.0 installer is empty.'
+          $previousInstaller = Join-Path $env:RUNNER_TEMP 'OpenMindAI_3.0.0_x64-setup.exe'
+          Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.0/OpenMindAI_3.0.0_x64-setup.exe' -OutFile $previousInstaller
+          if ((Get-Item -LiteralPath $previousInstaller).Length -le 0) {
+            throw 'Downloaded v3.0.0 installer is empty.'
           }
 
-          $upgradeRoot = Join-Path $env:RUNNER_TEMP 'OpenMindAI-v3-upgrade-smoke'
-          Invoke-SilentInstaller -InstallerPath $v2Installer -Destination $upgradeRoot
+          $upgradeRoot = Join-Path $env:RUNNER_TEMP 'OpenMindAI-v3.0.0-to-current-upgrade-smoke'
+          Invoke-SilentInstaller -InstallerPath $previousInstaller -Destination $upgradeRoot
           if (-not (Test-Path -LiteralPath $upgradeRoot)) {
-            throw 'v2.0.0 smoke installation did not create the expected destination.'
+            throw 'v3.0.0 smoke installation did not create the expected destination.'
           }
           $upgradeProcess = Start-Process -FilePath $candidate.FullName -ArgumentList @('/S', "/D=$upgradeRoot") -Wait -PassThru
           if ($upgradeProcess.ExitCode -ne 0) {
-            throw "v2.0.0 to $version upgrade failed with exit code $($upgradeProcess.ExitCode)."
+            throw "v3.0.0 to $version upgrade failed with exit code $($upgradeProcess.ExitCode)."
           }
           Assert-InstalledVersion -Destination $upgradeRoot -ExpectedVersion $version
           Assert-NativeRuntime -Destination $upgradeRoot
           Remove-SmokeInstall -Destination $upgradeRoot
 
-          $cleanRoot = Join-Path $env:RUNNER_TEMP 'OpenMindAI-v3-clean-smoke'
+          $cleanRoot = Join-Path $env:RUNNER_TEMP 'OpenMindAI-current-clean-smoke'
           Invoke-SilentInstaller -InstallerPath $candidate.FullName -Destination $cleanRoot
           Assert-InstalledVersion -Destination $cleanRoot -ExpectedVersion $version
           Assert-NativeRuntime -Destination $cleanRoot
           Remove-SmokeInstall -Destination $cleanRoot
 
-          Write-Host "Windows NSIS native clean-install and v2.0.0 -> $version upgrade smoke tests passed."
+          Write-Host "Windows NSIS native clean-install and v3.0.0 -> $version upgrade smoke tests passed."
 
       - name: Remove smoke build configuration
         if: always()
