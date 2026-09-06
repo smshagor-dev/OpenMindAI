@@ -41,6 +41,7 @@ macro_rules! openmind_generate_handler {
             project_agent_status_for_conversation,
             list_openagent_runs,
             openagent_run_details,
+            restore_openagent_checkpoint,
             send_project_agent_message,
             regenerate_project_agent_message
         ]
@@ -93,7 +94,7 @@ pub(crate) use google_workspace::{
 };
 pub(crate) use local_agent::{
     project_agent_status_for_conversation, regenerate_project_agent_message,
-    send_project_agent_message,
+    restore_openagent_checkpoint, send_project_agent_message,
 };
 pub(crate) use local_workspace::{
     attach_project_workspace_folder, create_project_workspace_directory,

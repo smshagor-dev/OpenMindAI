@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     fs,
     path::{Path, PathBuf},
     time::Duration,
@@ -91,6 +91,33 @@ struct AgentContext {
     conversation_context: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CheckpointSnapshot {
+    version: u32,
+    reversible: bool,
+    entries: Vec<CheckpointEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CheckpointEntry {
+    path: String,
+    kind: String,
+    sha256: Option<String>,
+    content_base64: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointRestoreResult {
+    pub checkpoint_id: String,
+    pub restored_files: usize,
+    pub restored_directories: usize,
+    pub removed_paths: usize,
+    pub validation_required: bool,
+}
+
 #[tauri::command]
 pub fn project_agent_status_for_conversation(
     conversation_id: String,
@@ -167,6 +194,65 @@ pub async fn regenerate_project_agent_message(
 
     let content = user.content.clone();
     run_agent_message(&app, &state, &conversation_id, &content, Some(user)).await
+}
+
+#[tauri::command]
+pub fn restore_openagent_checkpoint(
+    checkpoint_id: String,
+    state: State<AppState>,
+) -> Result<CheckpointRestoreResult, AppError> {
+    let (project_id, run_status, before_json, after_json) = {
+        let db = state
+            .database
+            .lock()
+            .map_err(|_| AppError::internal("database lock poisoned"))?;
+        let before: (String, String, String, String) = db
+            .connection()
+            .query_row(
+                "SELECT r.project_id, r.status, c.step_id, c.workspace_snapshot_json
+                 FROM openagent_checkpoints c
+                 JOIN openagent_runs r ON r.id = c.run_id
+                 WHERE c.id = ?1 AND c.kind = 'before_mutation'",
+                params![checkpoint_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?
+            .ok_or_else(|| AppError::internal("restorable OpenAgent checkpoint not found"))?;
+        let after_json: String = db
+            .connection()
+            .query_row(
+                "SELECT workspace_snapshot_json FROM openagent_checkpoints
+                 WHERE step_id = ?1 AND kind = 'after_mutation'
+                 ORDER BY created_at DESC LIMIT 1",
+                params![before.2],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| AppError::internal("checkpoint has no completed mutation snapshot"))?;
+        (before.0, before.1, before.3, after_json)
+    };
+    if run_status == "running" {
+        return Err(AppError::internal(
+            "cannot restore a checkpoint while its OpenAgent run is active",
+        ));
+    }
+    let before = parse_checkpoint_snapshot(&before_json)?;
+    let after = parse_checkpoint_snapshot(&after_json)?;
+    if before.version != 2 || after.version != 2 || !before.reversible || !after.reversible {
+        return Err(AppError::internal(
+            "checkpoint format is not safely restorable",
+        ));
+    }
+    let workspace = {
+        let db = state
+            .database
+            .lock()
+            .map_err(|_| AppError::internal("database lock poisoned"))?;
+        load_workspace_config(&db, &project_id)?
+    };
+    preflight_checkpoint_restore(&workspace, &after.entries)?;
+    let result = apply_checkpoint_restore(&checkpoint_id, &workspace, &before.entries)?;
+    Ok(result)
 }
 
 async fn run_agent_message(
@@ -835,6 +921,163 @@ fn capture_checkpoint_path(
         "contentBase64": BASE64.encode(content),
     }));
     Ok(())
+}
+
+fn parse_checkpoint_snapshot(raw: &str) -> Result<CheckpointSnapshot, AppError> {
+    serde_json::from_str(raw)
+        .map_err(|error| AppError::internal(format!("invalid checkpoint snapshot: {error}")))
+}
+
+fn checkpoint_path(config: &AgentWorkspaceConfig, raw: &str) -> Result<PathBuf, AppError> {
+    let path = PathBuf::from(raw);
+    if !path.is_absolute() {
+        return Err(AppError::internal(
+            "checkpoint contains a non-absolute path",
+        ));
+    }
+    let security_path = if path.exists() {
+        fs::canonicalize(&path)?
+    } else {
+        canonical_existing_parent(&path)?
+    };
+    let contained = config.roots.iter().any(|root| {
+        fs::canonicalize(&root.path)
+            .map(|root| security_path.starts_with(root))
+            .unwrap_or(false)
+    });
+    if !contained {
+        return Err(AppError::internal(
+            "checkpoint path is outside the currently attached workspace",
+        ));
+    }
+    Ok(path)
+}
+
+fn preflight_checkpoint_restore(
+    config: &AgentWorkspaceConfig,
+    expected: &[CheckpointEntry],
+) -> Result<(), AppError> {
+    let expected_paths = expected
+        .iter()
+        .map(|entry| display_path(Path::new(&entry.path)))
+        .collect::<HashSet<_>>();
+    for entry in expected {
+        let path = checkpoint_path(config, &entry.path)?;
+        let matches = match entry.kind.as_str() {
+            "missing" => !path.exists(),
+            "directory" => path.is_dir() && !fs::symlink_metadata(&path)?.file_type().is_symlink(),
+            "file" => {
+                if !path.is_file() || fs::symlink_metadata(&path)?.file_type().is_symlink() {
+                    false
+                } else {
+                    let content = fs::read(&path)?;
+                    entry.sha256.as_deref()
+                        == Some(format!("{:x}", Sha256::digest(content)).as_str())
+                }
+            }
+            _ => {
+                return Err(AppError::internal(
+                    "checkpoint contains an unknown entry kind",
+                ))
+            }
+        };
+        if !matches {
+            return Err(AppError::internal(format!(
+                "checkpoint restore conflict: {} changed after the OpenAgent step",
+                display_path(&path)
+            )));
+        }
+        if entry.kind == "directory" {
+            for child in fs::read_dir(&path)? {
+                let child = display_path(&child?.path());
+                if !expected_paths.contains(&child) {
+                    return Err(AppError::internal(format!(
+                        "checkpoint restore conflict: {child} was added after the OpenAgent step"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_checkpoint_restore(
+    checkpoint_id: &str,
+    config: &AgentWorkspaceConfig,
+    entries: &[CheckpointEntry],
+) -> Result<CheckpointRestoreResult, AppError> {
+    let mut paths = entries
+        .iter()
+        .map(|entry| Ok((checkpoint_path(config, &entry.path)?, entry)))
+        .collect::<Result<Vec<_>, AppError>>()?;
+    for (_, entry) in &paths {
+        if entry.kind == "file" {
+            let encoded = entry.content_base64.as_deref().ok_or_else(|| {
+                AppError::internal("checkpoint file is missing its content payload")
+            })?;
+            let content = BASE64
+                .decode(encoded)
+                .map_err(|_| AppError::internal("checkpoint file payload is invalid"))?;
+            let digest = format!("{:x}", Sha256::digest(&content));
+            if entry.sha256.as_deref() != Some(digest.as_str()) {
+                return Err(AppError::internal(
+                    "checkpoint file digest verification failed",
+                ));
+            }
+        }
+    }
+    paths.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
+    let mut removed_paths = 0;
+    for (path, entry) in &paths {
+        if entry.kind == "missing" && path.exists() {
+            if fs::symlink_metadata(path)?.file_type().is_symlink() {
+                return Err(AppError::internal("refusing to restore over a symlink"));
+            }
+            if path.is_dir() {
+                fs::remove_dir_all(path)?;
+            } else {
+                fs::remove_file(path)?;
+            }
+            removed_paths += 1;
+        }
+    }
+    paths.sort_by_key(|(path, _)| path.components().count());
+    let mut restored_directories = 0;
+    let mut restored_files = 0;
+    for (path, entry) in paths {
+        match entry.kind.as_str() {
+            "directory" => {
+                fs::create_dir_all(&path)?;
+                restored_directories += 1;
+            }
+            "file" => {
+                let encoded = entry.content_base64.as_deref().ok_or_else(|| {
+                    AppError::internal("checkpoint file is missing its content payload")
+                })?;
+                let content = BASE64
+                    .decode(encoded)
+                    .map_err(|_| AppError::internal("checkpoint file payload is invalid"))?;
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(path, content)?;
+                restored_files += 1;
+            }
+            "missing" => {}
+            _ => {
+                return Err(AppError::internal(
+                    "checkpoint contains an unknown entry kind",
+                ))
+            }
+        }
+    }
+    Ok(CheckpointRestoreResult {
+        checkpoint_id: checkpoint_id.to_string(),
+        restored_files,
+        restored_directories,
+        removed_paths,
+        validation_required: true,
+    })
 }
 
 fn finish_durable_run(
@@ -2246,6 +2489,13 @@ mod tests {
     use super::*;
     use crate::model_registry::ModelLifecycleState;
 
+    fn decoded_checkpoint_entries(values: Vec<Value>) -> Vec<CheckpointEntry> {
+        values
+            .into_iter()
+            .map(|value| serde_json::from_value(value).unwrap())
+            .collect()
+    }
+
     fn agent_model(id: &str, repository: &str, enabled: bool) -> ModelRecord {
         ModelRecord {
             id: id.to_string(),
@@ -2355,6 +2605,60 @@ mod tests {
             entries[0]["sha256"],
             format!("{:x}", Sha256::digest(b"before"))
         );
+    }
+
+    #[test]
+    fn checkpoint_restore_reinstates_verified_file_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("src.txt");
+        fs::write(&file, b"before").unwrap();
+        let config = AgentWorkspaceConfig {
+            full_pc_access: false,
+            roots: vec![AgentWorkspaceRoot {
+                id: "root".to_string(),
+                path: temp.path().display().to_string(),
+                created_at: "now".to_string(),
+            }],
+        };
+        let action = json!({"rootId": "root", "path": "src.txt", "content": "after"});
+        let before = decoded_checkpoint_entries(
+            capture_checkpoint_entries(&config, "write_file", &action).unwrap(),
+        );
+        fs::write(&file, b"after").unwrap();
+        let after = decoded_checkpoint_entries(
+            capture_checkpoint_entries(&config, "write_file", &action).unwrap(),
+        );
+
+        preflight_checkpoint_restore(&config, &after).unwrap();
+        let result = apply_checkpoint_restore("checkpoint", &config, &before).unwrap();
+
+        assert_eq!(fs::read(&file).unwrap(), b"before");
+        assert_eq!(result.restored_files, 1);
+        assert!(result.validation_required);
+    }
+
+    #[test]
+    fn checkpoint_restore_rejects_changes_made_after_agent_step() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("src.txt");
+        fs::write(&file, b"after").unwrap();
+        let config = AgentWorkspaceConfig {
+            full_pc_access: false,
+            roots: vec![AgentWorkspaceRoot {
+                id: "root".to_string(),
+                path: temp.path().display().to_string(),
+                created_at: "now".to_string(),
+            }],
+        };
+        let action = json!({"rootId": "root", "path": "src.txt", "content": "after"});
+        let after = decoded_checkpoint_entries(
+            capture_checkpoint_entries(&config, "write_file", &action).unwrap(),
+        );
+        fs::write(&file, b"user edit").unwrap();
+
+        let error = preflight_checkpoint_restore(&config, &after).unwrap_err();
+        assert!(error.to_string().contains("restore conflict"));
+        assert_eq!(fs::read(&file).unwrap(), b"user edit");
     }
 
     #[test]
