@@ -35,6 +35,45 @@ type ProjectAgentStatus = {
   attachedRoots: number;
 };
 
+export type OpenAgentRun = {
+  id: string;
+  conversationId: string;
+  projectId: string;
+  assistantMessageId: string;
+  modelId: string;
+  goal: string;
+  status: "running" | "completed" | "failed" | "cancelled" | "interrupted";
+  maxSteps: number;
+  currentStep: number;
+  consecutiveFailures: number;
+  validationStatus: "not_required" | "required" | "passed" | "skipped";
+  validationCommand: string | null;
+  error: string | null;
+  startedAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+};
+
+export type OpenAgentStep = {
+  id: string;
+  runId: string;
+  stepIndex: number;
+  tool: string;
+  actionJson: string;
+  status: "running" | "succeeded" | "failed" | "blocked";
+  workspaceChanged: boolean;
+  validationCommand: string | null;
+  resultSummary: string | null;
+  error: string | null;
+  startedAt: string;
+  completedAt: string | null;
+};
+
+export type OpenAgentRunDetails = {
+  run: OpenAgentRun;
+  steps: OpenAgentStep[];
+};
+
 type RuntimeBootstrapSnapshot = {
   inventory: RuntimeInventory;
   status: LlamaRuntimeStatus;
@@ -249,7 +288,8 @@ export const api = {
   stopRuntime: async () => {
     markRuntimeForegroundStarted();
     await legacyApi.stopRuntime();
-    const selected = runtimeInventoryCache?.selected ?? (await runtimeBootstrapSnapshot()).inventory.selected;
+    const selected =
+      runtimeInventoryCache?.selected ?? (await runtimeBootstrapSnapshot()).inventory.selected;
     runtimeInventoryCache = {
       runtimes: selected ? [selected] : [],
       selected,
@@ -258,6 +298,10 @@ export const api = {
     runtimeBootstrapPromise = null;
   },
   projectAgentStatus,
+  listOpenAgentRuns: (conversationId: string, limit = 20) =>
+    connectedInvoke<OpenAgentRun[]>("list_openagent_runs", { conversationId, limit }),
+  openAgentRunDetails: (runId: string) =>
+    connectedInvoke<OpenAgentRunDetails | null>("openagent_run_details", { runId }),
   sendChatMessage: async (
     conversationId: string,
     content: string,
@@ -311,10 +355,10 @@ export const api = {
     if (source?.content.startsWith("[Mode: Music/SFX Creation]")) resolvedMode = "sound";
     const isVisualTurn = Boolean(
       source?.content.startsWith("[Mode: Multimodal Vision Review]") ||
-        source?.content.startsWith("[Mode: Image/Vision Review]") ||
-        source?.content.includes("[Image attached:") ||
-        source?.content.includes("[PDF processed locally:") ||
-        source?.content.includes("[Video processed locally:"),
+      source?.content.startsWith("[Mode: Image/Vision Review]") ||
+      source?.content.includes("[Image attached:") ||
+      source?.content.includes("[PDF processed locally:") ||
+      source?.content.includes("[Video processed locally:"),
     );
     if (isVisualTurn) resolvedMode = "vision";
 
@@ -342,11 +386,7 @@ export const api = {
     }
 
     if (resolvedMode === "sound" && isTauri) {
-      await createSoundscapeArtifact(
-        conversationId,
-        assistant.id,
-        assistant.content.trim(),
-      );
+      await createSoundscapeArtifact(conversationId, assistant.id, assistant.content.trim());
     }
     return assistant;
   },
@@ -361,12 +401,9 @@ export const api = {
     }
     return legacyApi.createGenerationArtifact(conversationId, messageId, kind, prompt);
   },
-  googleWorkspaceStatus: () =>
-    connectedInvoke<GoogleWorkspaceStatus>("google_workspace_status"),
-  connectGoogleWorkspace: () =>
-    connectedInvoke<GoogleWorkspaceStatus>("connect_google_workspace"),
-  disconnectGoogleWorkspace: () =>
-    connectedInvoke<void>("disconnect_google_workspace"),
+  googleWorkspaceStatus: () => connectedInvoke<GoogleWorkspaceStatus>("google_workspace_status"),
+  connectGoogleWorkspace: () => connectedInvoke<GoogleWorkspaceStatus>("connect_google_workspace"),
+  disconnectGoogleWorkspace: () => connectedInvoke<void>("disconnect_google_workspace"),
   executeGoogleWorkspaceAction: (
     action: string,
     params: Record<string, unknown>,

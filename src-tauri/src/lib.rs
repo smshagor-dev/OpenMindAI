@@ -39,6 +39,8 @@ macro_rules! openmind_generate_handler {
             delete_project_workspace_path,
             run_project_terminal_command,
             project_agent_status_for_conversation,
+            list_openagent_runs,
+            openagent_run_details,
             send_project_agent_message,
             regenerate_project_agent_message
         ]
@@ -69,6 +71,7 @@ pub mod native_runtime;
 pub mod native_stream;
 #[cfg(feature = "native-cxx-llama")]
 pub mod native_supervisor;
+mod openagent_runs;
 mod pdf_ocr;
 mod speech_runtime;
 mod vision_batch;
@@ -103,6 +106,7 @@ pub(crate) use multimodal::{
     artifact_media_data_url, create_soundscape_artifact, regenerate_multimodal_message,
     send_multimodal_chat_message, transcribe_audio,
 };
+pub(crate) use openagent_runs::{list_openagent_runs, openagent_run_details};
 pub(crate) use pdf_ocr::ocr_pdf_pages;
 pub(crate) use warm_start::{prepare_default_chat_runtime, reveal_main_window};
 
