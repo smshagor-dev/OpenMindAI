@@ -59,7 +59,6 @@ mod connector_stabilization;
 mod github_workspace;
 mod google_workspace;
 mod local_agent;
-mod openagent_runs;
 mod local_workspace;
 mod multimodal;
 #[cfg(feature = "native-cxx-llama")]
@@ -72,6 +71,7 @@ pub mod native_runtime;
 pub mod native_stream;
 #[cfg(feature = "native-cxx-llama")]
 pub mod native_supervisor;
+mod openagent_runs;
 mod pdf_ocr;
 mod speech_runtime;
 mod vision_batch;
@@ -95,7 +95,6 @@ pub(crate) use local_agent::{
     project_agent_status_for_conversation, regenerate_project_agent_message,
     send_project_agent_message,
 };
-pub(crate) use openagent_runs::{list_openagent_runs, openagent_run_details};
 pub(crate) use local_workspace::{
     attach_project_workspace_folder, create_project_workspace_directory,
     delete_project_workspace_path, detach_project_workspace_folder,
@@ -107,6 +106,7 @@ pub(crate) use multimodal::{
     artifact_media_data_url, create_soundscape_artifact, regenerate_multimodal_message,
     send_multimodal_chat_message, transcribe_audio,
 };
+pub(crate) use openagent_runs::{list_openagent_runs, openagent_run_details};
 pub(crate) use pdf_ocr::ocr_pdf_pages;
 pub(crate) use warm_start::{prepare_default_chat_runtime, reveal_main_window};
 

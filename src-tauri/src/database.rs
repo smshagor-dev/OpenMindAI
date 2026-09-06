@@ -411,21 +411,31 @@ mod tests {
         {
             let database = Database::open(path.clone()).unwrap();
             let connection = database.connection();
-            connection.execute(
-                "INSERT INTO model_registry (id, name, path, format, created_at, updated_at)
+            connection
+                .execute(
+                    "INSERT INTO model_registry (id, name, path, format, created_at, updated_at)
                  VALUES (?1, 'Test', ?2, 'gguf', ?3, ?3)",
-                params![model_id, temp.path().join("test.gguf").display().to_string(), now],
-            ).unwrap();
-            connection.execute(
-                "INSERT INTO conversations (id, title, created_at, updated_at, pinned)
+                    params![
+                        model_id,
+                        temp.path().join("test.gguf").display().to_string(),
+                        now
+                    ],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO conversations (id, title, created_at, updated_at, pinned)
                  VALUES (?1, 'Run', ?2, ?2, 0)",
-                params![conversation_id, now],
-            ).unwrap();
-            connection.execute(
-                "INSERT INTO projects (id, name, created_at, updated_at)
+                    params![conversation_id, now],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO projects (id, name, created_at, updated_at)
                  VALUES (?1, 'Project', ?2, ?2)",
-                params![project_id, now],
-            ).unwrap();
+                    params![project_id, now],
+                )
+                .unwrap();
             connection.execute(
                 "INSERT INTO messages (id, conversation_id, role, content, status, model_id, created_at, updated_at)
                  VALUES (?1, ?2, 'assistant', '', 'completed', ?3, ?4, ?4)",
@@ -440,11 +450,14 @@ mod tests {
         }
 
         let database = Database::open(path).unwrap();
-        let (status, completed_at): (String, Option<String>) = database.connection().query_row(
-            "SELECT status, completed_at FROM openagent_runs WHERE id = ?1",
-            params![run_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap();
+        let (status, completed_at): (String, Option<String>) = database
+            .connection()
+            .query_row(
+                "SELECT status, completed_at FROM openagent_runs WHERE id = ?1",
+                params![run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
         assert_eq!(status, "interrupted");
         assert!(completed_at.is_some());
     }

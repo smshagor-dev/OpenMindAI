@@ -675,8 +675,12 @@ fn finish_durable_step(
         status,
         changed,
         validation_command,
-        result.map(|value| bounded(value, MAX_TOOL_RESULT_CHARS)).as_deref(),
-        error.map(|value| bounded(value, MAX_TOOL_RESULT_CHARS)).as_deref(),
+        result
+            .map(|value| bounded(value, MAX_TOOL_RESULT_CHARS))
+            .as_deref(),
+        error
+            .map(|value| bounded(value, MAX_TOOL_RESULT_CHARS))
+            .as_deref(),
     )
 }
 
@@ -741,7 +745,9 @@ fn finish_durable_run(
     OpenAgentRunRepository::new(&db).finish(
         run_id,
         status,
-        error.map(|value| bounded(value, MAX_TOOL_RESULT_CHARS)).as_deref(),
+        error
+            .map(|value| bounded(value, MAX_TOOL_RESULT_CHARS))
+            .as_deref(),
     )
 }
 
