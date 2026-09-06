@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "lint": "eslint .",
+    "test:image": "node --experimental-strip-types --test tests/imageGeneration.test.mjs",
     "format": "prettier --write .",
     "check:version": "node scripts/check-version-consistency.mjs",
     "check:release": "node scripts/check-release-readiness.mjs",
