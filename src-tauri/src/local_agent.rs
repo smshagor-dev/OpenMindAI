@@ -538,7 +538,10 @@ fn resolve_openagent_model(
         {
             format!("OpenAgent · NVIDIA Nemotron 3.5 Lightning · {}", model.name)
         } else {
-            format!("OpenAgent · compatible local agent fallback · {}", model.name)
+            format!(
+                "OpenAgent · compatible local agent fallback · {}",
+                model.name
+            )
         };
         return Ok((model, reason));
     }
@@ -546,7 +549,10 @@ fn resolve_openagent_model(
     let routing = crate::resolve_conversation_model(state, conversation_id, "thinking", content)?;
     Ok((
         routing.model.clone(),
-        format!("OpenAgent · general reasoning fallback · {}", routing.model.name),
+        format!(
+            "OpenAgent · general reasoning fallback · {}",
+            routing.model.name
+        ),
     ))
 }
 
@@ -560,9 +566,7 @@ fn select_openagent_model(models: &[ModelRecord]) -> Option<ModelRecord> {
     REPOSITORY_PREFERENCE.iter().find_map(|repository| {
         models
             .iter()
-            .find(|model| {
-                model.enabled && model.source_repository.as_deref() == Some(*repository)
-            })
+            .find(|model| model.enabled && model.source_repository.as_deref() == Some(*repository))
             .cloned()
     })
 }
@@ -859,9 +863,7 @@ async fn execute_tool(
             }
             let metadata = fs::metadata(&file)?;
             if metadata.len() > MAX_READ_FILE_BYTES {
-                return Err(AppError::internal(
-                    "file exceeds the OpenAgent read limit",
-                ));
+                return Err(AppError::internal("file exceeds the OpenAgent read limit"));
             }
             let content = fs::read_to_string(&file)
                 .map_err(|_| AppError::internal("read_file supports UTF-8 text files only"))?;
@@ -1929,11 +1931,7 @@ mod tests {
 
     #[test]
     fn openagent_prefers_nemotron_35_lightning() {
-        let nano = agent_model(
-            "nano",
-            "ggml-org/NVIDIA-Nemotron-3-Nano-30B-A3B-GGUF",
-            true,
-        );
+        let nano = agent_model("nano", "ggml-org/NVIDIA-Nemotron-3-Nano-30B-A3B-GGUF", true);
         let lightning = agent_model(
             "lightning",
             "ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
