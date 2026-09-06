@@ -2489,6 +2489,13 @@ mod tests {
     use super::*;
     use crate::model_registry::ModelLifecycleState;
 
+    fn decoded_checkpoint_entries(values: Vec<Value>) -> Vec<CheckpointEntry> {
+        values
+            .into_iter()
+            .map(|value| serde_json::from_value(value).unwrap())
+            .collect()
+    }
+
     fn agent_model(id: &str, repository: &str, enabled: bool) -> ModelRecord {
         ModelRecord {
             id: id.to_string(),
@@ -2614,9 +2621,13 @@ mod tests {
             }],
         };
         let action = json!({"rootId": "root", "path": "src.txt", "content": "after"});
-        let before = capture_checkpoint_entries(&config, "write_file", &action).unwrap();
+        let before = decoded_checkpoint_entries(
+            capture_checkpoint_entries(&config, "write_file", &action).unwrap(),
+        );
         fs::write(&file, b"after").unwrap();
-        let after = capture_checkpoint_entries(&config, "write_file", &action).unwrap();
+        let after = decoded_checkpoint_entries(
+            capture_checkpoint_entries(&config, "write_file", &action).unwrap(),
+        );
 
         preflight_checkpoint_restore(&config, &after).unwrap();
         let result = apply_checkpoint_restore("checkpoint", &config, &before).unwrap();
@@ -2640,7 +2651,9 @@ mod tests {
             }],
         };
         let action = json!({"rootId": "root", "path": "src.txt", "content": "after"});
-        let after = capture_checkpoint_entries(&config, "write_file", &action).unwrap();
+        let after = decoded_checkpoint_entries(
+            capture_checkpoint_entries(&config, "write_file", &action).unwrap(),
+        );
         fs::write(&file, b"user edit").unwrap();
 
         let error = preflight_checkpoint_restore(&config, &after).unwrap_err();
