@@ -5,9 +5,11 @@ use std::{
     time::Duration,
 };
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, State};
 use tokio::process::Command;
 
@@ -36,6 +38,8 @@ const MAX_TOOL_RESULT_CHARS: usize = 10_000;
 const MAX_READ_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_READ_LINES: usize = 500;
 const MAX_WRITE_CHARS: usize = 2_000_000;
+const MAX_CHECKPOINT_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_CHECKPOINT_ENTRIES: usize = 500;
 const MAX_SEARCH_FILES: usize = 600;
 const MAX_SEARCH_MATCHES: usize = 80;
 const MAX_SEARCH_QUERY_CHARS: usize = 500;
@@ -460,6 +464,8 @@ async fn run_agent_message(
                     &step_id,
                     "before_mutation",
                     &agent_context,
+                    tool,
+                    &decision,
                 )?;
             }
 
@@ -543,6 +549,8 @@ async fn run_agent_message(
                             &step_id,
                             "after_mutation",
                             &agent_context,
+                            tool,
+                            &decision,
                         )?;
                     }
                     if successful_validation.is_some() {
@@ -552,6 +560,8 @@ async fn run_agent_message(
                             &step_id,
                             "validation",
                             &agent_context,
+                            tool,
+                            &decision,
                         )?;
                     }
                     update_durable_progress(
@@ -716,20 +726,115 @@ fn durable_checkpoint(
     step_id: &str,
     kind: &str,
     context: &AgentContext,
+    tool: &str,
+    action: &Value,
 ) -> Result<(), AppError> {
+    let entries = capture_checkpoint_entries(&context.workspace, tool, action)?;
     let snapshot = json!({
+        "version": 2,
+        "tool": tool,
+        "action": action,
+        "reversible": tool != "terminal",
         "projectId": context.project.id,
         "roots": context.workspace.roots.iter().map(|root| json!({
             "id": root.id,
             "path": root.path,
         })).collect::<Vec<_>>(),
-        "workspaceContext": bounded(&context.workspace_context, MAX_TRANSCRIPT_CHARS),
+        "entries": entries,
     });
     let db = state
         .database
         .lock()
         .map_err(|_| AppError::internal("database lock poisoned"))?;
     OpenAgentRunRepository::new(&db).checkpoint(run_id, step_id, kind, &snapshot.to_string())
+}
+
+fn capture_checkpoint_entries(
+    config: &AgentWorkspaceConfig,
+    tool: &str,
+    action: &Value,
+) -> Result<Vec<Value>, AppError> {
+    let root_id = optional_string(action, "rootId");
+    let paths = match tool {
+        "write_file" | "replace_text" | "create_dir" | "delete_path" => {
+            vec![required_string(action, "path")?]
+        }
+        "move_path" => vec![
+            required_string(action, "sourcePath")?,
+            required_string(action, "targetPath")?,
+        ],
+        "terminal" => return Ok(Vec::new()),
+        _ => return Ok(Vec::new()),
+    };
+    let mut entries = Vec::new();
+    let mut total_bytes = 0u64;
+    for input in paths {
+        let target = resolve_agent_path(config, root_id.as_deref(), &input, false)?;
+        capture_checkpoint_path(&target, &target, &mut entries, &mut total_bytes)?;
+    }
+    Ok(entries)
+}
+
+fn capture_checkpoint_path(
+    root: &Path,
+    path: &Path,
+    entries: &mut Vec<Value>,
+    total_bytes: &mut u64,
+) -> Result<(), AppError> {
+    if entries.len() >= MAX_CHECKPOINT_ENTRIES {
+        return Err(AppError::internal(
+            "mutation checkpoint exceeds the 500-entry safety limit",
+        ));
+    }
+    if !path.exists() {
+        entries.push(json!({
+            "path": display_path(path),
+            "relativePath": "",
+            "kind": "missing",
+        }));
+        return Ok(());
+    }
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(AppError::internal(
+            "OpenAgent will not mutate a symlink without a reversible checkpoint",
+        ));
+    }
+    let relative = path.strip_prefix(root).unwrap_or(Path::new(""));
+    if metadata.is_dir() {
+        entries.push(json!({
+            "path": display_path(path),
+            "relativePath": relative.to_string_lossy(),
+            "kind": "directory",
+        }));
+        let mut children = fs::read_dir(path)?.collect::<Result<Vec<_>, _>>()?;
+        children.sort_by_key(|entry| entry.file_name());
+        for child in children {
+            capture_checkpoint_path(root, &child.path(), entries, total_bytes)?;
+        }
+        return Ok(());
+    }
+    if !metadata.is_file() {
+        return Err(AppError::internal(
+            "OpenAgent cannot checkpoint this filesystem object type",
+        ));
+    }
+    *total_bytes = total_bytes.saturating_add(metadata.len());
+    if *total_bytes > MAX_CHECKPOINT_BYTES {
+        return Err(AppError::internal(
+            "mutation checkpoint exceeds the 10 MiB safety limit",
+        ));
+    }
+    let content = fs::read(path)?;
+    entries.push(json!({
+        "path": display_path(path),
+        "relativePath": relative.to_string_lossy(),
+        "kind": "file",
+        "sizeBytes": content.len(),
+        "sha256": format!("{:x}", Sha256::digest(&content)),
+        "contentBase64": BASE64.encode(content),
+    }));
+    Ok(())
 }
 
 fn finish_durable_run(
@@ -2221,6 +2326,35 @@ mod tests {
         assert!(tool_mutates_workspace("delete_path"));
         assert!(!tool_mutates_workspace("read_file"));
         assert!(!tool_mutates_workspace("git_status"));
+    }
+
+    #[test]
+    fn mutation_checkpoint_captures_original_file_content_and_digest() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("src.txt");
+        fs::write(&file, b"before").unwrap();
+        let config = AgentWorkspaceConfig {
+            full_pc_access: false,
+            roots: vec![AgentWorkspaceRoot {
+                id: "root".to_string(),
+                path: temp.path().display().to_string(),
+                created_at: "now".to_string(),
+            }],
+        };
+        let entries = capture_checkpoint_entries(
+            &config,
+            "write_file",
+            &json!({"rootId": "root", "path": "src.txt", "content": "after"}),
+        )
+        .unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["kind"], "file");
+        assert_eq!(entries[0]["contentBase64"], BASE64.encode(b"before"));
+        assert_eq!(
+            entries[0]["sha256"],
+            format!("{:x}", Sha256::digest(b"before"))
+        );
     }
 
     #[test]
