@@ -239,7 +239,9 @@ pub fn restore_openagent_checkpoint(
     let before = parse_checkpoint_snapshot(&before_json)?;
     let after = parse_checkpoint_snapshot(&after_json)?;
     if before.version != 2 || after.version != 2 || !before.reversible || !after.reversible {
-        return Err(AppError::internal("checkpoint format is not safely restorable"));
+        return Err(AppError::internal(
+            "checkpoint format is not safely restorable",
+        ));
     }
     let workspace = {
         let db = state
@@ -929,7 +931,9 @@ fn parse_checkpoint_snapshot(raw: &str) -> Result<CheckpointSnapshot, AppError> 
 fn checkpoint_path(config: &AgentWorkspaceConfig, raw: &str) -> Result<PathBuf, AppError> {
     let path = PathBuf::from(raw);
     if !path.is_absolute() {
-        return Err(AppError::internal("checkpoint contains a non-absolute path"));
+        return Err(AppError::internal(
+            "checkpoint contains a non-absolute path",
+        ));
     }
     let security_path = if path.exists() {
         fs::canonicalize(&path)?
@@ -971,7 +975,11 @@ fn preflight_checkpoint_restore(
                         == Some(format!("{:x}", Sha256::digest(content)).as_str())
                 }
             }
-            _ => return Err(AppError::internal("checkpoint contains an unknown entry kind")),
+            _ => {
+                return Err(AppError::internal(
+                    "checkpoint contains an unknown entry kind",
+                ))
+            }
         };
         if !matches {
             return Err(AppError::internal(format!(
@@ -1012,7 +1020,9 @@ fn apply_checkpoint_restore(
                 .map_err(|_| AppError::internal("checkpoint file payload is invalid"))?;
             let digest = format!("{:x}", Sha256::digest(&content));
             if entry.sha256.as_deref() != Some(digest.as_str()) {
-                return Err(AppError::internal("checkpoint file digest verification failed"));
+                return Err(AppError::internal(
+                    "checkpoint file digest verification failed",
+                ));
             }
         }
     }
@@ -1054,7 +1064,11 @@ fn apply_checkpoint_restore(
                 restored_files += 1;
             }
             "missing" => {}
-            _ => return Err(AppError::internal("checkpoint contains an unknown entry kind")),
+            _ => {
+                return Err(AppError::internal(
+                    "checkpoint contains an unknown entry kind",
+                ))
+            }
         }
     }
     Ok(CheckpointRestoreResult {
