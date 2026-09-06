@@ -18,6 +18,7 @@ use crate::{
     inference::{StreamChunkEvent, StreamDoneEvent, StreamStartedEvent},
     launch_planner::ModelLaunchPlanner,
     local_workspace,
+    model_registry::{ModelRecord, ModelRegistry},
     projects::{Project, ProjectRepository},
     runtime::allocate_local_port,
     AppState,
@@ -171,13 +172,13 @@ async fn run_agent_message(
     existing_user: Option<Message>,
 ) -> Result<Message, AppError> {
     if content.trim().is_empty() {
-        return Err(AppError::internal("project agent request cannot be empty"));
+        return Err(AppError::internal("OpenAgent request cannot be empty"));
     }
 
     let mut agent_context = load_agent_context(state, conversation_id)?;
     if agent_context.workspace.roots.is_empty() {
         return Err(AppError::internal(
-            "attach a local folder to this project before using the Project Agent",
+            "attach a local folder to this project before using OpenAgent",
         ));
     }
 
@@ -190,8 +191,7 @@ async fn run_agent_message(
         crate::sync_project_context_in_database(&db, conversation_id)?;
     }
 
-    let routing = crate::resolve_conversation_model(state, conversation_id, "thinking", content)?;
-    let model = routing.model.clone();
+    let (model, routing_reason) = resolve_openagent_model(state, conversation_id, content)?;
     let hardware = state.hardware.clone();
     let plan = ModelLaunchPlanner::plan(&model, &hardware, allocate_local_port()?);
     let endpoint = {
@@ -222,7 +222,7 @@ async fn run_agent_message(
             user: user.clone(),
             assistant: assistant.clone(),
             routed_model_name: model.name.clone(),
-            routing_reason: format!("Project Agent · {}", routing.reason),
+            routing_reason,
         },
     ) {
         state.active_generations.finish(conversation_id);
@@ -238,8 +238,9 @@ async fn run_agent_message(
     let mut last_validation_command: Option<String> = None;
     let mut status = "completed";
     let intro = format!(
-        "Project Agent started for **{}**. I can inspect and change the attached workspace{}.",
+        "OpenAgent started for **{}** using **{}**. I can inspect and change the attached workspace{}.",
         agent_context.project.name,
+        model.name,
         if agent_context.workspace.full_pc_access {
             ", including terminal commands with the project's Full PC + Terminal grant"
         } else {
@@ -279,6 +280,7 @@ async fn run_agent_message(
                 &agent_context,
                 &transcript,
                 step,
+                &model.id,
             ) => result?,
                 _ = cancellation.cancelled() => {
                     status = "cancelled";
@@ -321,7 +323,7 @@ async fn run_agent_message(
                     push_transcript(&mut transcript, requirement.to_string());
                     if validation_deferrals > MAX_VALIDATION_DEFERRALS {
                         return Err(AppError::InferenceFailed(
-                            "Project Agent repeatedly attempted to finish without validating workspace changes"
+                            "OpenAgent repeatedly attempted to finish without validating workspace changes"
                                 .to_string(),
                         ));
                     }
@@ -392,7 +394,7 @@ async fn run_agent_message(
                 );
                 if consecutive_failures >= MAX_AGENT_FAILURES {
                     return Err(AppError::InferenceFailed(format!(
-                        "Project Agent stopped after {consecutive_failures} consecutive tool failures"
+                        "OpenAgent stopped after {consecutive_failures} consecutive tool failures"
                     )));
                 }
                 continue;
@@ -491,7 +493,7 @@ async fn run_agent_message(
                     );
                     if consecutive_failures >= MAX_AGENT_FAILURES {
                         return Err(AppError::InferenceFailed(format!(
-                            "Project Agent stopped after {consecutive_failures} consecutive tool failures. Last error: {text}"
+                            "OpenAgent stopped after {consecutive_failures} consecutive tool failures. Last error: {text}"
                         )));
                     }
                 }
@@ -499,7 +501,7 @@ async fn run_agent_message(
         }
 
         Err(AppError::InferenceFailed(format!(
-            "Project Agent reached the {MAX_AGENT_STEPS}-step safety limit before finishing"
+            "OpenAgent reached the {MAX_AGENT_STEPS}-step safety limit before finishing"
         )))
     }
     .await;
@@ -514,6 +516,55 @@ async fn run_agent_message(
     state.active_generations.finish(conversation_id);
     finish_result?;
     latest_message(state, conversation_id, &assistant.id)
+}
+
+fn resolve_openagent_model(
+    state: &State<'_, AppState>,
+    conversation_id: &str,
+    content: &str,
+) -> Result<(ModelRecord, String), AppError> {
+    let selected = {
+        let db = state
+            .database
+            .lock()
+            .map_err(|_| AppError::internal("database lock poisoned"))?;
+        let models = ModelRegistry::new(&db, &state.root).list_models()?;
+        select_openagent_model(&models)
+    };
+
+    if let Some(model) = selected {
+        let reason = if model.source_repository.as_deref()
+            == Some("ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF")
+        {
+            format!("OpenAgent · NVIDIA Nemotron 3.5 Lightning · {}", model.name)
+        } else {
+            format!("OpenAgent · compatible local agent fallback · {}", model.name)
+        };
+        return Ok((model, reason));
+    }
+
+    let routing = crate::resolve_conversation_model(state, conversation_id, "thinking", content)?;
+    Ok((
+        routing.model.clone(),
+        format!("OpenAgent · general reasoning fallback · {}", routing.model.name),
+    ))
+}
+
+fn select_openagent_model(models: &[ModelRecord]) -> Option<ModelRecord> {
+    const REPOSITORY_PREFERENCE: [&str; 3] = [
+        "ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
+        "ggml-org/NVIDIA-Nemotron-3-Nano-30B-A3B-GGUF",
+        "nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF",
+    ];
+
+    REPOSITORY_PREFERENCE.iter().find_map(|repository| {
+        models
+            .iter()
+            .find(|model| {
+                model.enabled && model.source_repository.as_deref() == Some(*repository)
+            })
+            .cloned()
+    })
 }
 
 fn load_agent_context(
@@ -612,6 +663,7 @@ async fn request_agent_decision(
     context: &AgentContext,
     transcript: &VecDeque<String>,
     step: usize,
+    model_id: &str,
 ) -> Result<Value, AppError> {
     let root_summary = context
         .workspace
@@ -634,7 +686,7 @@ async fn request_agent_decision(
     };
 
     let system = format!(
-        "You are OpenMindAI Local Project Agent. You operate directly on a user's local project only to fulfill the latest user request.\n\
+        "You are OpenAgent, OpenMindAI's local coding agent. You operate directly on a user's local project only to fulfill the latest user request.\n\
 Return EXACTLY one JSON object and no markdown, commentary, chain-of-thought, or code fences.\n\
 Choose either a tool action or a final answer.\n\
 Tool JSON shapes:\n\
@@ -689,7 +741,7 @@ Attached roots:\n{root_summary}"
     );
 
     let body = json!({
-        "model": "qwen3-4b-q4_k_m",
+        "model": model_id,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user}
@@ -808,7 +860,7 @@ async fn execute_tool(
             let metadata = fs::metadata(&file)?;
             if metadata.len() > MAX_READ_FILE_BYTES {
                 return Err(AppError::internal(
-                    "file exceeds the Project Agent read limit",
+                    "file exceeds the OpenAgent read limit",
                 ));
             }
             let content = fs::read_to_string(&file)
@@ -1056,7 +1108,7 @@ async fn execute_tool(
             })
         }
         other => Err(AppError::internal(format!(
-            "unknown Project Agent tool: {other}"
+            "unknown OpenAgent tool: {other}"
         ))),
     }
 }
@@ -1393,7 +1445,7 @@ fn resolve_agent_path(
         };
         if !security_path.starts_with(&root) {
             return Err(AppError::internal(
-                "Project Agent path escaped the attached folder",
+                "OpenAgent path escaped the attached folder",
             ));
         }
     }
@@ -1478,7 +1530,7 @@ fn reject_catastrophic_command(command: &str) -> Result<(), AppError> {
     ];
     if blocked.iter().any(|needle| compact.contains(needle)) {
         return Err(AppError::internal(
-            "catastrophic system/disk command blocked by Project Agent safety guard",
+            "catastrophic system/disk command blocked by OpenAgent safety guard",
         ));
     }
     Ok(())
@@ -1591,7 +1643,7 @@ fn latest_message(
         .list_messages(conversation_id)?
         .into_iter()
         .find(|message| message.id == message_id)
-        .ok_or_else(|| AppError::internal("Project Agent assistant message disappeared"))
+        .ok_or_else(|| AppError::internal("OpenAgent assistant message disappeared"))
 }
 
 fn parse_agent_json(content: &str) -> Result<Value, AppError> {
@@ -1600,12 +1652,12 @@ fn parse_agent_json(content: &str) -> Result<Value, AppError> {
     }
     let object = extract_first_json_object(content).ok_or_else(|| {
         AppError::InferenceFailed(format!(
-            "Project Agent did not return valid JSON: {}",
+            "OpenAgent did not return valid JSON: {}",
             one_line(content, 600)
         ))
     })?;
     serde_json::from_str::<Value>(&object)
-        .map_err(|error| AppError::InferenceFailed(format!("invalid Project Agent JSON: {error}")))
+        .map_err(|error| AppError::InferenceFailed(format!("invalid OpenAgent JSON: {error}")))
 }
 
 fn extract_first_json_object(input: &str) -> Option<String> {
@@ -1645,7 +1697,7 @@ fn required_string(value: &Value, key: &str) -> Result<String, AppError> {
         .get(key)
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
-        .ok_or_else(|| AppError::internal(format!("Project Agent tool requires `{key}`")))
+        .ok_or_else(|| AppError::internal(format!("OpenAgent tool requires `{key}`")))
 }
 
 fn optional_string(value: &Value, key: &str) -> Option<String> {
@@ -1852,6 +1904,55 @@ fn display_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model_registry::ModelLifecycleState;
+
+    fn agent_model(id: &str, repository: &str, enabled: bool) -> ModelRecord {
+        ModelRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            family: Some("nemotron".to_string()),
+            path: format!("models/llm/{id}.gguf"),
+            format: "gguf".to_string(),
+            quantization: Some("Q4_0".to_string()),
+            size_bytes: 0,
+            capabilities: "[\"chat\",\"code\",\"agent\",\"tool-use\"]".to_string(),
+            context_length: Some(65_536),
+            preferred_backend: None,
+            enabled,
+            source_repository: Some(repository.to_string()),
+            verification: Some("verified".to_string()),
+            state: ModelLifecycleState::Ready,
+            created_at: "now".to_string(),
+            updated_at: "now".to_string(),
+        }
+    }
+
+    #[test]
+    fn openagent_prefers_nemotron_35_lightning() {
+        let nano = agent_model(
+            "nano",
+            "ggml-org/NVIDIA-Nemotron-3-Nano-30B-A3B-GGUF",
+            true,
+        );
+        let lightning = agent_model(
+            "lightning",
+            "ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
+            true,
+        );
+
+        let selected = select_openagent_model(&[nano, lightning]).unwrap();
+        assert_eq!(selected.id, "lightning");
+    }
+
+    #[test]
+    fn openagent_ignores_disabled_agent_models() {
+        let lightning = agent_model(
+            "lightning",
+            "ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
+            false,
+        );
+        assert!(select_openagent_model(&[lightning]).is_none());
+    }
 
     #[test]
     fn extracts_json_after_model_noise() {
