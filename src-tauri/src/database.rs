@@ -56,6 +56,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "006_single_project_per_conversation",
         sql: include_str!("../migrations/006_single_project_per_conversation.sql"),
     },
+    Migration {
+        number: 7,
+        name: "007_openagent_durable_runs",
+        sql: include_str!("../migrations/007_openagent_durable_runs.sql"),
+    },
 ];
 
 pub struct Database {
@@ -76,6 +81,7 @@ impl Database {
         let mut database = Self { connection };
         database.migrate()?;
         database.recover_interrupted_chat_messages()?;
+        database.recover_interrupted_openagent_runs()?;
         database.ensure_local_profile()?;
         Ok(database)
     }
@@ -159,6 +165,19 @@ impl Database {
                 "UPDATE messages
                  SET status = 'failed', updated_at = ?1
                  WHERE status IN ('pending', 'streaming')",
+                params![now],
+            )
+            .map_err(AppError::from)
+    }
+
+    fn recover_interrupted_openagent_runs(&self) -> Result<usize, AppError> {
+        let now = Utc::now().to_rfc3339();
+        self.connection
+            .execute(
+                "UPDATE openagent_runs
+                 SET status = 'interrupted', error = 'Application exited before the run finished',
+                     updated_at = ?1, completed_at = ?1
+                 WHERE status = 'running'",
                 params![now],
             )
             .map_err(AppError::from)
@@ -376,6 +395,58 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, "failed");
+    }
+
+    #[test]
+    fn interrupted_openagent_runs_are_recovered_on_reopen() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("openmind_ai.db");
+        let conversation_id = Uuid::new_v4().to_string();
+        let project_id = Uuid::new_v4().to_string();
+        let message_id = Uuid::new_v4().to_string();
+        let model_id = Uuid::new_v4().to_string();
+        let run_id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+
+        {
+            let database = Database::open(path.clone()).unwrap();
+            let connection = database.connection();
+            connection.execute(
+                "INSERT INTO model_registry (id, name, path, format, created_at, updated_at)
+                 VALUES (?1, 'Test', ?2, 'gguf', ?3, ?3)",
+                params![model_id, temp.path().join("test.gguf").display().to_string(), now],
+            ).unwrap();
+            connection.execute(
+                "INSERT INTO conversations (id, title, created_at, updated_at, pinned)
+                 VALUES (?1, 'Run', ?2, ?2, 0)",
+                params![conversation_id, now],
+            ).unwrap();
+            connection.execute(
+                "INSERT INTO projects (id, name, created_at, updated_at)
+                 VALUES (?1, 'Project', ?2, ?2)",
+                params![project_id, now],
+            ).unwrap();
+            connection.execute(
+                "INSERT INTO messages (id, conversation_id, role, content, status, model_id, created_at, updated_at)
+                 VALUES (?1, ?2, 'assistant', '', 'completed', ?3, ?4, ?4)",
+                params![message_id, conversation_id, model_id, now],
+            ).unwrap();
+            connection.execute(
+                "INSERT INTO openagent_runs
+                 (id, conversation_id, project_id, assistant_message_id, model_id, goal, status, max_steps, started_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'test', 'running', 28, ?6, ?6)",
+                params![run_id, conversation_id, project_id, message_id, model_id, now],
+            ).unwrap();
+        }
+
+        let database = Database::open(path).unwrap();
+        let (status, completed_at): (String, Option<String>) = database.connection().query_row(
+            "SELECT status, completed_at FROM openagent_runs WHERE id = ?1",
+            params![run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(status, "interrupted");
+        assert!(completed_at.is_some());
     }
 
     #[test]

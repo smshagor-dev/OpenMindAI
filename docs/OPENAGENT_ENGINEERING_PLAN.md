@@ -59,4 +59,6 @@ The initial tool set covers directory listing, bounded file reads, text search, 
 
 ## Current implementation status
 
-Stage 1 is in progress. The bounded agent loop and attached-root file sandbox already exist. This change connects that loop to the installed Nemotron 3.5 Lightning release, removes the hardcoded Qwen request ID, introduces OpenAgent branding, and adds model-selection tests. Durable checkpoints and a true OS-level process sandbox remain later stages and must not be represented as complete until their platform tests pass.
+Stage 1 is complete. The bounded agent loop is connected to installed Nemotron 3.5 Lightning packages, uses the selected model ID, retains compatible lower-memory fallbacks, and runs inside the attached-root file boundary.
+
+Stage 2 is in progress. OpenAgent now persists run state, ordered tool steps, bounded results, validation state, and before/after workspace checkpoint manifests. Startup recovery marks abandoned runs as interrupted, and typed desktop APIs expose run history and step details. Safe mutation replay/resume, content-addressed reversible file snapshots, token/runtime metrics, and the visible timeline UI are still pending and must not be represented as complete. The OS-level process sandbox remains Stage 3.

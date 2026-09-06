@@ -19,6 +19,7 @@ use crate::{
     launch_planner::ModelLaunchPlanner,
     local_workspace,
     model_registry::{ModelRecord, ModelRegistry},
+    openagent_runs::OpenAgentRunRepository,
     projects::{Project, ProjectRepository},
     runtime::allocate_local_port,
     AppState,
@@ -214,6 +215,22 @@ async fn run_agent_message(
                 return Err(error);
             }
         };
+    let run_id = {
+        let db = state
+            .database
+            .lock()
+            .map_err(|_| AppError::internal("database lock poisoned"))?;
+        OpenAgentRunRepository::new(&db)
+            .start(
+                conversation_id,
+                &agent_context.project.id,
+                &assistant.id,
+                &model.id,
+                content,
+                MAX_AGENT_STEPS,
+            )?
+            .id
+    };
 
     if let Err(error) = app.emit(
         "inference:started",
@@ -225,6 +242,7 @@ async fn run_agent_message(
             routing_reason,
         },
     ) {
+        let _ = finish_durable_run(state, &run_id, "failed", Some(&error.to_string()));
         state.active_generations.finish(conversation_id);
         return Err(AppError::StreamFailed(error.to_string()));
     }
@@ -254,6 +272,7 @@ async fn run_agent_message(
         &assistant.id,
         &format!("{intro}\n\n"),
     ) {
+        let _ = finish_durable_run(state, &run_id, "failed", Some(&error.to_string()));
         state.active_generations.finish(conversation_id);
         return Err(error);
     }
@@ -330,6 +349,19 @@ async fn run_agent_message(
                     continue;
                 }
 
+                if validation_required && validation_skip_allowed {
+                    let db = state
+                        .database
+                        .lock()
+                        .map_err(|_| AppError::internal("database lock poisoned"))?;
+                    OpenAgentRunRepository::new(&db).update_progress(
+                        &run_id,
+                        consecutive_failures,
+                        "skipped",
+                        None,
+                    )?;
+                }
+
                 let message = decision
                     .get("message")
                     .and_then(Value::as_str)
@@ -365,6 +397,7 @@ async fn run_agent_message(
                 .ok_or_else(|| AppError::InferenceFailed("agent returned no tool name".to_string()))?;
 
             let action_signature = compact_json(&decision);
+            let step_id = start_durable_step(state, &run_id, step + 1, tool, &action_signature)?;
             if last_action_signature.as_deref() == Some(action_signature.as_str()) {
                 identical_action_repeats += 1;
             } else {
@@ -383,6 +416,22 @@ async fn run_agent_message(
                     &assistant.id,
                     &format!("• {tool} blocked: {text}\n"),
                 )?;
+                finish_durable_step(
+                    state,
+                    &step_id,
+                    "blocked",
+                    false,
+                    None,
+                    None,
+                    Some(&text),
+                )?;
+                update_durable_progress(
+                    state,
+                    &run_id,
+                    consecutive_failures,
+                    validation_required,
+                    last_validation_command.as_deref(),
+                )?;
                 push_transcript(
                     &mut transcript,
                     format!(
@@ -400,10 +449,33 @@ async fn run_agent_message(
                 continue;
             }
 
+            if tool_mutates_workspace(tool)
+                || (tool == "terminal"
+                    && optional_string(&decision, "command")
+                        .is_some_and(|command| terminal_command_may_mutate_workspace(&command)))
+            {
+                durable_checkpoint(
+                    state,
+                    &run_id,
+                    &step_id,
+                    "before_mutation",
+                    &agent_context,
+                )?;
+            }
+
             let result = tokio::select! {
                 result = execute_tool(tool, &decision, &agent_context.workspace) => result,
                 _ = cancellation.cancelled() => {
                     status = "cancelled";
+                    finish_durable_step(
+                        state,
+                        &step_id,
+                        "blocked",
+                        false,
+                        None,
+                        None,
+                        Some("Run cancelled while the tool was executing"),
+                    )?;
                     emit_agent_chunk(app, state, conversation_id, &assistant.id, "Agent run cancelled.")?;
                     return Ok::<(), AppError>(());
                 }
@@ -450,11 +522,45 @@ async fn run_agent_message(
                         }
                     }
 
-                    if let Some(command) = successful_validation {
+                    if let Some(command) = successful_validation.as_ref() {
                         validation_required = false;
                         validation_deferrals = 0;
-                        last_validation_command = Some(command);
+                        last_validation_command = Some(command.clone());
                     }
+                    finish_durable_step(
+                        state,
+                        &step_id,
+                        "succeeded",
+                        workspace_changed,
+                        successful_validation.as_deref(),
+                        Some(&outcome.transcript_result),
+                        None,
+                    )?;
+                    if workspace_changed {
+                        durable_checkpoint(
+                            state,
+                            &run_id,
+                            &step_id,
+                            "after_mutation",
+                            &agent_context,
+                        )?;
+                    }
+                    if successful_validation.is_some() {
+                        durable_checkpoint(
+                            state,
+                            &run_id,
+                            &step_id,
+                            "validation",
+                            &agent_context,
+                        )?;
+                    }
+                    update_durable_progress(
+                        state,
+                        &run_id,
+                        consecutive_failures,
+                        validation_required,
+                        last_validation_command.as_deref(),
+                    )?;
                     emit_agent_chunk(
                         app,
                         state,
@@ -475,6 +581,22 @@ async fn run_agent_message(
                 Err(error) => {
                     consecutive_failures += 1;
                     let text = error.to_string();
+                    finish_durable_step(
+                        state,
+                        &step_id,
+                        "failed",
+                        false,
+                        None,
+                        None,
+                        Some(&text),
+                    )?;
+                    update_durable_progress(
+                        state,
+                        &run_id,
+                        consecutive_failures,
+                        validation_required,
+                        last_validation_command.as_deref(),
+                    )?;
                     emit_agent_chunk(
                         app,
                         state,
@@ -506,16 +628,121 @@ async fn run_agent_message(
     }
     .await;
 
+    let mut run_error = None;
     if let Err(error) = loop_result {
         status = "failed";
+        run_error = Some(error.to_string());
         let message = format!("\nAgent stopped: {}", one_line(&error.to_string(), 900));
         let _ = emit_agent_chunk(app, state, conversation_id, &assistant.id, &message);
     }
 
+    finish_durable_run(state, &run_id, status, run_error.as_deref())?;
     let finish_result = finish_agent_message(app, state, conversation_id, &assistant.id, status);
     state.active_generations.finish(conversation_id);
     finish_result?;
     latest_message(state, conversation_id, &assistant.id)
+}
+
+fn start_durable_step(
+    state: &State<'_, AppState>,
+    run_id: &str,
+    step_index: usize,
+    tool: &str,
+    action_json: &str,
+) -> Result<String, AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| AppError::internal("database lock poisoned"))?;
+    OpenAgentRunRepository::new(&db).start_step(run_id, step_index, tool, action_json)
+}
+
+fn finish_durable_step(
+    state: &State<'_, AppState>,
+    step_id: &str,
+    status: &str,
+    changed: bool,
+    validation_command: Option<&str>,
+    result: Option<&str>,
+    error: Option<&str>,
+) -> Result<(), AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| AppError::internal("database lock poisoned"))?;
+    OpenAgentRunRepository::new(&db).finish_step(
+        step_id,
+        status,
+        changed,
+        validation_command,
+        result.map(|value| bounded(value, MAX_TOOL_RESULT_CHARS)).as_deref(),
+        error.map(|value| bounded(value, MAX_TOOL_RESULT_CHARS)).as_deref(),
+    )
+}
+
+fn update_durable_progress(
+    state: &State<'_, AppState>,
+    run_id: &str,
+    failures: usize,
+    validation_required: bool,
+    validation_command: Option<&str>,
+) -> Result<(), AppError> {
+    let validation_status = if validation_command.is_some() {
+        "passed"
+    } else if validation_required {
+        "required"
+    } else {
+        "not_required"
+    };
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| AppError::internal("database lock poisoned"))?;
+    OpenAgentRunRepository::new(&db).update_progress(
+        run_id,
+        failures,
+        validation_status,
+        validation_command,
+    )
+}
+
+fn durable_checkpoint(
+    state: &State<'_, AppState>,
+    run_id: &str,
+    step_id: &str,
+    kind: &str,
+    context: &AgentContext,
+) -> Result<(), AppError> {
+    let snapshot = json!({
+        "projectId": context.project.id,
+        "roots": context.workspace.roots.iter().map(|root| json!({
+            "id": root.id,
+            "path": root.path,
+        })).collect::<Vec<_>>(),
+        "workspaceContext": bounded(&context.workspace_context, MAX_TRANSCRIPT_CHARS),
+    });
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| AppError::internal("database lock poisoned"))?;
+    OpenAgentRunRepository::new(&db).checkpoint(run_id, step_id, kind, &snapshot.to_string())
+}
+
+fn finish_durable_run(
+    state: &State<'_, AppState>,
+    run_id: &str,
+    status: &str,
+    error: Option<&str>,
+) -> Result<(), AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| AppError::internal("database lock poisoned"))?;
+    OpenAgentRunRepository::new(&db).finish(
+        run_id,
+        status,
+        error.map(|value| bounded(value, MAX_TOOL_RESULT_CHARS)).as_deref(),
+    )
 }
 
 fn resolve_openagent_model(
