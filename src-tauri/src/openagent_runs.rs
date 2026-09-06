@@ -49,6 +49,17 @@ pub struct OpenAgentStep {
 pub struct OpenAgentRunDetails {
     pub run: OpenAgentRun,
     pub steps: Vec<OpenAgentStep>,
+    pub checkpoints: Vec<OpenAgentCheckpoint>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenAgentCheckpoint {
+    pub id: String,
+    pub run_id: String,
+    pub step_id: String,
+    pub kind: String,
+    pub created_at: String,
 }
 
 pub struct OpenAgentRunRepository<'a> {
@@ -216,7 +227,25 @@ impl<'a> OpenAgentRunRepository<'a> {
         )?;
         let rows = statement.query_map(params![run_id], map_step)?;
         let steps = rows.collect::<Result<Vec<_>, _>>()?;
-        Ok(Some(OpenAgentRunDetails { run, steps }))
+        let mut statement = self.database.connection().prepare(
+            "SELECT id, run_id, step_id, kind, created_at FROM openagent_checkpoints
+             WHERE run_id = ?1 ORDER BY created_at ASC",
+        )?;
+        let rows = statement.query_map(params![run_id], |row| {
+            Ok(OpenAgentCheckpoint {
+                id: row.get(0)?,
+                run_id: row.get(1)?,
+                step_id: row.get(2)?,
+                kind: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        let checkpoints = rows.collect::<Result<Vec<_>, _>>()?;
+        Ok(Some(OpenAgentRunDetails {
+            run,
+            steps,
+            checkpoints,
+        }))
     }
 }
 

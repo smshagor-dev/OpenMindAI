@@ -72,6 +72,23 @@ export type OpenAgentStep = {
 export type OpenAgentRunDetails = {
   run: OpenAgentRun;
   steps: OpenAgentStep[];
+  checkpoints: OpenAgentCheckpoint[];
+};
+
+export type OpenAgentCheckpoint = {
+  id: string;
+  runId: string;
+  stepId: string;
+  kind: "before_mutation" | "after_mutation" | "validation";
+  createdAt: string;
+};
+
+export type CheckpointRestoreResult = {
+  checkpointId: string;
+  restoredFiles: number;
+  restoredDirectories: number;
+  removedPaths: number;
+  validationRequired: boolean;
 };
 
 type RuntimeBootstrapSnapshot = {
@@ -302,6 +319,10 @@ export const api = {
     connectedInvoke<OpenAgentRun[]>("list_openagent_runs", { conversationId, limit }),
   openAgentRunDetails: (runId: string) =>
     connectedInvoke<OpenAgentRunDetails | null>("openagent_run_details", { runId }),
+  restoreOpenAgentCheckpoint: (checkpointId: string) =>
+    connectedInvoke<CheckpointRestoreResult>("restore_openagent_checkpoint", {
+      checkpointId,
+    }),
   sendChatMessage: async (
     conversationId: string,
     content: string,
