@@ -483,12 +483,14 @@ mod tests {
                  VALUES (?1, ?2, ?3, ?4, ?5, 'test', 'running', 28, ?6, ?6)",
                 params![run_id, conversation_id, project_id, message_id, model_id, now],
             ).unwrap();
-            connection.execute(
-                "INSERT INTO openagent_steps
+            connection
+                .execute(
+                    "INSERT INTO openagent_steps
                  (id, run_id, step_index, tool, action_json, status, started_at)
                  VALUES (?1, ?2, 1, 'write_file', '{}', 'running', ?3)",
-                params![step_id, run_id, now],
-            ).unwrap();
+                    params![step_id, run_id, now],
+                )
+                .unwrap();
         }
 
         let database = Database::open(path).unwrap();

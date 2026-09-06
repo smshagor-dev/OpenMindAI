@@ -1065,9 +1065,10 @@ fn validate_checkpoint_payloads(entries: &[CheckpointEntry]) -> Result<(), AppEr
         if entry.kind != "file" {
             continue;
         }
-        let encoded = entry.content_base64.as_deref().ok_or_else(|| {
-            AppError::internal("checkpoint file is missing its content payload")
-        })?;
+        let encoded = entry
+            .content_base64
+            .as_deref()
+            .ok_or_else(|| AppError::internal("checkpoint file is missing its content payload"))?;
         let content = BASE64
             .decode(encoded)
             .map_err(|_| AppError::internal("checkpoint file payload is invalid"))?;
