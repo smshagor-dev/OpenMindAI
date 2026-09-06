@@ -50,6 +50,21 @@ pub struct OpenAgentRunDetails {
     pub run: OpenAgentRun,
     pub steps: Vec<OpenAgentStep>,
     pub checkpoints: Vec<OpenAgentCheckpoint>,
+    pub restore_events: Vec<OpenAgentRestoreEvent>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenAgentRestoreEvent {
+    pub id: String,
+    pub checkpoint_id: String,
+    pub status: String,
+    pub restored_files: i64,
+    pub restored_directories: i64,
+    pub removed_paths: i64,
+    pub error: Option<String>,
+    pub started_at: String,
+    pub completed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -241,10 +256,30 @@ impl<'a> OpenAgentRunRepository<'a> {
             })
         })?;
         let checkpoints = rows.collect::<Result<Vec<_>, _>>()?;
+        let mut statement = self.database.connection().prepare(
+            "SELECT id, checkpoint_id, status, restored_files, restored_directories,
+             removed_paths, error, started_at, completed_at
+             FROM openagent_restore_events WHERE run_id = ?1 ORDER BY started_at ASC",
+        )?;
+        let rows = statement.query_map(params![run_id], |row| {
+            Ok(OpenAgentRestoreEvent {
+                id: row.get(0)?,
+                checkpoint_id: row.get(1)?,
+                status: row.get(2)?,
+                restored_files: row.get(3)?,
+                restored_directories: row.get(4)?,
+                removed_paths: row.get(5)?,
+                error: row.get(6)?,
+                started_at: row.get(7)?,
+                completed_at: row.get(8)?,
+            })
+        })?;
+        let restore_events = rows.collect::<Result<Vec<_>, _>>()?;
         Ok(Some(OpenAgentRunDetails {
             run,
             steps,
             checkpoints,
+            restore_events,
         }))
     }
 }

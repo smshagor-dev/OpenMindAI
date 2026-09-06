@@ -61,6 +61,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "007_openagent_durable_runs",
         sql: include_str!("../migrations/007_openagent_durable_runs.sql"),
     },
+    Migration {
+        number: 8,
+        name: "008_openagent_restore_audit",
+        sql: include_str!("../migrations/008_openagent_restore_audit.sql"),
+    },
 ];
 
 pub struct Database {
@@ -82,6 +87,8 @@ impl Database {
         database.migrate()?;
         database.recover_interrupted_chat_messages()?;
         database.recover_interrupted_openagent_runs()?;
+        database.recover_interrupted_openagent_steps()?;
+        database.recover_interrupted_restore_events()?;
         database.ensure_local_profile()?;
         Ok(database)
     }
@@ -177,6 +184,34 @@ impl Database {
                 "UPDATE openagent_runs
                  SET status = 'interrupted', error = 'Application exited before the run finished',
                      updated_at = ?1, completed_at = ?1
+                 WHERE status = 'running'",
+                params![now],
+            )
+            .map_err(AppError::from)
+    }
+
+    fn recover_interrupted_openagent_steps(&self) -> Result<usize, AppError> {
+        let now = Utc::now().to_rfc3339();
+        self.connection
+            .execute(
+                "UPDATE openagent_steps
+                 SET status = 'blocked', error = 'Application exited while this step was active',
+                     completed_at = ?1
+                 WHERE status = 'running'
+                   AND run_id IN (SELECT id FROM openagent_runs WHERE status = 'interrupted')",
+                params![now],
+            )
+            .map_err(AppError::from)
+    }
+
+    fn recover_interrupted_restore_events(&self) -> Result<usize, AppError> {
+        let now = Utc::now().to_rfc3339();
+        self.connection
+            .execute(
+                "UPDATE openagent_restore_events
+                 SET status = 'rollback_failed',
+                     error = 'Application exited during restore; workspace verification required',
+                     completed_at = ?1
                  WHERE status = 'running'",
                 params![now],
             )
@@ -406,6 +441,7 @@ mod tests {
         let message_id = Uuid::new_v4().to_string();
         let model_id = Uuid::new_v4().to_string();
         let run_id = Uuid::new_v4().to_string();
+        let step_id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
 
         {
@@ -447,6 +483,12 @@ mod tests {
                  VALUES (?1, ?2, ?3, ?4, ?5, 'test', 'running', 28, ?6, ?6)",
                 params![run_id, conversation_id, project_id, message_id, model_id, now],
             ).unwrap();
+            connection.execute(
+                "INSERT INTO openagent_steps
+                 (id, run_id, step_index, tool, action_json, status, started_at)
+                 VALUES (?1, ?2, 1, 'write_file', '{}', 'running', ?3)",
+                params![step_id, run_id, now],
+            ).unwrap();
         }
 
         let database = Database::open(path).unwrap();
@@ -460,6 +502,19 @@ mod tests {
             .unwrap();
         assert_eq!(status, "interrupted");
         assert!(completed_at.is_some());
+
+        let (step_status, step_error, step_completed_at): (String, Option<String>, Option<String>) =
+            database
+                .connection()
+                .query_row(
+                    "SELECT status, error, completed_at FROM openagent_steps WHERE id = ?1",
+                    params![step_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+        assert_eq!(step_status, "blocked");
+        assert!(step_error.unwrap().contains("exited"));
+        assert!(step_completed_at.is_some());
     }
 
     #[test]

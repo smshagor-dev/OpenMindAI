@@ -73,6 +73,19 @@ export type OpenAgentRunDetails = {
   run: OpenAgentRun;
   steps: OpenAgentStep[];
   checkpoints: OpenAgentCheckpoint[];
+  restoreEvents: OpenAgentRestoreEvent[];
+};
+
+export type OpenAgentRestoreEvent = {
+  id: string;
+  checkpointId: string;
+  status: "running" | "completed" | "rolled_back" | "rollback_failed";
+  restoredFiles: number;
+  restoredDirectories: number;
+  removedPaths: number;
+  error: string | null;
+  startedAt: string;
+  completedAt: string | null;
 };
 
 export type OpenAgentCheckpoint = {
