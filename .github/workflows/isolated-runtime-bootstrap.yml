@@ -1,0 +1,87 @@
+name: Isolated Runtime Integration
+
+on:
+  push:
+    branches:
+      - work/isolated-runtime
+
+permissions:
+  contents: write
+
+concurrency:
+  group: isolated-runtime-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  integrate-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Harden target-specific runtime imports
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src-tauri/src/isolated_runtime.rs')
+          text = path.read_text(encoding='utf-8')
+          old = 'use serde::{Deserialize, Serialize};\n'
+          new = 'use serde::Serialize;\n#[cfg(target_os = "windows")]\nuse serde::Deserialize;\n'
+          if text.count(old) != 1:
+              raise SystemExit('serde import target not found exactly once')
+          text = text.replace(old, new, 1)
+          old = 'const SAFE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";\n'
+          new = '#[cfg(any(target_os = "linux", target_os = "macos"))]\nconst SAFE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";\n'
+          if text.count(old) != 1:
+              raise SystemExit('SAFE_PATH target not found exactly once')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
+      - name: Apply isolated runtime integration
+        run: python scripts/bootstrap_isolated_runtime.py
+
+      - name: Remove one-shot integration files
+        run: |
+          rm scripts/bootstrap_isolated_runtime.py
+          rm .github/workflows/isolated-runtime-bootstrap.yml
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf bubblewrap
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Format Rust
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+
+      - name: Clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Lint frontend
+        run: npm run lint
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Commit verified integration
+        run: |
+          git config user.name "OpenMindAI Engineering Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: add fail-closed isolated command runtime"
+          git push origin HEAD:work/isolated-runtime
