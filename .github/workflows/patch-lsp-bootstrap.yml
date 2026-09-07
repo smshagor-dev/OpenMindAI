@@ -81,6 +81,14 @@ jobs:
                   raise SystemExit(f'patch schema escape target not found exactly once: {old}')
               local = local.replace(old, new, 1)
           local_path.write_text(local, encoding='utf-8')
+
+          lsp_path = Path('src-tauri/src/coding_lsp.rs')
+          lsp = lsp_path.read_text(encoding='utf-8')
+          old = "rest.trim_start_matches(|c: char| c == '*' || c == '&' || c == '(')"
+          new = "rest.trim_start_matches(|c: char| ['*', '&', '('].contains(&c))"
+          if lsp.count(old) != 1:
+              raise SystemExit('symbol declaration trim target not found exactly once')
+          lsp_path.write_text(lsp.replace(old, new, 1), encoding='utf-8')
           PY
 
       - name: Remove one-shot files
