@@ -54,6 +54,8 @@ mod tauri {
     pub use crate::tauri_crate::*;
 }
 
+mod coding_lsp;
+mod coding_patch;
 mod connected_agent;
 mod connector_ecosystem;
 mod connector_input_guard;
