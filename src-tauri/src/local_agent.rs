@@ -6,12 +6,14 @@ use std::{
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, State};
 use tokio::process::Command;
+use uuid::Uuid;
 
 use crate::{
     app_error::AppError,
@@ -201,20 +203,28 @@ pub fn restore_openagent_checkpoint(
     checkpoint_id: String,
     state: State<AppState>,
 ) -> Result<CheckpointRestoreResult, AppError> {
-    let (project_id, run_status, before_json, after_json) = {
+    let (project_id, run_id, run_status, before_json, after_json) = {
         let db = state
             .database
             .lock()
             .map_err(|_| AppError::internal("database lock poisoned"))?;
-        let before: (String, String, String, String) = db
+        let before: (String, String, String, String, String) = db
             .connection()
             .query_row(
-                "SELECT r.project_id, r.status, c.step_id, c.workspace_snapshot_json
+                "SELECT r.project_id, r.id, r.status, c.step_id, c.workspace_snapshot_json
                  FROM openagent_checkpoints c
                  JOIN openagent_runs r ON r.id = c.run_id
                  WHERE c.id = ?1 AND c.kind = 'before_mutation'",
                 params![checkpoint_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .optional()?
             .ok_or_else(|| AppError::internal("restorable OpenAgent checkpoint not found"))?;
@@ -224,12 +234,12 @@ pub fn restore_openagent_checkpoint(
                 "SELECT workspace_snapshot_json FROM openagent_checkpoints
                  WHERE step_id = ?1 AND kind = 'after_mutation'
                  ORDER BY created_at DESC LIMIT 1",
-                params![before.2],
+                params![before.3],
                 |row| row.get(0),
             )
             .optional()?
             .ok_or_else(|| AppError::internal("checkpoint has no completed mutation snapshot"))?;
-        (before.0, before.1, before.3, after_json)
+        (before.0, before.1, before.2, before.4, after_json)
     };
     if run_status == "running" {
         return Err(AppError::internal(
@@ -251,8 +261,53 @@ pub fn restore_openagent_checkpoint(
         load_workspace_config(&db, &project_id)?
     };
     preflight_checkpoint_restore(&workspace, &after.entries)?;
-    let result = apply_checkpoint_restore(&checkpoint_id, &workspace, &before.entries)?;
-    Ok(result)
+    validate_checkpoint_payloads(&before.entries)?;
+    validate_checkpoint_payloads(&after.entries)?;
+    let event_id = start_restore_event(&state, &checkpoint_id, &run_id)?;
+    match apply_checkpoint_restore(&checkpoint_id, &workspace, &before.entries) {
+        Ok(result) => {
+            finish_restore_event(&state, &event_id, "completed", &result, None)?;
+            mark_run_unvalidated_after_restore(&state, &run_id)?;
+            Ok(result)
+        }
+        Err(restore_error) => {
+            let rollback = apply_checkpoint_restore(&checkpoint_id, &workspace, &after.entries);
+            let empty = CheckpointRestoreResult {
+                checkpoint_id: checkpoint_id.clone(),
+                restored_files: 0,
+                restored_directories: 0,
+                removed_paths: 0,
+                validation_required: true,
+            };
+            match rollback {
+                Ok(_) => {
+                    finish_restore_event(
+                        &state,
+                        &event_id,
+                        "rolled_back",
+                        &empty,
+                        Some(&restore_error.to_string()),
+                    )?;
+                    Err(AppError::internal(format!(
+                        "checkpoint restore failed and was rolled back: {restore_error}"
+                    )))
+                }
+                Err(rollback_error) => {
+                    let message = format!(
+                        "restore failed: {restore_error}; rollback also failed: {rollback_error}"
+                    );
+                    finish_restore_event(
+                        &state,
+                        &event_id,
+                        "rollback_failed",
+                        &empty,
+                        Some(&message),
+                    )?;
+                    Err(AppError::internal(message))
+                }
+            }
+        }
+    }
 }
 
 async fn run_agent_message(
@@ -468,6 +523,10 @@ async fn run_agent_message(
                             one_line(reason, 320)
                         ));
                     }
+                } else if validation_required && !agent_context.workspace.full_pc_access {
+                    completion.push_str(
+                        "\n\nValidation: required but not run because Full PC + Terminal access is disabled. Workspace changes are unverified.",
+                    );
                 }
                 emit_agent_chunk(
                     app,
@@ -1001,6 +1060,28 @@ fn preflight_checkpoint_restore(
     Ok(())
 }
 
+fn validate_checkpoint_payloads(entries: &[CheckpointEntry]) -> Result<(), AppError> {
+    for entry in entries {
+        if entry.kind != "file" {
+            continue;
+        }
+        let encoded = entry
+            .content_base64
+            .as_deref()
+            .ok_or_else(|| AppError::internal("checkpoint file is missing its content payload"))?;
+        let content = BASE64
+            .decode(encoded)
+            .map_err(|_| AppError::internal("checkpoint file payload is invalid"))?;
+        let digest = format!("{:x}", Sha256::digest(&content));
+        if entry.sha256.as_deref() != Some(digest.as_str()) {
+            return Err(AppError::internal(
+                "checkpoint file digest verification failed",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn apply_checkpoint_restore(
     checkpoint_id: &str,
     config: &AgentWorkspaceConfig,
@@ -1010,33 +1091,19 @@ fn apply_checkpoint_restore(
         .iter()
         .map(|entry| Ok((checkpoint_path(config, &entry.path)?, entry)))
         .collect::<Result<Vec<_>, AppError>>()?;
-    for (_, entry) in &paths {
-        if entry.kind == "file" {
-            let encoded = entry.content_base64.as_deref().ok_or_else(|| {
-                AppError::internal("checkpoint file is missing its content payload")
-            })?;
-            let content = BASE64
-                .decode(encoded)
-                .map_err(|_| AppError::internal("checkpoint file payload is invalid"))?;
-            let digest = format!("{:x}", Sha256::digest(&content));
-            if entry.sha256.as_deref() != Some(digest.as_str()) {
-                return Err(AppError::internal(
-                    "checkpoint file digest verification failed",
-                ));
-            }
-        }
-    }
+    validate_checkpoint_payloads(entries)?;
     paths.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
     let mut removed_paths = 0;
-    for (path, entry) in &paths {
+    for (_, entry) in &paths {
+        let path = checkpoint_path(config, &entry.path)?;
         if entry.kind == "missing" && path.exists() {
-            if fs::symlink_metadata(path)?.file_type().is_symlink() {
+            if fs::symlink_metadata(&path)?.file_type().is_symlink() {
                 return Err(AppError::internal("refusing to restore over a symlink"));
             }
             if path.is_dir() {
-                fs::remove_dir_all(path)?;
+                fs::remove_dir_all(&path)?;
             } else {
-                fs::remove_file(path)?;
+                fs::remove_file(&path)?;
             }
             removed_paths += 1;
         }
@@ -1044,7 +1111,8 @@ fn apply_checkpoint_restore(
     paths.sort_by_key(|(path, _)| path.components().count());
     let mut restored_directories = 0;
     let mut restored_files = 0;
-    for (path, entry) in paths {
+    for (_, entry) in paths {
+        let path = checkpoint_path(config, &entry.path)?;
         match entry.kind.as_str() {
             "directory" => {
                 fs::create_dir_all(&path)?;
@@ -1078,6 +1146,71 @@ fn apply_checkpoint_restore(
         removed_paths,
         validation_required: true,
     })
+}
+
+fn start_restore_event(
+    state: &State<'_, AppState>,
+    checkpoint_id: &str,
+    run_id: &str,
+) -> Result<String, AppError> {
+    let id = Uuid::new_v4().to_string();
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| AppError::internal("database lock poisoned"))?;
+    db.connection().execute(
+        "INSERT INTO openagent_restore_events
+         (id, checkpoint_id, run_id, status, started_at)
+         VALUES (?1, ?2, ?3, 'running', ?4)",
+        params![id, checkpoint_id, run_id, Utc::now().to_rfc3339()],
+    )?;
+    Ok(id)
+}
+
+fn finish_restore_event(
+    state: &State<'_, AppState>,
+    event_id: &str,
+    status: &str,
+    result: &CheckpointRestoreResult,
+    error: Option<&str>,
+) -> Result<(), AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| AppError::internal("database lock poisoned"))?;
+    db.connection().execute(
+        "UPDATE openagent_restore_events
+         SET status = ?1, restored_files = ?2, restored_directories = ?3,
+             removed_paths = ?4, error = ?5, completed_at = ?6
+         WHERE id = ?7",
+        params![
+            status,
+            result.restored_files as i64,
+            result.restored_directories as i64,
+            result.removed_paths as i64,
+            error,
+            Utc::now().to_rfc3339(),
+            event_id
+        ],
+    )?;
+    Ok(())
+}
+
+fn mark_run_unvalidated_after_restore(
+    state: &State<'_, AppState>,
+    run_id: &str,
+) -> Result<(), AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| AppError::internal("database lock poisoned"))?;
+    db.connection().execute(
+        "UPDATE openagent_runs
+         SET validation_status = 'required', validation_command = NULL, updated_at = ?1
+         WHERE id = ?2",
+        params![Utc::now().to_rfc3339(), run_id],
+    )?;
+    Ok(())
 }
 
 fn finish_durable_run(
@@ -2659,6 +2792,34 @@ mod tests {
         let error = preflight_checkpoint_restore(&config, &after).unwrap_err();
         assert!(error.to_string().contains("restore conflict"));
         assert_eq!(fs::read(&file).unwrap(), b"user edit");
+    }
+
+    #[test]
+    fn checkpoint_restore_rejects_corrupt_payload_before_mutation() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("src.txt");
+        fs::write(&file, b"current").unwrap();
+        let config = AgentWorkspaceConfig {
+            full_pc_access: false,
+            roots: vec![AgentWorkspaceRoot {
+                id: "root".to_string(),
+                path: temp.path().display().to_string(),
+                created_at: "now".to_string(),
+            }],
+        };
+        let mut entries = decoded_checkpoint_entries(
+            capture_checkpoint_entries(
+                &config,
+                "write_file",
+                &json!({"rootId": "root", "path": "src.txt", "content": "next"}),
+            )
+            .unwrap(),
+        );
+        entries[0].content_base64 = Some(BASE64.encode(b"tampered"));
+
+        let error = apply_checkpoint_restore("checkpoint", &config, &entries).unwrap_err();
+        assert!(error.to_string().contains("digest verification failed"));
+        assert_eq!(fs::read(&file).unwrap(), b"current");
     }
 
     #[test]
