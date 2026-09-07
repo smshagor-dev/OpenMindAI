@@ -7,7 +7,9 @@ use std::{
 
 #[cfg(target_os = "windows")]
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use serde::{Deserialize, Serialize};
+#[cfg(target_os = "windows")]
+use serde::Deserialize;
+use serde::Serialize;
 use tokio::process::Command;
 #[cfg(target_os = "windows")]
 use tokio::time::sleep;
@@ -17,6 +19,7 @@ use uuid::Uuid;
 use crate::app_error::AppError;
 
 const RUNTIME_CWD_MARKER: &str = "__OPENMIND_RUNTIME_CWD__";
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const SAFE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 #[derive(Debug, Clone, Serialize)]
@@ -158,24 +161,24 @@ pub async fn run_host_shell(
     let started = Instant::now();
     let mut process = host_shell_process(command, &cwd);
     process.kill_on_drop(true);
-    let output = match tokio::time::timeout(Duration::from_secs(timeout_secs), process.output()).await
-    {
-        Ok(result) => result?,
-        Err(_) => {
-            return Ok(ShellExecutionResult {
-                cwd: display_path(&cwd),
-                exit_code: -1,
-                stdout: String::new(),
-                stderr: format!("Command timed out after {timeout_secs} seconds."),
-                duration_ms: started.elapsed().as_millis(),
-                timed_out: true,
-                truncated: false,
-                backend: "host-explicit".to_string(),
-                isolated: false,
-                network_disabled: false,
-            });
-        }
-    };
+    let output =
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), process.output()).await {
+            Ok(result) => result?,
+            Err(_) => {
+                return Ok(ShellExecutionResult {
+                    cwd: display_path(&cwd),
+                    exit_code: -1,
+                    stdout: String::new(),
+                    stderr: format!("Command timed out after {timeout_secs} seconds."),
+                    duration_ms: started.elapsed().as_millis(),
+                    timed_out: true,
+                    truncated: false,
+                    backend: "host-explicit".to_string(),
+                    isolated: false,
+                    network_disabled: false,
+                });
+            }
+        };
 
     let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -274,6 +277,7 @@ fn windows_sandbox_path() -> Option<PathBuf> {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn trusted_executable(candidates: &[&str]) -> Option<PathBuf> {
     candidates
         .iter()
@@ -349,30 +353,30 @@ async fn run_bubblewrap(
         .kill_on_drop(true);
 
     let started = Instant::now();
-    let output = match tokio::time::timeout(Duration::from_secs(timeout_secs), process.output()).await
-    {
-        Ok(result) => result?,
-        Err(_) => {
-            return Ok(timeout_result(
-                workspace_root,
-                cwd,
-                timeout_secs,
-                started,
-                "bubblewrap",
-            ));
-        }
-    };
-    finish_isolated_output(
+    let output =
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), process.output()).await {
+            Ok(result) => result?,
+            Err(_) => {
+                return Ok(timeout_result(
+                    workspace_root,
+                    cwd,
+                    timeout_secs,
+                    started,
+                    "bubblewrap",
+                ));
+            }
+        };
+    finish_isolated_output(IsolatedOutput {
         workspace_root,
         cwd,
-        output.status.code().unwrap_or(-1),
-        &output.stdout,
-        &output.stderr,
+        exit_code: output.status.code().unwrap_or(-1),
+        stdout: &output.stdout,
+        stderr: &output.stderr,
         started,
         max_output_chars,
-        "bubblewrap",
-        Some("/workspace"),
-    )
+        backend: "bubblewrap",
+        sandbox_workspace_prefix: Some("/workspace"),
+    })
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -443,30 +447,30 @@ async fn run_macos_sandbox(
         .kill_on_drop(true);
 
     let started = Instant::now();
-    let output = match tokio::time::timeout(Duration::from_secs(timeout_secs), process.output()).await
-    {
-        Ok(result) => result?,
-        Err(_) => {
-            return Ok(timeout_result(
-                workspace_root,
-                cwd,
-                timeout_secs,
-                started,
-                "sandbox-exec",
-            ));
-        }
-    };
-    finish_isolated_output(
+    let output =
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), process.output()).await {
+            Ok(result) => result?,
+            Err(_) => {
+                return Ok(timeout_result(
+                    workspace_root,
+                    cwd,
+                    timeout_secs,
+                    started,
+                    "sandbox-exec",
+                ));
+            }
+        };
+    finish_isolated_output(IsolatedOutput {
         workspace_root,
         cwd,
-        output.status.code().unwrap_or(-1),
-        &output.stdout,
-        &output.stderr,
+        exit_code: output.status.code().unwrap_or(-1),
+        stdout: &output.stdout,
+        stderr: &output.stderr,
         started,
         max_output_chars,
-        "sandbox-exec",
-        None,
-    )
+        backend: "sandbox-exec",
+        sandbox_workspace_prefix: None,
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -585,9 +589,8 @@ async fn run_windows_sandbox(
 
     let result_raw = fs::read_to_string(&result_path)?;
     let result_raw = result_raw.trim_start_matches('\u{feff}');
-    let result: WindowsSandboxResult = serde_json::from_str(result_raw).map_err(|error| {
-        AppError::internal(format!("invalid Windows Sandbox result: {error}"))
-    })?;
+    let result: WindowsSandboxResult = serde_json::from_str(result_raw)
+        .map_err(|error| AppError::internal(format!("invalid Windows Sandbox result: {error}")))?;
     let mut stdout = fs::read_to_string(&stdout_path).unwrap_or_default();
     let stderr = fs::read_to_string(&stderr_path).unwrap_or_default();
     let marker = take_cwd_marker(&mut stdout);
@@ -633,17 +636,32 @@ async fn run_windows_sandbox(
     ))
 }
 
-fn finish_isolated_output(
-    workspace_root: &Path,
-    cwd: &Path,
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct IsolatedOutput<'a> {
+    workspace_root: &'a Path,
+    cwd: &'a Path,
     exit_code: i32,
-    stdout: &[u8],
-    stderr: &[u8],
+    stdout: &'a [u8],
+    stderr: &'a [u8],
     started: Instant,
     max_output_chars: usize,
-    backend: &str,
-    sandbox_workspace_prefix: Option<&str>,
-) -> Result<ShellExecutionResult, AppError> {
+    backend: &'a str,
+    sandbox_workspace_prefix: Option<&'a str>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn finish_isolated_output(output: IsolatedOutput<'_>) -> Result<ShellExecutionResult, AppError> {
+    let IsolatedOutput {
+        workspace_root,
+        cwd,
+        exit_code,
+        stdout,
+        stderr,
+        started,
+        max_output_chars,
+        backend,
+        sandbox_workspace_prefix,
+    } = output;
     let mut stdout = String::from_utf8_lossy(stdout).into_owned();
     let stderr = String::from_utf8_lossy(stderr).into_owned();
     let marker = take_cwd_marker(&mut stdout);
@@ -716,6 +734,7 @@ fn host_shell_process(command: &str, cwd: &Path) -> Command {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn shell_wrapper(command: &str) -> String {
     format!(
         "{{ {command}; }}; openmind_code=$?; printf '\\n{RUNTIME_CWD_MARKER}%s\\n' \"$PWD\"; exit $openmind_code"
@@ -754,6 +773,7 @@ fn take_cwd_marker(stdout: &mut String) -> Option<String> {
     (!cwd.is_empty()).then_some(cwd)
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn translate_sandbox_cwd(workspace_root: &Path, prefix: &str, value: &str) -> Option<String> {
     let normalized = value.replace('\\', "/");
     if normalized == prefix {
@@ -763,6 +783,7 @@ fn translate_sandbox_cwd(workspace_root: &Path, prefix: &str, value: &str) -> Op
     Some(display_path(&workspace_root.join(relative)))
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn canonical_scoped_marker(workspace_root: &Path, value: &str) -> Option<String> {
     let candidate = fs::canonicalize(value).ok()?;
     candidate

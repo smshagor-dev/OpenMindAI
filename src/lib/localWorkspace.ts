@@ -43,6 +43,9 @@ export interface TerminalCommandResult {
   durationMs: number;
   timedOut: boolean;
   truncated: boolean;
+  backend: string;
+  isolated: boolean;
+  networkDisabled: boolean;
 }
 
 function desktopInvoke<T>(command: string, args: Record<string, unknown>): Promise<T> {

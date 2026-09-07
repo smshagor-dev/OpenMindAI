@@ -10,12 +10,12 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::State;
-use tokio::process::Command;
 use uuid::Uuid;
 
 use crate::{
     app_error::AppError,
     database::Database,
+    isolated_runtime,
     portable_root::{preview_writable, strip_windows_verbatim_prefix},
     AppState,
 };
@@ -150,6 +150,9 @@ pub struct TerminalCommandResult {
     pub duration_ms: u128,
     pub timed_out: bool,
     pub truncated: bool,
+    pub backend: String,
+    pub isolated: bool,
+    pub network_disabled: bool,
 }
 
 #[tauri::command]
@@ -461,14 +464,17 @@ pub async fn run_project_terminal_command(
     }
 
     let config = load_project_config(&state, &project_id)?;
-    if !config.full_pc_access {
-        return Err(AppError::internal(
-            "terminal access is disabled until Full PC + Terminal access is explicitly enabled for this project",
-        ));
-    }
-
+    let workspace_root = selected_root_path(&config, root_id.as_deref())?;
     let start_dir = if cwd.trim().is_empty() {
-        selected_root_path(&config, root_id.as_deref())?
+        workspace_root.clone()
+    } else if !config.full_pc_access && Path::new(cwd.trim()).is_absolute() {
+        let canonical = fs::canonicalize(cwd.trim())?;
+        if !canonical.starts_with(&workspace_root) {
+            return Err(AppError::internal(
+                "isolated terminal working directory must stay inside the attached workspace",
+            ));
+        }
+        canonical
     } else {
         resolve_path(&config, root_id.as_deref(), &cwd, true)?
     };
@@ -478,43 +484,37 @@ pub async fn run_project_terminal_command(
         ));
     }
 
-    let started = Instant::now();
-    let mut process = terminal_process(command_text, &start_dir);
-    process.kill_on_drop(true);
-    let output =
-        match tokio::time::timeout(Duration::from_secs(TERMINAL_TIMEOUT_SECS), process.output())
-            .await
-        {
-            Ok(result) => result?,
-            Err(_) => {
-                return Ok(TerminalCommandResult {
-                    command: command_text.to_string(),
-                    cwd: display_path(&start_dir),
-                    exit_code: -1,
-                    stdout: String::new(),
-                    stderr: format!("Command timed out after {TERMINAL_TIMEOUT_SECS} seconds."),
-                    duration_ms: started.elapsed().as_millis(),
-                    timed_out: true,
-                    truncated: false,
-                });
-            }
-        };
-
-    let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let resolved_cwd = take_terminal_cwd(&mut stdout).unwrap_or_else(|| display_path(&start_dir));
-    let (stdout, stdout_truncated) = truncate_chars(&stdout, MAX_TERMINAL_OUTPUT_CHARS);
-    let (stderr, stderr_truncated) = truncate_chars(&stderr, MAX_TERMINAL_OUTPUT_CHARS);
+    let result = if config.full_pc_access {
+        isolated_runtime::run_host_shell(
+            &start_dir,
+            command_text,
+            TERMINAL_TIMEOUT_SECS,
+            MAX_TERMINAL_OUTPUT_CHARS,
+        )
+        .await?
+    } else {
+        isolated_runtime::run_isolated_shell(
+            &workspace_root,
+            &start_dir,
+            command_text,
+            TERMINAL_TIMEOUT_SECS,
+            MAX_TERMINAL_OUTPUT_CHARS,
+        )
+        .await?
+    };
 
     Ok(TerminalCommandResult {
         command: command_text.to_string(),
-        cwd: resolved_cwd,
-        exit_code: output.status.code().unwrap_or(-1),
-        stdout,
-        stderr,
-        duration_ms: started.elapsed().as_millis(),
-        timed_out: false,
-        truncated: stdout_truncated || stderr_truncated,
+        cwd: result.cwd,
+        exit_code: result.exit_code,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        duration_ms: result.duration_ms,
+        timed_out: result.timed_out,
+        truncated: result.truncated,
+        backend: result.backend,
+        isolated: result.isolated,
+        network_disabled: result.network_disabled,
     })
 }
 
@@ -676,7 +676,8 @@ fn status_from_config(
     ProjectLocalAccessStatus {
         project_id: project_id.to_string(),
         full_pc_access: config.full_pc_access,
-        terminal_enabled: config.full_pc_access,
+        terminal_enabled: !config.roots.is_empty()
+            && (config.full_pc_access || isolated_runtime::sandbox_capability().available),
         roots: config.roots.iter().map(root_status).collect(),
     }
 }
@@ -865,50 +866,6 @@ fn truncate_chars(value: &str, limit: usize) -> (String, bool) {
     let mut chars = value.chars();
     let output: String = chars.by_ref().take(limit).collect();
     (output, chars.next().is_some())
-}
-
-fn terminal_process(command: &str, cwd: &Path) -> Command {
-    #[cfg(target_os = "windows")]
-    {
-        let wrapped = format!(
-            "& {{ {command}; $openmindCode = if ($null -ne $LASTEXITCODE) {{ $LASTEXITCODE }} else {{ 0 }}; Write-Output \"__OPENMIND_CWD__$((Get-Location).Path)\"; exit $openmindCode }}"
-        );
-        let mut process = Command::new("powershell.exe");
-        process
-            .arg("-NoLogo")
-            .arg("-NoProfile")
-            .arg("-NonInteractive")
-            .arg("-Command")
-            .arg(wrapped)
-            .current_dir(cwd);
-        process
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let wrapped = format!(
-            "{{ {command}; }}; openmind_code=$?; printf '\\n__OPENMIND_CWD__%s\\n' \"$PWD\"; exit $openmind_code"
-        );
-        let mut process = Command::new("/bin/sh");
-        process.arg("-lc").arg(wrapped).current_dir(cwd);
-        process
-    }
-}
-
-fn take_terminal_cwd(stdout: &mut String) -> Option<String> {
-    const MARKER: &str = "__OPENMIND_CWD__";
-    let index = stdout.rfind(MARKER)?;
-    let cwd = stdout[index + MARKER.len()..]
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    stdout.truncate(index);
-    while stdout.ends_with('\r') || stdout.ends_with('\n') {
-        stdout.pop();
-    }
-    (!cwd.is_empty()).then_some(cwd)
 }
 
 fn collect_workspace_paths(root: &Path, current: &Path, depth: usize, output: &mut Vec<String>) {

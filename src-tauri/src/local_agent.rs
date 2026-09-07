@@ -21,6 +21,7 @@ use crate::{
     coding_lsp, coding_patch,
     database::Database,
     inference::{StreamChunkEvent, StreamDoneEvent, StreamStartedEvent},
+    isolated_runtime,
     launch_planner::ModelLaunchPlanner,
     local_workspace,
     model_catalog::entry_by_id,
@@ -158,7 +159,8 @@ pub fn project_agent_status_for_conversation(
         project_id: Some(project.id),
         project_name: Some(project.name),
         full_pc_access: workspace.full_pc_access,
-        terminal_enabled: workspace.full_pc_access,
+        terminal_enabled: attached_roots > 0
+            && (workspace.full_pc_access || isolated_runtime::sandbox_capability().available),
         attached_roots,
     })
 }
@@ -1506,17 +1508,23 @@ async fn request_agent_decision(
         .map(|root| format!("- rootId={} path={}", root.id, root.path))
         .collect::<Vec<_>>()
         .join("\n");
-    let terminal_rule = if context.workspace.full_pc_access {
-        "terminal is AVAILABLE. Keep commands focused on the user's task and workspace. Catastrophic filesystem-root/disk commands are blocked."
+    let sandbox = isolated_runtime::sandbox_capability();
+    let terminal_rule = if sandbox.available {
+        format!(
+            "terminal is AVAILABLE. Default terminal actions run inside {} with the attached workspace as the only writable project mount and networking disabled. Set hostExecution=true only when host access is genuinely required; hostExecution requires Full PC + Terminal permission.",
+            sandbox.provider.as_deref().unwrap_or("the local isolation backend")
+        )
+    } else if context.workspace.full_pc_access {
+        "No strong isolation provider is available. terminal may only run when hostExecution=true, using the explicit Full PC + Terminal grant; never assume an isolated action will fall back to the host.".to_string()
     } else {
-        "terminal is NOT AVAILABLE. Use filesystem tools only."
+        "terminal is NOT AVAILABLE because no strong isolation provider is installed and Full PC + Terminal access is disabled. Use filesystem tools only.".to_string()
     };
     let platform_rule = if cfg!(target_os = "windows") {
-        "Host OS: Windows. terminal uses Windows PowerShell (powershell.exe -NoProfile -NonInteractive). Use PowerShell-compatible syntax."
+        "Host OS: Windows. Isolated execution uses the Windows Sandbox disposable microVM when available. Explicit host execution uses non-interactive Windows PowerShell."
     } else if cfg!(target_os = "macos") {
-        "Host OS: macOS. terminal uses /bin/sh -lc. Use POSIX shell-compatible syntax."
+        "Host OS: macOS. Isolated execution uses sandbox-exec with network disabled. Explicit host execution uses /bin/sh -lc."
     } else {
-        "Host OS: Linux. terminal uses /bin/sh -lc. Use POSIX shell-compatible syntax."
+        "Host OS: Linux. Isolated execution uses bubblewrap with network disabled. Explicit host execution uses /bin/sh -lc."
     };
 
     let system = format!(
@@ -1538,7 +1546,7 @@ Tool JSON shapes:\n\
 {{\"type\":\"tool\",\"tool\":\"delete_path\",\"rootId\":\"ID\",\"path\":\"path\"}}\n\
 {{\"type\":\"tool\",\"tool\":\"git_status\",\"rootId\":\"ID\"}}\n\
 {{\"type\":\"tool\",\"tool\":\"git_diff\",\"rootId\":\"ID\"}}\n\
-{{\"type\":\"tool\",\"tool\":\"terminal\",\"rootId\":\"ID\",\"cwd\":\"relative/or/absolute\",\"command\":\"command\",\"timeoutSec\":180}}\n\
+{{\"type\":\"tool\",\"tool\":\"terminal\",\"rootId\":\"ID\",\"cwd\":\"relative/path\",\"command\":\"command\",\"timeoutSec\":180,\"hostExecution\":false}}\n\
 {{\"type\":\"final\",\"message\":\"concise summary of completed work, validation, and any remaining issue\",\"validationSkippedReason\":\"optional only when no meaningful validation applies\"}}\n\
 Rules:\n\
 - Inspect relevant files before editing. Use search/read/list rather than guessing.\n\
@@ -1548,6 +1556,7 @@ Rules:\n\
 - Prefer patch_transaction for coordinated edits across multiple files. Every operation is preflighted before commit and the host rolls the entire batch back on failure.\n\
 - Prefer replace_text for a single targeted edit and write_file for new/small files.\n\
 - When Full PC + Terminal access is enabled, use git_status before editing a Git repository when useful and git_diff to review unstaged/staged changes. Git inspection remains behind the same explicit local-process permission boundary as terminal execution.\n\
+- terminal defaults to strong isolated workspace execution with networking disabled and no inherited host secrets. Never request hostExecution unless isolation cannot satisfy a task that the user explicitly authorized.\n\
 - After edits, validate with appropriate tests/build/lint when terminal is available. Run validation commands one at a time so each exit code is authoritative. If validation fails, inspect the error, change approach, fix, and rerun until green or a concrete blocker is established.\n\
 - A terminal timeout or non-zero exit is a failed tool action even when stdout/stderr is available; use that output to recover.\n\
 - Do not repeat an identical failed tool action. Inspect more context or choose a different recovery action.\n\
@@ -1557,7 +1566,7 @@ Rules:\n\
 - After changing workspace files, do not finalize before a successful applicable validation. Only use validationSkippedReason when no meaningful automated validation exists for the change.\n\
 - Never claim a command/test passed unless a tool result showed it.\n\
 - Do not delete unrelated data. delete_path is only for task-required paths.\n\
-- Absolute paths are only allowed when Full PC access is enabled.\n\
+- Absolute file paths are only allowed when Full PC access is enabled. Isolated terminal cwd must stay inside its attached root; absolute host cwd requires hostExecution=true and Full PC permission.\n\
 - {terminal_rule}\n\
 - {platform_rule}\n\
 Attached roots:\n{root_summary}"
@@ -1973,36 +1982,54 @@ async fn execute_tool(
             })
         }
         "terminal" => {
-            if !config.full_pc_access {
+            let host_execution = action
+                .get("hostExecution")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if host_execution && !config.full_pc_access {
                 return Err(AppError::internal(
-                    "terminal requires Full PC + Terminal access for this project",
+                    "hostExecution requires Full PC + Terminal access for this project",
                 ));
             }
             let root_id = optional_string(action, "rootId");
             let cwd = optional_string(action, "cwd").unwrap_or_default();
             let command = required_string(action, "command")?;
             let timeout_secs = terminal_timeout_secs(action);
-            let result =
-                run_terminal(config, root_id.as_deref(), &cwd, &command, timeout_secs).await?;
+            let result = run_terminal(
+                config,
+                root_id.as_deref(),
+                &cwd,
+                &command,
+                timeout_secs,
+                host_execution,
+            )
+            .await?;
             if result.timed_out || result.exit_code != 0 {
                 return Err(AppError::internal(format!(
-                    "terminal command failed in {} (exit {}, timed_out={}):\nstdout:\n{}\nstderr:\n{}",
+                    "terminal command failed via {} in {} (exit {}, timed_out={}, isolated={}, network_disabled={}):\nstdout:\n{}\nstderr:\n{}",
+                    result.backend,
                     result.cwd,
                     result.exit_code,
                     result.timed_out,
+                    result.isolated,
+                    result.network_disabled,
                     bounded(&result.stdout, 6_000),
                     bounded(&result.stderr, 6_000)
                 )));
             }
             Ok(AgentTurnResult {
                 trace_label: format!(
-                    "Ran `{}` (exit {})",
+                    "Ran `{}` via {} (exit {})",
                     one_line(&command, 120),
+                    result.backend,
                     result.exit_code
                 ),
                 transcript_result: bounded(
                     &format!(
-                        "cwd={}\nexit_code={}\ntimed_out={}\nstdout:\n{}\nstderr:\n{}",
+                        "backend={}\nisolated={}\nnetwork_disabled={}\ncwd={}\nexit_code={}\ntimed_out={}\nstdout:\n{}\nstderr:\n{}",
+                        result.backend,
+                        result.isolated,
+                        result.network_disabled,
                         result.cwd,
                         result.exit_code,
                         result.timed_out,
@@ -2019,22 +2046,14 @@ async fn execute_tool(
     }
 }
 
-#[derive(Debug)]
-struct AgentTerminalResult {
-    cwd: String,
-    exit_code: i32,
-    stdout: String,
-    stderr: String,
-    timed_out: bool,
-}
-
 async fn run_terminal(
     config: &AgentWorkspaceConfig,
     root_id: Option<&str>,
     cwd: &str,
     command: &str,
     timeout_secs: u64,
-) -> Result<AgentTerminalResult, AppError> {
+    host_execution: bool,
+) -> Result<isolated_runtime::ShellExecutionResult, AppError> {
     let command = command.trim();
     if command.is_empty() {
         return Err(AppError::internal("terminal command cannot be empty"));
@@ -2046,42 +2065,62 @@ async fn run_terminal(
     }
     reject_catastrophic_command(command)?;
 
+    if host_execution {
+        if !config.full_pc_access {
+            return Err(AppError::internal(
+                "hostExecution requires Full PC + Terminal access",
+            ));
+        }
+        let start_dir = if cwd.trim().is_empty() {
+            selected_root_path(config, root_id)?
+        } else {
+            resolve_agent_path(config, root_id, cwd, true)?
+        };
+        return isolated_runtime::run_host_shell(
+            &start_dir,
+            command,
+            timeout_secs,
+            MAX_TERMINAL_OUTPUT_CHARS,
+        )
+        .await;
+    }
+
+    let workspace_root = selected_root_path(config, root_id)?;
     let start_dir = if cwd.trim().is_empty() {
-        selected_root_path(config, root_id)?
+        workspace_root.clone()
     } else {
-        resolve_agent_path(config, root_id, cwd, true)?
+        let supplied = Path::new(cwd.trim());
+        if supplied.is_absolute() {
+            let canonical = fs::canonicalize(supplied)?;
+            if !canonical.starts_with(&workspace_root) {
+                return Err(AppError::internal(
+                    "isolated terminal cwd cannot leave the selected workspace root",
+                ));
+            }
+            canonical
+        } else {
+            let candidate = fs::canonicalize(workspace_root.join(supplied))?;
+            if !candidate.starts_with(&workspace_root) {
+                return Err(AppError::internal(
+                    "isolated terminal cwd escaped the selected workspace root",
+                ));
+            }
+            candidate
+        }
     };
     if !start_dir.is_dir() {
         return Err(AppError::internal(
             "terminal working directory is not a directory",
         ));
     }
-
-    let mut process = terminal_process(command, &start_dir);
-    process.kill_on_drop(true);
-    let output =
-        match tokio::time::timeout(Duration::from_secs(timeout_secs), process.output()).await {
-            Ok(result) => result?,
-            Err(_) => {
-                return Ok(AgentTerminalResult {
-                    cwd: display_path(&start_dir),
-                    exit_code: -1,
-                    stdout: String::new(),
-                    stderr: format!("Command timed out after {timeout_secs} seconds."),
-                    timed_out: true,
-                });
-            }
-        };
-    let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let resolved_cwd = take_terminal_cwd(&mut stdout).unwrap_or_else(|| display_path(&start_dir));
-    Ok(AgentTerminalResult {
-        cwd: resolved_cwd,
-        exit_code: output.status.code().unwrap_or(-1),
-        stdout: bounded(&stdout, MAX_TERMINAL_OUTPUT_CHARS),
-        stderr: bounded(&stderr, MAX_TERMINAL_OUTPUT_CHARS),
-        timed_out: false,
-    })
+    isolated_runtime::run_isolated_shell(
+        &workspace_root,
+        &start_dir,
+        command,
+        timeout_secs,
+        MAX_TERMINAL_OUTPUT_CHARS,
+    )
+    .await
 }
 
 async fn run_git_command(
@@ -2440,50 +2479,6 @@ fn reject_catastrophic_command(command: &str) -> Result<(), AppError> {
         ));
     }
     Ok(())
-}
-
-fn terminal_process(command: &str, cwd: &Path) -> Command {
-    #[cfg(target_os = "windows")]
-    {
-        let wrapped = format!(
-            "& {{ {command}; $openmindCode = if ($null -ne $LASTEXITCODE) {{ $LASTEXITCODE }} else {{ 0 }}; Write-Output \"__OPENMIND_AGENT_CWD__$((Get-Location).Path)\"; exit $openmindCode }}"
-        );
-        let mut process = Command::new("powershell.exe");
-        process
-            .arg("-NoLogo")
-            .arg("-NoProfile")
-            .arg("-NonInteractive")
-            .arg("-Command")
-            .arg(wrapped)
-            .current_dir(cwd);
-        process
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let wrapped = format!(
-            "{{ {command}; }}; openmind_code=$?; printf '\\n__OPENMIND_AGENT_CWD__%s\\n' \"$PWD\"; exit $openmind_code"
-        );
-        let mut process = Command::new("/bin/sh");
-        process.arg("-lc").arg(wrapped).current_dir(cwd);
-        process
-    }
-}
-
-fn take_terminal_cwd(stdout: &mut String) -> Option<String> {
-    const MARKER: &str = "__OPENMIND_AGENT_CWD__";
-    let index = stdout.rfind(MARKER)?;
-    let cwd = stdout[index + MARKER.len()..]
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    stdout.truncate(index);
-    while stdout.ends_with('\r') || stdout.ends_with('\n') {
-        stdout.pop();
-    }
-    (!cwd.is_empty()).then_some(cwd)
 }
 
 fn emit_agent_chunk(
