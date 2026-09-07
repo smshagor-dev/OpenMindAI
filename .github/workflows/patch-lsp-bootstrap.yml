@@ -37,7 +37,22 @@ jobs:
           new = '    "mod github_workspace;\\n",\n    "mod coding_lsp;\\nmod coding_patch;\\nmod github_workspace;\\n",'
           if s.count(old) != 1:
               raise SystemExit('current module bootstrap anchor not found exactly once')
-          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          s = s.replace(old, new, 1)
+          replacements = [
+              (
+                  'if allow_language_server && let Some(spec) = select_server(&root, None)',
+                  'if let (true, Some(spec)) = (allow_language_server, select_server(&root, None))',
+              ),
+              (
+                  'if allow_language_server && let Some(spec) = select_server(&root, Some(&file))',
+                  'if let (true, Some(spec)) = (allow_language_server, select_server(&root, Some(&file)))',
+              ),
+          ]
+          for old, new in replacements:
+              if s.count(old) != 1:
+                  raise SystemExit(f'compatibility bootstrap target not found exactly once: {old}')
+              s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
           PY
 
       - name: Apply integration and security hardening
