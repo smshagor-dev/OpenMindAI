@@ -43,7 +43,8 @@ macro_rules! openmind_generate_handler {
             openagent_run_details,
             restore_openagent_checkpoint,
             send_project_agent_message,
-            regenerate_project_agent_message
+            regenerate_project_agent_message,
+            openagent_sandbox_capability
         ]
     };
 }
@@ -73,6 +74,7 @@ pub mod native_stream;
 #[cfg(feature = "native-cxx-llama")]
 pub mod native_supervisor;
 mod openagent_runs;
+mod openagent_security;
 mod pdf_ocr;
 mod speech_runtime;
 mod vision_batch;
@@ -108,6 +110,7 @@ pub(crate) use multimodal::{
     send_multimodal_chat_message, transcribe_audio,
 };
 pub(crate) use openagent_runs::{list_openagent_runs, openagent_run_details};
+pub(crate) use openagent_security::openagent_sandbox_capability;
 pub(crate) use pdf_ocr::ocr_pdf_pages;
 pub(crate) use warm_start::{prepare_default_chat_runtime, reveal_main_window};
 

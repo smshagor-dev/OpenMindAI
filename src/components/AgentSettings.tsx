@@ -8,6 +8,7 @@ import type {
   LlamaRuntimeStatus,
   ModelCatalogReport,
   ModelRecord,
+  OpenAgentSandboxCapability,
   RuntimeInventory,
 } from "../types";
 import { formatBytes } from "../lib/format";
@@ -26,11 +27,13 @@ export function AgentSettings(props: {
   const [catalog, setCatalog] = useState<ModelCatalogReport | null>(null);
   const [download, setDownload] = useState<DownloadStatus | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [sandbox, setSandbox] = useState<OpenAgentSandboxCapability | null>(null);
 
   const refreshCatalog = async () => {
     try {
       setCatalog(await api.checkModelUpdates());
       setDownload(await api.modelDownloadStatus());
+      setSandbox(await api.openagentSandboxCapability());
       setMessage(null);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
@@ -104,7 +107,10 @@ export function AgentSettings(props: {
             <option value="isolated_sandbox" disabled>Isolated sandbox (installation pending)</option>
           </select>
         </label>
-        <p className="muted">Only implemented policies are selectable. Strong OS isolation will be enabled after its platform adapter passes qualification.</p>
+        <p className="muted">
+          Isolation provider: {sandbox?.provider ?? "none"} · {sandbox?.message ?? "detecting"}.
+          Only qualified execution modes are selectable.
+        </p>
       </section>
 
       <section className="model-catalog-section">

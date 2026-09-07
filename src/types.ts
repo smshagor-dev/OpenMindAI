@@ -423,6 +423,14 @@ export interface AppPreferences {
   openagentMaxParallelAgents: number;
 }
 
+export interface OpenAgentSandboxCapability {
+  platform: string;
+  provider: string | null;
+  available: boolean;
+  strongIsolation: boolean;
+  message: string;
+}
+
 export interface ModelCatalogEntry {
   id: string;
   name: string;
