@@ -22,10 +22,12 @@ use crate::{
     inference::{StreamChunkEvent, StreamDoneEvent, StreamStartedEvent},
     launch_planner::ModelLaunchPlanner,
     local_workspace,
+    model_catalog::entry_by_id,
     model_registry::{ModelRecord, ModelRegistry},
     openagent_runs::OpenAgentRunRepository,
     projects::{Project, ProjectRepository},
     runtime::allocate_local_port,
+    settings::SettingsRepository,
     AppState,
 };
 
@@ -1243,7 +1245,16 @@ fn resolve_openagent_model(
             .lock()
             .map_err(|_| AppError::internal("database lock poisoned"))?;
         let models = ModelRegistry::new(&db, &state.root).list_models()?;
-        select_openagent_model(&models)
+        let preferences = SettingsRepository::new(&db).get_preferences()?;
+        let preferred_repository = if preferences.openagent_model_id.is_empty() {
+            None
+        } else {
+            entry_by_id(&preferences.openagent_model_id)
+                .ok()
+                .filter(|entry| entry.kind == "agent")
+                .map(|entry| entry.repo)
+        };
+        select_openagent_model(&models, preferred_repository.as_deref())
     };
 
     if let Some(model) = selected {
@@ -1270,19 +1281,31 @@ fn resolve_openagent_model(
     ))
 }
 
-fn select_openagent_model(models: &[ModelRecord]) -> Option<ModelRecord> {
+fn select_openagent_model(
+    models: &[ModelRecord],
+    preferred_repository: Option<&str>,
+) -> Option<ModelRecord> {
     const REPOSITORY_PREFERENCE: [&str; 3] = [
         "ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
         "ggml-org/NVIDIA-Nemotron-3-Nano-30B-A3B-GGUF",
         "nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF",
     ];
 
-    REPOSITORY_PREFERENCE.iter().find_map(|repository| {
+    preferred_repository
+        .and_then(|repository| {
+            models
+                .iter()
+                .find(|model| {
+                    model.enabled && model.source_repository.as_deref() == Some(repository)
+                })
+                .cloned()
+        })
+        .or_else(|| REPOSITORY_PREFERENCE.iter().find_map(|repository| {
         models
             .iter()
             .find(|model| model.enabled && model.source_repository.as_deref() == Some(*repository))
             .cloned()
-    })
+        }))
 }
 
 fn load_agent_context(
@@ -2659,7 +2682,7 @@ mod tests {
             true,
         );
 
-        let selected = select_openagent_model(&[nano, lightning]).unwrap();
+        let selected = select_openagent_model(&[nano, lightning], None).unwrap();
         assert_eq!(selected.id, "lightning");
     }
 
@@ -2670,7 +2693,24 @@ mod tests {
             "ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
             false,
         );
-        assert!(select_openagent_model(&[lightning]).is_none());
+        assert!(select_openagent_model(&[lightning], None).is_none());
+    }
+
+    #[test]
+    fn openagent_honors_an_installed_preferred_agent_model() {
+        let nano = agent_model("nano", "ggml-org/NVIDIA-Nemotron-3-Nano-30B-A3B-GGUF", true);
+        let lightning = agent_model(
+            "lightning",
+            "ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF",
+            true,
+        );
+
+        let selected = select_openagent_model(
+            &[lightning, nano],
+            Some("ggml-org/NVIDIA-Nemotron-3-Nano-30B-A3B-GGUF"),
+        )
+        .unwrap();
+        assert_eq!(selected.id, "nano");
     }
 
     #[test]

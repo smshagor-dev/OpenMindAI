@@ -2579,6 +2579,41 @@ button {
   border-top: 1px solid var(--border);
 }
 
+.agent-settings-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.agent-settings-stack .sub-panel {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.agent-settings-stack .button-row button {
+  display: inline-flex;
+  width: auto;
+  padding: 0 12px;
+  gap: 7px;
+}
+
+.agent-setting-field {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.4fr) minmax(180px, 0.6fr);
+  align-items: center;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.agent-setting-field select {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+}
+
 .model-catalog-overview {
   display: flex;
   gap: 16px;

@@ -44,6 +44,10 @@ pub struct AppPreferences {
     pub notify_model_updates: bool,
     pub auto_download_model_updates: bool,
     pub update_channel: String,
+    pub openagent_model_id: String,
+    pub openagent_approval_mode: String,
+    pub openagent_sandbox_mode: String,
+    pub openagent_max_parallel_agents: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -130,6 +134,10 @@ impl Default for AppPreferences {
             notify_model_updates: true,
             auto_download_model_updates: false,
             update_channel: "Stable".to_string(),
+            openagent_model_id: String::new(),
+            openagent_approval_mode: "risk_based".to_string(),
+            openagent_sandbox_mode: "attached_workspace".to_string(),
+            openagent_max_parallel_agents: 1,
         }
     }
 }
