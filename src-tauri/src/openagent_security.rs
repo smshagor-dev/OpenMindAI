@@ -76,8 +76,17 @@ pub fn authorize_tool(tool: &str, action: &Value, mode: ApprovalMode) -> (Policy
 
 fn classify_tool(tool: &str, action: &Value) -> RiskLevel {
     match tool {
-        "list_dir" | "read_file" | "search_text" | "git_status" | "git_diff" => RiskLevel::ReadOnly,
-        "write_file" | "replace_text" | "create_dir" => RiskLevel::WorkspaceWrite,
+        "list_dir"
+        | "read_file"
+        | "search_text"
+        | "symbol_search"
+        | "symbol_definition"
+        | "symbol_references"
+        | "git_status"
+        | "git_diff" => RiskLevel::ReadOnly,
+        "write_file" | "replace_text" | "create_dir" | "patch_transaction" => {
+            RiskLevel::WorkspaceWrite
+        }
         "move_path" | "delete_path" => RiskLevel::Destructive,
         "terminal" => classify_terminal(
             action
@@ -200,6 +209,20 @@ mod tests {
     fn read_only_tools_never_prompt() {
         let (decision, _) = authorize_tool("read_file", &json!({}), ApprovalMode::AlwaysAsk);
         assert_eq!(decision, PolicyDecision::Allow);
+        let (decision, _) = authorize_tool("symbol_definition", &json!({}), ApprovalMode::AlwaysAsk);
+        assert_eq!(decision, PolicyDecision::Allow);
+    }
+
+    #[test]
+    fn patch_transaction_uses_workspace_write_policy() {
+        assert_eq!(
+            authorize_tool("patch_transaction", &json!({}), ApprovalMode::RiskBased).0,
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            authorize_tool("patch_transaction", &json!({}), ApprovalMode::AlwaysAsk).0,
+            PolicyDecision::RequireApproval
+        );
     }
 
     #[test]
