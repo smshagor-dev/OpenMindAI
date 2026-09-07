@@ -1,0 +1,60 @@
+name: OpenAgent Patch LSP Bootstrap
+
+on:
+  push:
+    branches:
+      - feature/openagent-patch-lsp
+
+permissions:
+  contents: write
+
+concurrency:
+  group: openagent-patch-lsp-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  integrate-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Apply OpenAgent integration patch
+        run: python scripts/bootstrap_openagent_patch_lsp.py
+
+      - name: Remove one-shot bootstrap files
+        run: |
+          rm scripts/bootstrap_openagent_patch_lsp.py
+          rm .github/workflows/openagent-patch-lsp-bootstrap.yml
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Format Rust
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+
+      - name: Clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --all-features
+
+      - name: Commit verified integration
+        run: |
+          git config user.name "OpenMindAI Engineering Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "feat(openagent): integrate atomic patches and symbol navigation"
+          git push origin HEAD:feature/openagent-patch-lsp
