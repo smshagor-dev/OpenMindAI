@@ -24,6 +24,7 @@ import type {
   LlamaRuntimeStatus,
   Message,
   ModelRecord,
+  OpenAgentSandboxCapability,
   PerformanceProfile,
   PortableRootInfo,
   Project,
@@ -276,6 +277,8 @@ export const api = {
   cancelRuntimeInstall: () => call<RuntimeInstallStatus>("cancel_runtime_install"),
   startRuntime: () => call<LlamaRuntimeStatus>("start_llama_runtime"),
   stopRuntime: () => call<void>("stop_llama_runtime"),
+  openagentSandboxCapability: () =>
+    call<OpenAgentSandboxCapability>("openagent_sandbox_capability"),
   sendChatMessage: async (
     conversationId: string,
     content: string,

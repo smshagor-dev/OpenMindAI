@@ -25,6 +25,7 @@ use crate::{
     model_catalog::entry_by_id,
     model_registry::{ModelRecord, ModelRegistry},
     openagent_runs::OpenAgentRunRepository,
+    openagent_security::{authorize_tool, ApprovalMode, PolicyDecision},
     projects::{Project, ProjectRepository},
     runtime::allocate_local_port,
     settings::SettingsRepository,
@@ -329,6 +330,17 @@ async fn run_agent_message(
             "attach a local folder to this project before using OpenAgent",
         ));
     }
+    let approval_mode = {
+        let db = state
+            .database
+            .lock()
+            .map_err(|_| AppError::internal("database lock poisoned"))?;
+        ApprovalMode::parse(
+            &SettingsRepository::new(&db)
+                .get_preferences()?
+                .openagent_approval_mode,
+        )
+    };
 
     // Keep the hidden project context fresh before routing/model execution.
     {
@@ -596,6 +608,56 @@ async fn run_agent_message(
                     return Err(AppError::InferenceFailed(format!(
                         "OpenAgent stopped after {consecutive_failures} consecutive tool failures"
                     )));
+                }
+                continue;
+            }
+
+            let (policy_decision, policy_reason) =
+                authorize_tool(tool, &decision, approval_mode);
+            if policy_decision != PolicyDecision::Allow {
+                let prefix = if policy_decision == PolicyDecision::Deny {
+                    "denied"
+                } else {
+                    "requires approval"
+                };
+                let text = format!("{prefix}: {policy_reason}");
+                finish_durable_step(
+                    state,
+                    &step_id,
+                    "blocked",
+                    false,
+                    None,
+                    None,
+                    Some(&text),
+                )?;
+                emit_agent_chunk(
+                    app,
+                    state,
+                    conversation_id,
+                    &assistant.id,
+                    &format!("• {tool} blocked by policy: {policy_reason}\n"),
+                )?;
+                push_transcript(
+                    &mut transcript,
+                    format!(
+                        "STEP {}\nACTION {}\nPOLICY {}",
+                        step + 1,
+                        action_signature,
+                        text
+                    ),
+                );
+                consecutive_failures += 1;
+                update_durable_progress(
+                    state,
+                    &run_id,
+                    consecutive_failures,
+                    validation_required,
+                    last_validation_command.as_deref(),
+                )?;
+                if policy_decision == PolicyDecision::Deny
+                    || consecutive_failures >= MAX_AGENT_FAILURES
+                {
+                    return Err(AppError::internal(text));
                 }
                 continue;
             }
