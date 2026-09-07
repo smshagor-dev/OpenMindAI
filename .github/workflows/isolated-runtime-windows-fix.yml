@@ -1,0 +1,57 @@
+name: Isolated Runtime Windows Fix
+
+on:
+  push:
+    branches:
+      - work/isolated-runtime
+
+permissions:
+  contents: write
+
+concurrency:
+  group: isolated-runtime-windows-fix
+  cancel-in-progress: false
+
+jobs:
+  verify-and-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Apply Windows isolation test fix
+        run: python scripts/fix_isolated_runtime_windows_test.py
+
+      - name: Remove one-shot files
+        shell: pwsh
+        run: |
+          Remove-Item scripts/fix_isolated_runtime_windows_test.py
+          Remove-Item .github/workflows/isolated-runtime-windows-fix.yml
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Rust format
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+
+      - name: Windows Clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Windows tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Commit verified fix
+        shell: pwsh
+        run: |
+          git config user.name "OpenMindAI Engineering Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "test: cover isolated cwd translation per platform"
+          git push origin HEAD:work/isolated-runtime

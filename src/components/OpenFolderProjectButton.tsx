@@ -34,12 +34,8 @@ export function OpenFolderProjectButton(props: {
       project = await api.createProject(projectName);
       await localWorkspaceApi.attachFolder(project.id, selected);
 
-      const grantFullAccess = window.confirm(
-        `OpenMindAI attached:\n${selected}\n\nEnable Full PC + Terminal for this project?\n\nChoose OK to let OpenAgent run local build/test/install/git/terminal commands and use absolute paths with your current OS-user permissions. Choose Cancel to keep OpenAgent restricted to the attached folder's sandboxed file tools.`,
-      );
-      if (grantFullAccess) {
-        await localWorkspaceApi.setFullAccess(project.id, true, true);
-      }
+      // Keep newly attached projects scoped by default. Host access remains an explicit later opt-in.
+
 
       conversation = await props.onCreateProjectChat(project);
       await api.linkProjectConversation(project.id, conversation.id);

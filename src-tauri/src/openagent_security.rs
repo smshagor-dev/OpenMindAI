@@ -1,6 +1,3 @@
-use std::{env, path::PathBuf, process::Command};
-
-use serde::Serialize;
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,12 +84,16 @@ fn classify_tool(tool: &str, action: &Value) -> RiskLevel {
                 .get("command")
                 .and_then(Value::as_str)
                 .unwrap_or_default(),
+            action
+                .get("hostExecution")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         ),
         _ => RiskLevel::Prohibited,
     }
 }
 
-fn classify_terminal(command: &str) -> RiskLevel {
+fn classify_terminal(command: &str, host_execution: bool) -> RiskLevel {
     let normalized = command.trim().to_ascii_lowercase();
     if normalized.is_empty()
         || normalized.contains("rm -rf /")
@@ -102,6 +103,9 @@ fn classify_terminal(command: &str) -> RiskLevel {
         || normalized.contains("reboot")
     {
         return RiskLevel::Prohibited;
+    }
+    if host_execution {
+        return RiskLevel::HostExecution;
     }
     if normalized.starts_with("git status")
         || normalized.starts_with("git diff")
@@ -113,85 +117,21 @@ fn classify_terminal(command: &str) -> RiskLevel {
     {
         return RiskLevel::ReadOnly;
     }
-    if normalized.starts_with("npm run lint")
-        || normalized.starts_with("npm test")
-        || normalized.starts_with("cargo test")
-        || normalized.starts_with("cargo clippy")
-        || normalized.starts_with("python -m pytest")
-        || normalized.starts_with("go test")
-        || normalized.starts_with("dotnet test")
+    if normalized.contains("rm -rf ")
+        || normalized.starts_with("remove-item ")
+        || normalized.starts_with("git reset --hard")
+        || normalized.starts_with("git clean -")
     {
-        return RiskLevel::WorkspaceWrite;
+        return RiskLevel::Destructive;
     }
-    RiskLevel::HostExecution
+    RiskLevel::WorkspaceWrite
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SandboxCapability {
-    pub platform: String,
-    pub provider: Option<String>,
-    pub available: bool,
-    pub strong_isolation: bool,
-    pub message: String,
-}
+pub use crate::isolated_runtime::SandboxCapability;
 
 #[tauri::command]
 pub fn openagent_sandbox_capability() -> SandboxCapability {
-    detect_sandbox_capability()
-}
-
-fn detect_sandbox_capability() -> SandboxCapability {
-    let platform = env::consts::OS.to_string();
-    let provider = match env::consts::OS {
-        "linux" if executable_on_path("bwrap") => Some("bubblewrap".to_string()),
-        "macos" if executable_on_path("sandbox-exec") => Some("sandbox-exec".to_string()),
-        "windows" if windows_sandbox_available() => Some("Windows Sandbox".to_string()),
-        _ => None,
-    };
-    let available = provider.is_some();
-    SandboxCapability {
-        platform,
-        provider,
-        available,
-        strong_isolation: false,
-        message: if available {
-            "Isolation provider detected; execution adapter and qualification are still required"
-                .to_string()
-        } else {
-            "No supported local isolation provider was detected".to_string()
-        },
-    }
-}
-
-fn executable_on_path(name: &str) -> bool {
-    env::var_os("PATH").is_some_and(|paths| {
-        env::split_paths(&paths).any(|directory| {
-            let candidate = directory.join(name);
-            candidate.is_file()
-                || (cfg!(windows) && directory.join(format!("{name}.exe")).is_file())
-        })
-    })
-}
-
-fn windows_sandbox_available() -> bool {
-    let system_root = env::var_os("SystemRoot").map(PathBuf::from);
-    let executable = system_root.map(|root| root.join("System32/WindowsSandbox.exe"));
-    if !executable.as_ref().is_some_and(|path| path.is_file()) {
-        return false;
-    }
-    Command::new("dism")
-        .args([
-            "/Online",
-            "/Get-FeatureInfo",
-            "/FeatureName:Containers-DisposableClientVM",
-        ])
-        .output()
-        .ok()
-        .is_some_and(|output| {
-            output.status.success()
-                && String::from_utf8_lossy(&output.stdout).contains("State : Enabled")
-        })
+    crate::isolated_runtime::sandbox_capability()
 }
 
 #[cfg(test)]
@@ -214,8 +154,30 @@ mod tests {
         assert_eq!(
             authorize_tool(
                 "terminal",
-                &json!({"command": "npm install"}),
+                &json!({"command": "npm install", "hostExecution": true}),
                 ApprovalMode::RiskBased
+            )
+            .0,
+            PolicyDecision::RequireApproval
+        );
+    }
+
+    #[test]
+    fn isolated_terminal_build_is_a_workspace_write() {
+        assert_eq!(
+            authorize_tool(
+                "terminal",
+                &json!({"command": "cargo test", "hostExecution": false}),
+                ApprovalMode::RiskBased
+            )
+            .0,
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            authorize_tool(
+                "terminal",
+                &json!({"command": "cargo test", "hostExecution": false}),
+                ApprovalMode::AlwaysAsk
             )
             .0,
             PolicyDecision::RequireApproval
