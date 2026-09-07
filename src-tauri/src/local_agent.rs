@@ -1300,12 +1300,16 @@ fn select_openagent_model(
                 })
                 .cloned()
         })
-        .or_else(|| REPOSITORY_PREFERENCE.iter().find_map(|repository| {
-        models
-            .iter()
-            .find(|model| model.enabled && model.source_repository.as_deref() == Some(*repository))
-            .cloned()
-        }))
+        .or_else(|| {
+            REPOSITORY_PREFERENCE.iter().find_map(|repository| {
+                models
+                    .iter()
+                    .find(|model| {
+                        model.enabled && model.source_repository.as_deref() == Some(*repository)
+                    })
+                    .cloned()
+            })
+        })
 }
 
 fn load_agent_context(
