@@ -74,6 +74,7 @@ pub mod native_stream;
 #[cfg(feature = "native-cxx-llama")]
 pub mod native_supervisor;
 mod openagent_runs;
+mod openagent_context;
 mod openagent_security;
 mod pdf_ocr;
 mod speech_runtime;
