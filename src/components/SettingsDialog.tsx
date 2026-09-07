@@ -21,6 +21,7 @@ import {
   Trash2,
   User,
   Wrench,
+  Bot,
 } from "lucide-react";
 import packageJson from "../../package.json";
 import type {
@@ -40,6 +41,7 @@ import { ModelsManager } from "./ModelsManager";
 import { AppsSettings } from "./AppsSettings";
 import { MaintenanceCenter } from "./MaintenanceCenter";
 import { UpdatesPanel } from "./UpdatesPanel";
+import { AgentSettings } from "./AgentSettings";
 
 export function SettingsDialog(props: {
   root: PortableRootInfo | null;
@@ -112,6 +114,7 @@ export function SettingsDialog(props: {
     { id: "appearance", label: "Appearance", icon: Palette },
     { id: "chat", label: "Chat", icon: MessageSquarePlus },
     { id: "capabilities", label: "Capabilities", icon: Brain },
+    { id: "openagent", label: "Agent Setup", icon: Bot },
     { id: "connectors", label: "Apps", icon: Plug },
     { id: "models", label: "Models", icon: Database },
     { id: "runtime", label: "AI Runtime", icon: Server },
@@ -348,6 +351,25 @@ export function SettingsDialog(props: {
             <AppsSettings />
           </SettingsGroup>
         )}
+
+        {activeSection === "openagent" && preferenceDraft ? (
+          <SettingsGroup title="Agent Setup">
+            <AgentSettings
+              hardware={props.hardware}
+              models={props.models}
+              runtime={props.runtime}
+              runtimeStatus={props.runtimeStatus}
+              preferences={preferenceDraft}
+              onPreferencesChange={(next) => {
+                setPreferenceDraft(next);
+                void props.updatePreferences(next);
+              }}
+              refresh={props.refresh}
+              startRuntime={props.startRuntime}
+              stopRuntime={props.stopRuntime}
+            />
+          </SettingsGroup>
+        ) : null}
 
         {activeSection === "models" && (
           <SettingsGroup title="Models">

@@ -417,6 +417,10 @@ export interface AppPreferences {
   notifyModelUpdates: boolean;
   autoDownloadModelUpdates: boolean;
   updateChannel: string;
+  openagentModelId: string;
+  openagentApprovalMode: "risk_based" | "always_ask" | "trusted_workspace";
+  openagentSandboxMode: "attached_workspace" | "isolated_sandbox";
+  openagentMaxParallelAgents: number;
 }
 
 export interface ModelCatalogEntry {
