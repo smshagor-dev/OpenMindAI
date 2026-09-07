@@ -21,22 +21,148 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Harden target-specific runtime imports
+      - name: Harden isolated runtime implementation
         run: |
           python - <<'PY'
           from pathlib import Path
+
           path = Path('src-tauri/src/isolated_runtime.rs')
           text = path.read_text(encoding='utf-8')
-          old = 'use serde::{Deserialize, Serialize};\n'
-          new = 'use serde::Serialize;\n#[cfg(target_os = "windows")]\nuse serde::Deserialize;\n'
-          if text.count(old) != 1:
-              raise SystemExit('serde import target not found exactly once')
-          text = text.replace(old, new, 1)
-          old = 'const SAFE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";\n'
-          new = '#[cfg(any(target_os = "linux", target_os = "macos"))]\nconst SAFE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";\n'
-          if text.count(old) != 1:
-              raise SystemExit('SAFE_PATH target not found exactly once')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replacements = [
+              (
+                  'use serde::{Deserialize, Serialize};\n',
+                  'use serde::Serialize;\n#[cfg(target_os = "windows")]\nuse serde::Deserialize;\n',
+                  'serde import',
+              ),
+              (
+                  'const SAFE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";\n',
+                  '#[cfg(any(target_os = "linux", target_os = "macos"))]\nconst SAFE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";\n',
+                  'SAFE_PATH',
+              ),
+              (
+                  'fn trusted_executable(candidates: &[&str]) -> Option<PathBuf> {\n',
+                  '#[cfg(any(target_os = "linux", target_os = "macos"))]\nfn trusted_executable(candidates: &[&str]) -> Option<PathBuf> {\n',
+                  'trusted_executable cfg',
+              ),
+              (
+                  'fn shell_wrapper(command: &str) -> String {\n',
+                  '#[cfg(not(target_os = "windows"))]\nfn shell_wrapper(command: &str) -> String {\n',
+                  'shell_wrapper cfg',
+              ),
+          ]
+          for old, new, label in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit(f'{label} target not found exactly once')
+              text = text.replace(old, new, 1)
+
+          bubblewrap_call = '''    finish_isolated_output(
+              workspace_root,
+              cwd,
+              output.status.code().unwrap_or(-1),
+              &output.stdout,
+              &output.stderr,
+              started,
+              max_output_chars,
+              "bubblewrap",
+              Some("/workspace"),
+          )
+          '''
+          bubblewrap_new = '''    finish_isolated_output(IsolatedOutput {
+              workspace_root,
+              cwd,
+              exit_code: output.status.code().unwrap_or(-1),
+              stdout: &output.stdout,
+              stderr: &output.stderr,
+              started,
+              max_output_chars,
+              backend: "bubblewrap",
+              sandbox_workspace_prefix: Some("/workspace"),
+          })
+          '''
+          if text.count(bubblewrap_call) != 1:
+              raise SystemExit('bubblewrap finish call not found exactly once')
+          text = text.replace(bubblewrap_call, bubblewrap_new, 1)
+
+          mac_call = '''    finish_isolated_output(
+              workspace_root,
+              cwd,
+              output.status.code().unwrap_or(-1),
+              &output.stdout,
+              &output.stderr,
+              started,
+              max_output_chars,
+              "sandbox-exec",
+              None,
+          )
+          '''
+          mac_new = '''    finish_isolated_output(IsolatedOutput {
+              workspace_root,
+              cwd,
+              exit_code: output.status.code().unwrap_or(-1),
+              stdout: &output.stdout,
+              stderr: &output.stderr,
+              started,
+              max_output_chars,
+              backend: "sandbox-exec",
+              sandbox_workspace_prefix: None,
+          })
+          '''
+          if text.count(mac_call) != 1:
+              raise SystemExit('macOS finish call not found exactly once')
+          text = text.replace(mac_call, mac_new, 1)
+
+          old_helper = '''fn finish_isolated_output(
+              workspace_root: &Path,
+              cwd: &Path,
+              exit_code: i32,
+              stdout: &[u8],
+              stderr: &[u8],
+              started: Instant,
+              max_output_chars: usize,
+              backend: &str,
+              sandbox_workspace_prefix: Option<&str>,
+          ) -> Result<ShellExecutionResult, AppError> {
+          '''
+          new_helper = '''#[cfg(any(target_os = "linux", target_os = "macos"))]
+          struct IsolatedOutput<'a> {
+              workspace_root: &'a Path,
+              cwd: &'a Path,
+              exit_code: i32,
+              stdout: &'a [u8],
+              stderr: &'a [u8],
+              started: Instant,
+              max_output_chars: usize,
+              backend: &'a str,
+              sandbox_workspace_prefix: Option<&'a str>,
+          }
+
+          #[cfg(any(target_os = "linux", target_os = "macos"))]
+          fn finish_isolated_output(output: IsolatedOutput<'_>) -> Result<ShellExecutionResult, AppError> {
+              let IsolatedOutput {
+                  workspace_root,
+                  cwd,
+                  exit_code,
+                  stdout,
+                  stderr,
+                  started,
+                  max_output_chars,
+                  backend,
+                  sandbox_workspace_prefix,
+              } = output;
+          '''
+          if text.count(old_helper) != 1:
+              raise SystemExit('finish helper signature not found exactly once')
+          text = text.replace(old_helper, new_helper, 1)
+
+          for fn_name in ['translate_sandbox_cwd', 'canonical_scoped_marker']:
+              old = f'fn {fn_name}'
+              new = f'#[cfg(any(target_os = "linux", target_os = "macos"))]\nfn {fn_name}'
+              if text.count(old) != 1:
+                  raise SystemExit(f'{fn_name} target not found exactly once')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
           PY
 
       - name: Apply isolated runtime integration
