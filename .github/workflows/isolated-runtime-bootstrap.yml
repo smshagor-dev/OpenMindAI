@@ -25,6 +25,7 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path('src-tauri/src/isolated_runtime.rs')
           text = path.read_text(encoding='utf-8')
@@ -56,75 +57,53 @@ jobs:
                   raise SystemExit(f'{label} target not found exactly once')
               text = text.replace(old, new, 1)
 
-          bubblewrap_call = '''    finish_isolated_output(
-              workspace_root,
-              cwd,
-              output.status.code().unwrap_or(-1),
-              &output.stdout,
-              &output.stderr,
-              started,
-              max_output_chars,
-              "bubblewrap",
-              Some("/workspace"),
+          call_pattern = re.compile(
+              r'(?m)^    finish_isolated_output\(\n(?P<body>(?:        .*\n)+?)^    \)'
           )
-          '''
-          bubblewrap_new = '''    finish_isolated_output(IsolatedOutput {
-              workspace_root,
-              cwd,
-              exit_code: output.status.code().unwrap_or(-1),
-              stdout: &output.stdout,
-              stderr: &output.stderr,
-              started,
-              max_output_chars,
-              backend: "bubblewrap",
-              sandbox_workspace_prefix: Some("/workspace"),
-          })
-          '''
-          if text.count(bubblewrap_call) != 1:
-              raise SystemExit('bubblewrap finish call not found exactly once')
-          text = text.replace(bubblewrap_call, bubblewrap_new, 1)
+          matches = list(call_pattern.finditer(text))
+          if len(matches) != 2:
+              raise SystemExit(f'expected 2 finish_isolated_output calls, found {len(matches)}')
 
-          mac_call = '''    finish_isolated_output(
-              workspace_root,
-              cwd,
-              output.status.code().unwrap_or(-1),
-              &output.stdout,
-              &output.stderr,
-              started,
-              max_output_chars,
-              "sandbox-exec",
-              None,
+          def call_replacement(match):
+              body = match.group('body')
+              if '"bubblewrap"' in body:
+                  backend = 'bubblewrap'
+                  prefix = 'Some("/workspace")'
+              elif '"sandbox-exec"' in body:
+                  backend = 'sandbox-exec'
+                  prefix = 'None'
+              else:
+                  raise SystemExit('unexpected isolated output backend')
+              return f'''    finish_isolated_output(IsolatedOutput {{
+                  workspace_root,
+                  cwd,
+                  exit_code: output.status.code().unwrap_or(-1),
+                  stdout: &output.stdout,
+                  stderr: &output.stderr,
+                  started,
+                  max_output_chars,
+                  backend: "{backend}",
+                  sandbox_workspace_prefix: {prefix},
+              }})'''
+
+          text = call_pattern.sub(call_replacement, text)
+
+          helper_pattern = re.compile(
+              r'(?m)^fn finish_isolated_output\(\n(?P<params>(?:    .*\n)+?)^\) -> Result<ShellExecutionResult, AppError> \{\n'
           )
-          '''
-          mac_new = '''    finish_isolated_output(IsolatedOutput {
-              workspace_root,
-              cwd,
-              exit_code: output.status.code().unwrap_or(-1),
-              stdout: &output.stdout,
-              stderr: &output.stderr,
-              started,
-              max_output_chars,
-              backend: "sandbox-exec",
-              sandbox_workspace_prefix: None,
-          })
-          '''
-          if text.count(mac_call) != 1:
-              raise SystemExit('macOS finish call not found exactly once')
-          text = text.replace(mac_call, mac_new, 1)
+          helper_matches = list(helper_pattern.finditer(text))
+          if len(helper_matches) != 1:
+              raise SystemExit(f'expected one finish helper, found {len(helper_matches)}')
+          expected_fields = [
+              'workspace_root: &Path', 'cwd: &Path', 'exit_code: i32', 'stdout: &[u8]',
+              'stderr: &[u8]', 'started: Instant', 'max_output_chars: usize',
+              'backend: &str', 'sandbox_workspace_prefix: Option<&str>',
+          ]
+          params = helper_matches[0].group('params')
+          if not all(field in params for field in expected_fields):
+              raise SystemExit('finish helper parameters changed unexpectedly')
 
-          old_helper = '''fn finish_isolated_output(
-              workspace_root: &Path,
-              cwd: &Path,
-              exit_code: i32,
-              stdout: &[u8],
-              stderr: &[u8],
-              started: Instant,
-              max_output_chars: usize,
-              backend: &str,
-              sandbox_workspace_prefix: Option<&str>,
-          ) -> Result<ShellExecutionResult, AppError> {
-          '''
-          new_helper = '''#[cfg(any(target_os = "linux", target_os = "macos"))]
+          helper = '''#[cfg(any(target_os = "linux", target_os = "macos"))]
           struct IsolatedOutput<'a> {
               workspace_root: &'a Path,
               cwd: &'a Path,
@@ -151,16 +130,17 @@ jobs:
                   sandbox_workspace_prefix,
               } = output;
           '''
-          if text.count(old_helper) != 1:
-              raise SystemExit('finish helper signature not found exactly once')
-          text = text.replace(old_helper, new_helper, 1)
+          text = helper_pattern.sub(helper, text, count=1)
 
           for fn_name in ['translate_sandbox_cwd', 'canonical_scoped_marker']:
-              old = f'fn {fn_name}'
-              new = f'#[cfg(any(target_os = "linux", target_os = "macos"))]\nfn {fn_name}'
-              if text.count(old) != 1:
+              pattern = re.compile(rf'(?m)^fn {fn_name}\b')
+              text, count = pattern.subn(
+                  f'#[cfg(any(target_os = "linux", target_os = "macos"))]\nfn {fn_name}',
+                  text,
+                  count=1,
+              )
+              if count != 1:
                   raise SystemExit(f'{fn_name} target not found exactly once')
-              text = text.replace(old, new, 1)
 
           path.write_text(text, encoding='utf-8')
           PY
