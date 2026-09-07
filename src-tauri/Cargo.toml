@@ -23,10 +23,10 @@ cxx-build = "1.0"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 chrono = { version = "0.4", features = ["serde"] }
 cxx = { version = "1.0", optional = true }
-dirs = "5"
+dirs = "6"
 docx-rs = "0.4.22"
 flate2 = "1"
 futures-util = "0.3"
@@ -34,11 +34,11 @@ hound = "3.5"
 printpdf = "0.12.6"
 pulldown-cmark = "0.13.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls"] }
-rusqlite = { version = "0.32", features = ["bundled", "chrono", "functions"] }
+rusqlite = { version = "0.40", features = ["bundled", "chrono", "functions"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
-sysinfo = "0.32"
+sha2 = "0.11"
+sysinfo = "0.39"
 tar = "0.4"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
@@ -53,14 +53,14 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
-zip = "2"
+zip = "8"
 
 # Retained only so the existing lockfile remains reproducible while historical
 # mobile packages are still present in Cargo.lock. No Android/iOS application
 # entry point or mobile feature code is compiled from this desktop-only repo.
 [target.'cfg(target_os = "android")'.dependencies]
 encoding_rs = "0.8.35"
-llama-cpp-2 = { version = "=0.1.154", default-features = false, features = ["android-shared-stdcxx", "mtmd"] }
+llama-cpp-2 = { version = "=0.1.156", default-features = false, features = ["android-shared-stdcxx", "mtmd"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 encoding_rs = "0.8.35"
