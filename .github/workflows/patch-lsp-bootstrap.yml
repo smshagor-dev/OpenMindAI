@@ -27,6 +27,19 @@ jobs:
           git show 12a43a841248f7ceec3f4be8036cc10c9df1f74c:src-tauri/src/openagent_patch.rs > src-tauri/src/coding_patch.rs
           git show 12a43a841248f7ceec3f4be8036cc10c9df1f74c:src-tauri/src/openagent_lsp.rs > src-tauri/src/coding_lsp.rs
 
+      - name: Align bootstrap with current tree
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('scripts/bootstrap_patch_lsp.py')
+          s = p.read_text(encoding='utf-8')
+          old = '    "mod chat;\\n",\n    "mod chat;\\nmod coding_lsp;\\nmod coding_patch;\\n",'
+          new = '    "mod github_workspace;\\n",\n    "mod coding_lsp;\\nmod coding_patch;\\nmod github_workspace;\\n",'
+          if s.count(old) != 1:
+              raise SystemExit('current module bootstrap anchor not found exactly once')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
+
       - name: Apply integration and security hardening
         run: |
           python scripts/bootstrap_patch_lsp.py
