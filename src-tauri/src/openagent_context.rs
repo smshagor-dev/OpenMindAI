@@ -134,8 +134,13 @@ fn relevant_candidates(
         .filter_map(|path| {
             let relative = relative_display(root, path);
             let normalized = relative.to_ascii_lowercase();
-            let manifest = MANIFEST_FILES.iter().any(|name| normalized.ends_with(&name.to_ascii_lowercase()));
-            let matches = terms.iter().filter(|term| normalized.contains(term.as_str())).count();
+            let manifest = MANIFEST_FILES
+                .iter()
+                .any(|name| normalized.ends_with(&name.to_ascii_lowercase()));
+            let matches = terms
+                .iter()
+                .filter(|term| normalized.contains(term.as_str()))
+                .count();
             let score = usize::from(manifest) * 20 + matches * 10;
             (score > 0).then_some((score, relative, path.clone()))
         })
@@ -154,7 +159,10 @@ fn read_bounded_text(path: &Path) -> Result<Option<String>, AppError> {
 }
 
 fn safe_context_file(path: &Path) -> bool {
-    let name = path.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
     if name.starts_with(".env")
         || name.ends_with(".pem")
         || name.ends_with(".key")
@@ -164,29 +172,57 @@ fn safe_context_file(path: &Path) -> bool {
         return false;
     }
     matches!(
-        path.extension().and_then(|value| value.to_str()).unwrap_or_default(),
-        "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go" | "php" | "java" | "kt" | "swift" | "toml" | "json" | "md" | "yml" | "yaml"
+        path.extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default(),
+        "rs" | "ts"
+            | "tsx"
+            | "js"
+            | "jsx"
+            | "py"
+            | "go"
+            | "php"
+            | "java"
+            | "kt"
+            | "swift"
+            | "toml"
+            | "json"
+            | "md"
+            | "yml"
+            | "yaml"
     ) || MANIFEST_FILES.contains(&name)
 }
 
 fn ignored_directory(path: &Path) -> bool {
     matches!(
-        path.file_name().and_then(|value| value.to_str()).unwrap_or_default(),
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default(),
         ".git" | "node_modules" | "target" | "dist" | "build" | ".next" | ".venv" | "vendor"
     )
 }
 
 fn goal_terms(goal: &str) -> HashSet<String> {
-    goal.split(|character: char| !character.is_alphanumeric() && character != '_' && character != '-')
-        .map(str::to_ascii_lowercase)
-        .filter(|term| term.chars().count() >= 4)
-        .filter(|term| !matches!(term.as_str(), "this" | "that" | "with" | "from" | "into" | "make" | "code" | "project"))
-        .take(32)
-        .collect()
+    goal.split(|character: char| {
+        !character.is_alphanumeric() && character != '_' && character != '-'
+    })
+    .map(str::to_ascii_lowercase)
+    .filter(|term| term.chars().count() >= 4)
+    .filter(|term| {
+        !matches!(
+            term.as_str(),
+            "this" | "that" | "with" | "from" | "into" | "make" | "code" | "project"
+        )
+    })
+    .take(32)
+    .collect()
 }
 
 fn relative_display(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root).unwrap_or(path).display().to_string()
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
 }
 
 fn truncate_chars(value: &str, limit: usize) -> String {
@@ -202,7 +238,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         fs::write(temp.path().join("AGENTS.md"), "Use small reviewed patches.").unwrap();
         fs::create_dir_all(temp.path().join("src/auth")).unwrap();
-        fs::write(temp.path().join("src/auth/session.rs"), "fn refresh_session() {}").unwrap();
+        fs::write(
+            temp.path().join("src/auth/session.rs"),
+            "fn refresh_session() {}",
+        )
+        .unwrap();
         fs::write(temp.path().join(".env"), "TOKEN=secret").unwrap();
         fs::write(temp.path().join("package.json"), "{}").unwrap();
 
