@@ -17,12 +17,16 @@ jobs:
           ref: work/runtime-guards-v2
           fetch-depth: 0
 
+      - name: Repair structural patch
+        run: python scripts/repair_runtime_bootstrap.py
+
       - name: Apply runtime guard integration
         run: python scripts/bootstrap_runtime_guards.py
 
       - name: Remove one-shot integration files
         run: |
           rm scripts/bootstrap_runtime_guards.py
+          rm scripts/repair_runtime_bootstrap.py
           rm .github/workflows/runtime-guards-bootstrap.yml
 
       - name: Install Linux dependencies
