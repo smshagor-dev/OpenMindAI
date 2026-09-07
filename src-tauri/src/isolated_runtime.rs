@@ -867,6 +867,7 @@ mod tests {
         assert!(validate_isolated_scope(&workspace, &outside).is_err());
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn sandbox_cwd_translation_stays_scoped() {
         let temp = tempfile::tempdir().unwrap();
@@ -877,6 +878,19 @@ mod tests {
             Some(display_path(&workspace.join("src")))
         );
         assert!(translate_sandbox_cwd(&workspace, "/workspace", "/other/src").is_none());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_sandbox_cwd_translation_stays_scoped() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(workspace.join("src")).unwrap();
+        assert_eq!(
+            translate_windows_sandbox_cwd(&workspace, r"C:\OpenMindWorkspace\src"),
+            Some(display_path(&workspace.join("src")))
+        );
+        assert!(translate_windows_sandbox_cwd(&workspace, r"C:\OtherWorkspace\src").is_none());
     }
 
     #[test]
