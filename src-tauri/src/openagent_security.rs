@@ -53,12 +53,22 @@ pub fn authorize_tool(tool: &str, action: &Value, mode: ApprovalMode) -> (Policy
     let reason = match (decision, risk) {
         (PolicyDecision::Allow, RiskLevel::ReadOnly) => "read-only workspace operation",
         (PolicyDecision::Allow, RiskLevel::WorkspaceWrite) => "bounded workspace edit",
-        (PolicyDecision::Allow, RiskLevel::Destructive) => "trusted-workspace destructive operation",
+        (PolicyDecision::Allow, RiskLevel::Destructive) => {
+            "trusted-workspace destructive operation"
+        }
         (PolicyDecision::Allow, RiskLevel::HostExecution) => "trusted-workspace host command",
-        (PolicyDecision::RequireApproval, RiskLevel::WorkspaceWrite) => "workspace edits require approval in Always Ask mode",
-        (PolicyDecision::RequireApproval, RiskLevel::Destructive) => "destructive filesystem operation requires approval",
-        (PolicyDecision::RequireApproval, RiskLevel::HostExecution) => "host command requires approval",
-        (PolicyDecision::Deny, RiskLevel::Prohibited) => "command violates the non-bypassable safety policy",
+        (PolicyDecision::RequireApproval, RiskLevel::WorkspaceWrite) => {
+            "workspace edits require approval in Always Ask mode"
+        }
+        (PolicyDecision::RequireApproval, RiskLevel::Destructive) => {
+            "destructive filesystem operation requires approval"
+        }
+        (PolicyDecision::RequireApproval, RiskLevel::HostExecution) => {
+            "host command requires approval"
+        }
+        (PolicyDecision::Deny, RiskLevel::Prohibited) => {
+            "command violates the non-bypassable safety policy"
+        }
         _ => "operation is not authorized by the active policy",
     };
     (decision, reason.to_string())
@@ -66,9 +76,7 @@ pub fn authorize_tool(tool: &str, action: &Value, mode: ApprovalMode) -> (Policy
 
 fn classify_tool(tool: &str, action: &Value) -> RiskLevel {
     match tool {
-        "list_dir" | "read_file" | "search_text" | "git_status" | "git_diff" => {
-            RiskLevel::ReadOnly
-        }
+        "list_dir" | "read_file" | "search_text" | "git_status" | "git_diff" => RiskLevel::ReadOnly,
         "write_file" | "replace_text" | "create_dir" => RiskLevel::WorkspaceWrite,
         "move_path" | "delete_path" => RiskLevel::Destructive,
         "terminal" => classify_terminal(
