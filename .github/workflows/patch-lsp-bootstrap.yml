@@ -1,0 +1,83 @@
+name: Patch and Symbol Integration
+
+on:
+  push:
+    branches:
+      - work/patch-lsp-core
+
+permissions:
+  contents: write
+
+concurrency:
+  group: patch-lsp-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  integrate-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Bring proven patch and symbol cores into the clean branch
+        run: |
+          git fetch origin 12a43a841248f7ceec3f4be8036cc10c9df1f74c --depth=1
+          git show 12a43a841248f7ceec3f4be8036cc10c9df1f74c:src-tauri/src/openagent_patch.rs > src-tauri/src/coding_patch.rs
+          git show 12a43a841248f7ceec3f4be8036cc10c9df1f74c:src-tauri/src/openagent_lsp.rs > src-tauri/src/coding_lsp.rs
+
+      - name: Apply integration and security hardening
+        run: |
+          python scripts/bootstrap_patch_lsp.py
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src-tauri/src/openagent_security.rs')
+          s = p.read_text(encoding='utf-8')
+          old = '            RiskLevel::WorkspaceWrite\n        }\n'
+          new = '            RiskLevel::WorkspaceWrite\n        },\n'
+          if old not in s:
+              raise SystemExit('workspace-write match arm not found')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
+
+      - name: Remove one-shot files
+        run: |
+          rm scripts/bootstrap_patch_lsp.py
+          rm .github/workflows/patch-lsp-bootstrap.yml
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Format Rust
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+
+      - name: Clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Commit verified integration
+        run: |
+          git config user.name "OpenMindAI Engineering Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: add atomic patching and symbol navigation"
+          git push origin HEAD:work/patch-lsp-core
