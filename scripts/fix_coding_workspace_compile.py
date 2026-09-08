@@ -53,6 +53,74 @@ replace_exact(
     "",
 )
 
+# The original context packer is fully superseded by coding_intelligence after
+# integration. Leaving the private module registered makes its entire helper
+# tree dead code under `-D warnings`, so unregister the obsolete module rather
+# than suppressing the diagnostics.
+replace_exact(
+    "src-tauri/src/lib.rs",
+    "mod openagent_context;\n",
+    "",
+)
+
+# FileFact only needs the canonical file path and logical root id. The copied
+# root PathBuf was never consumed by scoring, graphing, excerpts, or snapshots.
+replace_exact(
+    "src-tauri/src/coding_intelligence.rs",
+    "    root: PathBuf,\n",
+    "",
+)
+replace_exact(
+    "src-tauri/src/coding_intelligence.rs",
+    "                root: root.to_path_buf(),\n",
+    "",
+)
+
+# Integration uses the bounded parallel implementation directly. Remove the
+# compatibility wrapper so the production module has no unused public helper.
+replace_exact(
+    "src-tauri/src/coding_intelligence.rs",
+    '''pub fn build_repository_context(
+    roots: &[(String, String)],
+    goal: &str,
+) -> Result<String, AppError> {
+    build_repository_context_parallel(roots, goal, 1)
+}
+
+''',
+    "",
+)
+
+# Delivery policy and log summarization are production behavior, not test-only
+# helpers. Route mutations through the policy helper and use diagnostic-aware
+# truncation for large check logs.
+replace_exact(
+    "src-tauri/src/coding_delivery.rs",
+    '''    let risk = operation_risk(operation)
+        .ok_or_else(|| AppError::internal(format!("unsupported delivery operation: {operation}")))?;
+    if risk != DeliveryRisk::ReadOnly && !approved {
+''',
+    '''    operation_risk(operation)
+        .ok_or_else(|| AppError::internal(format!("unsupported delivery operation: {operation}")))?;
+    if policy_requires_approval(operation) && !approved {
+''',
+)
+replace_exact(
+    "src-tauri/src/coding_delivery.rs",
+    '''    .await?;
+    Ok(bound_value(value, MAX_DELIVERY_RESULT_CHARS))
+''',
+    '''    .await?;
+    if operation == "check_logs" && value.to_string().chars().count() > MAX_DELIVERY_RESULT_CHARS {
+        return Ok(json!({
+            "truncated": true,
+            "diagnostic": summarize_check_failure(&value),
+        }));
+    }
+    Ok(bound_value(value, MAX_DELIVERY_RESULT_CHARS))
+''',
+)
+
 # The run loop deliberately assigns its final durable status at multiple exit
 # points. The pre-format generated source makes removing the redundant seed
 # brittle, so scope the rustc lint to this one orchestration boundary.
@@ -75,5 +143,19 @@ replace_regex(
     r'^(?P<indent>[ \t]*)async fn execute_tool\($',
     r'\g<indent>#[allow(clippy::too_many_arguments)]\n\g<indent>async fn execute_tool(',
 )
+
+# Some source revisions already carry the narrowly scoped attributes above.
+# Normalize adjacent duplicates deterministically instead of adding a broad
+# duplicated-attributes exception.
+local_path = Path("src-tauri/src/local_agent.rs")
+local_text = local_path.read_text(encoding="utf-8")
+for attribute in (
+    "#[allow(unused_assignments)]",
+    "#[allow(clippy::too_many_arguments)]",
+):
+    duplicate = f"{attribute}\n{attribute}\n"
+    while duplicate in local_text:
+        local_text = local_text.replace(duplicate, f"{attribute}\n")
+local_path.write_text(local_text, encoding="utf-8")
 
 print("coding workspace compile repairs applied")
