@@ -1,0 +1,108 @@
+name: Coding Orchestration Finalize
+
+on:
+  push:
+    branches:
+      - work/coding-orchestration-finalize
+
+permissions:
+  contents: write
+
+jobs:
+  integrate-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Make integration bootstrap idempotent for merged runtime guards
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          script = Path('scripts/integrate_coding_workspace.py')
+          text = script.read_text(encoding='utf-8')
+          runtime = Path('src-tauri/src/runtime_guards.rs').read_text(encoding='utf-8')
+          marker = 'patch(\n    "src-tauri/src/runtime_guards.rs",'
+          if '#[cfg(not(unix))]\nfn prepare_process_tree(_command: &mut Command) {}' in runtime and marker in text:
+              start = text.index(marker)
+              end = text.index('\n\n# Register durable control migration.', start)
+              text = text[:start] + text[end:]
+              script.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Normalize integration bootstrap
+        run: python3 scripts/normalize_coding_bootstrap.py
+
+      - name: Apply production integration
+        run: python3 scripts/integrate_coding_workspace.py
+
+      - name: Apply compile repairs
+        run: python3 scripts/fix_coding_workspace_compile.py
+
+      - name: Remove one-shot bootstrap files
+        run: |
+          rm -f scripts/normalize_coding_bootstrap.py
+          rm -f scripts/integrate_coding_workspace.py
+          rm -f scripts/fix_coding_workspace_compile.py
+          rm -f .github/workflows/coding-workspace-validation.yml
+          rm -f .github/workflows/coding-workspace-repair.yml
+          rm -f .github/workflows/coding-orchestration-finalize.yml
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf bubblewrap
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Format Rust
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+
+      - name: Rust check
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Frontend lint
+        run: npm run lint
+
+      - name: Frontend build
+        run: npm run build
+
+      - name: Deterministic coding evaluation
+        run: python3 scripts/coding_workspace_eval.py
+
+      - name: Adversarial security evaluation
+        run: python3 scripts/coding_security_suite.py
+
+      - name: Diff safety
+        run: git diff --check
+
+      - name: Commit verified orchestration integration
+        run: |
+          git config user.name "OpenMindAI Engineering Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "feat: activate coding orchestration controls"
+          git push origin HEAD:work/coding-orchestration-finalize
