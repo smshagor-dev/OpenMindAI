@@ -1,0 +1,41 @@
+name: Patch Durability Sync Main
+
+on:
+  push:
+    branches:
+      - work/patch-durability
+    paths:
+      - .github/workflows/patch-durability-sync-main.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Merge validated main baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git merge --no-edit origin/main
+
+      - name: Remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/patch-durability-sync-main.yml
+          git add -A
+          git commit -m "chore: remove durability sync workflow"
+
+      - name: Push updated branch
+        shell: bash
+        run: git push origin HEAD:work/patch-durability
