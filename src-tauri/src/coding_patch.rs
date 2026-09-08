@@ -31,7 +31,7 @@ enum PatchOperation {
         path: String,
         old: String,
         new: String,
-        #[serde(default)]
+        #[serde(default, rename = "expectedSha256", alias = "expected_sha256")]
         expected_sha256: Option<String>,
     },
     #[serde(rename = "create")]
@@ -39,7 +39,7 @@ enum PatchOperation {
     #[serde(rename = "delete")]
     Delete {
         path: String,
-        #[serde(default)]
+        #[serde(default, rename = "expectedSha256", alias = "expected_sha256")]
         expected_sha256: Option<String>,
     },
 }
@@ -597,13 +597,14 @@ fn validate_relative_path(raw: &str) -> Result<PathBuf, AppError> {
 
 fn resolve_scoped_target(root: &Path, relative: &Path) -> Result<PathBuf, AppError> {
     ensure_no_symlink_components(root, relative)?;
+    let canonical_root = fs::canonicalize(root)?;
     let target = root.join(relative);
     let security_path = if target.exists() {
         fs::canonicalize(&target)?
     } else {
         canonical_existing_parent(&target)?
     };
-    if !security_path.starts_with(root) {
+    if !security_path.starts_with(&canonical_root) {
         return Err(AppError::internal(
             "patch_transaction path escaped the attached workspace",
         ));

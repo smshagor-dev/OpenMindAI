@@ -732,6 +732,7 @@ fn project_marker_present(root: &Path, spec: ServerSpec) -> bool {
 }
 
 fn sanitize_lsp_result(root: &Path, result: Value, limit: usize) -> Result<Value, AppError> {
+    let root = fs::canonicalize(root)?;
     match result {
         Value::Null => Ok(Value::Null),
         Value::Array(items) => {
@@ -740,14 +741,14 @@ fn sanitize_lsp_result(root: &Path, result: Value, limit: usize) -> Result<Value
                 if safe.len() >= limit {
                     break;
                 }
-                if lsp_item_is_scoped(root, &item)? {
+                if lsp_item_is_scoped(&root, &item)? {
                     safe.push(item);
                 }
             }
             Ok(Value::Array(safe))
         }
         Value::Object(_) => {
-            if lsp_item_is_scoped(root, &result)? {
+            if lsp_item_is_scoped(&root, &result)? {
                 Ok(result)
             } else {
                 Ok(Value::Null)
