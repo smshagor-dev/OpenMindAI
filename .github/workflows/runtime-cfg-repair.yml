@@ -38,9 +38,16 @@ jobs:
           PY
       - name: Remove bootstrap workflow
         run: rm -f .github/workflows/runtime-cfg-repair.yml
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf bubblewrap
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
       - name: Validate Linux source
         run: |
           cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
