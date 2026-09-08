@@ -27,26 +27,28 @@ struct CappedBytes {
     truncated: bool,
 }
 
+#[cfg(unix)]
 pub fn resource_limit_labels() -> Vec<String> {
-    #[cfg(unix)]
-    {
-        return vec![
-            "CPU time bounded relative to the command timeout".to_string(),
-            "address space <= 8 GiB".to_string(),
-            "open files <= 1024".to_string(),
-            "processes <= 256".to_string(),
-            "single file <= 8 GiB".to_string(),
-        ];
-    }
-    #[cfg(target_os = "windows")]
-    {
-        return vec![
-            "Windows Sandbox memory <= 4096 MiB".to_string(),
-            "wall-clock timeout with process-tree termination".to_string(),
-            "bounded stdout/stderr capture".to_string(),
-        ];
-    }
-    #[allow(unreachable_code)]
+    vec![
+        "CPU time bounded relative to the command timeout".to_string(),
+        "address space <= 8 GiB".to_string(),
+        "open files <= 1024".to_string(),
+        "processes <= 256".to_string(),
+        "single file <= 8 GiB".to_string(),
+    ]
+}
+
+#[cfg(target_os = "windows")]
+pub fn resource_limit_labels() -> Vec<String> {
+    vec![
+        "Windows Sandbox memory <= 4096 MiB".to_string(),
+        "wall-clock timeout with process-tree termination".to_string(),
+        "bounded stdout/stderr capture".to_string(),
+    ]
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+pub fn resource_limit_labels() -> Vec<String> {
     vec!["wall-clock timeout with bounded output capture".to_string()]
 }
 
@@ -81,13 +83,25 @@ pub fn apply_isolated_limits(command: &mut Command, timeout_secs: u64) -> Result
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 unsafe fn set_limit(resource: libc::__rlimit_resource_t, value: libc::rlim_t) -> io::Result<()> {
     let limit = libc::rlimit {
         rlim_cur: value,
         rlim_max: value,
     };
-    // SAFETY: caller provides a valid resource constant and a live rlimit pointer.
+    if unsafe { libc::setrlimit(resource, &limit) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+unsafe fn set_limit(resource: libc::c_int, value: libc::rlim_t) -> io::Result<()> {
+    let limit = libc::rlimit {
+        rlim_cur: value,
+        rlim_max: value,
+    };
     if unsafe { libc::setrlimit(resource, &limit) } == 0 {
         Ok(())
     } else {
@@ -122,14 +136,15 @@ pub async fn run_process(
     let stderr_task = tokio::spawn(read_capped(stderr, byte_limit));
 
     let mut timed_out = false;
-    let exit_code = match tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait()).await {
-        Ok(status) => status?.code().unwrap_or(-1),
-        Err(_) => {
-            timed_out = true;
-            terminate_process_tree(&mut child).await;
-            -1
-        }
-    };
+    let exit_code =
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait()).await {
+            Ok(status) => status?.code().unwrap_or(-1),
+            Err(_) => {
+                timed_out = true;
+                terminate_process_tree(&mut child).await;
+                -1
+            }
+        };
 
     let stdout = stdout_task
         .await

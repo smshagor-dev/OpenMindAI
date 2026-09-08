@@ -104,12 +104,14 @@ export function AgentSettings(props: {
           <span>Sandbox</span>
           <select value={props.preferences.openagentSandboxMode} onChange={(event) => save("openagentSandboxMode", event.target.value as AppPreferences["openagentSandboxMode"])}>
             <option value="attached_workspace">Attached workspace boundary</option>
-            <option value="isolated_sandbox" disabled>Isolated sandbox (installation pending)</option>
+            <option value="isolated_sandbox" disabled={!sandbox?.available}>Strong isolation · no host escape</option>
           </select>
         </label>
         <p className="muted">
           Isolation provider: {sandbox?.provider ?? "none"} · {sandbox?.message ?? "detecting"}.
-          Only qualified execution modes are selectable.
+          {sandbox?.resourceLimits?.length ? ` Limits: ${sandbox.resourceLimits.join(" · ")}.` : ""}
+          {sandbox?.processTreeControl ? " Process-tree cleanup enabled." : ""}
+          {sandbox?.boundedOutput ? " Output capture is bounded." : ""}
         </p>
       </section>
 
