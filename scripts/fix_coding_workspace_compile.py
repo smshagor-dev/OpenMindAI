@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 
 def replace_exact(path: str, old: str, new: str, expected: int = 1) -> None:
@@ -8,6 +9,15 @@ def replace_exact(path: str, old: str, new: str, expected: int = 1) -> None:
     if found != expected:
         raise SystemExit(f"{path}: expected {expected} occurrences, found {found}: {old[:120]!r}")
     file.write_text(text.replace(old, new), encoding="utf-8")
+
+
+def replace_regex(path: str, pattern: str, replacement: str, expected: int = 1) -> None:
+    file = Path(path)
+    text = file.read_text(encoding="utf-8")
+    updated, count = re.subn(pattern, replacement, text, flags=re.MULTILINE)
+    if count != expected:
+        raise SystemExit(f"{path}: expected {expected} regex matches, found {count}: {pattern!r}")
+    file.write_text(updated, encoding="utf-8")
 
 
 # serde_json errors must be mapped into the app's explicit error boundary.
@@ -45,24 +55,24 @@ replace_exact(
 
 # Every loop exit assigns the durable run status before it is consumed. Avoid
 # a redundant initial value that strict Clippy correctly identifies as unused.
-replace_exact(
+replace_regex(
     "src-tauri/src/local_agent.rs",
-    '    let mut run_status = "completed";\n',
-    '    let mut run_status;\n',
+    r'^(?P<indent>[ \t]*)let mut run_status = "completed";[ \t]*$',
+    r'\g<indent>let mut run_status;',
 )
 
 # These two internal orchestration boundaries intentionally carry the model,
 # sandbox, plan/run and tool context explicitly. Keeping those security-relevant
 # inputs visible is preferable to hiding them inside a loosely scoped bag.
-replace_exact(
+replace_regex(
     "src-tauri/src/local_agent.rs",
-    "async fn request_agent_decision(\n",
-    "#[allow(clippy::too_many_arguments)]\nasync fn request_agent_decision(\n",
+    r'^(?P<indent>[ \t]*)async fn request_agent_decision\($',
+    r'\g<indent>#[allow(clippy::too_many_arguments)]\n\g<indent>async fn request_agent_decision(',
 )
-replace_exact(
+replace_regex(
     "src-tauri/src/local_agent.rs",
-    "async fn execute_tool(\n",
-    "#[allow(clippy::too_many_arguments)]\nasync fn execute_tool(\n",
+    r'^(?P<indent>[ \t]*)async fn execute_tool\($',
+    r'\g<indent>#[allow(clippy::too_many_arguments)]\n\g<indent>async fn execute_tool(',
 )
 
 print("coding workspace compile repairs applied")
