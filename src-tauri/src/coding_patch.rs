@@ -672,7 +672,11 @@ fn verify_expected_sha256(
         return Ok(());
     };
     let expected = expected.trim().to_ascii_lowercase();
-    if expected.len() != 64 || !expected.chars().all(|character| character.is_ascii_hexdigit()) {
+    if expected.len() != 64
+        || !expected
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
         return Err(AppError::internal(format!(
             "invalid expectedSha256 precondition for {relative_path}"
         )));
@@ -782,7 +786,10 @@ mod tests {
         .unwrap();
         assert_eq!(result.deleted_files, 1);
         assert!(!temp.path().join("remove.txt").exists());
-        assert_eq!(fs::read_to_string(temp.path().join("keep.txt")).unwrap(), "new");
+        assert_eq!(
+            fs::read_to_string(temp.path().join("keep.txt")).unwrap(),
+            "new"
+        );
     }
 
     #[test]
@@ -829,7 +836,10 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("stale-file precondition"));
-        assert_eq!(fs::read_to_string(temp.path().join("a.txt")).unwrap(), "alpha");
+        assert_eq!(
+            fs::read_to_string(temp.path().join("a.txt")).unwrap(),
+            "alpha"
+        );
     }
 
     #[test]
@@ -852,7 +862,11 @@ mod tests {
                 staged_name: "0.stage".to_string(),
             }],
         };
-        fs::write(tx_dir.join(JOURNAL_FILE), serde_json::to_vec(&journal).unwrap()).unwrap();
+        fs::write(
+            tx_dir.join(JOURNAL_FILE),
+            serde_json::to_vec(&journal).unwrap(),
+        )
+        .unwrap();
         let marker = CommitMarker {
             version: COMMIT_MARKER_VERSION,
             transaction_id: transaction_id.to_string(),
@@ -864,7 +878,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(recover_interrupted_transactions(temp.path()).unwrap(), 1);
-        assert_eq!(fs::read_to_string(temp.path().join("a.txt")).unwrap(), "new");
+        assert_eq!(
+            fs::read_to_string(temp.path().join("a.txt")).unwrap(),
+            "new"
+        );
         assert!(!base.exists());
     }
 
@@ -888,10 +905,17 @@ mod tests {
                 staged_name: "0.stage".to_string(),
             }],
         };
-        fs::write(tx_dir.join(JOURNAL_FILE), serde_json::to_vec(&journal).unwrap()).unwrap();
+        fs::write(
+            tx_dir.join(JOURNAL_FILE),
+            serde_json::to_vec(&journal).unwrap(),
+        )
+        .unwrap();
 
         assert_eq!(recover_interrupted_transactions(temp.path()).unwrap(), 1);
-        assert_eq!(fs::read_to_string(temp.path().join("a.txt")).unwrap(), "old");
+        assert_eq!(
+            fs::read_to_string(temp.path().join("a.txt")).unwrap(),
+            "old"
+        );
         assert!(!base.exists());
     }
 
