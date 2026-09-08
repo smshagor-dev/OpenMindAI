@@ -23,10 +23,14 @@ jobs:
       - name: Apply runtime guard integration
         run: python scripts/bootstrap_runtime_guards.py
 
+      - name: Normalize cross-platform lint guards
+        run: python scripts/fix_runtime_clippy.py
+
       - name: Remove one-shot integration files
         run: |
           rm scripts/bootstrap_runtime_guards.py
           rm scripts/repair_runtime_bootstrap.py
+          rm scripts/fix_runtime_clippy.py
           rm .github/workflows/runtime-guards-bootstrap.yml
 
       - name: Install Linux dependencies
