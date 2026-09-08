@@ -190,13 +190,14 @@ pub async fn terminate_process_tree(child: &mut Child) {
     let _ = child.wait().await;
 }
 
+#[cfg(unix)]
 fn prepare_process_tree(command: &mut Command) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        command.as_std_mut().process_group(0);
-    }
+    use std::os::unix::process::CommandExt as _;
+    command.as_std_mut().process_group(0);
 }
+
+#[cfg(not(unix))]
+fn prepare_process_tree(_command: &mut Command) {}
 
 async fn read_capped<R>(mut reader: R, limit: usize) -> io::Result<CappedBytes>
 where

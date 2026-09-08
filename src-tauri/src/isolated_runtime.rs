@@ -612,6 +612,28 @@ async fn run_windows_sandbox(
     })
 }
 
+#[cfg(target_os = "windows")]
+fn timeout_result(
+    _workspace_root: &Path,
+    cwd: &Path,
+    timeout_secs: u64,
+    started: Instant,
+    backend: &str,
+) -> ShellExecutionResult {
+    ShellExecutionResult {
+        cwd: display_path(cwd),
+        exit_code: -1,
+        stdout: String::new(),
+        stderr: format!("Command timed out after {timeout_secs} seconds."),
+        duration_ms: started.elapsed().as_millis(),
+        timed_out: true,
+        truncated: false,
+        backend: backend.to_string(),
+        isolated: true,
+        network_disabled: true,
+    }
+}
+
 #[cfg(not(target_os = "windows"))]
 async fn run_windows_sandbox(
     _workspace_root: &Path,
