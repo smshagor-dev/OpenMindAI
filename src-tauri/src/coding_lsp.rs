@@ -915,9 +915,7 @@ fn declaration_symbol(file: &Path, line: &str) -> Option<(&'static str, String)>
         "py" => python_declaration(trimmed),
         "go" => go_declaration(trimmed),
         "php" => php_declaration(trimmed),
-        "c" | "h" | "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => {
-            c_like_declaration(trimmed)
-        }
+        "c" | "h" | "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => c_like_declaration(trimmed),
         "java" | "cs" => java_like_declaration(trimmed),
         "kt" | "kts" => kotlin_declaration(trimmed),
         "rb" => ruby_declaration(trimmed),
