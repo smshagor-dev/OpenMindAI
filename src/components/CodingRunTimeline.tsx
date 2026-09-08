@@ -13,12 +13,12 @@ import {
   ShieldCheck,
   XCircle,
 } from "lucide-react";
+import { api, type OpenAgentRun } from "../api";
 import {
-  api,
+  codingTimelineApi,
   type CodingApproval,
   type CodingRunSnapshot,
-  type OpenAgentRun,
-} from "../api";
+} from "../codingTimelineApi";
 import { formatError, formatTime } from "../lib/format";
 import "../coding-workspace.css";
 
@@ -53,7 +53,7 @@ export function CodingRunTimeline(props: { conversationIds: string[] }) {
   }, [props.conversationIds]);
 
   useEffect(() => {
-    void refresh().catch((caught) => setError(formatError(caught)));
+    void refresh().catch((caught: unknown) => setError(formatError(caught)));
   }, [refresh]);
 
   useEffect(() => {
@@ -62,12 +62,12 @@ export function CodingRunTimeline(props: { conversationIds: string[] }) {
       return;
     }
     let alive = true;
-    void api
+    void codingTimelineApi
       .codingRunSnapshot(selectedId)
-      .then((value) => {
+      .then((value: CodingRunSnapshot | null) => {
         if (alive) setSnapshot(value);
       })
-      .catch((caught) => {
+      .catch((caught: unknown) => {
         if (alive) setError(formatError(caught));
       });
     return () => {
@@ -87,7 +87,7 @@ export function CodingRunTimeline(props: { conversationIds: string[] }) {
     try {
       await action();
       await refresh();
-      if (selectedId) setSnapshot(await api.codingRunSnapshot(selectedId));
+      if (selectedId) setSnapshot(await codingTimelineApi.codingRunSnapshot(selectedId));
     } catch (caught) {
       setError(formatError(caught));
     } finally {
@@ -97,7 +97,9 @@ export function CodingRunTimeline(props: { conversationIds: string[] }) {
 
   const decide = (approval: CodingApproval, approved: boolean) =>
     mutate(`${approved ? "approve" : "reject"}-${approval.id}`, () =>
-      approved ? api.approveCodingAction(approval.id) : api.rejectCodingAction(approval.id),
+      approved
+        ? codingTimelineApi.approveCodingAction(approval.id)
+        : codingTimelineApi.rejectCodingAction(approval.id),
     );
 
   if (!runs.length) {
@@ -106,7 +108,9 @@ export function CodingRunTimeline(props: { conversationIds: string[] }) {
         <History size={17} />
         <span>
           <strong>Coding run timeline</strong>
-          <small>Plans, validations, approvals, budgets, and recovery controls appear here after a coding task starts.</small>
+          <small>
+            Plans, validations, approvals, budgets, and recovery controls appear here after a coding task starts.
+          </small>
         </span>
       </section>
     );
@@ -124,7 +128,11 @@ export function CodingRunTimeline(props: { conversationIds: string[] }) {
         </button>
       </header>
 
-      {error ? <button className="coding-error" onClick={() => setError(null)}>{error}</button> : null}
+      {error ? (
+        <button className="coding-error" onClick={() => setError(null)}>
+          {error}
+        </button>
+      ) : null}
 
       <div className="coding-run-tabs">
         {runs.slice(0, 8).map((run) => (
@@ -146,9 +154,15 @@ export function CodingRunTimeline(props: { conversationIds: string[] }) {
       {selectedRun && snapshot ? (
         <div className="coding-run-detail">
           <div className="coding-run-summary">
-            <span><Clock3 size={14} /> Step {selectedRun.currentStep}/{selectedRun.maxSteps}</span>
-            <span><ShieldCheck size={14} /> Validation {selectedRun.validationStatus.replaceAll("_", " ")}</span>
-            <span><Gauge size={14} /> {metricSummary(snapshot)}</span>
+            <span>
+              <Clock3 size={14} /> Step {selectedRun.currentStep}/{selectedRun.maxSteps}
+            </span>
+            <span>
+              <ShieldCheck size={14} /> Validation {selectedRun.validationStatus.replace(/_/g, " ")}
+            </span>
+            <span>
+              <Gauge size={14} /> {metricSummary(snapshot)}
+            </span>
           </div>
 
           {snapshot.plan ? (
@@ -160,7 +174,8 @@ export function CodingRunTimeline(props: { conversationIds: string[] }) {
               <ol>
                 {snapshot.plan.steps.map((step) => (
                   <li key={step.id} data-status={step.status}>
-                    <span>{step.title}</span><small>{step.status}</small>
+                    <span>{step.title}</span>
+                    <small>{step.status}</small>
                   </li>
                 ))}
               </ol>
@@ -186,7 +201,11 @@ export function CodingRunTimeline(props: { conversationIds: string[] }) {
                         disabled={busy !== null}
                         onClick={() => void decide(approval, true)}
                       >
-                        {busy === `approve-${approval.id}` ? <LoaderCircle className="spin" size={14} /> : <CheckCircle2 size={14} />}
+                        {busy === `approve-${approval.id}` ? (
+                          <LoaderCircle className="spin" size={14} />
+                        ) : (
+                          <CheckCircle2 size={14} />
+                        )}
                         Approve exact action
                       </button>
                       <button
@@ -203,15 +222,20 @@ export function CodingRunTimeline(props: { conversationIds: string[] }) {
           ) : null}
 
           <div className="coding-timeline-events">
-            {snapshot.events.slice(-20).reverse().map((event) => (
-              <div key={event.id}>
-                <span className="coding-event-dot" data-kind={event.kind} />
-                <span>
-                  <strong>{event.label}</strong>
-                  <small>{event.kind} · {formatTime(event.createdAt)}</small>
-                </span>
-              </div>
-            ))}
+            {snapshot.events
+              .slice(-20)
+              .reverse()
+              .map((event) => (
+                <div key={event.id}>
+                  <span className="coding-event-dot" data-kind={event.kind} />
+                  <span>
+                    <strong>{event.label}</strong>
+                    <small>
+                      {event.kind} · {formatTime(event.createdAt)}
+                    </small>
+                  </span>
+                </div>
+              ))}
           </div>
 
           <div className="coding-recovery-row">
@@ -219,9 +243,13 @@ export function CodingRunTimeline(props: { conversationIds: string[] }) {
               <button
                 type="button"
                 disabled={busy !== null}
-                onClick={() => void mutate("resume", () => api.resumeCodingRun(selectedRun.id))}
+                onClick={() => void mutate("resume", () => codingTimelineApi.resumeCodingRun(selectedRun.id))}
               >
-                {busy === "resume" ? <LoaderCircle className="spin" size={14} /> : <Play size={14} />}
+                {busy === "resume" ? (
+                  <LoaderCircle className="spin" size={14} />
+                ) : (
+                  <Play size={14} />
+                )}
                 Resume safely
               </button>
             ) : null}
@@ -238,7 +266,11 @@ export function CodingRunTimeline(props: { conversationIds: string[] }) {
                   }
                 }}
               >
-                {busy === "restore" ? <LoaderCircle className="spin" size={14} /> : <RotateCcw size={14} />}
+                {busy === "restore" ? (
+                  <LoaderCircle className="spin" size={14} />
+                ) : (
+                  <RotateCcw size={14} />
+                )}
                 Restore latest safe checkpoint
               </button>
             ) : null}
