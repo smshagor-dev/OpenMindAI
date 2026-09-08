@@ -3,7 +3,7 @@ name: Coding Workspace Repair
 on:
   push:
     branches:
-      - work/coding-workspace-complete
+      - work/coding-orchestration-repair
 
 permissions:
   contents: write
@@ -89,4 +89,4 @@ jobs:
           git add -A
           git diff --cached --quiet && exit 0
           git commit -m "feat: complete coding workspace orchestration"
-          git push origin HEAD:work/coding-workspace-complete
+          git push origin HEAD:work/coding-orchestration-repair
