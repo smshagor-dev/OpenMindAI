@@ -7,9 +7,13 @@ use tokio::{
 
 use crate::app_error::AppError;
 
+#[cfg(unix)]
 const ISOLATED_MEMORY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+#[cfg(unix)]
 const ISOLATED_OPEN_FILES: u64 = 1_024;
+#[cfg(unix)]
 const ISOLATED_PROCESSES: u64 = 256;
+#[cfg(unix)]
 const ISOLATED_FILE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -52,8 +56,8 @@ pub fn resource_limit_labels() -> Vec<String> {
     vec!["wall-clock timeout with bounded output capture".to_string()]
 }
 
+#[cfg(unix)]
 pub fn apply_isolated_limits(command: &mut Command, timeout_secs: u64) -> Result<(), AppError> {
-    #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
 
@@ -75,10 +79,6 @@ pub fn apply_isolated_limits(command: &mut Command, timeout_secs: u64) -> Result
                 Ok(())
             });
         }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (command, timeout_secs);
     }
     Ok(())
 }
