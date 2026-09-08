@@ -90,13 +90,14 @@ async function resumeCodingRun(runId: string) {
   return api.sendChatMessage(details.run.conversationId, details.run.goal, "chat");
 }
 
-async function unsupportedApproval(): Promise<never> {
+async function unsupportedApproval(approvalId: string): Promise<never> {
+  void approvalId;
   throw new Error("Exact coding approvals are unavailable until the durable coding-control backend is active.");
 }
 
 export const codingTimelineApi = {
   codingRunSnapshot,
   resumeCodingRun,
-  approveCodingAction: (_approvalId: string) => unsupportedApproval(),
-  rejectCodingAction: (_approvalId: string) => unsupportedApproval(),
+  approveCodingAction: (approvalId: string) => unsupportedApproval(approvalId),
+  rejectCodingAction: (approvalId: string) => unsupportedApproval(approvalId),
 };
