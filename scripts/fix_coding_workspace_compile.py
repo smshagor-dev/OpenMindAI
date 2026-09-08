@@ -43,4 +43,26 @@ replace_exact(
     "",
 )
 
+# Every loop exit assigns the durable run status before it is consumed. Avoid
+# a redundant initial value that strict Clippy correctly identifies as unused.
+replace_exact(
+    "src-tauri/src/local_agent.rs",
+    '    let mut run_status = "completed";\n',
+    '    let mut run_status;\n',
+)
+
+# These two internal orchestration boundaries intentionally carry the model,
+# sandbox, plan/run and tool context explicitly. Keeping those security-relevant
+# inputs visible is preferable to hiding them inside a loosely scoped bag.
+replace_exact(
+    "src-tauri/src/local_agent.rs",
+    "async fn request_agent_decision(\n",
+    "#[allow(clippy::too_many_arguments)]\nasync fn request_agent_decision(\n",
+)
+replace_exact(
+    "src-tauri/src/local_agent.rs",
+    "async fn execute_tool(\n",
+    "#[allow(clippy::too_many_arguments)]\nasync fn execute_tool(\n",
+)
+
 print("coding workspace compile repairs applied")
