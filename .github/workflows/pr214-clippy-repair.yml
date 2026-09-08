@@ -1,0 +1,84 @@
+name: PR214 Clippy Repair
+
+on:
+  push:
+    branches:
+      - work/patch-lsp-hardening
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: work/patch-lsp-hardening
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Repair strict Clippy findings
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('src-tauri/src/coding_lsp.rs')
+          text = path.read_text()
+
+          replacements = [
+              (
+                  '            match request {\n                Ok(result) => {',
+                  '            if let Ok(result) = request {'
+              ),
+              (
+                  '                }\n                Err(_) => {}\n            }\n            session.close().await;',
+                  '            }\n            session.close().await;'
+              ),
+              (
+                  "line.trim_start_matches(|character: char| character == '&')",
+                  "line.trim_start_matches('&')"
+              ),
+              (
+                  '        .filter(|part| !part.is_empty())\n        .next_back()?;',
+                  '        .rfind(|part| !part.is_empty())?;'
+              ),
+              (
+                  'before.map_or(true, |value| !is_identifier_char(value))',
+                  'before.is_none_or(|value| !is_identifier_char(value))'
+              ),
+              (
+                  'after.map_or(true, |value| !is_identifier_char(value))',
+                  'after.is_none_or(|value| !is_identifier_char(value))'
+              ),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one match for {old!r}, found {count}')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text)
+      - name: Validate Rust formatting and Clippy
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml
+          cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Remove one-shot repair workflow
+        run: rm .github/workflows/pr214-clippy-repair.yml
+      - name: Commit validated repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src-tauri/src/coding_lsp.rs .github/workflows/pr214-clippy-repair.yml
+          git commit -m "fix: satisfy strict Clippy in LSP navigation"
+          git push origin HEAD:work/patch-lsp-hardening
