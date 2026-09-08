@@ -90,19 +90,16 @@ pub async fn workspace_symbols(
             let request = session
                 .request("workspace/symbol", json!({"query": query}))
                 .await;
-            match request {
-                Ok(result) => {
-                    server_succeeded = true;
-                    servers.push(format!(
-                        "{}@{}",
-                        candidate.spec.command,
-                        relative_display(&root, &candidate.root)
-                    ));
-                    let remaining = MAX_SYMBOL_RESULTS.saturating_sub(collected.len());
-                    let sanitized = sanitize_lsp_result(&root, result, remaining)?;
-                    append_unique_results(&mut collected, &mut seen, sanitized, remaining);
-                }
-                Err(_) => {}
+            if let Ok(result) = request {
+                server_succeeded = true;
+                servers.push(format!(
+                    "{}@{}",
+                    candidate.spec.command,
+                    relative_display(&root, &candidate.root)
+                ));
+                let remaining = MAX_SYMBOL_RESULTS.saturating_sub(collected.len());
+                let sanitized = sanitize_lsp_result(&root, result, remaining)?;
+                append_unique_results(&mut collected, &mut seen, sanitized, remaining);
             }
             session.close().await;
         }
@@ -1030,7 +1027,7 @@ fn go_declaration(line: &str) -> Option<(&'static str, String)> {
 }
 
 fn php_declaration(line: &str) -> Option<(&'static str, String)> {
-    let mut value = line.trim_start_matches(|character: char| character == '&');
+    let mut value = line.trim_start_matches('&');
     loop {
         let mut stripped = false;
         for prefix in [
@@ -1171,8 +1168,7 @@ fn function_name_before_paren(line: &str) -> Option<String> {
     }
     let name = before
         .split(|character: char| character.is_whitespace() || character == '*' || character == '&')
-        .filter(|part| !part.is_empty())
-        .next_back()?;
+        .rfind(|part| !part.is_empty())?;
     if matches!(
         name,
         "if" | "for" | "while" | "switch" | "catch" | "return" | "new"
@@ -1258,8 +1254,8 @@ fn word_occurrences(line: &str, symbol: &str) -> Vec<usize> {
     for (byte_index, _) in line.match_indices(symbol) {
         let before = line[..byte_index].chars().next_back();
         let after = line[byte_index + symbol.len()..].chars().next();
-        if before.map_or(true, |value| !is_identifier_char(value))
-            && after.map_or(true, |value| !is_identifier_char(value))
+        if before.is_none_or(|value| !is_identifier_char(value))
+            && after.is_none_or(|value| !is_identifier_char(value))
         {
             results.push(line[..byte_index].chars().count());
         }
