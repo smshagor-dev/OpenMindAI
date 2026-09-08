@@ -2,6 +2,19 @@ from pathlib import Path
 
 path = Path("scripts/integrate_coding_workspace.py")
 text = path.read_text(encoding="utf-8")
+
+# Runtime guard process-tree scoping was already merged by the isolated-runtime
+# hardening work. Remove the old one-shot replacement so this bootstrap is
+# idempotent when replayed from current main.
+runtime_patch = 'patch(\n    "src-tauri/src/runtime_guards.rs",\n'
+register_marker = '# Register durable control migration.\n'
+if runtime_patch in text:
+    start = text.index(runtime_patch)
+    end = text.index(register_marker, start)
+    text = text[:start] + text[end:]
+
+# Normalize the delivery action example insertion. The original generated
+# triple-quoted replacement is fragile across formatting changes in the prompt.
 marker = "# Decision function takes plan and returns usage evidence.\n"
 start = text.index(marker)
 needle = "patch(\n    \"src-tauri/src/local_agent.rs\",\n    '''{{\\\"type\\\":\\\"tool\\\",\\\"tool\\\":\\\"terminal"
