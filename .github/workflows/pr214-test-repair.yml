@@ -20,6 +20,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
       - name: Repair cross-platform path scoping and hash precondition parsing
         shell: python
         run: |
@@ -35,6 +38,15 @@ jobs:
           if text.count(old) != 1:
               raise SystemExit('sanitize_lsp_result insertion point mismatch')
           text = text.replace(old, new, 1)
+
+          replacements = [
+              ('if lsp_item_is_scoped(root, &item)? {', 'if lsp_item_is_scoped(&root, &item)? {'),
+              ('if lsp_item_is_scoped(root, &result)? {', 'if lsp_item_is_scoped(&root, &result)? {'),
+          ]
+          for old, new in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit(f'LSP borrow repair point mismatch: {old}')
+              text = text.replace(old, new, 1)
           lsp.write_text(text)
 
           patch = Path('src-tauri/src/coding_patch.rs')
