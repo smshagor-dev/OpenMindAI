@@ -428,6 +428,10 @@ export interface OpenAgentSandboxCapability {
   provider: string | null;
   available: boolean;
   strongIsolation: boolean;
+  processTreeControl: boolean;
+  boundedOutput: boolean;
+  disposableScratch: boolean;
+  resourceLimits: string[];
   message: string;
 }
 

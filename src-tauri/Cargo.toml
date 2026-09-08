@@ -55,6 +55,9 @@ url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 zip = "2"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Retained only so the existing lockfile remains reproducible while historical
 # mobile packages are still present in Cargo.lock. No Android/iOS application
 # entry point or mobile feature code is compiled from this desktop-only repo.

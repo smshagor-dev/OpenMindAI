@@ -80,6 +80,7 @@ mod openagent_context;
 mod openagent_runs;
 mod openagent_security;
 mod pdf_ocr;
+mod runtime_guards;
 mod speech_runtime;
 mod vision_batch;
 mod warm_start;

@@ -2,8 +2,11 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     sync::OnceLock,
-    time::{Duration, Instant},
+    time::Instant,
 };
+
+#[cfg(target_os = "windows")]
+use std::time::Duration;
 
 #[cfg(target_os = "windows")]
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
@@ -13,12 +16,14 @@ use serde::Serialize;
 use tokio::process::Command;
 #[cfg(target_os = "windows")]
 use tokio::time::sleep;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use uuid::Uuid;
 
-use crate::app_error::AppError;
+use crate::{app_error::AppError, runtime_guards};
 
 const RUNTIME_CWD_MARKER: &str = "__OPENMIND_RUNTIME_CWD__";
+#[cfg(target_os = "windows")]
+const WINDOWS_SANDBOX_MEMORY_MB: u32 = 4_096;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const SAFE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
@@ -29,6 +34,10 @@ pub struct SandboxCapability {
     pub provider: Option<String>,
     pub available: bool,
     pub strong_isolation: bool,
+    pub process_tree_control: bool,
+    pub bounded_output: bool,
+    pub disposable_scratch: bool,
+    pub resource_limits: Vec<String>,
     pub message: String,
 }
 
@@ -86,6 +95,10 @@ pub fn sandbox_capability() -> SandboxCapability {
         provider: provider.map(|value| value.label().to_string()),
         available: provider.is_some(),
         strong_isolation: provider.is_some(),
+        process_tree_control: true,
+        bounded_output: true,
+        disposable_scratch: provider.is_some(),
+        resource_limits: runtime_guards::resource_limit_labels(),
         message: provider
             .map(|value| value.message().to_string())
             .unwrap_or_else(unavailable_message),
@@ -159,40 +172,27 @@ pub async fn run_host_shell(
     }
 
     let started = Instant::now();
-    let mut process = host_shell_process(command, &cwd);
-    process.kill_on_drop(true);
-    let output =
-        match tokio::time::timeout(Duration::from_secs(timeout_secs), process.output()).await {
-            Ok(result) => result?,
-            Err(_) => {
-                return Ok(ShellExecutionResult {
-                    cwd: display_path(&cwd),
-                    exit_code: -1,
-                    stdout: String::new(),
-                    stderr: format!("Command timed out after {timeout_secs} seconds."),
-                    duration_ms: started.elapsed().as_millis(),
-                    timed_out: true,
-                    truncated: false,
-                    backend: "host-explicit".to_string(),
-                    isolated: false,
-                    network_disabled: false,
-                });
-            }
-        };
-
-    let mut stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let process = host_shell_process(command, &cwd);
+    let capture = runtime_guards::run_process(process, timeout_secs, max_output_chars).await?;
+    let mut stdout = String::from_utf8_lossy(&capture.stdout).into_owned();
+    let mut stderr = String::from_utf8_lossy(&capture.stderr).into_owned();
+    if capture.timed_out {
+        if !stderr.is_empty() && !stderr.ends_with('\n') {
+            stderr.push('\n');
+        }
+        stderr.push_str(&format!("Command timed out after {timeout_secs} seconds."));
+    }
     let resolved_cwd = take_cwd_marker(&mut stdout).unwrap_or_else(|| display_path(&cwd));
     let (stdout, stdout_truncated) = truncate_chars(&stdout, max_output_chars);
     let (stderr, stderr_truncated) = truncate_chars(&stderr, max_output_chars);
     Ok(ShellExecutionResult {
         cwd: resolved_cwd,
-        exit_code: output.status.code().unwrap_or(-1),
+        exit_code: capture.exit_code,
         stdout,
         stderr,
         duration_ms: started.elapsed().as_millis(),
-        timed_out: false,
-        truncated: stdout_truncated || stderr_truncated,
+        timed_out: capture.timed_out,
+        truncated: capture.truncated || stdout_truncated || stderr_truncated,
         backend: "host-explicit".to_string(),
         isolated: false,
         network_disabled: false,
@@ -352,30 +352,22 @@ async fn run_bubblewrap(
         .arg(wrapped)
         .kill_on_drop(true);
 
+    runtime_guards::apply_isolated_limits(&mut process, timeout_secs)?;
     let started = Instant::now();
-    let output =
-        match tokio::time::timeout(Duration::from_secs(timeout_secs), process.output()).await {
-            Ok(result) => result?,
-            Err(_) => {
-                return Ok(timeout_result(
-                    workspace_root,
-                    cwd,
-                    timeout_secs,
-                    started,
-                    "bubblewrap",
-                ));
-            }
-        };
+    let output = runtime_guards::run_process(process, timeout_secs, max_output_chars).await?;
     finish_isolated_output(IsolatedOutput {
         workspace_root,
         cwd,
-        exit_code: output.status.code().unwrap_or(-1),
+        exit_code: output.exit_code,
         stdout: &output.stdout,
         stderr: &output.stderr,
         started,
         max_output_chars,
         backend: "bubblewrap",
         sandbox_workspace_prefix: Some("/workspace"),
+        timed_out: output.timed_out,
+        pre_truncated: output.truncated,
+        timeout_secs,
     })
 }
 
@@ -403,6 +395,9 @@ async fn run_macos_sandbox(
     let executable = macos_sandbox_path()
         .ok_or_else(|| AppError::internal("sandbox-exec disappeared after capability detection"))?;
     let workspace = sandbox_profile_escape(&display_path(workspace_root));
+    let scratch_dir = env::temp_dir().join(format!("openmindai-runtime-{}", Uuid::new_v4()));
+    fs::create_dir_all(&scratch_dir)?;
+    let scratch = sandbox_profile_escape(&display_path(&scratch_dir));
     let profile = format!(
         "(version 1)\n\
          (deny default)\n\
@@ -422,11 +417,11 @@ async fn run_macos_sandbox(
            (subpath \"/private/etc\")\n\
            (subpath \"/private/var/db/dyld\")\n\
            (subpath \"/dev\")\n\
-           (subpath \"{workspace}\"))\n\
+           (subpath \"{workspace}\")\n\
+           (subpath \"{scratch}\"))\n\
          (allow file-write*\n\
            (subpath \"{workspace}\")\n\
-           (subpath \"/private/tmp\")\n\
-           (subpath \"/tmp\"))\n\
+           (subpath \"{scratch}\"))\n\
          (deny network*)"
     );
     let wrapped = shell_wrapper(command);
@@ -439,37 +434,31 @@ async fn run_macos_sandbox(
         .arg(wrapped)
         .current_dir(cwd)
         .env_clear()
-        .env("HOME", "/private/tmp")
-        .env("TMPDIR", "/private/tmp")
+        .env("HOME", &scratch_dir)
+        .env("TMPDIR", &scratch_dir)
         .env("PATH", SAFE_PATH)
         .env("LANG", "C.UTF-8")
         .env("OPENMINDAI_ISOLATED", "1")
         .kill_on_drop(true);
 
+    runtime_guards::apply_isolated_limits(&mut process, timeout_secs)?;
     let started = Instant::now();
-    let output =
-        match tokio::time::timeout(Duration::from_secs(timeout_secs), process.output()).await {
-            Ok(result) => result?,
-            Err(_) => {
-                return Ok(timeout_result(
-                    workspace_root,
-                    cwd,
-                    timeout_secs,
-                    started,
-                    "sandbox-exec",
-                ));
-            }
-        };
+    let output = runtime_guards::run_process(process, timeout_secs, max_output_chars).await;
+    let _ = fs::remove_dir_all(&scratch_dir);
+    let output = output?;
     finish_isolated_output(IsolatedOutput {
         workspace_root,
         cwd,
-        exit_code: output.status.code().unwrap_or(-1),
+        exit_code: output.exit_code,
         stdout: &output.stdout,
         stderr: &output.stderr,
         started,
         max_output_chars,
         backend: "sandbox-exec",
         sandbox_workspace_prefix: None,
+        timed_out: output.timed_out,
+        pre_truncated: output.truncated,
+        timeout_secs,
     })
 }
 
@@ -543,7 +532,7 @@ async fn run_windows_sandbox(
            <VideoInput>Disable</VideoInput>\r\n\
            <PrinterRedirection>Disable</PrinterRedirection>\r\n\
            <ClipboardRedirection>Disable</ClipboardRedirection>\r\n\
-           <MemoryInMB>2048</MemoryInMB>\r\n\
+           <MemoryInMB>{WINDOWS_SANDBOX_MEMORY_MB}</MemoryInMB>\r\n\
            <MappedFolders>\r\n\
              <MappedFolder><HostFolder>{}</HostFolder><SandboxFolder>C:\\OpenMindWorkspace</SandboxFolder><ReadOnly>false</ReadOnly></MappedFolder>\r\n\
              <MappedFolder><HostFolder>{}</HostFolder><SandboxFolder>C:\\OpenMindControl</SandboxFolder><ReadOnly>false</ReadOnly></MappedFolder>\r\n\
@@ -574,7 +563,7 @@ async fn run_windows_sandbox(
             )));
         }
         if started.elapsed() >= Duration::from_secs(timeout_secs) {
-            let _ = child.kill().await;
+            runtime_guards::terminate_process_tree(&mut child).await;
             let _ = fs::remove_dir_all(&control_dir);
             return Ok(timeout_result(
                 workspace_root,
@@ -605,7 +594,7 @@ async fn run_windows_sandbox(
         .await
         .is_err()
     {
-        let _ = child.kill().await;
+        runtime_guards::terminate_process_tree(&mut child).await;
     }
     let _ = fs::remove_dir_all(&control_dir);
 
@@ -621,6 +610,28 @@ async fn run_windows_sandbox(
         isolated: true,
         network_disabled: true,
     })
+}
+
+#[cfg(target_os = "windows")]
+fn timeout_result(
+    _workspace_root: &Path,
+    cwd: &Path,
+    timeout_secs: u64,
+    started: Instant,
+    backend: &str,
+) -> ShellExecutionResult {
+    ShellExecutionResult {
+        cwd: display_path(cwd),
+        exit_code: -1,
+        stdout: String::new(),
+        stderr: format!("Command timed out after {timeout_secs} seconds."),
+        duration_ms: started.elapsed().as_millis(),
+        timed_out: true,
+        truncated: false,
+        backend: backend.to_string(),
+        isolated: true,
+        network_disabled: true,
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -647,6 +658,9 @@ struct IsolatedOutput<'a> {
     max_output_chars: usize,
     backend: &'a str,
     sandbox_workspace_prefix: Option<&'a str>,
+    timed_out: bool,
+    pre_truncated: bool,
+    timeout_secs: u64,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -661,9 +675,18 @@ fn finish_isolated_output(output: IsolatedOutput<'_>) -> Result<ShellExecutionRe
         max_output_chars,
         backend,
         sandbox_workspace_prefix,
+        timed_out,
+        pre_truncated,
+        timeout_secs,
     } = output;
     let mut stdout = String::from_utf8_lossy(stdout).into_owned();
-    let stderr = String::from_utf8_lossy(stderr).into_owned();
+    let mut stderr = String::from_utf8_lossy(stderr).into_owned();
+    if timed_out {
+        if !stderr.is_empty() && !stderr.ends_with('\n') {
+            stderr.push('\n');
+        }
+        stderr.push_str(&format!("Command timed out after {timeout_secs} seconds."));
+    }
     let marker = take_cwd_marker(&mut stdout);
     let resolved_cwd = marker
         .as_deref()
@@ -681,33 +704,12 @@ fn finish_isolated_output(output: IsolatedOutput<'_>) -> Result<ShellExecutionRe
         stdout,
         stderr,
         duration_ms: started.elapsed().as_millis(),
-        timed_out: false,
-        truncated: stdout_truncated || stderr_truncated,
+        timed_out,
+        truncated: pre_truncated || stdout_truncated || stderr_truncated,
         backend: backend.to_string(),
         isolated: true,
         network_disabled: true,
     })
-}
-
-fn timeout_result(
-    _workspace_root: &Path,
-    cwd: &Path,
-    timeout_secs: u64,
-    started: Instant,
-    backend: &str,
-) -> ShellExecutionResult {
-    ShellExecutionResult {
-        cwd: display_path(cwd),
-        exit_code: -1,
-        stdout: String::new(),
-        stderr: format!("Command timed out after {timeout_secs} seconds."),
-        duration_ms: started.elapsed().as_millis(),
-        timed_out: true,
-        truncated: false,
-        backend: backend.to_string(),
-        isolated: true,
-        network_disabled: true,
-    }
 }
 
 fn host_shell_process(command: &str, cwd: &Path) -> Command {

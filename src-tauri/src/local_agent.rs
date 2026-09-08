@@ -336,15 +336,15 @@ async fn run_agent_message(
             "attach a local folder to this project before using OpenAgent",
         ));
     }
-    let approval_mode = {
+    let (approval_mode, sandbox_mode) = {
         let db = state
             .database
             .lock()
             .map_err(|_| AppError::internal("database lock poisoned"))?;
-        ApprovalMode::parse(
-            &SettingsRepository::new(&db)
-                .get_preferences()?
-                .openagent_approval_mode,
+        let preferences = SettingsRepository::new(&db).get_preferences()?;
+        (
+            ApprovalMode::parse(&preferences.openagent_approval_mode),
+            preferences.openagent_sandbox_mode,
         )
     };
 
@@ -465,6 +465,7 @@ async fn run_agent_message(
                 &transcript,
                 step,
                 &model.id,
+                &sandbox_mode,
             ) => result?,
                 _ = cancellation.cancelled() => {
                     status = "cancelled";
@@ -685,7 +686,7 @@ async fn run_agent_message(
             }
 
             let result = tokio::select! {
-                result = execute_tool(tool, &decision, &agent_context.workspace) => result,
+                result = execute_tool(tool, &decision, &agent_context.workspace, &sandbox_mode) => result,
                 _ = cancellation.cancelled() => {
                     status = "cancelled";
                     finish_durable_step(
@@ -1492,6 +1493,7 @@ fn create_agent_messages(
     Ok((user, assistant))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn request_agent_decision(
     client: &reqwest::Client,
     endpoint: &str,
@@ -1500,6 +1502,7 @@ async fn request_agent_decision(
     transcript: &VecDeque<String>,
     step: usize,
     model_id: &str,
+    sandbox_mode: &str,
 ) -> Result<Value, AppError> {
     let root_summary = context
         .workspace
@@ -1509,7 +1512,10 @@ async fn request_agent_decision(
         .collect::<Vec<_>>()
         .join("\n");
     let sandbox = isolated_runtime::sandbox_capability();
-    let terminal_rule = if sandbox.available {
+    let strict_isolation = sandbox_mode == "isolated_sandbox";
+    let terminal_rule = if strict_isolation && !sandbox.available {
+        "terminal is NOT AVAILABLE because strict isolation is selected but no qualified isolation provider is available. Never fall back to the host.".to_string()
+    } else if sandbox.available {
         format!(
             "terminal is AVAILABLE. Default terminal actions run inside {} with the attached workspace as the only writable project mount and networking disabled. Set hostExecution=true only when host access is genuinely required; hostExecution requires Full PC + Terminal permission.",
             sandbox.provider.as_deref().unwrap_or("the local isolation backend")
@@ -1529,6 +1535,7 @@ async fn request_agent_decision(
 
     let system = format!(
         "You are OpenAgent, OpenMindAI's local coding agent. You operate directly on a user's local project only to fulfill the latest user request.\n\
+Active sandbox policy: {sandbox_mode}. When isolated_sandbox is selected, explicit hostExecution is forbidden.\n\
 Return EXACTLY one JSON object and no markdown, commentary, chain-of-thought, or code fences.\n\
 Choose either a tool action or a final answer.\n\
 Tool JSON shapes:\n\
@@ -1653,6 +1660,7 @@ async fn execute_tool(
     tool: &str,
     action: &Value,
     config: &AgentWorkspaceConfig,
+    sandbox_mode: &str,
 ) -> Result<AgentTurnResult, AppError> {
     match tool {
         "list_dir" => {
@@ -1986,6 +1994,11 @@ async fn execute_tool(
                 .get("hostExecution")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            if host_execution && sandbox_mode == "isolated_sandbox" {
+                return Err(AppError::internal(
+                    "strict isolation mode forbids hostExecution; switch the project execution policy explicitly if host access is required",
+                ));
+            }
             if host_execution && !config.full_pc_access {
                 return Err(AppError::internal(
                     "hostExecution requires Full PC + Terminal access for this project",
