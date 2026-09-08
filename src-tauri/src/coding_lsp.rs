@@ -192,9 +192,7 @@ async fn position_navigation(
                     }),
                 };
                 let (method, limit) = match kind {
-                    NavigationKind::Definition => {
-                        ("textDocument/definition", MAX_SYMBOL_RESULTS)
-                    }
+                    NavigationKind::Definition => ("textDocument/definition", MAX_SYMBOL_RESULTS),
                     NavigationKind::References => {
                         ("textDocument/references", MAX_REFERENCE_RESULTS)
                     }
@@ -469,7 +467,9 @@ async fn read_lsp_message(reader: &mut BufReader<ChildStdout>) -> Result<Value, 
         }
         header_bytes = header_bytes.saturating_add(read);
         if header_bytes > MAX_LSP_HEADER_BYTES {
-            return Err(AppError::internal("LSP response headers exceed safety limit"));
+            return Err(AppError::internal(
+                "LSP response headers exceed safety limit",
+            ));
         }
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {
@@ -593,8 +593,7 @@ fn select_workspace_servers(root: &Path) -> Vec<ServerSpec> {
             },
         ),
         (
-            root.join("compile_commands.json").is_file()
-                || root.join("CMakeLists.txt").is_file(),
+            root.join("compile_commands.json").is_file() || root.join("CMakeLists.txt").is_file(),
             ServerSpec {
                 command: "clangd",
                 args: &[],
@@ -783,9 +782,7 @@ fn declaration_symbol(file: &Path, line: &str) -> Option<(&'static str, String)>
         "py" => python_declaration(trimmed),
         "go" => go_declaration(trimmed),
         "php" => php_declaration(trimmed),
-        "c" | "h" | "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => {
-            c_like_declaration(trimmed)
-        }
+        "c" | "h" | "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => c_like_declaration(trimmed),
         "java" | "cs" => java_like_declaration(trimmed),
         "kt" | "kts" => kotlin_declaration(trimmed),
         "rb" => ruby_declaration(trimmed),
@@ -1043,7 +1040,10 @@ fn function_name_before_paren(line: &str) -> Option<String> {
         .split(|character: char| character.is_whitespace() || character == '*' || character == '&')
         .filter(|part| !part.is_empty())
         .next_back()?;
-    if matches!(name, "if" | "for" | "while" | "switch" | "catch" | "return" | "new") {
+    if matches!(
+        name,
+        "if" | "for" | "while" | "switch" | "catch" | "return" | "new"
+    ) {
         return None;
     }
     if name.chars().all(is_identifier_char) {
@@ -1242,8 +1242,7 @@ fn extension(path: &Path) -> String {
 fn supported_source(path: &Path) -> bool {
     matches!(
         extension(path).as_str(),
-        "rs"
-            | "ts"
+        "rs" | "ts"
             | "tsx"
             | "js"
             | "jsx"
