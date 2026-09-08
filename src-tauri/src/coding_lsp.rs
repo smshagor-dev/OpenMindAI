@@ -23,6 +23,10 @@ const MAX_SYMBOL_RESULTS: usize = 100;
 const MAX_REFERENCE_RESULTS: usize = 200;
 const MAX_LSP_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_LSP_HEADER_BYTES: usize = 16 * 1024;
+const MAX_PROJECT_ROOTS: usize = 32;
+const MAX_PROJECT_SCAN_DIRS: usize = 250;
+const MAX_PROJECT_SCAN_DEPTH: usize = 5;
+const MAX_WORKSPACE_LSP_SESSIONS: usize = 8;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +41,12 @@ struct ServerSpec {
     command: &'static str,
     args: &'static [&'static str],
     language_id: &'static str,
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceServer {
+    root: PathBuf,
+    spec: ServerSpec,
 }
 
 struct LspSession {
@@ -66,11 +76,15 @@ pub async fn workspace_symbols(
         let mut servers = Vec::new();
         let mut server_succeeded = false;
 
-        for spec in select_workspace_servers(&root) {
+        for candidate in discover_workspace_servers(&root)?
+            .into_iter()
+            .take(MAX_WORKSPACE_LSP_SESSIONS)
+        {
             if collected.len() >= MAX_SYMBOL_RESULTS {
                 break;
             }
-            let Ok(mut session) = LspSession::start(&root, spec).await else {
+            let Ok(mut session) = LspSession::start(&root, &candidate.root, candidate.spec).await
+            else {
                 continue;
             };
             let request = session
@@ -79,7 +93,11 @@ pub async fn workspace_symbols(
             match request {
                 Ok(result) => {
                     server_succeeded = true;
-                    servers.push(spec.command.to_string());
+                    servers.push(format!(
+                        "{}@{}",
+                        candidate.spec.command,
+                        relative_display(&root, &candidate.root)
+                    ));
                     let remaining = MAX_SYMBOL_RESULTS.saturating_sub(collected.len());
                     let sanitized = sanitize_lsp_result(&root, result, remaining)?;
                     append_unique_results(&mut collected, &mut seen, sanitized, remaining);
@@ -89,11 +107,18 @@ pub async fn workspace_symbols(
             session.close().await;
         }
 
-        if server_succeeded {
+        if !collected.is_empty() {
             return Ok(NavigationResult {
                 engine: "lsp".to_string(),
                 server: Some(servers.join(",")),
                 result: Value::Array(collected),
+            });
+        }
+        if server_succeeded {
+            return Ok(NavigationResult {
+                engine: "lsp+lexical-fallback".to_string(),
+                server: Some(servers.join(",")),
+                result: fallback_workspace_symbols(&root, query)?,
             });
         }
     }
@@ -172,7 +197,8 @@ async fn position_navigation(
     validate_character_position(line_text, character_index)?;
 
     if let (true, Some(spec)) = (allow_language_server, select_server_for_file(&file)) {
-        if let Ok(mut session) = LspSession::start(&root, spec).await {
+        let server_root = nearest_project_root(&root, &file, spec);
+        if let Ok(mut session) = LspSession::start(&root, &server_root, spec).await {
             if session
                 .open_document(&file, &text, spec.language_id)
                 .await
@@ -199,12 +225,18 @@ async fn position_navigation(
                 };
                 if let Ok(result) = session.request(method, params).await {
                     let result = sanitize_lsp_result(&root, result, limit)?;
-                    session.close().await;
-                    return Ok(NavigationResult {
-                        engine: "lsp".to_string(),
-                        server: Some(spec.command.to_string()),
-                        result,
-                    });
+                    if result_has_items(&result) {
+                        session.close().await;
+                        return Ok(NavigationResult {
+                            engine: "lsp".to_string(),
+                            server: Some(format!(
+                                "{}@{}",
+                                spec.command,
+                                relative_display(&root, &server_root)
+                            )),
+                            result,
+                        });
+                    }
                 }
             }
             session.close().await;
@@ -223,7 +255,7 @@ async fn position_navigation(
     })
 }
 
-fn resolve_server_executable(root: &Path, name: &str) -> Result<PathBuf, AppError> {
+fn resolve_server_executable(workspace_root: &Path, name: &str) -> Result<PathBuf, AppError> {
     let path = env::var_os("PATH")
         .ok_or_else(|| AppError::internal("PATH is unavailable for language server discovery"))?;
     for directory in env::split_paths(&path) {
@@ -243,7 +275,7 @@ fn resolve_server_executable(root: &Path, name: &str) -> Result<PathBuf, AppErro
             let Ok(executable) = fs::canonicalize(candidate) else {
                 continue;
             };
-            if executable.starts_with(root) {
+            if executable.starts_with(workspace_root) {
                 continue;
             }
             return Ok(executable);
@@ -255,12 +287,21 @@ fn resolve_server_executable(root: &Path, name: &str) -> Result<PathBuf, AppErro
 }
 
 impl LspSession {
-    async fn start(root: &Path, spec: ServerSpec) -> Result<Self, AppError> {
-        let executable = resolve_server_executable(root, spec.command)?;
+    async fn start(
+        workspace_root: &Path,
+        server_root: &Path,
+        spec: ServerSpec,
+    ) -> Result<Self, AppError> {
+        if !server_root.starts_with(workspace_root) || !server_root.is_dir() {
+            return Err(AppError::internal(
+                "language server root is outside the attached workspace",
+            ));
+        }
+        let executable = resolve_server_executable(workspace_root, spec.command)?;
         let mut process = Command::new(executable);
         process
             .args(spec.args)
-            .current_dir(root)
+            .current_dir(server_root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -276,8 +317,8 @@ impl LspSession {
             .stdout
             .take()
             .ok_or_else(|| AppError::internal("language server stdout unavailable"))?;
-        let root_uri = directory_uri(root)?;
-        let root_name = root
+        let root_uri = directory_uri(server_root)?;
+        let root_name = server_root
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or("workspace")
@@ -552,7 +593,7 @@ fn select_server_for_file(file: &Path) -> Option<ServerSpec> {
     }
 }
 
-fn select_workspace_servers(root: &Path) -> Vec<ServerSpec> {
+fn server_specs_for_directory(root: &Path) -> Vec<ServerSpec> {
     let mut specs = Vec::new();
     let mut commands = HashSet::new();
     let candidates = [
@@ -609,6 +650,90 @@ fn select_workspace_servers(root: &Path) -> Vec<ServerSpec> {
     specs
 }
 
+fn discover_workspace_servers(root: &Path) -> Result<Vec<WorkspaceServer>, AppError> {
+    let mut results = Vec::new();
+    let mut seen = HashSet::new();
+    let mut directories = vec![(root.to_path_buf(), 0usize)];
+    let mut scanned = 0usize;
+
+    while let Some((directory, depth)) = directories.pop() {
+        if scanned >= MAX_PROJECT_SCAN_DIRS || results.len() >= MAX_PROJECT_ROOTS {
+            break;
+        }
+        scanned += 1;
+
+        for spec in server_specs_for_directory(&directory) {
+            let key = format!("{}|{}", spec.command, directory.to_string_lossy());
+            if seen.insert(key) {
+                results.push(WorkspaceServer {
+                    root: directory.clone(),
+                    spec,
+                });
+                if results.len() >= MAX_PROJECT_ROOTS {
+                    break;
+                }
+            }
+        }
+
+        if depth >= MAX_PROJECT_SCAN_DEPTH {
+            continue;
+        }
+        let mut entries = fs::read_dir(&directory)?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries.into_iter().rev() {
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path)?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() || ignored_directory(&path) {
+                continue;
+            }
+            directories.push((path, depth + 1));
+        }
+    }
+
+    Ok(results)
+}
+
+fn nearest_project_root(workspace_root: &Path, file: &Path, spec: ServerSpec) -> PathBuf {
+    let mut current = file.parent().unwrap_or(workspace_root).to_path_buf();
+    loop {
+        if project_marker_present(&current, spec) {
+            return current;
+        }
+        if current == workspace_root {
+            break;
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if !parent.starts_with(workspace_root) {
+            break;
+        }
+        current = parent.to_path_buf();
+    }
+    workspace_root.to_path_buf()
+}
+
+fn project_marker_present(root: &Path, spec: ServerSpec) -> bool {
+    match spec.command {
+        "rust-analyzer" => root.join("Cargo.toml").is_file(),
+        "typescript-language-server" => {
+            root.join("tsconfig.json").is_file()
+                || root.join("jsconfig.json").is_file()
+                || root.join("package.json").is_file()
+        }
+        "pyright-langserver" => {
+            root.join("pyproject.toml").is_file()
+                || root.join("requirements.txt").is_file()
+                || root.join("setup.py").is_file()
+        }
+        "gopls" => root.join("go.mod").is_file(),
+        "clangd" => {
+            root.join("compile_commands.json").is_file() || root.join("CMakeLists.txt").is_file()
+        }
+        _ => false,
+    }
+}
+
 fn sanitize_lsp_result(root: &Path, result: Value, limit: usize) -> Result<Value, AppError> {
     match result {
         Value::Null => Ok(Value::Null),
@@ -632,6 +757,14 @@ fn sanitize_lsp_result(root: &Path, result: Value, limit: usize) -> Result<Value
             }
         }
         _ => Ok(Value::Null),
+    }
+}
+
+fn result_has_items(result: &Value) -> bool {
+    match result {
+        Value::Array(items) => !items.is_empty(),
+        Value::Object(_) => true,
+        _ => false,
     }
 }
 
@@ -782,7 +915,9 @@ fn declaration_symbol(file: &Path, line: &str) -> Option<(&'static str, String)>
         "py" => python_declaration(trimmed),
         "go" => go_declaration(trimmed),
         "php" => php_declaration(trimmed),
-        "c" | "h" | "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => c_like_declaration(trimmed),
+        "c" | "h" | "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => {
+            c_like_declaration(trimmed)
+        }
         "java" | "cs" => java_like_declaration(trimmed),
         "kt" | "kts" => kotlin_declaration(trimmed),
         "rb" => ruby_declaration(trimmed),
@@ -1368,10 +1503,41 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         fs::write(temp.path().join("Cargo.toml"), "[package]\nname='x'\n").unwrap();
         fs::write(temp.path().join("package.json"), "{}").unwrap();
-        let specs = select_workspace_servers(temp.path());
+        let specs = server_specs_for_directory(temp.path());
         let commands = specs.iter().map(|spec| spec.command).collect::<Vec<_>>();
         assert!(commands.contains(&"rust-analyzer"));
         assert!(commands.contains(&"typescript-language-server"));
+    }
+
+    #[test]
+    fn workspace_server_discovery_finds_nested_projects() {
+        let temp = tempfile::tempdir().unwrap();
+        let nested = temp.path().join("apps/web");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("package.json"), "{}").unwrap();
+        let servers = discover_workspace_servers(temp.path()).unwrap();
+        assert!(servers.iter().any(|server| {
+            server.spec.command == "typescript-language-server" && server.root == nested
+        }));
+    }
+
+    #[test]
+    fn nearest_project_root_prefers_nested_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let nested = temp.path().join("crates/core");
+        let source = nested.join("src/lib.rs");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(nested.join("Cargo.toml"), "[package]\nname='core'\n").unwrap();
+        fs::write(&source, "pub fn run() {}\n").unwrap();
+        let spec = select_server_for_file(&source).unwrap();
+        assert_eq!(nearest_project_root(temp.path(), &source, spec), nested);
+    }
+
+    #[test]
+    fn empty_lsp_result_is_not_treated_as_successful_navigation() {
+        assert!(!result_has_items(&Value::Null));
+        assert!(!result_has_items(&Value::Array(Vec::new())));
+        assert!(result_has_items(&json!({"uri":"file:///tmp/a.rs"})));
     }
 
     #[test]
