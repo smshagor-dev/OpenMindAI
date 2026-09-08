@@ -1,0 +1,177 @@
+[1m[92m   Compiling[0m open-mind-ai v3.0.1 (/home/runner/work/OpenMindAI/OpenMindAI/src-tauri)
+[1m[91merror[0m[1m: duplicated attribute[0m
+    [1m[94m--> [0msrc/local_agent.rs:1611:9
+     [1m[94m|[0m
+[1m[94m1611[0m [1m[94m|[0m #[allow(clippy::too_many_arguments)]
+     [1m[94m|[0m         [1m[91m^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+     [1m[94m|[0m
+[1m[92mnote[0m: first defined here
+    [1m[94m--> [0msrc/local_agent.rs:1610:9
+     [1m[94m|[0m
+[1m[94m1610[0m [1m[94m|[0m #[allow(clippy::too_many_arguments)]
+     [1m[94m|[0m         [1m[92m^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+[1m[96mhelp[0m: remove this attribute
+    [1m[94m--> [0msrc/local_agent.rs:1611:9
+     [1m[94m|[0m
+[1m[94m1611[0m [1m[94m|[0m #[allow(clippy::too_many_arguments)]
+     [1m[94m|[0m         [1m[96m^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+     [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#duplicated_attributes
+     [1m[94m= [0m[1mnote[0m: `-D clippy::duplicated-attributes` implied by `-D warnings`
+     [1m[94m= [0m[1mhelp[0m: to override `-D warnings` add `#[allow(clippy::duplicated_attributes)]`
+
+[1m[91merror[0m[1m: constant `MAX_LOG_DIAGNOSTIC_CHARS` is never used[0m
+ [1m[94m--> [0msrc/coding_delivery.rs:7:7
+  [1m[94m|[0m
+[1m[94m7[0m [1m[94m|[0m const MAX_LOG_DIAGNOSTIC_CHARS: usize = 8_000;
+  [1m[94m|[0m       [1m[91m^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [1m[94m|[0m
+  [1m[94m= [0m[1mnote[0m: `-D dead-code` implied by `-D warnings`
+  [1m[94m= [0m[1mhelp[0m: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+[1m[91merror[0m[1m: function `policy_requires_approval` is never used[0m
+  [1m[94m--> [0msrc/coding_delivery.rs:31:8
+   [1m[94m|[0m
+[1m[94m31[0m [1m[94m|[0m pub fn policy_requires_approval(operation: &str) -> bool {
+   [1m[94m|[0m        [1m[91m^^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: function `summarize_check_failure` is never used[0m
+  [1m[94m--> [0msrc/coding_delivery.rs:73:8
+   [1m[94m|[0m
+[1m[94m73[0m [1m[94m|[0m pub fn summarize_check_failure(value: &Value) -> String {
+   [1m[94m|[0m        [1m[91m^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: field `root` is never read[0m
+  [1m[94m--> [0msrc/coding_intelligence.rs:25:5
+   [1m[94m|[0m
+[1m[94m23[0m [1m[94m|[0m struct FileFact {
+   [1m[94m|[0m        [1m[94m--------[0m [1m[94mfield in this struct[0m
+[1m[94m24[0m [1m[94m|[0m     root_id: String,
+[1m[94m25[0m [1m[94m|[0m     root: PathBuf,
+   [1m[94m|[0m     [1m[91m^^^^[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mnote[0m: `FileFact` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+[1m[91merror[0m[1m: function `build_repository_context` is never used[0m
+  [1m[94m--> [0msrc/coding_intelligence.rs:41:8
+   [1m[94m|[0m
+[1m[94m41[0m [1m[94m|[0m pub fn build_repository_context(
+   [1m[94m|[0m        [1m[91m^^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: constant `MAX_SCANNED_FILES` is never used[0m
+ [1m[94m--> [0msrc/openagent_context.rs:9:7
+  [1m[94m|[0m
+[1m[94m9[0m [1m[94m|[0m const MAX_SCANNED_FILES: usize = 2_000;
+  [1m[94m|[0m       [1m[91m^^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: constant `MAX_INSTRUCTION_FILES` is never used[0m
+  [1m[94m--> [0msrc/openagent_context.rs:10:7
+   [1m[94m|[0m
+[1m[94m10[0m [1m[94m|[0m const MAX_INSTRUCTION_FILES: usize = 12;
+   [1m[94m|[0m       [1m[91m^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: constant `MAX_RELEVANT_FILES` is never used[0m
+  [1m[94m--> [0msrc/openagent_context.rs:11:7
+   [1m[94m|[0m
+[1m[94m11[0m [1m[94m|[0m const MAX_RELEVANT_FILES: usize = 6;
+   [1m[94m|[0m       [1m[91m^^^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: constant `MAX_FILE_BYTES` is never used[0m
+  [1m[94m--> [0msrc/openagent_context.rs:12:7
+   [1m[94m|[0m
+[1m[94m12[0m [1m[94m|[0m const MAX_FILE_BYTES: u64 = 64 * 1024;
+   [1m[94m|[0m       [1m[91m^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: constant `MAX_PACK_CHARS` is never used[0m
+  [1m[94m--> [0msrc/openagent_context.rs:13:7
+   [1m[94m|[0m
+[1m[94m13[0m [1m[94m|[0m const MAX_PACK_CHARS: usize = 18_000;
+   [1m[94m|[0m       [1m[91m^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: constant `INSTRUCTION_FILES` is never used[0m
+  [1m[94m--> [0msrc/openagent_context.rs:15:7
+   [1m[94m|[0m
+[1m[94m15[0m [1m[94m|[0m const INSTRUCTION_FILES: &[&str] = &[
+   [1m[94m|[0m       [1m[91m^^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: constant `MANIFEST_FILES` is never used[0m
+  [1m[94m--> [0msrc/openagent_context.rs:22:7
+   [1m[94m|[0m
+[1m[94m22[0m [1m[94m|[0m const MANIFEST_FILES: &[&str] = &[
+   [1m[94m|[0m       [1m[91m^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: function `build_repository_context` is never used[0m
+  [1m[94m--> [0msrc/openagent_context.rs:32:8
+   [1m[94m|[0m
+[1m[94m32[0m [1m[94m|[0m pub fn build_repository_context(
+   [1m[94m|[0m        [1m[91m^^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: function `collect_files` is never used[0m
+  [1m[94m--> [0msrc/openagent_context.rs:77:4
+   [1m[94m|[0m
+[1m[94m77[0m [1m[94m|[0m fn collect_files(root: &Path) -> Result<Vec<PathBuf>, AppError> {
+   [1m[94m|[0m    [1m[91m^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: function `instruction_candidates` is never used[0m
+   [1m[94m--> [0msrc/openagent_context.rs:107:4
+    [1m[94m|[0m
+[1m[94m107[0m [1m[94m|[0m fn instruction_candidates(root: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
+    [1m[94m|[0m    [1m[91m^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: function `relevant_candidates` is never used[0m
+   [1m[94m--> [0msrc/openagent_context.rs:124:4
+    [1m[94m|[0m
+[1m[94m124[0m [1m[94m|[0m fn relevant_candidates(
+    [1m[94m|[0m    [1m[91m^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: function `read_bounded_text` is never used[0m
+   [1m[94m--> [0msrc/openagent_context.rs:152:4
+    [1m[94m|[0m
+[1m[94m152[0m [1m[94m|[0m fn read_bounded_text(path: &Path) -> Result<Option<String>, AppError> {
+    [1m[94m|[0m    [1m[91m^^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: function `safe_context_file` is never used[0m
+   [1m[94m--> [0msrc/openagent_context.rs:161:4
+    [1m[94m|[0m
+[1m[94m161[0m [1m[94m|[0m fn safe_context_file(path: &Path) -> bool {
+    [1m[94m|[0m    [1m[91m^^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: function `ignored_directory` is never used[0m
+   [1m[94m--> [0msrc/openagent_context.rs:196:4
+    [1m[94m|[0m
+[1m[94m196[0m [1m[94m|[0m fn ignored_directory(path: &Path) -> bool {
+    [1m[94m|[0m    [1m[91m^^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: function `goal_terms` is never used[0m
+   [1m[94m--> [0msrc/openagent_context.rs:205:4
+    [1m[94m|[0m
+[1m[94m205[0m [1m[94m|[0m fn goal_terms(goal: &str) -> HashSet<String> {
+    [1m[94m|[0m    [1m[91m^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: function `relative_display` is never used[0m
+   [1m[94m--> [0msrc/openagent_context.rs:221:4
+    [1m[94m|[0m
+[1m[94m221[0m [1m[94m|[0m fn relative_display(root: &Path, path: &Path) -> String {
+    [1m[94m|[0m    [1m[91m^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: function `truncate_chars` is never used[0m
+   [1m[94m--> [0msrc/openagent_context.rs:228:4
+    [1m[94m|[0m
+[1m[94m228[0m [1m[94m|[0m fn truncate_chars(value: &str, limit: usize) -> String {
+    [1m[94m|[0m    [1m[91m^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: field `root` is never read[0m
+  [1m[94m--> [0msrc/coding_intelligence.rs:25:5
+   [1m[94m|[0m
+[1m[94m23[0m [1m[94m|[0m struct FileFact {
+   [1m[94m|[0m        [1m[94m--------[0m [1m[94mfield in this struct[0m
+[1m[94m24[0m [1m[94m|[0m     root_id: String,
+[1m[94m25[0m [1m[94m|[0m     root: PathBuf,
+   [1m[94m|[0m     [1m[91m^^^^[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mnote[0m: `FileFact` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   [1m[94m= [0m[1mnote[0m: `-D dead-code` implied by `-D warnings`
+   [1m[94m= [0m[1mhelp[0m: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+[1m[91merror[0m: could not compile `open-mind-ai` (lib) due to 23 previous errors
+[1m[33mwarning[0m: build failed, waiting for other jobs to finish...
+[1m[91merror[0m: could not compile `open-mind-ai` (lib test) due to 2 previous errors
