@@ -17,11 +17,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Normalize integration bootstrap
+        run: python3 scripts/normalize_coding_bootstrap.py
+
       - name: Apply production integration
         run: python3 scripts/integrate_coding_workspace.py
 
       - name: Remove bootstrap files
-        run: rm -f scripts/integrate_coding_workspace.py .github/workflows/coding-workspace-validation.yml
+        run: rm -f scripts/normalize_coding_bootstrap.py scripts/integrate_coding_workspace.py .github/workflows/coding-workspace-validation.yml
 
       - name: Install Linux dependencies
         run: |
