@@ -312,11 +312,11 @@ fn commit_transaction(
             if change.target.exists() {
                 reject_symlink(&change.target)?;
                 let backup = tx_dir.join(format!("{index}.backup"));
-                fs::rename(&change.target, &backup)?;
+                durable_rename(&change.target, &backup)?;
             }
             if change.replacement.is_some() {
                 let stage = tx_dir.join(format!("{index}.stage"));
-                fs::rename(stage, &change.target)?;
+                durable_rename(&stage, &change.target)?;
             }
         }
 
@@ -526,7 +526,7 @@ fn rollback_transaction(root: &Path, tx_dir: &Path, journal: &Journal) -> Result
                 if let Some(parent) = target.parent() {
                     create_scoped_parent_directories(root, parent)?;
                 }
-                fs::rename(&backup, &target)?;
+                durable_rename(&backup, &target)?;
             } else if !target.exists() && original_copy.is_file() {
                 reject_symlink(&original_copy)?;
                 if let Some(parent) = target.parent() {
@@ -709,6 +709,35 @@ fn remove_regular_file(path: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> Result<(), AppError> {
+    fs::File::open(path)?.sync_all()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> Result<(), AppError> {
+    Ok(())
+}
+
+fn durable_rename(source: &Path, target: &Path) -> Result<(), AppError> {
+    let source_parent = source
+        .parent()
+        .ok_or_else(|| AppError::internal("transaction source has no parent directory"))?
+        .to_path_buf();
+    let target_parent = target
+        .parent()
+        .ok_or_else(|| AppError::internal("transaction target has no parent directory"))?
+        .to_path_buf();
+
+    fs::rename(source, target)?;
+    sync_directory(&source_parent)?;
+    if source_parent != target_parent {
+        sync_directory(&target_parent)?;
+    }
+    Ok(())
+}
+
 fn write_synced_json_atomic(path: &Path, value: &impl Serialize) -> Result<(), AppError> {
     let bytes = serde_json::to_vec(value).map_err(|error| {
         AppError::internal(format!("failed to serialize transaction metadata: {error}"))
@@ -722,7 +751,7 @@ fn write_synced_json_atomic(path: &Path, value: &impl Serialize) -> Result<(), A
         remove_regular_file(&temp)?;
     }
     write_synced_bytes_new(&temp, &bytes)?;
-    fs::rename(&temp, path)?;
+    durable_rename(&temp, path)?;
     Ok(())
 }
 
@@ -737,6 +766,17 @@ fn write_synced_bytes_new(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn durable_rename_moves_file_and_preserves_contents() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source.txt");
+        let target = temp.path().join("target.txt");
+        fs::write(&source, "durable").unwrap();
+        durable_rename(&source, &target).unwrap();
+        assert!(!source.exists());
+        assert_eq!(fs::read_to_string(target).unwrap(), "durable");
+    }
 
     #[test]
     fn transaction_replaces_multiple_files_and_creates_one() {
