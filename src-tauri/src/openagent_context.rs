@@ -459,7 +459,7 @@ fn goal_terms(goal: &str) -> HashSet<String> {
 }
 
 fn normalized_relative(root: &Path, path: &Path) -> String {
-    relative_display(root, path).replace('\\', "/")
+    relative_display(root, path)
 }
 
 fn relative_display(root: &Path, path: &Path) -> String {
@@ -467,6 +467,7 @@ fn relative_display(root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .display()
         .to_string()
+        .replace('\\', "/")
 }
 
 fn truncate_chars(value: &str, limit: usize) -> String {
