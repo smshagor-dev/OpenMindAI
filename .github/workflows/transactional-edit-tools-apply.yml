@@ -1,0 +1,486 @@
+name: Transactional edit tools apply
+
+on:
+  push:
+    branches:
+      - work/transactional-edit-tools
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply transactional edit hardening
+        shell: python
+        run: |
+          from pathlib import Path
+
+          patch_path = Path("src-tauri/src/coding_patch.rs")
+          text = patch_path.read_text()
+
+          old = '''    #[serde(rename = "create")]
+              Create { path: String, content: String },
+              #[serde(rename = "delete")]
+          '''
+          new = '''    #[serde(rename = "create")]
+              Create { path: String, content: String },
+              #[serde(rename = "write")]
+              Write {
+                  path: String,
+                  content: String,
+                  #[serde(default, rename = "expectedSha256", alias = "expected_sha256")]
+                  expected_sha256: Option<String>,
+              },
+              #[serde(rename = "delete")]
+          '''
+          if old not in text:
+              raise SystemExit("PatchOperation create/delete anchor not found")
+          text = text.replace(old, new, 1)
+
+          old = '''            PatchOperation::Replace { path, .. }
+                          | PatchOperation::Create { path, .. }
+                          | PatchOperation::Delete { path, .. } => {
+          '''
+          new = '''            PatchOperation::Replace { path, .. }
+                          | PatchOperation::Create { path, .. }
+                          | PatchOperation::Write { path, .. }
+                          | PatchOperation::Delete { path, .. } => {
+          '''
+          if text.count(old) != 2:
+              raise SystemExit(f"expected two path-match anchors, found {text.count(old)}")
+          text = text.replace(old, new)
+
+          anchor = '''            PatchOperation::Delete {
+                      expected_sha256, ..
+                  } => {
+          '''
+          write_case = '''            PatchOperation::Write {
+                      content,
+                      expected_sha256,
+                      ..
+                  } => {
+                      let replacement = content.as_bytes().to_vec();
+                      if target.exists() {
+                          if !target.is_file() {
+                              return Err(AppError::internal(format!(
+                                  "write operation target is not a file: {relative_path}"
+                              )));
+                          }
+                          let original = fs::read(&target)?;
+                          verify_expected_sha256(
+                              expected_sha256.as_deref(),
+                              &original,
+                              &relative_path,
+                          )?;
+                          total_bytes = total_bytes
+                              .saturating_add(original.len())
+                              .saturating_add(replacement.len());
+                          PlannedChange {
+                              relative_path,
+                              target,
+                              original: Some(original),
+                              replacement: Some(replacement),
+                              kind: PlannedKind::Replace,
+                          }
+                      } else {
+                          if expected_sha256.is_some() {
+                              return Err(AppError::internal(format!(
+                                  "write operation expectedSha256 requires an existing file: {relative_path}"
+                              )));
+                          }
+                          total_bytes = total_bytes.saturating_add(replacement.len());
+                          PlannedChange {
+                              relative_path,
+                              target,
+                              original: None,
+                              replacement: Some(replacement),
+                              kind: PlannedKind::Create,
+                          }
+                      }
+                  }
+          ''' + anchor
+          if anchor not in text:
+              raise SystemExit("delete operation anchor not found")
+          text = text.replace(anchor, write_case, 1)
+
+          test_anchor = '''    #[test]
+              fn transaction_deletes_file_atomically() {
+          '''
+          tests = '''    #[test]
+              fn write_operation_creates_and_overwrites_files() {
+                  let temp = tempfile::tempdir().unwrap();
+                  let created = apply_patch_transaction(
+                      temp.path(),
+                      &json!({"operations":[{"op":"write","path":"new.txt","content":"first"}]}),
+                  )
+                  .unwrap();
+                  assert_eq!(created.created_files, 1);
+                  assert_eq!(fs::read_to_string(temp.path().join("new.txt")).unwrap(), "first");
+
+                  let original = fs::read(temp.path().join("new.txt")).unwrap();
+                  let expected = format!("{:x}", Sha256::digest(&original));
+                  let replaced = apply_patch_transaction(
+                      temp.path(),
+                      &json!({"operations":[{
+                          "op":"write",
+                          "path":"new.txt",
+                          "content":"second",
+                          "expectedSha256": expected
+                      }]}),
+                  )
+                  .unwrap();
+                  assert_eq!(replaced.replaced_files, 1);
+                  assert_eq!(fs::read_to_string(temp.path().join("new.txt")).unwrap(), "second");
+              }
+
+              #[test]
+              fn write_operation_handles_empty_file_and_rejects_stale_hash() {
+                  let temp = tempfile::tempdir().unwrap();
+                  fs::write(temp.path().join("empty.txt"), "").unwrap();
+                  let empty_hash = format!("{:x}", Sha256::digest(b""));
+                  apply_patch_transaction(
+                      temp.path(),
+                      &json!({"operations":[{
+                          "op":"write",
+                          "path":"empty.txt",
+                          "content":"filled",
+                          "expectedSha256": empty_hash
+                      }]}),
+                  )
+                  .unwrap();
+                  assert_eq!(fs::read_to_string(temp.path().join("empty.txt")).unwrap(), "filled");
+
+                  let error = apply_patch_transaction(
+                      temp.path(),
+                      &json!({"operations":[{
+                          "op":"write",
+                          "path":"empty.txt",
+                          "content":"wrong",
+                          "expectedSha256":"0000000000000000000000000000000000000000000000000000000000000000"
+                      }]}),
+                  )
+                  .unwrap_err();
+                  assert!(error.to_string().contains("stale-file precondition"));
+                  assert_eq!(fs::read_to_string(temp.path().join("empty.txt")).unwrap(), "filled");
+              }
+
+              #[test]
+              fn write_operation_rejects_directory_and_hash_for_missing_file() {
+                  let temp = tempfile::tempdir().unwrap();
+                  fs::create_dir(temp.path().join("dir")).unwrap();
+                  assert!(apply_patch_transaction(
+                      temp.path(),
+                      &json!({"operations":[{"op":"write","path":"dir","content":"x"}]})
+                  )
+                  .is_err());
+                  assert!(apply_patch_transaction(
+                      temp.path(),
+                      &json!({"operations":[{
+                          "op":"write",
+                          "path":"missing.txt",
+                          "content":"x",
+                          "expectedSha256":"0000000000000000000000000000000000000000000000000000000000000000"
+                      }]})
+                  )
+                  .is_err());
+              }
+
+          ''' + test_anchor
+          if test_anchor not in text:
+              raise SystemExit("coding_patch test anchor not found")
+          text = text.replace(test_anchor, tests, 1)
+          patch_path.write_text(text)
+
+          local_path = Path("src-tauri/src/local_agent.rs")
+          text = local_path.read_text()
+
+          old_write = '''        "write_file" => {
+                      let root_id = optional_string(action, "rootId");
+                      let path = required_string(action, "path")?;
+                      let content = required_string(action, "content")?;
+                      if content.chars().count() > MAX_WRITE_CHARS {
+                          return Err(AppError::internal(
+                              "write_file content exceeds the safety limit",
+                          ));
+                      }
+                      let file = resolve_agent_path(config, root_id.as_deref(), &path, false)?;
+                      if file.exists() && file.is_dir() {
+                          return Err(AppError::internal("cannot overwrite a directory as a file"));
+                      }
+                      if let Some(parent) = file.parent() {
+                          fs::create_dir_all(parent)?;
+                      }
+                      fs::write(&file, content.as_bytes())?;
+                      Ok(AgentTurnResult {
+                          trace_label: format!("Wrote {}", display_path(&file)),
+                          transcript_result: format!(
+                              "ok path={} chars={}",
+                              display_path(&file),
+                              content.chars().count()
+                          ),
+                      })
+                  }
+          '''
+          new_write = '''        "write_file" => {
+                      let root_id = optional_string(action, "rootId");
+                      let path = required_string(action, "path")?;
+                      let content = required_string(action, "content")?;
+                      if content.chars().count() > MAX_WRITE_CHARS {
+                          return Err(AppError::internal(
+                              "write_file content exceeds the safety limit",
+                          ));
+                      }
+                      if Path::new(&path).is_absolute() {
+                          let file = resolve_agent_path(config, root_id.as_deref(), &path, false)?;
+                          if file.exists() && file.is_dir() {
+                              return Err(AppError::internal("cannot overwrite a directory as a file"));
+                          }
+                          if let Some(parent) = file.parent() {
+                              fs::create_dir_all(parent)?;
+                          }
+                          fs::write(&file, content.as_bytes())?;
+                          return Ok(AgentTurnResult {
+                              trace_label: format!("Wrote host file {}", display_path(&file)),
+                              transcript_result: format!(
+                                  "ok path={} chars={} host_write=true",
+                                  display_path(&file),
+                                  content.chars().count()
+                              ),
+                          });
+                      }
+
+                      let root = selected_root_path(config, root_id.as_deref())?;
+                      let file = resolve_agent_path(config, root_id.as_deref(), &path, false)?;
+                      if file.exists() && file.is_dir() {
+                          return Err(AppError::internal("cannot overwrite a directory as a file"));
+                      }
+                      let mut operation = json!({"op":"write","path":path,"content":content});
+                      if file.is_file() {
+                          operation["expectedSha256"] = Value::String(format!(
+                              "{:x}",
+                              Sha256::digest(fs::read(&file)?)
+                          ));
+                      }
+                      let transaction = json!({"operations":[operation]});
+                      let outcome = coding_patch::apply_patch_transaction(&root, &transaction)?;
+                      Ok(AgentTurnResult {
+                          trace_label: format!("Wrote {} transactionally", display_path(&file)),
+                          transcript_result: format!(
+                              "ok path={} chars={} transaction={}",
+                              display_path(&file),
+                              content.chars().count(),
+                              outcome.transaction_id
+                          ),
+                      })
+                  }
+          '''
+          if old_write not in text:
+              raise SystemExit("write_file block not found")
+          text = text.replace(old_write, new_write, 1)
+
+          old_replace = '''        "replace_text" => {
+                      let root_id = optional_string(action, "rootId");
+                      let path = required_string(action, "path")?;
+                      let old = required_string(action, "old")?;
+                      let new = required_string(action, "new")?;
+                      if old.is_empty() {
+                          return Err(AppError::internal("replace_text old text cannot be empty"));
+                      }
+                      let file = resolve_agent_path(config, root_id.as_deref(), &path, true)?;
+                      if !file.is_file() {
+                          return Err(AppError::internal("replace_text path is not a file"));
+                      }
+                      let original = fs::read_to_string(&file)
+                          .map_err(|_| AppError::internal("replace_text supports UTF-8 text files only"))?;
+                      let matches = original.match_indices(&old).count();
+                      if matches == 0 {
+                          return Err(AppError::internal("replace_text old text was not found"));
+                      }
+                      if matches > 1 {
+                          return Err(AppError::internal(format!(
+                              "replace_text old text matched {matches} places; provide a more specific exact block"
+                          )));
+                      }
+                      let updated = original.replacen(&old, &new, 1);
+                      if updated.chars().count() > MAX_WRITE_CHARS {
+                          return Err(AppError::internal("updated file exceeds the safety limit"));
+                      }
+                      fs::write(&file, updated.as_bytes())?;
+                      Ok(AgentTurnResult {
+                          trace_label: format!("Updated {}", display_path(&file)),
+                          transcript_result: format!("ok path={} exact_replacements=1", display_path(&file)),
+                      })
+                  }
+          '''
+          new_replace = '''        "replace_text" => {
+                      let root_id = optional_string(action, "rootId");
+                      let path = required_string(action, "path")?;
+                      let old = required_string(action, "old")?;
+                      let new = required_string(action, "new")?;
+                      if old.is_empty() {
+                          return Err(AppError::internal("replace_text old text cannot be empty"));
+                      }
+                      let file = resolve_agent_path(config, root_id.as_deref(), &path, true)?;
+                      if !file.is_file() {
+                          return Err(AppError::internal("replace_text path is not a file"));
+                      }
+                      let original = fs::read_to_string(&file)
+                          .map_err(|_| AppError::internal("replace_text supports UTF-8 text files only"))?;
+                      let matches = original.match_indices(&old).count();
+                      if matches == 0 {
+                          return Err(AppError::internal("replace_text old text was not found"));
+                      }
+                      if matches > 1 {
+                          return Err(AppError::internal(format!(
+                              "replace_text old text matched {matches} places; provide a more specific exact block"
+                          )));
+                      }
+                      let updated = original.replacen(&old, &new, 1);
+                      if updated.chars().count() > MAX_WRITE_CHARS {
+                          return Err(AppError::internal("updated file exceeds the safety limit"));
+                      }
+                      if Path::new(&path).is_absolute() {
+                          fs::write(&file, updated.as_bytes())?;
+                          return Ok(AgentTurnResult {
+                              trace_label: format!("Updated host file {}", display_path(&file)),
+                              transcript_result: format!(
+                                  "ok path={} exact_replacements=1 host_write=true",
+                                  display_path(&file)
+                              ),
+                          });
+                      }
+
+                      let root = selected_root_path(config, root_id.as_deref())?;
+                      let expected = format!("{:x}", Sha256::digest(original.as_bytes()));
+                      let transaction = json!({"operations":[{
+                          "op":"write",
+                          "path":path,
+                          "content":updated,
+                          "expectedSha256":expected
+                      }]});
+                      let outcome = coding_patch::apply_patch_transaction(&root, &transaction)?;
+                      Ok(AgentTurnResult {
+                          trace_label: format!("Updated {} transactionally", display_path(&file)),
+                          transcript_result: format!(
+                              "ok path={} exact_replacements=1 transaction={}",
+                              display_path(&file),
+                              outcome.transaction_id
+                          ),
+                      })
+                  }
+          '''
+          if old_replace not in text:
+              raise SystemExit("replace_text block not found")
+          text = text.replace(old_replace, new_replace, 1)
+
+          old_prompt = '''- Prefer patch_transaction for coordinated edits across multiple files. Every operation is preflighted before commit and the host rolls the entire batch back on failure.\\n\\
+          - Prefer replace_text for a single targeted edit and write_file for new/small files.\\n\\
+          '''
+          new_prompt = '''- Prefer patch_transaction for coordinated edits across multiple files. Every operation is preflighted before commit and the host rolls the entire batch back on failure.\\n\\
+          - replace_text and write_file on attached workspace roots also use the crash-safe transaction journal; use them for single targeted edits or new/small files. Absolute Full-PC host paths remain outside the workspace transaction store and require the existing explicit host permission boundary.\\n\\
+          '''
+          if old_prompt not in text:
+              raise SystemExit("agent edit prompt anchor not found")
+          text = text.replace(old_prompt, new_prompt, 1)
+
+          test_anchor = '''    #[test]
+              fn openagent_prefers_nemotron_35_lightning() {
+          '''
+          local_tests = '''    fn test_workspace_config(root: &Path) -> AgentWorkspaceConfig {
+                  AgentWorkspaceConfig {
+                      full_pc_access: false,
+                      roots: vec![AgentWorkspaceRoot {
+                          id: "root".to_string(),
+                          path: root.display().to_string(),
+                          created_at: "now".to_string(),
+                      }],
+                  }
+              }
+
+              #[tokio::test]
+              async fn relative_write_file_uses_patch_transaction() {
+                  let temp = tempfile::tempdir().unwrap();
+                  let config = test_workspace_config(temp.path());
+                  let result = execute_tool(
+                      "write_file",
+                      &json!({"rootId":"root","path":"nested/file.txt","content":"hello"}),
+                      &config,
+                      "auto",
+                  )
+                  .await
+                  .unwrap();
+                  assert_eq!(
+                      fs::read_to_string(temp.path().join("nested/file.txt")).unwrap(),
+                      "hello"
+                  );
+                  assert!(result.transcript_result.contains("transaction="));
+                  assert!(!temp.path().join(".openmindai-patch-transactions").exists());
+              }
+
+              #[tokio::test]
+              async fn relative_replace_text_uses_patch_transaction() {
+                  let temp = tempfile::tempdir().unwrap();
+                  fs::write(temp.path().join("file.txt"), "before value after").unwrap();
+                  let config = test_workspace_config(temp.path());
+                  let result = execute_tool(
+                      "replace_text",
+                      &json!({
+                          "rootId":"root",
+                          "path":"file.txt",
+                          "old":"value",
+                          "new":"changed"
+                      }),
+                      &config,
+                      "auto",
+                  )
+                  .await
+                  .unwrap();
+                  assert_eq!(
+                      fs::read_to_string(temp.path().join("file.txt")).unwrap(),
+                      "before changed after"
+                  );
+                  assert!(result.transcript_result.contains("transaction="));
+                  assert!(!temp.path().join(".openmindai-patch-transactions").exists());
+              }
+
+          ''' + test_anchor
+          if test_anchor not in text:
+              raise SystemExit("local_agent test anchor not found")
+          text = text.replace(test_anchor, local_tests, 1)
+          local_path.write_text(text)
+      - name: Format
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml
+          cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - name: Clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Patch transaction tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml coding_patch
+      - name: Local agent edit tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml relative_write_file_uses_patch_transaction
+      - name: Local agent replace tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml relative_replace_text_uses_patch_transaction
+      - name: Diff check
+        run: git diff --check
+      - name: Remove one-shot workflow
+        run: rm .github/workflows/transactional-edit-tools-apply.yml
+      - name: Commit transactional edit hardening
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src-tauri/src/coding_patch.rs src-tauri/src/local_agent.rs .github/workflows/transactional-edit-tools-apply.yml
+          git commit -m "fix: route workspace edits through patch transactions"
+          git push origin HEAD:work/transactional-edit-tools
