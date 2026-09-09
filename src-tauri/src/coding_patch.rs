@@ -36,6 +36,13 @@ enum PatchOperation {
     },
     #[serde(rename = "create")]
     Create { path: String, content: String },
+    #[serde(rename = "write")]
+    Write {
+        path: String,
+        content: String,
+        #[serde(rename = "expectedSha256", alias = "expected_sha256")]
+        expected_sha256: String,
+    },
     #[serde(rename = "delete")]
     Delete {
         path: String,
@@ -104,6 +111,7 @@ pub fn transaction_paths(action: &Value) -> Result<Vec<String>, AppError> {
         .map(|operation| match operation {
             PatchOperation::Replace { path, .. }
             | PatchOperation::Create { path, .. }
+            | PatchOperation::Write { path, .. }
             | PatchOperation::Delete { path, .. } => {
                 validate_relative_path(path).map(|_| path.clone())
             }
@@ -163,6 +171,7 @@ fn preflight(root: &Path, operations: &[PatchOperation]) -> Result<Vec<PlannedCh
         let path = match operation {
             PatchOperation::Replace { path, .. }
             | PatchOperation::Create { path, .. }
+            | PatchOperation::Write { path, .. }
             | PatchOperation::Delete { path, .. } => path,
         };
         let relative = validate_relative_path(path)?;
@@ -230,6 +239,30 @@ fn preflight(root: &Path, operations: &[PatchOperation]) -> Result<Vec<PlannedCh
                     original: None,
                     replacement: Some(replacement),
                     kind: PlannedKind::Create,
+                }
+            }
+            PatchOperation::Write {
+                content,
+                expected_sha256,
+                ..
+            } => {
+                if !target.is_file() {
+                    return Err(AppError::internal(format!(
+                        "write operation target is not a file: {relative_path}"
+                    )));
+                }
+                let original = fs::read(&target)?;
+                verify_expected_sha256(Some(expected_sha256.as_str()), &original, &relative_path)?;
+                let replacement = content.as_bytes().to_vec();
+                total_bytes = total_bytes
+                    .saturating_add(original.len())
+                    .saturating_add(replacement.len());
+                PlannedChange {
+                    relative_path,
+                    target,
+                    original: Some(original),
+                    replacement: Some(replacement),
+                    kind: PlannedKind::Replace,
                 }
             }
             PatchOperation::Delete {
@@ -973,6 +1006,63 @@ mod tests {
         );
         assert!(temp.path().join("c.rs").is_file());
         assert!(!temp.path().join(TRANSACTION_DIR).exists());
+    }
+
+    #[test]
+    fn write_operation_requires_current_hash_and_replaces_existing_file() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("file.txt"), "first").unwrap();
+        let expected = format!("{:x}", Sha256::digest(b"first"));
+
+        let result = apply_patch_transaction(
+            temp.path(),
+            &json!({"operations":[{
+                "op":"write",
+                "path":"file.txt",
+                "content":"second",
+                "expectedSha256":expected
+            }]}),
+        )
+        .unwrap();
+
+        assert_eq!(result.replaced_files, 1);
+        assert_eq!(
+            fs::read_to_string(temp.path().join("file.txt")).unwrap(),
+            "second"
+        );
+    }
+
+    #[test]
+    fn write_operation_rejects_missing_target_and_stale_hash() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = apply_patch_transaction(
+            temp.path(),
+            &json!({"operations":[{
+                "op":"write",
+                "path":"missing.txt",
+                "content":"value",
+                "expectedSha256":"0000000000000000000000000000000000000000000000000000000000000000"
+            }]}),
+        )
+        .unwrap_err();
+        assert!(missing.to_string().contains("target is not a file"));
+
+        fs::write(temp.path().join("file.txt"), "current").unwrap();
+        let stale = apply_patch_transaction(
+            temp.path(),
+            &json!({"operations":[{
+                "op":"write",
+                "path":"file.txt",
+                "content":"wrong",
+                "expectedSha256":"0000000000000000000000000000000000000000000000000000000000000000"
+            }]}),
+        )
+        .unwrap_err();
+        assert!(stale.to_string().contains("stale-file precondition"));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("file.txt")).unwrap(),
+            "current"
+        );
     }
 
     #[test]
