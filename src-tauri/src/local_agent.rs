@@ -27,6 +27,7 @@ use crate::{
     model_catalog::entry_by_id,
     model_registry::{ModelRecord, ModelRegistry},
     openagent_context::build_repository_context,
+    openagent_prompt_context::{build_prompt_context, PromptContextInput},
     openagent_runs::OpenAgentRunRepository,
     openagent_security::{authorize_tool, ApprovalMode, PolicyDecision},
     projects::{Project, ProjectRepository},
@@ -360,6 +361,7 @@ async fn run_agent_message(
     let (model, routing_reason) = resolve_openagent_model(state, conversation_id, content)?;
     let hardware = state.hardware.clone();
     let plan = ModelLaunchPlanner::plan(&model, &hardware, allocate_local_port()?);
+    let context_window_tokens = plan.config.context_size as usize;
     let endpoint = {
         let mut runtime = state
             .runtime
@@ -466,6 +468,7 @@ async fn run_agent_message(
                 step,
                 &model.id,
                 &sandbox_mode,
+                context_window_tokens,
             ) => result?,
                 _ = cancellation.cancelled() => {
                     status = "cancelled";
@@ -1503,6 +1506,7 @@ async fn request_agent_decision(
     step: usize,
     model_id: &str,
     sandbox_mode: &str,
+    context_window_tokens: usize,
 ) -> Result<Value, AppError> {
     let root_summary = context
         .workspace
@@ -1579,24 +1583,54 @@ Rules:\n\
 Attached roots:\n{root_summary}"
     );
 
-    let instructions = bounded(context.project.instructions.trim(), 5_000);
-    let workspace = bounded(&context.workspace_context, 6_000);
-    let repository_context = bounded(&context.repository_context, 18_000);
-    let history = bounded(
-        &transcript.iter().cloned().collect::<Vec<_>>().join("\n\n"),
-        MAX_TRANSCRIPT_CHARS,
-    );
+    let prompt_context = build_prompt_context(PromptContextInput {
+        project_instructions: context.project.instructions.trim(),
+        repository_context: &context.repository_context,
+        workspace_context: &context.workspace_context,
+        conversation_context: &context.conversation_context,
+        goal,
+        transcript,
+        context_window_tokens,
+        system_chars: system.chars().count(),
+    });
     let user = format!(
-        "Project: {}\nStep: {}/{}\nProject instructions:\n{}\n\nDiscovered repository context:\n{}\n\nWorkspace snapshot:\n{}\n\nRecent project chat:\n{}\n\nUser goal:\n{}\n\nRecent tool history:\n{}\n\nReturn the next single JSON action.",
+        "Project: {}\nStep: {}/{}\nContext selection: selectedChars={}/{} compressed={}\nProject instructions:\n{}\n\nDiscovered repository context:\n{}\n\nWorkspace snapshot:\n{}\n\nRecent project chat:\n{}\n\nUser goal:\n{}\n\nRecent tool history:\n{}\n\nReturn the next single JSON action.",
         context.project.name,
         step + 1,
         MAX_AGENT_STEPS,
-        if instructions.is_empty() { "(none)" } else { &instructions },
-        if repository_context.is_empty() { "(none)" } else { &repository_context },
-        workspace,
-        bounded(&context.conversation_context, 7_000),
-        bounded(goal, 6_000),
-        if history.is_empty() { "(none)" } else { &history },
+        prompt_context.selected_chars,
+        prompt_context.budget_chars,
+        prompt_context.compressed,
+        if prompt_context.project_instructions.is_empty() {
+            "(none)"
+        } else {
+            prompt_context.project_instructions.as_str()
+        },
+        if prompt_context.repository_context.is_empty() {
+            "(none)"
+        } else {
+            prompt_context.repository_context.as_str()
+        },
+        if prompt_context.workspace_context.is_empty() {
+            "(none)"
+        } else {
+            prompt_context.workspace_context.as_str()
+        },
+        if prompt_context.conversation_context.is_empty() {
+            "(none)"
+        } else {
+            prompt_context.conversation_context.as_str()
+        },
+        if prompt_context.goal.is_empty() {
+            "(none)"
+        } else {
+            prompt_context.goal.as_str()
+        },
+        if prompt_context.transcript.is_empty() {
+            "(none)"
+        } else {
+            prompt_context.transcript.as_str()
+        },
     );
 
     let body = json!({
@@ -1609,7 +1643,7 @@ Attached roots:\n{root_summary}"
         "temperature": 0.15,
         "top_p": 0.85,
         "top_k": 20,
-        "max_tokens": 4096,
+        "max_tokens": prompt_context.max_output_tokens,
         "presence_penalty": 0.0,
         "chat_template_kwargs": {"enable_thinking": false}
     });
