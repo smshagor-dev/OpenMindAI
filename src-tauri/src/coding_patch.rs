@@ -272,11 +272,15 @@ fn commit_transaction(
 ) -> Result<PatchTransactionResult, AppError> {
     let transaction_id = Uuid::new_v4().to_string();
     let base = transaction_base(root)?;
+    let base_existed = base.exists();
     fs::create_dir_all(&base)?;
     reject_symlink(&base)?;
+    if !base_existed {
+        sync_directory(root)?;
+    }
 
     let tx_dir = base.join(&transaction_id);
-    fs::create_dir(&tx_dir)?;
+    durable_create_dir(&tx_dir)?;
 
     let entries = planned
         .iter()
@@ -403,7 +407,7 @@ fn recover_interrupted_transactions(root: &Path) -> Result<usize, AppError> {
                     "OpenAgent found an incomplete transaction without a journal",
                 ));
             }
-            fs::remove_dir_all(&tx_dir)?;
+            durable_remove_dir_all(&tx_dir)?;
             recovered += 1;
             continue;
         }
@@ -416,7 +420,7 @@ fn recover_interrupted_transactions(root: &Path) -> Result<usize, AppError> {
                         "invalid OpenAgent transaction journal: {error}"
                     )));
                 }
-                fs::remove_dir_all(&tx_dir)?;
+                durable_remove_dir_all(&tx_dir)?;
                 recovered += 1;
                 continue;
             }
@@ -424,17 +428,17 @@ fn recover_interrupted_transactions(root: &Path) -> Result<usize, AppError> {
         validate_journal(&tx_dir, &journal)?;
 
         if committed_marker_matches(&tx_dir, &journal.transaction_id)? {
-            fs::remove_dir_all(&tx_dir)?;
+            durable_remove_dir_all(&tx_dir)?;
             recovered += 1;
             continue;
         }
 
         rollback_transaction(root, &tx_dir, &journal)?;
-        fs::remove_dir_all(&tx_dir)?;
+        durable_remove_dir_all(&tx_dir)?;
         recovered += 1;
     }
 
-    let _ = fs::remove_dir(&base);
+    try_remove_empty_directory_durably(&base)?;
     Ok(recovered)
 }
 
@@ -532,7 +536,7 @@ fn rollback_transaction(root: &Path, tx_dir: &Path, journal: &Journal) -> Result
                 if let Some(parent) = target.parent() {
                     create_scoped_parent_directories(root, parent)?;
                 }
-                fs::copy(&original_copy, &target)?;
+                durable_copy_new(&original_copy, &target)?;
             }
         } else if target.exists() {
             remove_regular_file(&target)?;
@@ -543,11 +547,9 @@ fn rollback_transaction(root: &Path, tx_dir: &Path, journal: &Journal) -> Result
 
 fn cleanup_transaction_dir(base: &Path, tx_dir: &Path) -> Result<(), AppError> {
     if tx_dir.exists() {
-        fs::remove_dir_all(tx_dir)?;
+        durable_remove_dir_all(tx_dir)?;
     }
-    if base.exists() {
-        let _ = fs::remove_dir(base);
-    }
+    try_remove_empty_directory_durably(base)?;
     Ok(())
 }
 
@@ -705,7 +707,11 @@ fn remove_regular_file(path: &Path) -> Result<(), AppError> {
             "patch transaction rollback encountered a non-regular file",
         ));
     }
+    let parent = path
+        .parent()
+        .ok_or_else(|| AppError::internal("transaction file has no parent directory"))?;
     fs::remove_file(path)?;
+    sync_directory(parent)?;
     Ok(())
 }
 
@@ -717,6 +723,53 @@ fn sync_directory(path: &Path) -> Result<(), AppError> {
 
 #[cfg(not(unix))]
 fn sync_directory(_path: &Path) -> Result<(), AppError> {
+    Ok(())
+}
+
+fn durable_create_dir(path: &Path) -> Result<(), AppError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| AppError::internal("transaction directory has no parent"))?;
+    fs::create_dir(path)?;
+    sync_directory(parent)?;
+    Ok(())
+}
+
+fn durable_remove_dir_all(path: &Path) -> Result<(), AppError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| AppError::internal("transaction directory has no parent"))?;
+    fs::remove_dir_all(path)?;
+    sync_directory(parent)?;
+    Ok(())
+}
+
+fn try_remove_empty_directory_durably(path: &Path) -> Result<(), AppError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| AppError::internal("transaction directory has no parent"))?;
+    if fs::remove_dir(path).is_ok() {
+        sync_directory(parent)?;
+    }
+    Ok(())
+}
+
+fn durable_copy_new(source: &Path, target: &Path) -> Result<(), AppError> {
+    let metadata = fs::symlink_metadata(source)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(AppError::internal(
+            "patch transaction recovery source is not a regular file",
+        ));
+    }
+    let parent = target
+        .parent()
+        .ok_or_else(|| AppError::internal("transaction target has no parent directory"))?;
+    let bytes = fs::read(source)?;
+    write_synced_bytes_new(target, &bytes)?;
+    sync_directory(parent)?;
     Ok(())
 }
 
@@ -776,6 +829,60 @@ mod tests {
         durable_rename(&source, &target).unwrap();
         assert!(!source.exists());
         assert_eq!(fs::read_to_string(target).unwrap(), "durable");
+    }
+
+    #[test]
+    fn durable_copy_new_restores_contents_without_overwriting() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source.txt");
+        let target = temp.path().join("target.txt");
+        fs::write(&source, "restored").unwrap();
+        durable_copy_new(&source, &target).unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "restored");
+        assert!(durable_copy_new(&source, &target).is_err());
+    }
+
+    #[test]
+    fn recovery_restores_original_copy_when_backup_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().join(TRANSACTION_DIR);
+        fs::create_dir(&base).unwrap();
+        let transaction_id = "tx-original-copy";
+        let tx_dir = base.join(transaction_id);
+        fs::create_dir(&tx_dir).unwrap();
+        fs::write(tx_dir.join("0.original"), "old").unwrap();
+        let journal = Journal {
+            version: JOURNAL_VERSION,
+            transaction_id: transaction_id.to_string(),
+            entries: vec![JournalEntry {
+                relative_path: "a.txt".to_string(),
+                original_existed: true,
+                backup_name: "0.backup".to_string(),
+                staged_name: "0.stage".to_string(),
+            }],
+        };
+        fs::write(
+            tx_dir.join(JOURNAL_FILE),
+            serde_json::to_vec(&journal).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(recover_interrupted_transactions(temp.path()).unwrap(), 1);
+        assert_eq!(
+            fs::read_to_string(temp.path().join("a.txt")).unwrap(),
+            "old"
+        );
+        assert!(!base.exists());
+    }
+
+    #[test]
+    fn durable_directory_helpers_create_and_remove_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("transaction");
+        durable_create_dir(&directory).unwrap();
+        assert!(directory.is_dir());
+        durable_remove_dir_all(&directory).unwrap();
+        assert!(!directory.exists());
     }
 
     #[test]
