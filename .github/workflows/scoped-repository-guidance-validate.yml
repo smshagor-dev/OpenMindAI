@@ -1,0 +1,44 @@
+name: Scoped repository guidance validation
+
+on:
+  push:
+    branches:
+      - work/scoped-repository-guidance
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml
+          cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - name: Clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Repository context tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml openagent_context
+      - name: Diff check
+        run: git diff --check
+      - name: Remove validation workflow
+        run: rm .github/workflows/scoped-repository-guidance-validate.yml
+      - name: Commit validated scoped guidance
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src-tauri/src/openagent_context.rs .github/workflows/scoped-repository-guidance-validate.yml
+          git commit -m "feat: scope repository guidance by path"
+          git push origin HEAD:work/scoped-repository-guidance
