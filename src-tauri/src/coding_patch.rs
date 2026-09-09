@@ -639,11 +639,50 @@ fn create_scoped_parent_directories(root: &Path, parent: &Path) -> Result<(), Ap
             "patch_transaction parent directory escaped the workspace",
         ));
     }
-    fs::create_dir_all(parent)?;
     let relative = parent.strip_prefix(root).map_err(|_| {
         AppError::internal("patch_transaction parent directory escaped the workspace")
     })?;
-    ensure_no_symlink_components(root, relative)
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(value) = component else {
+            continue;
+        };
+        current.push(value);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => validate_directory_component(&current, &metadata)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let parent_directory = current.parent().ok_or_else(|| {
+                    AppError::internal("patch_transaction directory has no parent")
+                })?;
+                match fs::create_dir(&current) {
+                    Ok(()) => sync_directory(parent_directory)?,
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        let metadata = fs::symlink_metadata(&current)?;
+                        validate_directory_component(&current, &metadata)?;
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn validate_directory_component(path: &Path, metadata: &fs::Metadata) -> Result<(), AppError> {
+    if metadata.file_type().is_symlink() {
+        return Err(AppError::internal(format!(
+            "patch_transaction refuses symlink directory component: {}",
+            path.display()
+        )));
+    }
+    if !metadata.is_dir() {
+        return Err(AppError::internal(format!(
+            "patch_transaction parent component is not a directory: {}",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 fn canonical_existing_parent(path: &Path) -> Result<PathBuf, AppError> {
@@ -883,6 +922,25 @@ mod tests {
         assert!(directory.is_dir());
         durable_remove_dir_all(&directory).unwrap();
         assert!(!directory.exists());
+    }
+
+    #[test]
+    fn scoped_parent_creation_builds_nested_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let parent = root.join("nested").join("deeper").join("target");
+        create_scoped_parent_directories(&root, &parent).unwrap();
+        assert!(parent.is_dir());
+    }
+
+    #[test]
+    fn scoped_parent_creation_rejects_non_directory_component() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        fs::write(root.join("blocked"), "file").unwrap();
+        let error = create_scoped_parent_directories(&root, &root.join("blocked").join("child"))
+            .unwrap_err();
+        assert!(error.to_string().contains("not a directory"));
     }
 
     #[test]
