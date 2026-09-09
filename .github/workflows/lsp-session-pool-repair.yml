@@ -1,0 +1,77 @@
+name: LSP Session Pool Repair
+
+on:
+  push:
+    branches:
+      - work/lsp-session-pool
+
+permissions:
+  contents: write
+
+jobs:
+  repair-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Apply persistent LSP session pooling
+        run: python3 scripts/apply_lsp_session_pool.py
+
+      - name: Repair strict Clippy finding
+        run: python3 scripts/fix_lsp_session_pool_clippy.py
+
+      - name: Remove one-shot integration files
+        run: |
+          rm -f scripts/apply_lsp_session_pool.py
+          rm -f scripts/fix_lsp_session_pool_clippy.py
+          rm -f .github/workflows/lsp-session-pool.yml
+          rm -f .github/workflows/lsp-session-pool-repair.yml
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf bubblewrap
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Format Rust
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+
+      - name: Rust check
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: LSP tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml coding_lsp
+
+      - name: Full Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Deterministic coding evaluation
+        run: python3 scripts/coding_workspace_eval.py
+
+      - name: Adversarial security evaluation
+        run: python3 scripts/coding_security_suite.py
+
+      - name: Diff safety
+        run: git diff --check
+
+      - name: Commit verified LSP session pool
+        run: |
+          git config user.name "OpenMindAI Engineering Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "feat: reuse language servers with document sync"
+          git push origin HEAD:work/lsp-session-pool
