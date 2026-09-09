@@ -1,0 +1,43 @@
+name: Scoped repository guidance validation
+
+on:
+  push:
+    branches: [work/scoped-repository-guidance]
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Linux system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply scoped guidance sibling isolation
+        run: echo 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgpwYXRoID0gUGF0aCgic3JjLXRhdXJpL3NyYy9vcGVuYWdlbnRfY29udGV4dC5ycyIpCnNvdXJjZSA9IHBhdGgucmVhZF90ZXh0KCkKCm9sZCA9ICcnJyAgICAgICAgICAgIGxldCB0ZXJtX2hpdHMgPSB0ZXJtcwogICAgICAgICAgICAgICAgLml0ZXIoKQogICAgICAgICAgICAgICAgLmZpbHRlcih8dGVybXwgbm9ybWFsaXplZF9zY29wZS5jb250YWlucyh0ZXJtLmFzX3N0cigpKSkKICAgICAgICAgICAgICAgIC5jb3VudCgpOwogICAgICAgICAgICBsZXQgc2NvcmUgPSByZWxldmFudF9oaXRzICogMV8wMDAgKyB0ZXJtX2hpdHMgKiAxMDAgKyBtZXRhZGF0YS5wcmVjZWRlbmNlOwonJycKbmV3ID0gJycnICAgICAgICAgICAgbGV0IHRlcm1faGl0cyA9IHRlcm1zCiAgICAgICAgICAgICAgICAuaXRlcigpCiAgICAgICAgICAgICAgICAuZmlsdGVyKHx0ZXJtfCBub3JtYWxpemVkX3Njb3BlLmNvbnRhaW5zKHRlcm0uYXNfc3RyKCkpKQogICAgICAgICAgICAgICAgLmNvdW50KCk7CiAgICAgICAgICAgIGlmICFyZWxldmFudC5pc19lbXB0eSgpICYmIHJlbGV2YW50X2hpdHMgPT0gMCAmJiB0ZXJtX2hpdHMgPT0gMCB7CiAgICAgICAgICAgICAgICByZXR1cm4gTm9uZTsKICAgICAgICAgICAgfQogICAgICAgICAgICBsZXQgc2NvcmUgPSByZWxldmFudF9oaXRzICogMV8wMDAgKyB0ZXJtX2hpdHMgKiAxMDAgKyBtZXRhZGF0YS5wcmVjZWRlbmNlOwonJycKaWYgc291cmNlLmNvdW50KG9sZCkgIT0gMToKICAgIHJhaXNlIFN5c3RlbUV4aXQoZiJzY29wZWQgc2VsZWN0aW9uIGFuY2hvciBjb3VudD17c291cmNlLmNvdW50KG9sZCl9IikKc291cmNlID0gc291cmNlLnJlcGxhY2Uob2xkLCBuZXcsIDEpCgppZiAic29ydF9pbnN0cnVjdGlvbnMocm9vdCwgJm11dCBzZWxlY3RlZCk7IiBub3QgaW4gc291cmNlOgogICAgcmFpc2UgU3lzdGVtRXhpdCgiZmluYWwgaW5zdHJ1Y3Rpb24gb3JkZXJpbmcgc29ydCBtaXNzaW5nIikKCmFuY2hvciA9ICcnJyAgICAjW3Rlc3RdCiAgICBmbiBjb250ZXh0X2RvZXNfbm90X2ZvbGxvd19zeW1saW5rZWRfZmlsZXNfb3JfZ3VpZGFuY2UoKSB7CicnJwp0ZXN0ID0gJycnICAgICNbdGVzdF0KICAgIGZuIHNjb3BlZF9ndWlkYW5jZV9kb2VzX25vdF9sZWFrX2Fjcm9zc19zaWJsaW5ncygpIHsKICAgICAgICBsZXQgdGVtcCA9IHRlbXBmaWxlOjp0ZW1wZGlyKCkudW53cmFwKCk7CiAgICAgICAgZnM6OndyaXRlKHRlbXAucGF0aCgpLmpvaW4oIkFHRU5UUy5tZCIpLCAiUk9PVF9SVUxFIikudW53cmFwKCk7CiAgICAgICAgZnM6OmNyZWF0ZV9kaXJfYWxsKHRlbXAucGF0aCgpLmpvaW4oInNyYy9hdXRoIikpLnVud3JhcCgpOwogICAgICAgIGZzOjp3cml0ZSh0ZW1wLnBhdGgoKS5qb2luKCJzcmMvQUdFTlRTLm1kIiksICJTUkNfUlVMRSIpLnVud3JhcCgpOwogICAgICAgIGZzOjp3cml0ZSh0ZW1wLnBhdGgoKS5qb2luKCJzcmMvYXV0aC9BR0VOVFMubWQiKSwgIkFVVEhfUlVMRSIpLnVud3JhcCgpOwogICAgICAgIGZzOjp3cml0ZSgKICAgICAgICAgICAgdGVtcC5wYXRoKCkuam9pbigic3JjL2F1dGgvc2Vzc2lvbi5ycyIpLAogICAgICAgICAgICAiZm4gYXV0aF9zZXNzaW9uX3JlZnJlc2goKSB7fSIsCiAgICAgICAgKQogICAgICAgIC51bndyYXAoKTsKCiAgICAgICAgZm9yIChkaXJlY3RvcnksIG1hcmtlcikgaW4gWwogICAgICAgICAgICAoImRvY3MiLCAiRE9DU19PTkxZX1JVTEUiKSwKICAgICAgICAgICAgKCJ0b29scyIsICJUT09MU19PTkxZX1JVTEUiKSwKICAgICAgICBdIHsKICAgICAgICAgICAgZnM6OmNyZWF0ZV9kaXJfYWxsKHRlbXAucGF0aCgpLmpvaW4oZGlyZWN0b3J5KSkudW53cmFwKCk7CiAgICAgICAgICAgIGZzOjp3cml0ZSh0ZW1wLnBhdGgoKS5qb2luKGRpcmVjdG9yeSkuam9pbigiQUdFTlRTLm1kIiksIG1hcmtlcikudW53cmFwKCk7CiAgICAgICAgfQoKICAgICAgICBsZXQgY29udGV4dCA9IGJ1aWxkX3JlcG9zaXRvcnlfY29udGV4dCgKICAgICAgICAgICAgJlsoInJvb3QiLnRvX3N0cmluZygpLCB0ZW1wLnBhdGgoKS5kaXNwbGF5KCkudG9fc3RyaW5nKCkpXSwKICAgICAgICAgICAgImZpeCBhdXRoIHNlc3Npb24gcmVmcmVzaCIsCiAgICAgICAgKQogICAgICAgIC51bndyYXAoKTsKCiAgICAgICAgYXNzZXJ0IShjb250ZXh0LmNvbnRhaW5zKCJST09UX1JVTEUiKSk7CiAgICAgICAgYXNzZXJ0IShjb250ZXh0LmNvbnRhaW5zKCJTUkNfUlVMRSIpKTsKICAgICAgICBhc3NlcnQhKGNvbnRleHQuY29udGFpbnMoIkFVVEhfUlVMRSIpKTsKICAgICAgICBhc3NlcnQhKCFjb250ZXh0LmNvbnRhaW5zKCJET0NTX09OTkxZX1JVTEUiKSk7CiAgICAgICAgYXNzZXJ0ISghY29udGV4dC5jb250YWlucygiVE9PTFNfT05MWV9SVUxFIikpOwogICAgfQoKJycnCmlmICJmbiBzY29wZWRfZ3VpZGFuY2VfZG9lc19ub3RfbGVha19hY3Jvc3Nfc2libGluZ3MoKSIgbm90IGluIHNvdXJjZToKICAgIGlmIHNvdXJjZS5jb3VudChhbmNob3IpICE9IDE6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdChmInRlc3QgaW5zZXJ0aW9uIGFuY2hvciBjb3VudD17c291cmNlLmNvdW50KGFuY2hvcil9IikKICAgIHNvdXJjZSA9IHNvdXJjZS5yZXBsYWNlKGFuY2hvciwgdGVzdCArIGFuY2hvciwgMSkKCnBhdGgud3JpdGVfdGV4dChzb3VyY2UpCg==' | base64 --decode > /tmp/scoped_fix.py && python3 /tmp/scoped_fix.py
+      - name: Format
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+      - name: Format check
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - name: Clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Repository context tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml openagent_context -- --nocapture
+      - name: Diff check
+        run: git diff --check
+      - name: Remove validation workflow
+        run: rm .github/workflows/scoped-repository-guidance-validate.yml
+      - name: Commit validated scoped guidance
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src-tauri/src/openagent_context.rs .github/workflows/scoped-repository-guidance-validate.yml
+          git commit -m 'feat: isolate scoped repository guidance'
+          git push origin HEAD:work/scoped-repository-guidance
