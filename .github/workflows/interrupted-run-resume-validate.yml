@@ -1,0 +1,48 @@
+name: Interrupted run resume validation
+
+on:
+  push:
+    branches: [work/interrupted-run-resume]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install Linux system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Apply interrupted run resume implementation
+        run: python3 .github/interrupted-run-resume-apply.py
+      - name: Format
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+      - name: Format check
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - name: Clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Resume unit tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml only_interrupted_runs_are_resumable -- --nocapture
+      - name: Database migration tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml database::tests:: -- --nocapture
+      - name: Durable run tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml openagent -- --nocapture
+      - name: Diff check
+        run: git diff --check
+      - name: Remove temporary validation files
+        run: rm -f .github/workflows/interrupted-run-resume-validate.yml .github/interrupted-run-resume-apply.py
+      - name: Commit validated interrupted run resume
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A src-tauri/src/database.rs src-tauri/src/portable_root.rs src-tauri/src/lib.rs src-tauri/src/local_agent.rs .github/workflows/interrupted-run-resume-validate.yml .github/interrupted-run-resume-apply.py
+          git commit -m 'feat: resume interrupted coding runs safely'
+          git push origin HEAD:work/interrupted-run-resume
