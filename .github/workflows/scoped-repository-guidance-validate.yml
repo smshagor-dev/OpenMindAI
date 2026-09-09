@@ -23,6 +23,70 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Apply scoped guidance isolation fix
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src-tauri/src/openagent_context.rs")
+          source = path.read_text()
+
+          old = '''            let term_hits = terms
+                .iter()
+                .filter(|term| normalized_scope.contains(term.as_str()))
+                .count();
+            let score = relevant_hits * 1_000 + term_hits * 100 + metadata.precedence;
+'''
+          new = '''            let term_hits = terms
+                .iter()
+                .filter(|term| normalized_scope.contains(term.as_str()))
+                .count();
+            if (!relevant.is_empty() && relevant_hits == 0)
+                || (relevant.is_empty() && term_hits == 0)
+            {
+                return None;
+            }
+            let score = relevant_hits * 1_000 + term_hits * 100 + metadata.precedence;
+'''
+          if old not in source:
+              raise SystemExit("scoped guidance selection anchor not found")
+          source = source.replace(old, new, 1)
+
+          anchor = '''    #[test]
+    fn context_does_not_follow_symlinked_files_or_guidance() {
+'''
+          test = '''    #[test]
+    fn scoped_guidance_does_not_leak_across_siblings() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("AGENTS.md"), "ROOT_RULE").unwrap();
+        fs::create_dir_all(temp.path().join("src/auth")).unwrap();
+        fs::write(temp.path().join("src/AGENTS.md"), "SRC_RULE").unwrap();
+        fs::write(
+            temp.path().join("src/auth/session.rs"),
+            "fn auth_session_refresh() {}",
+        )
+        .unwrap();
+        fs::create_dir_all(temp.path().join("docs")).unwrap();
+        fs::write(temp.path().join("docs/AGENTS.md"), "DOCS_ONLY_RULE").unwrap();
+
+        let context = build_repository_context(
+            &[("root".to_string(), temp.path().display().to_string())],
+            "fix auth session refresh",
+        )
+        .unwrap();
+
+        assert!(context.contains("ROOT_RULE"));
+        assert!(context.contains("SRC_RULE"));
+        assert!(!context.contains("DOCS_ONLY_RULE"));
+        assert!(!context.contains("REPOSITORY GUIDANCE [docs/AGENTS.md]"));
+    }
+
+'''
+          if anchor not in source:
+              raise SystemExit("test insertion anchor not found")
+          source = source.replace(anchor, test + anchor, 1)
+          path.write_text(source)
+          PY
       - name: Format
         run: |
           cargo fmt --manifest-path src-tauri/Cargo.toml
@@ -40,5 +104,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src-tauri/src/openagent_context.rs .github/workflows/scoped-repository-guidance-validate.yml
-          git commit -m "feat: scope repository guidance by path"
+          git commit -m "feat: isolate scoped repository guidance"
           git push origin HEAD:work/scoped-repository-guidance
