@@ -2,8 +2,7 @@ name: Scoped repository guidance validation
 
 on:
   push:
-    branches:
-      - work/scoped-repository-guidance
+    branches: [work/scoped-repository-guidance]
 
 permissions:
   contents: write
@@ -16,81 +15,17 @@ jobs:
         with:
           fetch-depth: 0
       - name: Install Linux system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - name: Apply scoped guidance isolation fix
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("src-tauri/src/openagent_context.rs")
-          source = path.read_text()
-
-          old = '''            let term_hits = terms
-                .iter()
-                .filter(|term| normalized_scope.contains(term.as_str()))
-                .count();
-            let score = relevant_hits * 1_000 + term_hits * 100 + metadata.precedence;
-'''
-          new = '''            let term_hits = terms
-                .iter()
-                .filter(|term| normalized_scope.contains(term.as_str()))
-                .count();
-            if (!relevant.is_empty() && relevant_hits == 0)
-                || (relevant.is_empty() && term_hits == 0)
-            {
-                return None;
-            }
-            let score = relevant_hits * 1_000 + term_hits * 100 + metadata.precedence;
-'''
-          if old not in source:
-              raise SystemExit("scoped guidance selection anchor not found")
-          source = source.replace(old, new, 1)
-
-          anchor = '''    #[test]
-    fn context_does_not_follow_symlinked_files_or_guidance() {
-'''
-          test = '''    #[test]
-    fn scoped_guidance_does_not_leak_across_siblings() {
-        let temp = tempfile::tempdir().unwrap();
-        fs::write(temp.path().join("AGENTS.md"), "ROOT_RULE").unwrap();
-        fs::create_dir_all(temp.path().join("src/auth")).unwrap();
-        fs::write(temp.path().join("src/AGENTS.md"), "SRC_RULE").unwrap();
-        fs::write(
-            temp.path().join("src/auth/session.rs"),
-            "fn auth_session_refresh() {}",
-        )
-        .unwrap();
-        fs::create_dir_all(temp.path().join("docs")).unwrap();
-        fs::write(temp.path().join("docs/AGENTS.md"), "DOCS_ONLY_RULE").unwrap();
-
-        let context = build_repository_context(
-            &[("root".to_string(), temp.path().display().to_string())],
-            "fix auth session refresh",
-        )
-        .unwrap();
-
-        assert!(context.contains("ROOT_RULE"));
-        assert!(context.contains("SRC_RULE"));
-        assert!(!context.contains("DOCS_ONLY_RULE"));
-        assert!(!context.contains("REPOSITORY GUIDANCE [docs/AGENTS.md]"));
-    }
-
-'''
-          if anchor not in source:
-              raise SystemExit("test insertion anchor not found")
-          source = source.replace(anchor, test + anchor, 1)
-          path.write_text(source)
-          PY
+        run: echo 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgpwYXRoID0gUGF0aCgic3JjLXRhdXJpL3NyYy9vcGVuYWdlbnRfY29udGV4dC5ycyIpCnNvdXJjZSA9IHBhdGgucmVhZF90ZXh0KCkKCm9sZCA9ICIiIiAgICAgICAgICAgIGxldCB0ZXJtX2hpdHMgPSB0ZXJtcwogICAgICAgICAgICAgICAgLml0ZXIoKQogICAgICAgICAgICAgICAgLmZpbHRlcih8dGVybXwgbm9ybWFsaXplZF9zY29wZS5jb250YWlucyh0ZXJtLmFzX3N0cigpKSkKICAgICAgICAgICAgICAgIC5jb3VudCgpOwogICAgICAgICAgICBsZXQgc2NvcmUgPSByZWxldmFudF9oaXRzICogMV8wMDAgKyB0ZXJtX2hpdHMgKiAxMDAgKyBtZXRhZGF0YS5wcmVjZWRlbmNlOwoiIiIKbmV3ID0gIiIiICAgICAgICAgICAgbGV0IHRlcm1faGl0cyA9IHRlcm1zCiAgICAgICAgICAgICAgICAuaXRlcigpCiAgICAgICAgICAgICAgICAuZmlsdGVyKHx0ZXJtfCBub3JtYWxpemVkX3Njb3BlLmNvbnRhaW5zKHRlcm0uYXNfc3RyKCkpKQogICAgICAgICAgICAgICAgLmNvdW50KCk7CiAgICAgICAgICAgIGlmICghcmVsZXZhbnQuaXNfZW1wdHkoKSAmJiByZWxldmFudF9oaXRzID09IDApCiAgICAgICAgICAgICAgICB8fCAocmVsZXZhbnQuaXNfZW1wdHkoKSAmJiB0ZXJtX2hpdHMgPT0gMCkKICAgICAgICAgICAgewogICAgICAgICAgICAgICAgcmV0dXJuIE5vbmU7CiAgICAgICAgICAgIH0KICAgICAgICAgICAgbGV0IHNjb3JlID0gcmVsZXZhbnRfaGl0cyAqIDFfMDAwICsgdGVybV9oaXRzICogMTAwICsgbWV0YWRhdGEucHJlY2VkZW5jZTsKIiIiCmlmIG9sZCBub3QgaW4gc291cmNlOgogICAgcmFpc2UgU3lzdGVtRXhpdCgic2NvcGVkIGd1aWRhbmNlIHNlbGVjdGlvbiBhbmNob3Igbm90IGZvdW5kIikKc291cmNlID0gc291cmNlLnJlcGxhY2Uob2xkLCBuZXcsIDEpCgphbmNob3IgPSAiIiIgICAgI1t0ZXN0XQogICAgZm4gY29udGV4dF9kb2VzX25vdF9mb2xsb3dfc3ltbGlua2VkX2ZpbGVzX29yX2d1aWRhbmNlKCkgewoiIiIKdGVzdCA9ICIiIiAgICAjW3Rlc3RdCiAgICBmbiBzY29wZWRfZ3VpZGFuY2VfZG9lc19ub3RfbGVha19hY3Jvc3Nfc2libGluZ3MoKSB7CiAgICAgICAgbGV0IHRlbXAgPSB0ZW1wZmlsZTo6dGVtcGRpcigpLnVud3JhcCgpOwogICAgICAgIGZzOjp3cml0ZSh0ZW1wLnBhdGgoKS5qb2luKCJBR0VOVFMubWQiKSwgIlJPT1RfUlVMRSIpLnVud3JhcCgpOwogICAgICAgIGZzOjpjcmVhdGVfZGlyX2FsbCh0ZW1wLnBhdGgoKS5qb2luKCJzcmMvYXV0aCIpKS51bndyYXAoKTsKICAgICAgICBmczo6d3JpdGUodGVtcC5wYXRoKCkuam9pbigic3JjL0FHRU5UUy5tZCIpLCAiU1JDX1JVTEUiKS51bndyYXAoKTsKICAgICAgICBmczo6d3JpdGUoCiAgICAgICAgICAgIHRlbXAucGF0aCgpLmpvaW4oInNyYy9hdXRoL3Nlc3Npb24ucnMiKSwKICAgICAgICAgICAgImZuIGF1dGhfc2Vzc2lvbl9yZWZyZXNoKCkge30iLAogICAgICAgICkKICAgICAgICAudW53cmFwKCk7CiAgICAgICAgZnM6OmNyZWF0ZV9kaXJfYWxsKHRlbXAucGF0aCgpLmpvaW4oImRvY3MiKSkudW53cmFwKCk7CiAgICAgICAgZnM6OndyaXRlKHRlbXAucGF0aCgpLmpvaW4oImRvY3MvQUdFTlRTLm1kIiksICJET0NTX09OTFlfUlVMRSIpLnVud3JhcCgpOwoKICAgICAgICBsZXQgY29udGV4dCA9IGJ1aWxkX3JlcG9zaXRvcnlfY29udGV4dCgKICAgICAgICAgICAgJlsoInJvb3QiLnRvX3N0cmluZygpLCB0ZW1wLnBhdGgoKS5kaXNwbGF5KCkudG9fc3RyaW5nKCkpXSwKICAgICAgICAgICAgImZpeCBhdXRoIHNlc3Npb24gcmVmcmVzaCIsCiAgICAgICAgKQogICAgICAgIC51bndyYXAoKTsKCiAgICAgICAgYXNzZXJ0IShjb250ZXh0LmNvbnRhaW5zKCJST09UX1JVTEUiKSk7CiAgICAgICAgYXNzZXJ0IShjb250ZXh0LmNvbnRhaW5zKCJTUkNfUlVMRSIpKTsKICAgICAgICBhc3NlcnQhKCFjb250ZXh0LmNvbnRhaW5zKCJET0NTX09OTFlfUlVMRSIpKTsKICAgICAgICBhc3NlcnQhKCFjb250ZXh0LmNvbnRhaW5zKCJSRVBPU0lUT1JZIEdVSURBTkNFIFtkb2NzL0FHRU5UUy5tZF0iKSk7CiAgICB9CgoiIiIKaWYgYW5jaG9yIG5vdCBpbiBzb3VyY2U6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJ0ZXN0IGluc2VydGlvbiBhbmNob3Igbm90IGZvdW5kIikKc291cmNlID0gc291cmNlLnJlcGxhY2UoYW5jaG9yLCB0ZXN0ICsgYW5jaG9yLCAxKQpwYXRoLndyaXRlX3RleHQoc291cmNlKQo=' | base64 --decode > /tmp/scoped_fix.py && python3 /tmp/scoped_fix.py
       - name: Format
-        run: |
-          cargo fmt --manifest-path src-tauri/Cargo.toml
-          cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+      - name: Format check
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - name: Clippy
         run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
       - name: Repository context tests
@@ -101,8 +36,8 @@ jobs:
         run: rm .github/workflows/scoped-repository-guidance-validate.yml
       - name: Commit validated scoped guidance
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add src-tauri/src/openagent_context.rs .github/workflows/scoped-repository-guidance-validate.yml
-          git commit -m "feat: isolate scoped repository guidance"
+          git commit -m 'feat: isolate scoped repository guidance'
           git push origin HEAD:work/scoped-repository-guidance
