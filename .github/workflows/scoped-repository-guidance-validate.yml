@@ -1,14 +1,15 @@
-name: Scoped repository guidance validation
+name: Scoped repository guidance repair
 
 on:
   push:
-    branches: [work/scoped-repository-guidance]
+    branches: [fix/scoped-guidance-ci]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  validate:
+  repair-and-validate:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -20,8 +21,109 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Apply scoped guidance sibling isolation
-        run: echo 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgpwYXRoID0gUGF0aCgic3JjLXRhdXJpL3NyYy9vcGVuYWdlbnRfY29udGV4dC5ycyIpCnNvdXJjZSA9IHBhdGgucmVhZF90ZXh0KCkKCm9sZCA9ICcnJyAgICAgICAgICAgIGxldCB0ZXJtX2hpdHMgPSB0ZXJtcwogICAgICAgICAgICAgICAgLml0ZXIoKQogICAgICAgICAgICAgICAgLmZpbHRlcih8dGVybXwgbm9ybWFsaXplZF9zY29wZS5jb250YWlucyh0ZXJtLmFzX3N0cigpKSkKICAgICAgICAgICAgICAgIC5jb3VudCgpOwogICAgICAgICAgICBsZXQgc2NvcmUgPSByZWxldmFudF9oaXRzICogMV8wMDAgKyB0ZXJtX2hpdHMgKiAxMDAgKyBtZXRhZGF0YS5wcmVjZWRlbmNlOwonJycKbmV3ID0gJycnICAgICAgICAgICAgbGV0IHRlcm1faGl0cyA9IHRlcm1zCiAgICAgICAgICAgICAgICAuaXRlcigpCiAgICAgICAgICAgICAgICAuZmlsdGVyKHx0ZXJtfCBub3JtYWxpemVkX3Njb3BlLmNvbnRhaW5zKHRlcm0uYXNfc3RyKCkpKQogICAgICAgICAgICAgICAgLmNvdW50KCk7CiAgICAgICAgICAgIGlmICFyZWxldmFudC5pc19lbXB0eSgpICYmIHJlbGV2YW50X2hpdHMgPT0gMCAmJiB0ZXJtX2hpdHMgPT0gMCB7CiAgICAgICAgICAgICAgICByZXR1cm4gTm9uZTsKICAgICAgICAgICAgfQogICAgICAgICAgICBsZXQgc2NvcmUgPSByZWxldmFudF9oaXRzICogMV8wMDAgKyB0ZXJtX2hpdHMgKiAxMDAgKyBtZXRhZGF0YS5wcmVjZWRlbmNlOwonJycKaWYgc291cmNlLmNvdW50KG9sZCkgIT0gMToKICAgIHJhaXNlIFN5c3RlbUV4aXQoZiJzY29wZWQgc2VsZWN0aW9uIGFuY2hvciBjb3VudD17c291cmNlLmNvdW50KG9sZCl9IikKc291cmNlID0gc291cmNlLnJlcGxhY2Uob2xkLCBuZXcsIDEpCgppZiAic29ydF9pbnN0cnVjdGlvbnMocm9vdCwgJm11dCBzZWxlY3RlZCk7IiBub3QgaW4gc291cmNlOgogICAgcmFpc2UgU3lzdGVtRXhpdCgiZmluYWwgaW5zdHJ1Y3Rpb24gb3JkZXJpbmcgc29ydCBtaXNzaW5nIikKCmFuY2hvciA9ICcnJyAgICAjW3Rlc3RdCiAgICBmbiBjb250ZXh0X2RvZXNfbm90X2ZvbGxvd19zeW1saW5rZWRfZmlsZXNfb3JfZ3VpZGFuY2UoKSB7CicnJwp0ZXN0ID0gJycnICAgICNbdGVzdF0KICAgIGZuIHNjb3BlZF9ndWlkYW5jZV9kb2VzX25vdF9sZWFrX2Fjcm9zc19zaWJsaW5ncygpIHsKICAgICAgICBsZXQgdGVtcCA9IHRlbXBmaWxlOjp0ZW1wZGlyKCkudW53cmFwKCk7CiAgICAgICAgZnM6OndyaXRlKHRlbXAucGF0aCgpLmpvaW4oIkFHRU5UUy5tZCIpLCAiUk9PVF9SVUxFIikudW53cmFwKCk7CiAgICAgICAgZnM6OmNyZWF0ZV9kaXJfYWxsKHRlbXAucGF0aCgpLmpvaW4oInNyYy9hdXRoIikpLnVud3JhcCgpOwogICAgICAgIGZzOjp3cml0ZSh0ZW1wLnBhdGgoKS5qb2luKCJzcmMvQUdFTlRTLm1kIiksICJTUkNfUlVMRSIpLnVud3JhcCgpOwogICAgICAgIGZzOjp3cml0ZSh0ZW1wLnBhdGgoKS5qb2luKCJzcmMvYXV0aC9BR0VOVFMubWQiKSwgIkFVVEhfUlVMRSIpLnVud3JhcCgpOwogICAgICAgIGZzOjp3cml0ZSgKICAgICAgICAgICAgdGVtcC5wYXRoKCkuam9pbigic3JjL2F1dGgvc2Vzc2lvbi5ycyIpLAogICAgICAgICAgICAiZm4gYXV0aF9zZXNzaW9uX3JlZnJlc2goKSB7fSIsCiAgICAgICAgKQogICAgICAgIC51bndyYXAoKTsKCiAgICAgICAgZm9yIChkaXJlY3RvcnksIG1hcmtlcikgaW4gWwogICAgICAgICAgICAoImRvY3MiLCAiRE9DU19PTkxZX1JVTEUiKSwKICAgICAgICAgICAgKCJ0b29scyIsICJUT09MU19PTkxZX1JVTEUiKSwKICAgICAgICBdIHsKICAgICAgICAgICAgZnM6OmNyZWF0ZV9kaXJfYWxsKHRlbXAucGF0aCgpLmpvaW4oZGlyZWN0b3J5KSkudW53cmFwKCk7CiAgICAgICAgICAgIGZzOjp3cml0ZSh0ZW1wLnBhdGgoKS5qb2luKGRpcmVjdG9yeSkuam9pbigiQUdFTlRTLm1kIiksIG1hcmtlcikudW53cmFwKCk7CiAgICAgICAgfQoKICAgICAgICBsZXQgY29udGV4dCA9IGJ1aWxkX3JlcG9zaXRvcnlfY29udGV4dCgKICAgICAgICAgICAgJlsoInJvb3QiLnRvX3N0cmluZygpLCB0ZW1wLnBhdGgoKS5kaXNwbGF5KCkudG9fc3RyaW5nKCkpXSwKICAgICAgICAgICAgImZpeCBhdXRoIHNlc3Npb24gcmVmcmVzaCIsCiAgICAgICAgKQogICAgICAgIC51bndyYXAoKTsKCiAgICAgICAgYXNzZXJ0IShjb250ZXh0LmNvbnRhaW5zKCJST09UX1JVTEUiKSk7CiAgICAgICAgYXNzZXJ0IShjb250ZXh0LmNvbnRhaW5zKCJTUkNfUlVMRSIpKTsKICAgICAgICBhc3NlcnQhKGNvbnRleHQuY29udGFpbnMoIkFVVEhfUlVMRSIpKTsKICAgICAgICBhc3NlcnQhKCFjb250ZXh0LmNvbnRhaW5zKCJET0NTX09OTkxZX1JVTEUiKSk7CiAgICAgICAgYXNzZXJ0ISghY29udGV4dC5jb250YWlucygiVE9PTFNfT05MWV9SVUxFIikpOwogICAgfQoKJycnCmlmICJmbiBzY29wZWRfZ3VpZGFuY2VfZG9lc19ub3RfbGVha19hY3Jvc3Nfc2libGluZ3MoKSIgbm90IGluIHNvdXJjZToKICAgIGlmIHNvdXJjZS5jb3VudChhbmNob3IpICE9IDE6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdChmInRlc3QgaW5zZXJ0aW9uIGFuY2hvciBjb3VudD17c291cmNlLmNvdW50KGFuY2hvcil9IikKICAgIHNvdXJjZSA9IHNvdXJjZS5yZXBsYWNlKGFuY2hvciwgdGVzdCArIGFuY2hvciwgMSkKCnBhdGgud3JpdGVfdGV4dChzb3VyY2UpCg==' | base64 --decode > /tmp/scoped_fix.py && python3 /tmp/scoped_fix.py
+      - name: Fix scoped guidance selection
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('src-tauri/src/openagent_context.rs')
+          source = path.read_text()
+
+          old = '''            let term_hits = terms
+                .iter()
+                .filter(|term| normalized_scope.contains(term.as_str()))
+                .count();
+            let score = relevant_hits * 1_000 + term_hits * 100 + metadata.precedence;
+            Some((score, metadata.relative, path.clone()))
+'''
+          new = '''            let term_hits = terms
+                .iter()
+                .filter(|term| normalized_scope.contains(term.as_str()))
+                .count();
+            if relevant_hits == 0 && term_hits == 0 {
+                return None;
+            }
+            let score = relevant_hits * 1_000 + term_hits * 100 + metadata.precedence;
+            Some((score, metadata.relative, path.clone()))
+'''
+          if source.count(old) != 1:
+              raise SystemExit(f'scoped selection anchor count={source.count(old)}')
+          source = source.replace(old, new, 1)
+
+          old = '''        .filter(|path| !instruction_set.contains(path) && safe_context_file(path))
+'''
+          new = '''        .filter(|path| {
+            !instruction_set.contains(path)
+                && !guidance_like_file(root, path)
+                && safe_context_file(path)
+        })
+'''
+          if source.count(old) != 1:
+              raise SystemExit(f'relevant filter anchor count={source.count(old)}')
+          source = source.replace(old, new, 1)
+
+          anchor = '''fn instruction_metadata(root: &Path, path: &Path) -> Option<InstructionMetadata> {
+'''
+          helper = '''fn guidance_like_file(root: &Path, path: &Path) -> bool {
+    let relative = normalized_relative(root, path);
+    relative == "AGENTS.md"
+        || relative.ends_with("/AGENTS.md")
+        || relative == "CLAUDE.md"
+        || relative.ends_with("/CLAUDE.md")
+        || relative == "CONTRIBUTING.md"
+        || relative.ends_with("/CONTRIBUTING.md")
+        || relative == ".github/copilot-instructions.md"
+        || relative.ends_with("/.github/copilot-instructions.md")
+}
+
+'''
+          if source.count(anchor) != 1:
+              raise SystemExit(f'helper anchor count={source.count(anchor)}')
+          source = source.replace(anchor, helper + anchor, 1)
+
+          anchor = '''    #[test]
+    fn context_does_not_follow_symlinked_files_or_guidance() {
+'''
+          test = '''    #[test]
+    fn unrelated_scoped_guidance_does_not_leak_into_context() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("AGENTS.md"), "ROOT_RULE").unwrap();
+        fs::create_dir_all(temp.path().join("src/auth")).unwrap();
+        fs::create_dir_all(temp.path().join("docs")).unwrap();
+        fs::create_dir_all(temp.path().join("tools")).unwrap();
+        fs::write(temp.path().join("src/AGENTS.md"), "SRC_RULE").unwrap();
+        fs::write(temp.path().join("src/auth/AGENTS.md"), "AUTH_RULE").unwrap();
+        fs::write(temp.path().join("docs/AGENTS.md"), "DOCS_ONLY_RULE").unwrap();
+        fs::write(temp.path().join("tools/AGENTS.md"), "TOOLS_ONLY_RULE").unwrap();
+        fs::write(temp.path().join("docs/CLAUDE.md"), "DOCS_CLAUDE_RULE").unwrap();
+        fs::write(
+            temp.path().join("src/auth/session.rs"),
+            "fn auth_session_refresh() {}",
+        )
+        .unwrap();
+
+        let context = build_repository_context(
+            &[("root".to_string(), temp.path().display().to_string())],
+            "fix auth session refresh",
+        )
+        .unwrap();
+
+        assert!(context.contains("ROOT_RULE"));
+        assert!(context.contains("SRC_RULE"));
+        assert!(context.contains("AUTH_RULE"));
+        assert!(!context.contains("DOCS_ONLY_RULE"));
+        assert!(!context.contains("TOOLS_ONLY_RULE"));
+        assert!(!context.contains("DOCS_CLAUDE_RULE"));
+    }
+
+'''
+          if source.count(anchor) != 1:
+              raise SystemExit(f'test anchor count={source.count(anchor)}')
+          source = source.replace(anchor, test + anchor, 1)
+
+          path.write_text(source)
+          PY
       - name: Format
         run: cargo fmt --manifest-path src-tauri/Cargo.toml
       - name: Format check
@@ -32,12 +134,12 @@ jobs:
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml openagent_context -- --nocapture
       - name: Diff check
         run: git diff --check
-      - name: Remove validation workflow
+      - name: Remove temporary repair workflow
         run: rm .github/workflows/scoped-repository-guidance-validate.yml
-      - name: Commit validated scoped guidance
+      - name: Commit validated fix
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add src-tauri/src/openagent_context.rs .github/workflows/scoped-repository-guidance-validate.yml
-          git commit -m 'feat: isolate scoped repository guidance'
-          git push origin HEAD:work/scoped-repository-guidance
+          git commit -m 'fix: harden scoped repository guidance selection'
+          git push origin HEAD:fix/scoped-guidance-ci
