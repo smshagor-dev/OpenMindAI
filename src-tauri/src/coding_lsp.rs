@@ -21,6 +21,7 @@ const MAX_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_FALLBACK_FILES: usize = 1_200;
 const MAX_SYMBOL_RESULTS: usize = 100;
 const MAX_REFERENCE_RESULTS: usize = 200;
+const MAX_HOVER_CHARS: usize = 12_000;
 const MAX_LSP_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_LSP_HEADER_BYTES: usize = 16 * 1024;
 const MAX_PROJECT_ROOTS: usize = 32;
@@ -49,6 +50,14 @@ struct WorkspaceServer {
     spec: ServerSpec,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct ServerCapabilities {
+    workspace_symbols: bool,
+    definition: bool,
+    references: bool,
+    hover: bool,
+}
+
 struct LspSession {
     child: Child,
     stdin: ChildStdin,
@@ -57,6 +66,7 @@ struct LspSession {
     server_name: String,
     root_uri: String,
     root_name: String,
+    capabilities: ServerCapabilities,
 }
 
 pub async fn workspace_symbols(
@@ -87,6 +97,10 @@ pub async fn workspace_symbols(
             else {
                 continue;
             };
+            if !session.capabilities.workspace_symbols {
+                session.close().await;
+                continue;
+            }
             let request = session
                 .request("workspace/symbol", json!({"query": query}))
                 .await;
@@ -163,10 +177,29 @@ pub async fn references(
     .await
 }
 
+pub async fn hover(
+    root: &Path,
+    relative_path: &str,
+    line: u64,
+    character: u64,
+    allow_language_server: bool,
+) -> Result<NavigationResult, AppError> {
+    position_navigation(
+        root,
+        relative_path,
+        line,
+        character,
+        NavigationKind::Hover,
+        allow_language_server,
+    )
+    .await
+}
+
 #[derive(Debug, Clone, Copy)]
 enum NavigationKind {
     Definition,
     References,
+    Hover,
 }
 
 async fn position_navigation(
@@ -196,10 +229,11 @@ async fn position_navigation(
     if let (true, Some(spec)) = (allow_language_server, select_server_for_file(&file)) {
         let server_root = nearest_project_root(&root, &file, spec);
         if let Ok(mut session) = LspSession::start(&root, &server_root, spec).await {
-            if session
-                .open_document(&file, &text, spec.language_id)
-                .await
-                .is_ok()
+            if session.supports_navigation(kind)
+                && session
+                    .open_document(&file, &text, spec.language_id)
+                    .await
+                    .is_ok()
             {
                 let uri = file_uri(&file)?;
                 let lsp_character = utf16_character_offset(line_text, character_index)?;
@@ -213,15 +247,25 @@ async fn position_navigation(
                         "position": {"line": line - 1, "character": lsp_character},
                         "context": {"includeDeclaration": true}
                     }),
+                    NavigationKind::Hover => json!({
+                        "textDocument": {"uri": uri},
+                        "position": {"line": line - 1, "character": lsp_character}
+                    }),
                 };
                 let (method, limit) = match kind {
                     NavigationKind::Definition => ("textDocument/definition", MAX_SYMBOL_RESULTS),
                     NavigationKind::References => {
                         ("textDocument/references", MAX_REFERENCE_RESULTS)
                     }
+                    NavigationKind::Hover => ("textDocument/hover", 1),
                 };
                 if let Ok(result) = session.request(method, params).await {
-                    let result = sanitize_lsp_result(&root, result, limit)?;
+                    let result = match kind {
+                        NavigationKind::Hover => sanitize_hover_result(result)?,
+                        NavigationKind::Definition | NavigationKind::References => {
+                            sanitize_lsp_result(&root, result, limit)?
+                        }
+                    };
                     if result_has_items(&result) {
                         session.close().await;
                         return Ok(NavigationResult {
@@ -244,6 +288,7 @@ async fn position_navigation(
     let result = match kind {
         NavigationKind::Definition => fallback_definition(&root, &symbol)?,
         NavigationKind::References => fallback_references(&root, &symbol)?,
+        NavigationKind::Hover => fallback_hover(&root, &symbol)?,
     };
     Ok(NavigationResult {
         engine: "lexical-fallback".to_string(),
@@ -328,8 +373,9 @@ impl LspSession {
             server_name: spec.command.to_string(),
             root_uri: root_uri.clone(),
             root_name: root_name.clone(),
+            capabilities: ServerCapabilities::default(),
         };
-        session
+        let initialize_result = session
             .request(
                 "initialize",
                 json!({
@@ -347,12 +393,14 @@ impl LspSession {
                         "textDocument": {
                             "definition": {"dynamicRegistration": false, "linkSupport": true},
                             "references": {"dynamicRegistration": false},
+                            "hover": {"dynamicRegistration": false, "contentFormat": ["markdown", "plaintext"]},
                             "synchronization": {"dynamicRegistration": false, "didOpen": true}
                         }
                     }
                 }),
             )
             .await?;
+        session.capabilities = parse_server_capabilities(&initialize_result);
         session.notify("initialized", json!({})).await?;
         Ok(session)
     }
@@ -487,10 +535,38 @@ impl LspSession {
         }
     }
 
+    fn supports_navigation(&self, kind: NavigationKind) -> bool {
+        match kind {
+            NavigationKind::Definition => self.capabilities.definition,
+            NavigationKind::References => self.capabilities.references,
+            NavigationKind::Hover => self.capabilities.hover,
+        }
+    }
+
     async fn close(&mut self) {
         let _ = self.request("shutdown", Value::Null).await;
         let _ = self.notify("exit", Value::Null).await;
         let _ = self.child.kill().await;
+    }
+}
+
+fn parse_server_capabilities(initialize_result: &Value) -> ServerCapabilities {
+    let capabilities = initialize_result
+        .get("capabilities")
+        .unwrap_or(&Value::Null);
+    ServerCapabilities {
+        workspace_symbols: capability_enabled(capabilities, "workspaceSymbolProvider"),
+        definition: capability_enabled(capabilities, "definitionProvider"),
+        references: capability_enabled(capabilities, "referencesProvider"),
+        hover: capability_enabled(capabilities, "hoverProvider"),
+    }
+}
+
+fn capability_enabled(capabilities: &Value, name: &str) -> bool {
+    match capabilities.get(name) {
+        Some(Value::Bool(value)) => *value,
+        Some(Value::Object(_)) => true,
+        _ => false,
     }
 }
 
@@ -758,6 +834,70 @@ fn sanitize_lsp_result(root: &Path, result: Value, limit: usize) -> Result<Value
     }
 }
 
+fn sanitize_hover_result(result: Value) -> Result<Value, AppError> {
+    let Value::Object(mut object) = result else {
+        return Ok(Value::Null);
+    };
+    let Some(contents) = object.remove("contents") else {
+        return Ok(Value::Null);
+    };
+    let mut remaining = MAX_HOVER_CHARS;
+    let contents = sanitize_hover_contents(contents, &mut remaining);
+    if !hover_contents_has_data(&contents) {
+        return Ok(Value::Null);
+    }
+
+    let mut safe = serde_json::Map::new();
+    safe.insert("contents".to_string(), contents);
+    if let Some(range) = object.remove("range").filter(Value::is_object) {
+        safe.insert("range".to_string(), range);
+    }
+    Ok(Value::Object(safe))
+}
+
+fn sanitize_hover_contents(value: Value, remaining: &mut usize) -> Value {
+    if *remaining == 0 {
+        return Value::Null;
+    }
+    match value {
+        Value::String(text) => {
+            let bounded = text.chars().take(*remaining).collect::<String>();
+            *remaining = (*remaining).saturating_sub(bounded.chars().count());
+            Value::String(bounded)
+        }
+        Value::Array(values) => Value::Array(
+            values
+                .into_iter()
+                .take(32)
+                .map(|value| sanitize_hover_contents(value, remaining))
+                .filter(hover_contents_has_data)
+                .collect(),
+        ),
+        Value::Object(mut object) => {
+            let mut safe = serde_json::Map::new();
+            for key in ["kind", "language", "value"] {
+                if let Some(value) = object.remove(key) {
+                    let value = sanitize_hover_contents(value, remaining);
+                    if hover_contents_has_data(&value) {
+                        safe.insert(key.to_string(), value);
+                    }
+                }
+            }
+            Value::Object(safe)
+        }
+        _ => Value::Null,
+    }
+}
+
+fn hover_contents_has_data(value: &Value) -> bool {
+    match value {
+        Value::String(value) => !value.is_empty(),
+        Value::Array(values) => values.iter().any(hover_contents_has_data),
+        Value::Object(values) => values.values().any(hover_contents_has_data),
+        _ => false,
+    }
+}
+
 fn result_has_items(result: &Value) -> bool {
     match result {
         Value::Array(items) => !items.is_empty(),
@@ -864,6 +1004,32 @@ fn fallback_definition(root: &Path, symbol: &str) -> Result<Value, AppError> {
                         "line": line_index + 1
                     }));
                     if results.len() >= MAX_SYMBOL_RESULTS {
+                        return Ok(Value::Array(results));
+                    }
+                }
+            }
+        }
+    }
+    Ok(Value::Array(results))
+}
+
+fn fallback_hover(root: &Path, symbol: &str) -> Result<Value, AppError> {
+    let mut results = Vec::new();
+    for file in collect_source_files(root)? {
+        let Ok(text) = read_source(&file) else {
+            continue;
+        };
+        for (line_index, line) in text.lines().enumerate() {
+            if let Some((kind, candidate)) = declaration_symbol(&file, line) {
+                if candidate == symbol {
+                    results.push(json!({
+                        "name": candidate,
+                        "kind": kind,
+                        "path": relative_display(root, &file),
+                        "line": line_index + 1,
+                        "preview": truncate_preview(line.trim(), 320)
+                    }));
+                    if results.len() >= 10 {
                         return Ok(Value::Array(results));
                     }
                 }
@@ -1533,6 +1699,49 @@ mod tests {
         assert!(!result_has_items(&Value::Null));
         assert!(!result_has_items(&Value::Array(Vec::new())));
         assert!(result_has_items(&json!({"uri":"file:///tmp/a.rs"})));
+    }
+
+    #[test]
+    fn server_capabilities_are_parsed_from_initialize_result() {
+        let parsed = parse_server_capabilities(&json!({
+            "capabilities": {
+                "workspaceSymbolProvider": true,
+                "definitionProvider": {"workDoneProgress": true},
+                "referencesProvider": false,
+                "hoverProvider": {}
+            }
+        }));
+        assert!(parsed.workspace_symbols);
+        assert!(parsed.definition);
+        assert!(!parsed.references);
+        assert!(parsed.hover);
+    }
+
+    #[test]
+    fn hover_sanitization_bounds_untrusted_markup() {
+        let long = "x".repeat(MAX_HOVER_CHARS + 50);
+        let safe = sanitize_hover_result(json!({
+            "contents": {"kind": "markdown", "value": long},
+            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
+            "unsafe": "discard me"
+        }))
+        .unwrap();
+        let value = safe
+            .pointer("/contents/value")
+            .and_then(Value::as_str)
+            .unwrap();
+        assert!(value.chars().count() <= MAX_HOVER_CHARS);
+        assert!(safe.get("unsafe").is_none());
+    }
+
+    #[test]
+    fn fallback_hover_reports_declaration_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("lib.rs"), "pub struct Router {}\n").unwrap();
+        let hover = fallback_hover(temp.path(), "Router").unwrap();
+        let item = hover.as_array().unwrap().first().unwrap();
+        assert_eq!(item.get("kind").and_then(Value::as_str), Some("struct"));
+        assert_eq!(item.get("path").and_then(Value::as_str), Some("lib.rs"));
     }
 
     #[test]
