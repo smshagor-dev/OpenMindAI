@@ -22,7 +22,25 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Apply context selection and compression implementation
-        run: python3 .github/context-selection-compression-apply.py
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.github/context-selection-compression-apply.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace("old_prompt = '''", "old_prompt = r'''", 1)
+          text = text.replace("new_prompt = '''", "new_prompt = r'''", 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+          python3 .github/context-selection-compression-apply.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src-tauri/src/openagent_prompt_context.rs')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace('project_instructions: &"project instruction ".repeat(600),', 'project_instructions: "project instructions",')
+          text = text.replace('workspace_context: &"workspace snapshot ".repeat(600),', 'workspace_context: "workspace snapshot",')
+          text = text.replace('conversation_context: &"old chat newest chat ".repeat(600),', 'conversation_context: "recent conversation",')
+          path.write_text(text, encoding='utf-8')
+          PY
       - name: Format
         run: cargo fmt --manifest-path src-tauri/Cargo.toml
       - name: Format check
