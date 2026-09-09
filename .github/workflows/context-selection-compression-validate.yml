@@ -22,7 +22,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Apply context selection and compression implementation
-        run: base64 --decode .github/context-selection-compression.payload | gzip --decompress > /tmp/apply_context_compression.py && python3 /tmp/apply_context_compression.py
+        run: python3 .github/context-selection-compression-apply.py
       - name: Format
         run: cargo fmt --manifest-path src-tauri/Cargo.toml
       - name: Format check
@@ -32,15 +32,15 @@ jobs:
       - name: Repository context tests
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml openagent_context -- --nocapture
       - name: Prompt context tests
-        run: cargo test --locked --manifest-path src-tauri/Cargo.toml context_ -- --nocapture
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml openagent_prompt_context -- --nocapture
       - name: Diff check
         run: git diff --check
       - name: Remove temporary validation files
-        run: rm .github/workflows/context-selection-compression-validate.yml .github/context-selection-compression.payload
+        run: rm -f .github/workflows/context-selection-compression-validate.yml .github/context-selection-compression.payload .github/context-selection-compression-apply.py
       - name: Commit validated context selection
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src-tauri/src/openagent_context.rs src-tauri/src/local_agent.rs .github/workflows/context-selection-compression-validate.yml .github/context-selection-compression.payload
+          git add -A src-tauri/src/openagent_context.rs src-tauri/src/openagent_prompt_context.rs src-tauri/src/local_agent.rs src-tauri/src/lib.rs .github/workflows/context-selection-compression-validate.yml .github/context-selection-compression.payload .github/context-selection-compression-apply.py
           git commit -m 'feat: add model-aware context selection and compression'
           git push origin HEAD:work/context-selection-compression
