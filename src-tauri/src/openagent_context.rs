@@ -51,12 +51,8 @@ pub fn build_repository_context(
         let files = collect_files(&root)?;
         let all_instructions = instruction_candidates(&root, &files);
         let relevant = relevant_candidates(&root, &files, &terms, &all_instructions);
-        let instructions = select_instruction_candidates(
-            &root,
-            &all_instructions,
-            &relevant,
-            &terms,
-        );
+        let instructions =
+            select_instruction_candidates(&root, &all_instructions, &relevant, &terms);
         let mut root_sections = Vec::new();
 
         if !instructions.is_empty() || !relevant.is_empty() {
@@ -181,22 +177,15 @@ fn select_instruction_candidates(
                 .iter()
                 .filter(|term| normalized_scope.contains(term.as_str()))
                 .count();
+            if relevant_hits == 0 && term_hits == 0 {
+                return None;
+            }
             let score = relevant_hits * 1_000 + term_hits * 100 + metadata.precedence;
             Some((score, metadata.relative, path.clone()))
         })
         .collect::<Vec<_>>();
-    scoped.sort_by(|left, right| {
-        right
-            .0
-            .cmp(&left.0)
-            .then_with(|| left.1.cmp(&right.1))
-    });
-    selected.extend(
-        scoped
-            .into_iter()
-            .take(remaining)
-            .map(|(_, _, path)| path),
-    );
+    scoped.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    selected.extend(scoped.into_iter().take(remaining).map(|(_, _, path)| path));
     sort_instructions(root, &mut selected);
     selected
 }
@@ -209,11 +198,25 @@ fn sort_instructions(root: &Path, candidates: &mut [PathBuf]) {
             (Some(left), Some(right)) => left
                 .precedence
                 .cmp(&right.precedence)
-                .then_with(|| instruction_priority(&left.relative).cmp(&instruction_priority(&right.relative)))
+                .then_with(|| {
+                    instruction_priority(&left.relative).cmp(&instruction_priority(&right.relative))
+                })
                 .then_with(|| left.relative.cmp(&right.relative)),
             _ => left.cmp(right),
         }
     });
+}
+
+fn guidance_like_file(root: &Path, path: &Path) -> bool {
+    let relative = normalized_relative(root, path);
+    relative == "AGENTS.md"
+        || relative.ends_with("/AGENTS.md")
+        || relative == "CLAUDE.md"
+        || relative.ends_with("/CLAUDE.md")
+        || relative == "CONTRIBUTING.md"
+        || relative.ends_with("/CONTRIBUTING.md")
+        || relative == ".github/copilot-instructions.md"
+        || relative.ends_with("/.github/copilot-instructions.md")
 }
 
 fn instruction_metadata(root: &Path, path: &Path) -> Option<InstructionMetadata> {
@@ -283,7 +286,11 @@ fn relevant_candidates(
     let instruction_set = instructions.iter().collect::<HashSet<_>>();
     let mut scored = files
         .iter()
-        .filter(|path| !instruction_set.contains(path) && safe_context_file(path))
+        .filter(|path| {
+            !instruction_set.contains(path)
+                && !guidance_like_file(root, path)
+                && safe_context_file(path)
+        })
         .filter_map(|path| {
             let relative = relative_display(root, path);
             let normalized = relative.to_ascii_lowercase();
@@ -473,6 +480,38 @@ mod tests {
 
         assert!(context.contains("AUTH_PRIORITY_RULE"));
         assert!(context.contains("scope=src/auth"));
+    }
+
+    #[test]
+    fn unrelated_scoped_guidance_does_not_leak_into_context() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("AGENTS.md"), "ROOT_RULE").unwrap();
+        fs::create_dir_all(temp.path().join("src/auth")).unwrap();
+        fs::create_dir_all(temp.path().join("docs")).unwrap();
+        fs::create_dir_all(temp.path().join("tools")).unwrap();
+        fs::write(temp.path().join("src/AGENTS.md"), "SRC_RULE").unwrap();
+        fs::write(temp.path().join("src/auth/AGENTS.md"), "AUTH_RULE").unwrap();
+        fs::write(temp.path().join("docs/AGENTS.md"), "DOCS_ONLY_RULE").unwrap();
+        fs::write(temp.path().join("tools/AGENTS.md"), "TOOLS_ONLY_RULE").unwrap();
+        fs::write(temp.path().join("docs/CLAUDE.md"), "DOCS_CLAUDE_RULE").unwrap();
+        fs::write(
+            temp.path().join("src/auth/session.rs"),
+            "fn auth_session_refresh() {}",
+        )
+        .unwrap();
+
+        let context = build_repository_context(
+            &[("root".to_string(), temp.path().display().to_string())],
+            "fix auth session refresh",
+        )
+        .unwrap();
+
+        assert!(context.contains("ROOT_RULE"));
+        assert!(context.contains("SRC_RULE"));
+        assert!(context.contains("AUTH_RULE"));
+        assert!(!context.contains("DOCS_ONLY_RULE"));
+        assert!(!context.contains("TOOLS_ONLY_RULE"));
+        assert!(!context.contains("DOCS_CLAUDE_RULE"));
     }
 
     #[test]
