@@ -74,7 +74,8 @@ pub fn authorize_tool(tool: &str, action: &Value, mode: ApprovalMode) -> (Policy
 fn classify_tool(tool: &str, action: &Value) -> RiskLevel {
     match tool {
         "list_dir" | "read_file" | "search_text" | "symbol_search" | "symbol_definition"
-        | "symbol_references" | "symbol_hover" | "git_status" | "git_diff" => RiskLevel::ReadOnly,
+        | "symbol_references" | "symbol_hover" | "symbol_diagnostics" | "git_status"
+        | "git_diff" => RiskLevel::ReadOnly,
         "write_file" | "replace_text" | "patch_transaction" | "create_dir" => {
             RiskLevel::WorkspaceWrite
         }
@@ -142,6 +143,9 @@ mod tests {
     #[test]
     fn read_only_tools_never_prompt() {
         let (decision, _) = authorize_tool("read_file", &json!({}), ApprovalMode::AlwaysAsk);
+        assert_eq!(decision, PolicyDecision::Allow);
+        let (decision, _) =
+            authorize_tool("symbol_diagnostics", &json!({}), ApprovalMode::AlwaysAsk);
         assert_eq!(decision, PolicyDecision::Allow);
     }
 
