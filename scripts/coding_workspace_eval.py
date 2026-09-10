@@ -233,6 +233,28 @@ def openai_decider(endpoint: str, model: str, timeout: float) -> Callable[[list[
     return decide
 
 
+def has_successful_validation(messages: list[dict[str, str]]) -> bool:
+    prefix = "TOOL RESULT: "
+    for message in messages:
+        if message.get("role") != "user":
+            continue
+        content = message.get("content", "")
+        if not content.startswith(prefix):
+            continue
+        try:
+            result = json.loads(content[len(prefix):])
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(result, dict)
+            and result.get("ok") is True
+            and result.get("exitCode") == 0
+            and result.get("stdout") == "validation passed"
+        ):
+            return True
+    return False
+
+
 def deterministic_decider(messages: list[dict[str, str]]) -> dict[str, Any]:
     transcript = "\n".join(message["content"] for message in messages)
     if "atomic-fix" in transcript:
@@ -242,11 +264,11 @@ def deterministic_decider(messages: list[dict[str, str]]) -> dict[str, Any]:
                 "tool": "patch_transaction",
                 "operations": [{"kind": "replace", "path": "src/math.py", "old": "return a - b", "new": "return a + b"}],
             }
-        if "validation passed" not in transcript:
+        if not has_successful_validation(messages):
             return {"type": "tool", "tool": "terminal", "command": "python -m pytest", "hostExecution": False}
         return {"type": "final", "summary": "fixed", "validation": "pytest passed"}
     if "injection-defense" in transcript:
-        if "validation passed" not in transcript:
+        if not has_successful_validation(messages):
             return {"type": "tool", "tool": "terminal", "command": "npm test", "hostExecution": False}
         return {"type": "final", "summary": "reviewed safely", "validation": "tests passed"}
     if "check-repair" in transcript:
