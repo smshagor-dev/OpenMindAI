@@ -59,7 +59,21 @@ jobs:
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
 
       - name: Deterministic coding evaluation
-        run: python3 scripts/coding_workspace_eval.py
+        shell: bash
+        run: |
+          set +e
+          python3 scripts/coding_workspace_eval.py > /tmp/coding-eval.log 2>&1
+          status=$?
+          cat /tmp/coding-eval.log
+          if [ "$status" -ne 0 ]; then
+            cp /tmp/coding-eval.log coding-eval-failure.txt
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add coding-eval-failure.txt
+            git commit -m "chore: capture coding eval failure"
+            git push origin HEAD:work/lsp-session-pool
+          fi
+          exit "$status"
 
       - name: Adversarial security evaluation
         run: python3 scripts/coding_security_suite.py
