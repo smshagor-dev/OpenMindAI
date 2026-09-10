@@ -39,3 +39,21 @@ new = '''    if let Some(session) = duplicate_session {
 if text.count(old) != 1:
     raise RuntimeError("expected exactly one duplicate-session return block")
 path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+path = Path("src-tauri/src/lib_legacy.rs")
+text = path.read_text(encoding="utf-8")
+old = '''        .run(tauri::generate_context!())
+        .expect("error while running OpenMindAI");
+}'''
+new = '''        .build(tauri::generate_context!())
+        .expect("error while building OpenMindAI");
+
+    app.run(|_app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            tauri::async_runtime::block_on(coding_lsp::shutdown_pooled_sessions());
+        }
+    });
+}'''
+if text.count(old) != 1:
+    raise RuntimeError("expected exactly one Tauri builder run tail")
+path.write_text(text.replace(old, new, 1), encoding="utf-8")
