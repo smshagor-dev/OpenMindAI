@@ -64,11 +64,3 @@ new = '''        .build(tauri::generate_context!())
 if text.count(old) != 1:
     raise RuntimeError("expected exactly one Tauri builder run tail")
 path.write_text(text.replace(old, new, 1), encoding="utf-8")
-
-path = Path("scripts/coding_workspace_eval.py")
-text = path.read_text(encoding="utf-8")
-bad = '"format c:' + chr(92) + '",'
-good = '"format c:",'
-if text.count(bad) != 1:
-    raise RuntimeError("expected exactly one malformed Windows format token")
-path.write_text(text.replace(bad, good, 1), encoding="utf-8")
