@@ -42,6 +42,13 @@ path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 path = Path("src-tauri/src/lib_legacy.rs")
 text = path.read_text(encoding="utf-8")
+old = '''    tauri::Builder::default()
+'''
+new = '''    let app = tauri::Builder::default()
+'''
+if text.count(old) != 1:
+    raise RuntimeError("expected exactly one Tauri builder start")
+text = text.replace(old, new, 1)
 old = '''        .run(tauri::generate_context!())
         .expect("error while running OpenMindAI");
 }'''
