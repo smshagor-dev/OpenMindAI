@@ -1,0 +1,82 @@
+name: LSP Diagnostics Integration
+
+on:
+  push:
+    branches:
+      - work/lsp-diagnostics
+
+permissions:
+  contents: write
+
+jobs:
+  integrate-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Apply diagnostics integration
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 scripts/apply_lsp_diagnostics.py
+
+      - name: Remove one-shot integration files
+        run: |
+          rm -f scripts/apply_lsp_diagnostics.py
+          rm -f .github/workflows/lsp-diagnostics.yml
+          rm -rf scripts/__pycache__
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf bubblewrap
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Format Rust
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+
+      - name: Rust check
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Focused LSP tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml coding_lsp
+
+      - name: Security policy tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml openagent_security
+
+      - name: Full Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Deterministic coding evaluation
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 scripts/coding_workspace_eval.py
+
+      - name: Adversarial security evaluation
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python3 scripts/coding_security_suite.py
+
+      - name: Diff safety
+        run: git diff --check
+
+      - name: Commit verified diagnostics implementation
+        run: |
+          git config user.name "OpenMindAI Engineering Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "feat: capture language server diagnostics"
+          git push origin HEAD:work/lsp-diagnostics
