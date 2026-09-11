@@ -73,9 +73,19 @@ pub fn authorize_tool(tool: &str, action: &Value, mode: ApprovalMode) -> (Policy
 
 fn classify_tool(tool: &str, action: &Value) -> RiskLevel {
     match tool {
-        "list_dir" | "read_file" | "search_text" | "symbol_search" | "symbol_definition"
-        | "symbol_references" | "symbol_hover" | "symbol_outline" | "symbol_diagnostics"
-        | "git_status" | "git_diff" => RiskLevel::ReadOnly,
+        "list_dir"
+        | "read_file"
+        | "search_text"
+        | "symbol_search"
+        | "symbol_definition"
+        | "symbol_references"
+        | "symbol_hover"
+        | "symbol_outline"
+        | "symbol_incoming_calls"
+        | "symbol_outgoing_calls"
+        | "symbol_diagnostics"
+        | "git_status"
+        | "git_diff" => RiskLevel::ReadOnly,
         "write_file" | "replace_text" | "patch_transaction" | "create_dir" => {
             RiskLevel::WorkspaceWrite
         }
@@ -148,6 +158,12 @@ mod tests {
             authorize_tool("symbol_diagnostics", &json!({}), ApprovalMode::AlwaysAsk);
         assert_eq!(decision, PolicyDecision::Allow);
         let (decision, _) = authorize_tool("symbol_outline", &json!({}), ApprovalMode::AlwaysAsk);
+        assert_eq!(decision, PolicyDecision::Allow);
+        let (decision, _) =
+            authorize_tool("symbol_incoming_calls", &json!({}), ApprovalMode::AlwaysAsk);
+        assert_eq!(decision, PolicyDecision::Allow);
+        let (decision, _) =
+            authorize_tool("symbol_outgoing_calls", &json!({}), ApprovalMode::AlwaysAsk);
         assert_eq!(decision, PolicyDecision::Allow);
     }
 
