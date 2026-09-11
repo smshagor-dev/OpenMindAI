@@ -93,14 +93,19 @@ async fn collect_post_edit_diagnostics(
         .into_iter()
         .take(MAX_POST_EDIT_DIAGNOSTIC_FILES)
     {
-        let resolved = match resolve_agent_path(config, root_id, &relative_path, false) {
+        let resolved = match resolve_agent_path(config, root_id, &relative_path, true) {
             Ok(path) => path,
             Err(error) => {
+                let missing_after_mutation = !root.join(&relative_path).exists();
                 results.push(json!({
                     "path": relative_path,
-                    "status": "unavailable",
+                    "status": if missing_after_mutation { "skipped" } else { "unavailable" },
                     "published": false,
-                    "reason": one_line(&error.to_string(), 240),
+                    "reason": if missing_after_mutation {
+                        "changed path no longer exists after the mutation".to_string()
+                    } else {
+                        one_line(&error.to_string(), 240)
+                    },
                 }));
                 continue;
             }
@@ -193,7 +198,7 @@ tests = r'''    #[test]
         let action = json!({
             "operations": [
                 {"op": "create", "path": "a.rs", "content": "fn a() {}"},
-                {"op": "write", "path": "a.rs", "content": "fn a() { println!(\"a\"); }"},
+                {"op": "write", "path": "a.rs", "content": "fn a() { println!(\"a\"); }", "expectedSha256": "00"},
                 {"op": "create", "path": "b.rs", "content": "fn b() {}"}
             ]
         });
@@ -207,20 +212,27 @@ tests = r'''    #[test]
         let config = test_workspace_config(temp.path());
         let operations = (0..(MAX_POST_EDIT_DIAGNOSTIC_FILES + 2))
             .map(|index| {
+                let path = format!("file-{index}.rs");
+                fs::write(temp.path().join(&path), format!("fn item_{index}() {{}}"))
+                    .unwrap();
                 json!({
                     "op": "create",
-                    "path": format!("file-{index}.rs"),
+                    "path": path,
                     "content": format!("fn item_{index}() {{}}"),
                 })
             })
             .collect::<Vec<_>>();
         let action = json!({"rootId": "root", "operations": operations});
-        let outcome = execute_tool("patch_transaction", &action, &config, "auto")
-            .await
-            .unwrap();
-        assert!(outcome.transcript_result.contains("post_edit_diagnostics="));
-        assert!(outcome.transcript_result.contains("\"filesTruncated\":true"));
-        assert!(outcome.transcript_result.contains("\"published\":false"));
+        let diagnostics = collect_post_edit_diagnostics(
+            &config,
+            Some("root"),
+            "patch_transaction",
+            &action,
+        )
+        .await;
+        assert!(diagnostics.contains("\"filesTruncated\":true"));
+        assert!(diagnostics.contains("\"published\":false"));
+        assert!(diagnostics.contains("\"checkedFiles\":8"));
     }
 
 '''
