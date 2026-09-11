@@ -26,6 +26,8 @@ const MAX_FALLBACK_FILES: usize = 1_200;
 const MAX_SYMBOL_RESULTS: usize = 100;
 const MAX_DOCUMENT_SYMBOL_RESULTS: usize = 200;
 const MAX_DOCUMENT_SYMBOL_DEPTH: usize = 16;
+const MAX_CALL_HIERARCHY_RESULTS: usize = 100;
+const MAX_CALL_HIERARCHY_RANGES: usize = 64;
 const MAX_SYMBOL_NAME_CHARS: usize = 512;
 const MAX_SYMBOL_DETAIL_CHARS: usize = 2_000;
 const MAX_REFERENCE_RESULTS: usize = 200;
@@ -131,6 +133,7 @@ static LSP_SESSION_POOL: OnceLock<Mutex<LspSessionPool>> = OnceLock::new();
 struct ServerCapabilities {
     workspace_symbols: bool,
     document_symbols: bool,
+    call_hierarchy: bool,
     definition: bool,
     references: bool,
     hover: bool,
@@ -478,6 +481,313 @@ pub async fn document_symbols(
         server: None,
         result: fallback_document_symbols(&root, &file, &text),
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CallHierarchyDirection {
+    Incoming,
+    Outgoing,
+}
+
+pub async fn incoming_calls(
+    root: &Path,
+    relative_path: &str,
+    line: u64,
+    character: u64,
+    allow_language_server: bool,
+) -> Result<NavigationResult, AppError> {
+    call_hierarchy(
+        root,
+        relative_path,
+        line,
+        character,
+        CallHierarchyDirection::Incoming,
+        allow_language_server,
+    )
+    .await
+}
+
+pub async fn outgoing_calls(
+    root: &Path,
+    relative_path: &str,
+    line: u64,
+    character: u64,
+    allow_language_server: bool,
+) -> Result<NavigationResult, AppError> {
+    call_hierarchy(
+        root,
+        relative_path,
+        line,
+        character,
+        CallHierarchyDirection::Outgoing,
+        allow_language_server,
+    )
+    .await
+}
+
+async fn call_hierarchy(
+    root: &Path,
+    relative_path: &str,
+    line: u64,
+    character: u64,
+    direction: CallHierarchyDirection,
+    allow_language_server: bool,
+) -> Result<NavigationResult, AppError> {
+    let root = canonical_root(root)?;
+    let file = resolve_source_file(&root, relative_path)?;
+    let text = read_source(&file)?;
+    let lsp_position = validated_call_hierarchy_position(&text, line, character)?;
+
+    if !allow_language_server {
+        return Ok(call_hierarchy_unavailable(
+            None,
+            "language-server call hierarchy requires Full PC + Terminal access",
+        ));
+    }
+
+    let Some(spec) = select_server_for_file(&file) else {
+        return Ok(call_hierarchy_unavailable(
+            None,
+            "no supported language server is configured for this file type",
+        ));
+    };
+    let server_root = nearest_project_root(&root, &file, spec);
+    let server = Some(format!(
+        "{}@{}",
+        spec.command,
+        relative_display(&root, &server_root)
+    ));
+
+    let Ok(lease) = acquire_healthy_lsp_session(&root, &server_root, spec).await else {
+        return Ok(call_hierarchy_unavailable(
+            server,
+            "trusted language server is unavailable",
+        ));
+    };
+
+    let response = {
+        let mut session = lease.session.lock().await;
+        if !session.capabilities.call_hierarchy {
+            return Ok(call_hierarchy_unavailable(
+                server,
+                "language server does not advertise callHierarchyProvider",
+            ));
+        }
+        if let Err(error) = session.sync_document(&file, &text, spec.language_id).await {
+            Err(error)
+        } else {
+            let uri = file_uri(&file)?;
+            match session
+                .request(
+                    "textDocument/prepareCallHierarchy",
+                    json!({
+                        "textDocument": {"uri": uri},
+                        "position": {
+                            "line": lsp_position.line,
+                            "character": lsp_position.character
+                        }
+                    }),
+                )
+                .await
+            {
+                Ok(prepared) => match first_scoped_call_hierarchy_item(&root, &file, &prepared)? {
+                    Some(item) => {
+                        let method = match direction {
+                            CallHierarchyDirection::Incoming => "callHierarchy/incomingCalls",
+                            CallHierarchyDirection::Outgoing => "callHierarchy/outgoingCalls",
+                        };
+                        session.request(method, json!({"item": item})).await
+                    }
+                    None => {
+                        return Ok(NavigationResult {
+                            engine: "lsp".to_string(),
+                            server,
+                            result: Value::Array(Vec::new()),
+                        });
+                    }
+                },
+                Err(error) => Err(error),
+            }
+        }
+    };
+
+    match response {
+        Ok(result) => Ok(NavigationResult {
+            engine: "lsp".to_string(),
+            server,
+            result: sanitize_call_hierarchy_result(&root, result, direction)?,
+        }),
+        Err(_) => {
+            invalidate_pooled_session(&lease).await;
+            Ok(call_hierarchy_unavailable(
+                server,
+                "language server call-hierarchy request failed",
+            ))
+        }
+    }
+}
+
+fn validated_call_hierarchy_position(
+    text: &str,
+    line: u64,
+    character: u64,
+) -> Result<LspPosition, AppError> {
+    if line == 0 {
+        return Err(AppError::internal(
+            "call hierarchy line is 1-based and must be >= 1",
+        ));
+    }
+    let line_index = usize::try_from(line)
+        .map_err(|_| AppError::internal("call hierarchy line is too large"))?;
+    let character_index = usize::try_from(character)
+        .map_err(|_| AppError::internal("call hierarchy character is too large"))?;
+    let line_text = source_line(text, line_index)?;
+    validate_character_position(line_text, character_index)?;
+    let utf16_character = utf16_character_offset(line_text, character_index)?;
+    let utf16_character = u64::try_from(utf16_character)
+        .map_err(|_| AppError::internal("call hierarchy UTF-16 character offset is too large"))?;
+    Ok(LspPosition {
+        line: line - 1,
+        character: utf16_character,
+    })
+}
+
+fn call_hierarchy_unavailable(server: Option<String>, reason: &str) -> NavigationResult {
+    NavigationResult {
+        engine: "lsp-unavailable".to_string(),
+        server,
+        result: json!({
+            "available": false,
+            "reason": reason,
+            "calls": []
+        }),
+    }
+}
+
+fn first_scoped_call_hierarchy_item(
+    root: &Path,
+    file: &Path,
+    result: &Value,
+) -> Result<Option<Value>, AppError> {
+    let Some(items) = result.as_array() else {
+        return Ok(None);
+    };
+    for item in items.iter().take(MAX_CALL_HIERARCHY_RESULTS) {
+        let Some(uri) = item.get("uri").and_then(Value::as_str) else {
+            continue;
+        };
+        if uri_is_scoped(root, uri)?
+            && uri_matches_file(uri, file)
+            && sanitize_call_hierarchy_item(root, item)?.is_some()
+        {
+            return Ok(Some(item.clone()));
+        }
+    }
+    Ok(None)
+}
+
+fn sanitize_call_hierarchy_result(
+    root: &Path,
+    result: Value,
+    direction: CallHierarchyDirection,
+) -> Result<Value, AppError> {
+    let Some(entries) = result.as_array() else {
+        return Ok(Value::Array(Vec::new()));
+    };
+    let item_key = match direction {
+        CallHierarchyDirection::Incoming => "from",
+        CallHierarchyDirection::Outgoing => "to",
+    };
+    let mut output = Vec::new();
+    for entry in entries.iter().take(MAX_CALL_HIERARCHY_RESULTS) {
+        let Some(item) = entry.get(item_key) else {
+            continue;
+        };
+        let Some(item) = sanitize_call_hierarchy_item(root, item)? else {
+            continue;
+        };
+        let ranges = entry
+            .get("fromRanges")
+            .and_then(Value::as_array)
+            .map(|ranges| {
+                ranges
+                    .iter()
+                    .take(MAX_CALL_HIERARCHY_RANGES)
+                    .filter_map(sanitize_diagnostic_range)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut safe = serde_json::Map::new();
+        safe.insert(item_key.to_string(), item);
+        safe.insert("fromRanges".to_string(), Value::Array(ranges));
+        output.push(Value::Object(safe));
+    }
+    Ok(Value::Array(output))
+}
+
+fn sanitize_call_hierarchy_item(root: &Path, value: &Value) -> Result<Option<Value>, AppError> {
+    let Some(name) = value.get("name").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if name.trim().is_empty() {
+        return Ok(None);
+    }
+    let Some(kind) = value.get("kind").and_then(Value::as_u64) else {
+        return Ok(None);
+    };
+    if !(1..=26).contains(&kind) {
+        return Ok(None);
+    }
+    let Some(uri) = value.get("uri").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if !uri_is_scoped(root, uri)? {
+        return Ok(None);
+    }
+    let Ok(url) = Url::parse(uri) else {
+        return Ok(None);
+    };
+    let Ok(path) = url.to_file_path() else {
+        return Ok(None);
+    };
+    let Ok(path) = fs::canonicalize(path) else {
+        return Ok(None);
+    };
+    if !path.starts_with(root) {
+        return Ok(None);
+    }
+    let Some(range) = value.get("range").and_then(sanitize_diagnostic_range) else {
+        return Ok(None);
+    };
+    let Some(selection_range) = value
+        .get("selectionRange")
+        .and_then(sanitize_diagnostic_range)
+    else {
+        return Ok(None);
+    };
+
+    let mut safe = serde_json::Map::new();
+    safe.insert(
+        "name".to_string(),
+        Value::String(truncate_preview(name, MAX_SYMBOL_NAME_CHARS)),
+    );
+    safe.insert("kind".to_string(), json!(kind));
+    safe.insert(
+        "path".to_string(),
+        Value::String(relative_display(root, &path)),
+    );
+    safe.insert("range".to_string(), range);
+    safe.insert("selectionRange".to_string(), selection_range);
+    if let Some(detail) = value.get("detail").and_then(Value::as_str) {
+        safe.insert(
+            "detail".to_string(),
+            Value::String(truncate_preview(detail, MAX_SYMBOL_DETAIL_CHARS)),
+        );
+    }
+    if let Some(tags) = sanitize_symbol_tags(value.get("tags")) {
+        safe.insert("tags".to_string(), tags);
+    }
+    Ok(Some(Value::Object(safe)))
 }
 
 pub async fn definition(
@@ -870,6 +1180,7 @@ impl LspSession {
                                 "hierarchicalDocumentSymbolSupport": true,
                                 "tagSupport": {"valueSet": [1]}
                             },
+                            "callHierarchy": {"dynamicRegistration": false},
                             "publishDiagnostics": {
                                 "relatedInformation": false,
                                 "tagSupport": {"valueSet": [1, 2]},
@@ -1166,6 +1477,7 @@ fn parse_server_capabilities(initialize_result: &Value) -> ServerCapabilities {
     ServerCapabilities {
         workspace_symbols: capability_enabled(capabilities, "workspaceSymbolProvider"),
         document_symbols: capability_enabled(capabilities, "documentSymbolProvider"),
+        call_hierarchy: capability_enabled(capabilities, "callHierarchyProvider"),
         definition: capability_enabled(capabilities, "definitionProvider"),
         references: capability_enabled(capabilities, "referencesProvider"),
         hover: capability_enabled(capabilities, "hoverProvider"),
@@ -2833,6 +3145,193 @@ mod tests {
         assert!(!result_has_items(&Value::Null));
         assert!(!result_has_items(&Value::Array(Vec::new())));
         assert!(result_has_items(&json!({"uri":"file:///tmp/a.rs"})));
+    }
+
+    #[test]
+    fn call_hierarchy_position_is_one_based_and_utf16_safe() {
+        let position = validated_call_hierarchy_position("🙂Router\n", 1, 1).unwrap();
+        assert_eq!(position.line, 0);
+        assert_eq!(position.character, 2);
+        assert!(validated_call_hierarchy_position("Router\n", 0, 0).is_err());
+        assert!(validated_call_hierarchy_position("Router\n", 1, 99).is_err());
+    }
+
+    #[test]
+    fn call_hierarchy_results_and_ranges_are_bounded() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let file = root.join("inside.rs");
+        fs::write(&file, "fn caller() {}\n").unwrap();
+        let uri = file_uri(&file).unwrap();
+        let ranges = (0..(MAX_CALL_HIERARCHY_RANGES + 5))
+            .map(|index| {
+                json!({
+                    "start": {"line": index, "character": 0},
+                    "end": {"line": index, "character": 1}
+                })
+            })
+            .collect::<Vec<_>>();
+        let calls = (0..(MAX_CALL_HIERARCHY_RESULTS + 5))
+            .map(|index| {
+                json!({
+                    "to": {
+                        "name": format!("callee_{index}"),
+                        "kind": 12,
+                        "uri": uri,
+                        "range": {
+                            "start": {"line": 0, "character": 0},
+                            "end": {"line": 0, "character": 10}
+                        },
+                        "selectionRange": {
+                            "start": {"line": 0, "character": 3},
+                            "end": {"line": 0, "character": 9}
+                        },
+                        "data": {"opaque": index}
+                    },
+                    "fromRanges": ranges
+                })
+            })
+            .collect::<Vec<_>>();
+        let safe = sanitize_call_hierarchy_result(
+            &root,
+            Value::Array(calls),
+            CallHierarchyDirection::Outgoing,
+        )
+        .unwrap();
+        let safe = safe.as_array().unwrap();
+        assert_eq!(safe.len(), MAX_CALL_HIERARCHY_RESULTS);
+        assert_eq!(
+            safe[0]["fromRanges"].as_array().unwrap().len(),
+            MAX_CALL_HIERARCHY_RANGES
+        );
+        assert!(safe[0]["to"].get("data").is_none());
+    }
+
+    #[test]
+    fn prepared_call_hierarchy_data_is_internal_only_but_round_trippable() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let file = root.join("requested.rs");
+        fs::write(&file, "fn requested() {}\n").unwrap();
+        let result = json!([{
+            "name": "requested",
+            "kind": 12,
+            "uri": file_uri(&file).unwrap(),
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 15}
+            },
+            "selectionRange": {
+                "start": {"line": 0, "character": 3},
+                "end": {"line": 0, "character": 12}
+            },
+            "data": {"opaque": "server-token"}
+        }]);
+        let prepared = first_scoped_call_hierarchy_item(&root, &file, &result)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            prepared.pointer("/data/opaque").and_then(Value::as_str),
+            Some("server-token")
+        );
+        let visible = sanitize_call_hierarchy_item(&root, &prepared)
+            .unwrap()
+            .unwrap();
+        assert!(visible.get("data").is_none());
+    }
+
+    #[test]
+    fn call_hierarchy_capability_is_parsed() {
+        let parsed = parse_server_capabilities(&json!({
+            "capabilities": {
+                "callHierarchyProvider": {"workDoneProgress": true}
+            }
+        }));
+        assert!(parsed.call_hierarchy);
+    }
+
+    #[test]
+    fn call_hierarchy_sanitization_is_scoped_and_drops_opaque_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let inside = root.join("inside.rs");
+        fs::write(&inside, "fn caller() {}\n").unwrap();
+        let inside_uri = file_uri(&inside).unwrap();
+
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("outside.rs");
+        fs::write(&outside_file, "fn outside() {}\n").unwrap();
+        let outside_uri = file_uri(&outside_file).unwrap();
+
+        let entry = |uri: String, name: &str| {
+            json!({
+                "from": {
+                    "name": name,
+                    "kind": 12,
+                    "uri": uri,
+                    "range": {
+                        "start": {"line": 0, "character": 0},
+                        "end": {"line": 0, "character": 10}
+                    },
+                    "selectionRange": {
+                        "start": {"line": 0, "character": 3},
+                        "end": {"line": 0, "character": 9}
+                    },
+                    "detail": "safe detail",
+                    "data": {"secret": "drop-me"},
+                    "unsafe": "drop-me"
+                },
+                "fromRanges": [
+                    {
+                        "start": {"line": 1, "character": 0},
+                        "end": {"line": 1, "character": 5}
+                    }
+                ]
+            })
+        };
+
+        let safe = sanitize_call_hierarchy_result(
+            &root,
+            json!([entry(inside_uri, "caller"), entry(outside_uri, "outside")]),
+            CallHierarchyDirection::Incoming,
+        )
+        .unwrap();
+        let items = safe.as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        let from = items[0].get("from").unwrap();
+        assert_eq!(from.get("path").and_then(Value::as_str), Some("inside.rs"));
+        assert!(from.get("data").is_none());
+        assert!(from.get("unsafe").is_none());
+        assert_eq!(items[0]["fromRanges"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn prepared_call_hierarchy_item_must_match_requested_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let requested = root.join("requested.rs");
+        let other = root.join("other.rs");
+        fs::write(&requested, "fn requested() {}\n").unwrap();
+        fs::write(&other, "fn other() {}\n").unwrap();
+        let result = json!([
+            {
+                "name": "other",
+                "kind": 12,
+                "uri": file_uri(&other).unwrap(),
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 5}
+                },
+                "selectionRange": {
+                    "start": {"line": 0, "character": 3},
+                    "end": {"line": 0, "character": 5}
+                },
+                "data": {"opaque": true}
+            }
+        ]);
+        assert!(first_scoped_call_hierarchy_item(&root, &requested, &result)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
