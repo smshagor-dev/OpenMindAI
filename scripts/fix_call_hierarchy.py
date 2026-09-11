@@ -20,10 +20,37 @@ lsp = replace_once(
     "client callHierarchy capability",
 )
 
+call_hierarchy_prefix = '''async fn call_hierarchy(
+    root: &Path,
+    relative_path: &str,
+    line: u64,
+    character: u64,
+    direction: CallHierarchyDirection,
+    allow_language_server: bool,
+) -> Result<NavigationResult, AppError> {
+    let root = canonical_root(root)?;
+    let file = resolve_source_file(&root, relative_path)?;
+    let text = read_source(&file)?;
+
+    if !allow_language_server {'''
+call_hierarchy_prefix_hardened = '''async fn call_hierarchy(
+    root: &Path,
+    relative_path: &str,
+    line: u64,
+    character: u64,
+    direction: CallHierarchyDirection,
+    allow_language_server: bool,
+) -> Result<NavigationResult, AppError> {
+    let root = canonical_root(root)?;
+    let file = resolve_source_file(&root, relative_path)?;
+    let text = read_source(&file)?;
+    let lsp_position = validated_call_hierarchy_position(&text, line, character)?;
+
+    if !allow_language_server {'''
 lsp = replace_once(
     lsp,
-    '    let root = canonical_root(root)?;\n    let file = resolve_source_file(&root, relative_path)?;\n    let text = read_source(&file)?;\n\n    if !allow_language_server {',
-    '    let root = canonical_root(root)?;\n    let file = resolve_source_file(&root, relative_path)?;\n    let text = read_source(&file)?;\n    let lsp_position = validated_call_hierarchy_position(&text, line, character)?;\n\n    if !allow_language_server {',
+    call_hierarchy_prefix,
+    call_hierarchy_prefix_hardened,
     "call hierarchy position validation",
 )
 
@@ -54,7 +81,6 @@ lsp = replace_once(
     "call hierarchy safe tags",
 )
 
-# Add tests before the existing capability test block.
 test_marker = '    #[test]\n    fn call_hierarchy_capability_is_parsed() {\n'
 tests = r'''    #[test]
     fn call_hierarchy_position_is_one_based_and_utf16_safe() {
