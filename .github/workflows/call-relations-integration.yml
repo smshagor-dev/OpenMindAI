@@ -1,0 +1,157 @@
+name: Call Relationship Integration
+
+on:
+  push:
+    branches:
+      - work/lsp-call-relations
+
+permissions:
+  contents: write
+
+jobs:
+  integrate-and-verify:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: work/lsp-call-relations
+          fetch-depth: 0
+
+      - name: Port validated call hierarchy slice
+        run: |
+          git config user.name "OpenMindAI Engineering Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git fetch origin work/lsp-call-hierarchy
+          git diff db7ae2f5853f6f4edffc01c933360493bd6c0e7a 250e6bf0f24dc04d60fa00b6752f90bbb86313ac -- \
+            src-tauri/src/coding_lsp.rs \
+            src-tauri/src/local_agent.rs \
+            src-tauri/src/openagent_security.rs | git apply --3way
+
+      - name: Apply correctness hardening
+        run: python scripts/fix_call_hierarchy.py
+
+      - name: Remove one-shot integration files
+        run: |
+          rm scripts/fix_call_hierarchy.py
+          rm .github/workflows/call-relations-integration.yml
+          find scripts -type d -name __pycache__ -prune -exec rm -rf {} +
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Format generated Rust
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+
+      - name: Verify Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Rust check
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Strict Clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Focused LSP tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml coding_lsp::tests
+
+      - name: Focused local agent tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml local_agent::tests
+
+      - name: Security policy tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml openagent_security::tests
+
+      - name: Full Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Deterministic coding evaluation
+        run: python scripts/coding_workspace_eval.py
+
+      - name: Adversarial security evaluation
+        run: python scripts/coding_security_suite.py
+
+      - name: Diff safety
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          test ! -e .github/workflows/call-relations-integration.yml
+          test ! -e scripts/fix_call_hierarchy.py
+          test -z "$(find scripts -type f \( -name '*.pyc' -o -name '*.pyo' \) -print -quit)"
+          test -z "$(find scripts -type d -name __pycache__ -print -quit)"
+
+          python - <<'PY'
+          import subprocess
+
+          expected = {
+              ".github/workflows/call-relations-integration.yml",
+              "scripts/fix_call_hierarchy.py",
+              "src-tauri/src/coding_lsp.rs",
+              "src-tauri/src/local_agent.rs",
+              "src-tauri/src/openagent_security.rs",
+          }
+
+          def changed(*args: str) -> set[str]:
+              output = subprocess.check_output(["git", "diff", "--name-only", "-z", *args])
+              return {path.decode("utf-8") for path in output.split(b"\0") if path}
+
+          actual = changed() | changed("--cached")
+          print("Observed integration diff:")
+          for path in sorted(actual):
+              print(repr(path))
+          if actual != expected:
+              print("Missing:", sorted(expected - actual))
+              print("Unexpected:", sorted(actual - expected))
+              raise SystemExit(1)
+          PY
+
+          git diff --name-status | grep -Fx $'D\t.github/workflows/call-relations-integration.yml' >/dev/null
+          git diff --name-status | grep -Fx $'D\tscripts/fix_call_hierarchy.py' >/dev/null
+
+      - name: Commit verified implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -A -- \
+            .github/workflows/call-relations-integration.yml \
+            scripts/fix_call_hierarchy.py \
+            src-tauri/src/coding_lsp.rs \
+            src-tauri/src/local_agent.rs \
+            src-tauri/src/openagent_security.rs
+
+          python - <<'PY'
+          import subprocess
+
+          expected = {
+              ".github/workflows/call-relations-integration.yml",
+              "scripts/fix_call_hierarchy.py",
+              "src-tauri/src/coding_lsp.rs",
+              "src-tauri/src/local_agent.rs",
+              "src-tauri/src/openagent_security.rs",
+          }
+          output = subprocess.check_output(["git", "diff", "--cached", "--name-only", "-z"])
+          staged = {path.decode("utf-8") for path in output.split(b"\0") if path}
+          print("Staged verified diff:")
+          for path in sorted(staged):
+              print(repr(path))
+          if staged != expected:
+              print("Missing:", sorted(expected - staged))
+              print("Unexpected:", sorted(staged - expected))
+              raise SystemExit(1)
+          PY
+
+          git diff --cached --check
+          git commit -m "feat: add bounded LSP call relationship navigation"
+          git push origin HEAD:work/lsp-call-relations
