@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   integrate-and-verify:
-    if: github.event.head_commit.message != 'feat: add bounded LSP call relationship navigation'
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -88,63 +87,44 @@ jobs:
         run: |
           set -euo pipefail
           git diff --check
-
           test ! -e .github/workflows/call-relations-integration.yml
           test ! -e scripts/fix_call_hierarchy.py
           test -z "$(find scripts -type f \( -name '*.pyc' -o -name '*.pyo' \) -print -quit)"
           test -z "$(find scripts -type d -name __pycache__ -print -quit)"
 
-          worktree_status="$(git diff --name-status)"
-          cached_status="$(git diff --cached --name-status)"
-          printf '%s\n' 'Working-tree diff:' "$worktree_status"
-          printf '%s\n' 'Cached diff:' "$cached_status"
+          files="$(printf '%s\n%s\n' "$(git diff --name-only)" "$(git diff --cached --name-only)" | sed '/^$/d' | sort -u)"
+          expected="$(printf '%s\n' \
+            .github/workflows/call-relations-integration.yml \
+            scripts/fix_call_hierarchy.py \
+            src-tauri/src/coding_lsp.rs \
+            src-tauri/src/local_agent.rs \
+            src-tauri/src/openagent_security.rs | sort)"
+          printf '%s\n' 'Observed integration diff:' "$files"
+          test "$files" = "$expected"
 
-          while IFS=$'\t' read -r status path extra; do
-            [ -z "${path:-}" ] && continue
-            case "$path" in
-              src-tauri/src/coding_lsp.rs|src-tauri/src/local_agent.rs|src-tauri/src/openagent_security.rs)
-                case "$status" in M|A) ;; *) echo "Unexpected production status: $status $path"; exit 1 ;; esac
-                ;;
-              .github/workflows/call-relations-integration.yml|scripts/fix_call_hierarchy.py)
-                [ "$status" = "D" ] || { echo "One-shot file must only be deleted: $status $path"; exit 1; }
-                ;;
-              *)
-                echo "Unexpected working-tree diff path: $status $path"
-                exit 1
-                ;;
-            esac
-          done <<< "$worktree_status"
-
-          while IFS=$'\t' read -r status path extra; do
-            [ -z "${path:-}" ] && continue
-            case "$path" in
-              src-tauri/src/coding_lsp.rs|src-tauri/src/local_agent.rs|src-tauri/src/openagent_security.rs)
-                case "$status" in M|A) ;; *) echo "Unexpected cached production status: $status $path"; exit 1 ;; esac
-                ;;
-              *)
-                echo "Unexpected cached diff path: $status $path"
-                exit 1
-                ;;
-            esac
-          done <<< "$cached_status"
-
-          printf '%s\n' "$worktree_status" | grep -Fx $'D\t.github/workflows/call-relations-integration.yml' >/dev/null
-          printf '%s\n' "$worktree_status" | grep -Fx $'D\tscripts/fix_call_hierarchy.py' >/dev/null
+          git diff --name-status | grep -Fx $'D\t.github/workflows/call-relations-integration.yml' >/dev/null
+          git diff --name-status | grep -Fx $'D\tscripts/fix_call_hierarchy.py' >/dev/null
 
       - name: Commit verified implementation
         shell: bash
         run: |
           set -euo pipefail
-          git add src-tauri/src/coding_lsp.rs src-tauri/src/local_agent.rs src-tauri/src/openagent_security.rs
+          git add -A -- \
+            .github/workflows/call-relations-integration.yml \
+            scripts/fix_call_hierarchy.py \
+            src-tauri/src/coding_lsp.rs \
+            src-tauri/src/local_agent.rs \
+            src-tauri/src/openagent_security.rs
 
           staged="$(git diff --cached --name-only | sort)"
           expected="$(printf '%s\n' \
+            .github/workflows/call-relations-integration.yml \
+            scripts/fix_call_hierarchy.py \
             src-tauri/src/coding_lsp.rs \
             src-tauri/src/local_agent.rs \
             src-tauri/src/openagent_security.rs | sort)"
-          printf '%s\n' 'Staged production diff:' "$staged"
-          [ "$staged" = "$expected" ] || { echo "Staged diff is not exactly the three production files"; exit 1; }
-
+          printf '%s\n' 'Staged verified diff:' "$staged"
+          test "$staged" = "$expected"
           git diff --cached --check
           git commit -m "feat: add bounded LSP call relationship navigation"
           git push origin HEAD:work/lsp-call-relations
