@@ -86,6 +86,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          find scripts -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
+          find scripts -type d -name __pycache__ -prune -exec rm -rf {} +
           git diff --check
           test ! -e .github/workflows/call-relations-integration.yml
           test ! -e scripts/fix_call_hierarchy.py
