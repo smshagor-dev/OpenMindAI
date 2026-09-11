@@ -41,7 +41,10 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
-      - name: Format Rust
+      - name: Format generated Rust
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+
+      - name: Verify Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
       - name: Rust check
