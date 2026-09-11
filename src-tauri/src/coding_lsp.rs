@@ -24,6 +24,10 @@ const LSP_TIMEOUT_SECS: u64 = 20;
 const MAX_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_FALLBACK_FILES: usize = 1_200;
 const MAX_SYMBOL_RESULTS: usize = 100;
+const MAX_DOCUMENT_SYMBOL_RESULTS: usize = 200;
+const MAX_DOCUMENT_SYMBOL_DEPTH: usize = 16;
+const MAX_SYMBOL_NAME_CHARS: usize = 512;
+const MAX_SYMBOL_DETAIL_CHARS: usize = 2_000;
 const MAX_REFERENCE_RESULTS: usize = 200;
 const MAX_HOVER_CHARS: usize = 12_000;
 const MAX_LSP_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
@@ -126,6 +130,7 @@ static LSP_SESSION_POOL: OnceLock<Mutex<LspSessionPool>> = OnceLock::new();
 #[derive(Debug, Clone, Copy, Default)]
 struct ServerCapabilities {
     workspace_symbols: bool,
+    document_symbols: bool,
     definition: bool,
     references: bool,
     hover: bool,
@@ -402,6 +407,76 @@ pub async fn workspace_symbols(
         engine: "lexical-fallback".to_string(),
         server: None,
         result: fallback_workspace_symbols(&root, query)?,
+    })
+}
+
+pub async fn document_symbols(
+    root: &Path,
+    relative_path: &str,
+    allow_language_server: bool,
+) -> Result<NavigationResult, AppError> {
+    let root = canonical_root(root)?;
+    let file = resolve_source_file(&root, relative_path)?;
+    let text = read_source(&file)?;
+
+    if let (true, Some(spec)) = (allow_language_server, select_server_for_file(&file)) {
+        let server_root = nearest_project_root(&root, &file, spec);
+        if let Ok(lease) = acquire_healthy_lsp_session(&root, &server_root, spec).await {
+            let request = {
+                let mut session = lease.session.lock().await;
+                if !session.capabilities.document_symbols {
+                    None
+                } else if let Err(error) =
+                    session.sync_document(&file, &text, spec.language_id).await
+                {
+                    Some(Err(error))
+                } else {
+                    let uri = file_uri(&file)?;
+                    Some(
+                        session
+                            .request(
+                                "textDocument/documentSymbol",
+                                json!({"textDocument": {"uri": uri}}),
+                            )
+                            .await,
+                    )
+                }
+            };
+
+            if let Some(request) = request {
+                match request {
+                    Ok(result) => {
+                        let result = sanitize_document_symbol_result(&root, &file, result)?;
+                        let server = Some(format!(
+                            "{}@{}",
+                            spec.command,
+                            relative_display(&root, &server_root)
+                        ));
+                        if result_has_items(&result) {
+                            return Ok(NavigationResult {
+                                engine: "lsp".to_string(),
+                                server,
+                                result,
+                            });
+                        }
+                        return Ok(NavigationResult {
+                            engine: "lsp+lexical-fallback".to_string(),
+                            server,
+                            result: fallback_document_symbols(&root, &file, &text),
+                        });
+                    }
+                    Err(_) => {
+                        invalidate_pooled_session(&lease).await;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(NavigationResult {
+        engine: "lexical-fallback".to_string(),
+        server: None,
+        result: fallback_document_symbols(&root, &file, &text),
     })
 }
 
@@ -790,6 +865,11 @@ impl LspSession {
                             "definition": {"dynamicRegistration": false, "linkSupport": true},
                             "references": {"dynamicRegistration": false},
                             "hover": {"dynamicRegistration": false, "contentFormat": ["markdown", "plaintext"]},
+                            "documentSymbol": {
+                                "dynamicRegistration": false,
+                                "hierarchicalDocumentSymbolSupport": true,
+                                "tagSupport": {"valueSet": [1]}
+                            },
                             "publishDiagnostics": {
                                 "relatedInformation": false,
                                 "tagSupport": {"valueSet": [1, 2]},
@@ -1085,6 +1165,7 @@ fn parse_server_capabilities(initialize_result: &Value) -> ServerCapabilities {
     let (sync_open_close, sync_kind) = parse_text_document_sync(capabilities);
     ServerCapabilities {
         workspace_symbols: capability_enabled(capabilities, "workspaceSymbolProvider"),
+        document_symbols: capability_enabled(capabilities, "documentSymbolProvider"),
         definition: capability_enabled(capabilities, "definitionProvider"),
         references: capability_enabled(capabilities, "referencesProvider"),
         hover: capability_enabled(capabilities, "hoverProvider"),
@@ -1164,6 +1245,187 @@ async fn read_lsp_stream(
             }
         }
     }
+}
+
+fn sanitize_document_symbol_result(
+    root: &Path,
+    file: &Path,
+    result: Value,
+) -> Result<Value, AppError> {
+    let values = match result {
+        Value::Array(values) => values,
+        Value::Null => Vec::new(),
+        value => vec![value],
+    };
+    let mut remaining = MAX_DOCUMENT_SYMBOL_RESULTS;
+    let mut output = Vec::new();
+    for value in values {
+        if remaining == 0 {
+            break;
+        }
+        if let Some(symbol) = sanitize_document_symbol_item(root, file, &value, 0, &mut remaining)?
+        {
+            output.push(symbol);
+        }
+    }
+    Ok(Value::Array(output))
+}
+
+fn sanitize_document_symbol_item(
+    root: &Path,
+    file: &Path,
+    value: &Value,
+    depth: usize,
+    remaining: &mut usize,
+) -> Result<Option<Value>, AppError> {
+    if depth >= MAX_DOCUMENT_SYMBOL_DEPTH || *remaining == 0 {
+        return Ok(None);
+    }
+    if value.get("location").is_some() {
+        return sanitize_symbol_information(root, file, value, remaining);
+    }
+
+    let Some(name) = value.get("name").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let Some(kind) = value
+        .get("kind")
+        .and_then(Value::as_u64)
+        .filter(|kind| (1..=26).contains(kind))
+    else {
+        return Ok(None);
+    };
+    let Some(range) = value.get("range").and_then(sanitize_diagnostic_range) else {
+        return Ok(None);
+    };
+    let Some(selection_range) = value
+        .get("selectionRange")
+        .and_then(sanitize_diagnostic_range)
+    else {
+        return Ok(None);
+    };
+
+    *remaining = remaining.saturating_sub(1);
+    let mut safe = serde_json::Map::new();
+    safe.insert(
+        "name".to_string(),
+        Value::String(truncate_preview(name, MAX_SYMBOL_NAME_CHARS)),
+    );
+    safe.insert("kind".to_string(), json!(kind));
+    safe.insert("range".to_string(), range);
+    safe.insert("selectionRange".to_string(), selection_range);
+
+    if let Some(detail) = value.get("detail").and_then(Value::as_str) {
+        safe.insert(
+            "detail".to_string(),
+            Value::String(truncate_preview(detail, MAX_SYMBOL_DETAIL_CHARS)),
+        );
+    }
+    if let Some(tags) = sanitize_symbol_tags(value.get("tags")) {
+        safe.insert("tags".to_string(), tags);
+    }
+
+    if let Some(children) = value.get("children").and_then(Value::as_array) {
+        let mut safe_children = Vec::new();
+        for child in children {
+            if *remaining == 0 {
+                break;
+            }
+            if let Some(child) =
+                sanitize_document_symbol_item(root, file, child, depth + 1, remaining)?
+            {
+                safe_children.push(child);
+            }
+        }
+        if !safe_children.is_empty() {
+            safe.insert("children".to_string(), Value::Array(safe_children));
+        }
+    }
+
+    Ok(Some(Value::Object(safe)))
+}
+
+fn sanitize_symbol_information(
+    root: &Path,
+    file: &Path,
+    value: &Value,
+    remaining: &mut usize,
+) -> Result<Option<Value>, AppError> {
+    if *remaining == 0 {
+        return Ok(None);
+    }
+    let Some(name) = value.get("name").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    let Some(kind) = value
+        .get("kind")
+        .and_then(Value::as_u64)
+        .filter(|kind| (1..=26).contains(kind))
+    else {
+        return Ok(None);
+    };
+    let Some(location) = value.get("location") else {
+        return Ok(None);
+    };
+    let Some(uri) = location.get("uri").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if !uri_is_scoped(root, uri)? || !uri_matches_file(uri, file) {
+        return Ok(None);
+    }
+    let Some(range) = location.get("range").and_then(sanitize_diagnostic_range) else {
+        return Ok(None);
+    };
+
+    *remaining = remaining.saturating_sub(1);
+    let mut safe = serde_json::Map::new();
+    safe.insert(
+        "name".to_string(),
+        Value::String(truncate_preview(name, MAX_SYMBOL_NAME_CHARS)),
+    );
+    safe.insert("kind".to_string(), json!(kind));
+    safe.insert(
+        "location".to_string(),
+        json!({
+            "uri": uri,
+            "range": range,
+        }),
+    );
+    if let Some(container_name) = value.get("containerName").and_then(Value::as_str) {
+        safe.insert(
+            "containerName".to_string(),
+            Value::String(truncate_preview(container_name, MAX_SYMBOL_NAME_CHARS)),
+        );
+    }
+    if let Some(tags) = sanitize_symbol_tags(value.get("tags")) {
+        safe.insert("tags".to_string(), tags);
+    }
+    Ok(Some(Value::Object(safe)))
+}
+
+fn sanitize_symbol_tags(value: Option<&Value>) -> Option<Value> {
+    let tags = value?
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_u64)
+        .filter(|tag| *tag == 1)
+        .take(8)
+        .map(Value::from)
+        .collect::<Vec<_>>();
+    (!tags.is_empty()).then_some(Value::Array(tags))
+}
+
+fn uri_matches_file(raw: &str, file: &Path) -> bool {
+    let Ok(url) = Url::parse(raw) else {
+        return false;
+    };
+    if url.scheme() != "file" {
+        return false;
+    }
+    let Ok(path) = url.to_file_path() else {
+        return false;
+    };
+    fs::canonicalize(path).is_ok_and(|path| path == file)
 }
 
 fn sanitize_publish_diagnostics(
@@ -1719,6 +1981,25 @@ fn append_unique_results(
             target.push(value);
         }
     }
+}
+
+fn fallback_document_symbols(root: &Path, file: &Path, text: &str) -> Value {
+    let mut results = Vec::new();
+    for (line_index, line) in text.lines().enumerate() {
+        if let Some((kind, symbol)) = declaration_symbol(file, line) {
+            results.push(json!({
+                "name": symbol,
+                "kind": kind,
+                "path": relative_display(root, file),
+                "line": line_index + 1,
+                "character": line.chars().take_while(|character| character.is_whitespace()).count(),
+            }));
+            if results.len() >= MAX_DOCUMENT_SYMBOL_RESULTS {
+                break;
+            }
+        }
+    }
+    Value::Array(results)
 }
 
 fn fallback_workspace_symbols(root: &Path, query: &str) -> Result<Value, AppError> {
@@ -2368,6 +2649,100 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fallback_document_outline_is_bounded_to_one_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let file = root.join("lib.rs");
+        let text = "pub struct Router {}\nfn build() {}\n";
+        fs::write(&file, text).unwrap();
+        let outline = fallback_document_symbols(&root, &file, text);
+        let items = outline.as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].get("name").and_then(Value::as_str), Some("Router"));
+        assert_eq!(items[1].get("name").and_then(Value::as_str), Some("build"));
+        assert!(items
+            .iter()
+            .all(|item| item.get("path").and_then(Value::as_str) == Some("lib.rs")));
+    }
+
+    #[test]
+    fn document_symbol_sanitization_preserves_safe_hierarchy_and_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let file = root.join("lib.rs");
+        fs::write(&file, "pub struct Router {}\n").unwrap();
+        let uri = file_uri(&file).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("outside.rs");
+        fs::write(&outside_file, "fn outside() {}\n").unwrap();
+
+        let result = json!([
+            {
+                "name": "Router",
+                "detail": "safe detail",
+                "kind": 23,
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 20}
+                },
+                "selectionRange": {
+                    "start": {"line": 0, "character": 11},
+                    "end": {"line": 0, "character": 17}
+                },
+                "data": {"secret": "drop-me"},
+                "children": [{
+                    "name": "new",
+                    "kind": 6,
+                    "range": {
+                        "start": {"line": 1, "character": 0},
+                        "end": {"line": 1, "character": 10}
+                    },
+                    "selectionRange": {
+                        "start": {"line": 1, "character": 3},
+                        "end": {"line": 1, "character": 6}
+                    },
+                    "unsafe": "drop-me"
+                }]
+            },
+            {
+                "name": "build",
+                "kind": 12,
+                "location": {
+                    "uri": uri,
+                    "range": {
+                        "start": {"line": 2, "character": 0},
+                        "end": {"line": 2, "character": 8}
+                    }
+                },
+                "containerName": "Router",
+                "data": {"secret": "drop-me"}
+            },
+            {
+                "name": "outside",
+                "kind": 12,
+                "location": {
+                    "uri": file_uri(&outside_file).unwrap(),
+                    "range": {
+                        "start": {"line": 0, "character": 0},
+                        "end": {"line": 0, "character": 7}
+                    }
+                }
+            }
+        ]);
+
+        let safe = sanitize_document_symbol_result(&root, &file, result).unwrap();
+        let items = safe.as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert!(items[0].get("data").is_none());
+        assert!(items[0].pointer("/children/0/unsafe").is_none());
+        assert_eq!(
+            items[1].pointer("/location/uri").and_then(Value::as_str),
+            Some(uri.as_str())
+        );
+        assert!(items[1].get("data").is_none());
+    }
+
+    #[test]
     fn fallback_finds_definitions_and_references() {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir_all(temp.path().join("src")).unwrap();
@@ -2465,6 +2840,7 @@ mod tests {
         let parsed = parse_server_capabilities(&json!({
             "capabilities": {
                 "workspaceSymbolProvider": true,
+                "documentSymbolProvider": {"label": "outline"},
                 "definitionProvider": {"workDoneProgress": true},
                 "referencesProvider": false,
                 "hoverProvider": {},
@@ -2472,6 +2848,7 @@ mod tests {
             }
         }));
         assert!(parsed.workspace_symbols);
+        assert!(parsed.document_symbols);
         assert!(parsed.definition);
         assert!(!parsed.references);
         assert!(parsed.hover);
