@@ -23,7 +23,10 @@ jobs:
           git config user.name "OpenMindAI Engineering Bot"
           git config user.email "actions@users.noreply.github.com"
           git fetch origin work/lsp-call-hierarchy
-          git cherry-pick 250e6bf0f24dc04d60fa00b6752f90bbb86313ac
+          git diff db7ae2f5853f6f4edffc01c933360493bd6c0e7a 250e6bf0f24dc04d60fa00b6752f90bbb86313ac -- \
+            src-tauri/src/coding_lsp.rs \
+            src-tauri/src/local_agent.rs \
+            src-tauri/src/openagent_security.rs | git apply --3way
 
       - name: Apply correctness hardening
         run: python scripts/fix_call_hierarchy.py
@@ -89,5 +92,5 @@ jobs:
         run: |
           git add -A src-tauri/src/coding_lsp.rs src-tauri/src/local_agent.rs src-tauri/src/openagent_security.rs scripts/fix_call_hierarchy.py .github/workflows/call-relations-integration.yml
           git diff --cached --exit-code && { echo "No corrected implementation changes to commit"; exit 1; } || true
-          git commit -m "fix: harden LSP call relationship navigation"
+          git commit -m "feat: add hardened LSP call relationships"
           git push origin HEAD:work/lsp-call-relations
