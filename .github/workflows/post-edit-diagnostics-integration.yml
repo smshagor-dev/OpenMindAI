@@ -1,0 +1,80 @@
+name: Post Edit Diagnostics Integration
+
+on:
+  push:
+    branches:
+      - work/post-edit-diagnostics
+
+permissions:
+  contents: write
+
+jobs:
+  integrate-and-verify:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: work/post-edit-diagnostics
+
+      - name: Apply integration patch
+        run: python scripts/apply_post_edit_diagnostics.py
+
+      - name: Remove one-shot integration files
+        run: |
+          rm scripts/apply_post_edit_diagnostics.py
+          rm .github/workflows/post-edit-diagnostics-integration.yml
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Format generated Rust
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+
+      - name: Verify Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Rust check
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Strict Clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Focused local agent tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml local_agent::tests
+
+      - name: Focused LSP tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml coding_lsp::tests
+
+      - name: Full Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Deterministic coding evaluation
+        run: python scripts/coding_workspace_eval.py
+
+      - name: Adversarial security evaluation
+        run: python scripts/coding_security_suite.py
+
+      - name: Diff safety
+        run: git diff --check
+
+      - name: Commit verified implementation
+        run: |
+          git config user.name "OpenMindAI Engineering Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add src-tauri/src/local_agent.rs
+          git diff --cached --exit-code && { echo "No production changes generated"; exit 1; } || true
+          git commit -m "feat: add automatic post-edit diagnostics"
+          git push origin HEAD:work/post-edit-diagnostics
