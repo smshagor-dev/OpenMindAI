@@ -1,0 +1,79 @@
+name: LSP Document Symbols Repair
+
+on:
+  push:
+    branches:
+      - work/lsp-document-symbols
+
+permissions:
+  contents: write
+
+jobs:
+  integrate-and-verify:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Repair patcher
+        run: python scripts/repair_lsp_document_symbols_patcher.py
+
+      - name: Apply document symbol integration
+        run: python scripts/apply_lsp_document_symbols.py
+
+      - name: Remove one-shot integration files
+        run: rm scripts/apply_lsp_document_symbols.py scripts/repair_lsp_document_symbols_patcher.py .github/workflows/lsp-document-symbols-repair.yml
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Format Rust
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Rust check
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Focused LSP tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml coding_lsp::tests
+
+      - name: Security policy tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml openagent_security::tests
+
+      - name: Full Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Deterministic coding evaluation
+        run: python scripts/coding_workspace_eval.py
+
+      - name: Adversarial security evaluation
+        run: python scripts/coding_security_suite.py
+
+      - name: Diff safety
+        run: git diff --check
+
+      - name: Commit verified document symbol implementation
+        env:
+          BRANCH: work/lsp-document-symbols
+        run: |
+          git config user.name "OpenMindAI Engineering Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: add bounded document symbol outlines"
+          git push origin "HEAD:${BRANCH}"
