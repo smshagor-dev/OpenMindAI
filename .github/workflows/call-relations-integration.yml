@@ -92,15 +92,30 @@ jobs:
           test -z "$(find scripts -type f \( -name '*.pyc' -o -name '*.pyo' \) -print -quit)"
           test -z "$(find scripts -type d -name __pycache__ -print -quit)"
 
-          files="$(printf '%s\n%s\n' "$(git diff --name-only)" "$(git diff --cached --name-only)" | sed '/^$/d' | sort -u)"
-          expected="$(printf '%s\n' \
-            .github/workflows/call-relations-integration.yml \
-            scripts/fix_call_hierarchy.py \
-            src-tauri/src/coding_lsp.rs \
-            src-tauri/src/local_agent.rs \
-            src-tauri/src/openagent_security.rs | sort)"
-          printf '%s\n' 'Observed integration diff:' "$files"
-          test "$files" = "$expected"
+          python - <<'PY'
+          import subprocess
+
+          expected = {
+              ".github/workflows/call-relations-integration.yml",
+              "scripts/fix_call_hierarchy.py",
+              "src-tauri/src/coding_lsp.rs",
+              "src-tauri/src/local_agent.rs",
+              "src-tauri/src/openagent_security.rs",
+          }
+
+          def changed(*args: str) -> set[str]:
+              output = subprocess.check_output(["git", "diff", "--name-only", "-z", *args])
+              return {path.decode("utf-8") for path in output.split(b"\0") if path}
+
+          actual = changed() | changed("--cached")
+          print("Observed integration diff:")
+          for path in sorted(actual):
+              print(repr(path))
+          if actual != expected:
+              print("Missing:", sorted(expected - actual))
+              print("Unexpected:", sorted(actual - expected))
+              raise SystemExit(1)
+          PY
 
           git diff --name-status | grep -Fx $'D\t.github/workflows/call-relations-integration.yml' >/dev/null
           git diff --name-status | grep -Fx $'D\tscripts/fix_call_hierarchy.py' >/dev/null
@@ -116,15 +131,27 @@ jobs:
             src-tauri/src/local_agent.rs \
             src-tauri/src/openagent_security.rs
 
-          staged="$(git diff --cached --name-only | sort)"
-          expected="$(printf '%s\n' \
-            .github/workflows/call-relations-integration.yml \
-            scripts/fix_call_hierarchy.py \
-            src-tauri/src/coding_lsp.rs \
-            src-tauri/src/local_agent.rs \
-            src-tauri/src/openagent_security.rs | sort)"
-          printf '%s\n' 'Staged verified diff:' "$staged"
-          test "$staged" = "$expected"
+          python - <<'PY'
+          import subprocess
+
+          expected = {
+              ".github/workflows/call-relations-integration.yml",
+              "scripts/fix_call_hierarchy.py",
+              "src-tauri/src/coding_lsp.rs",
+              "src-tauri/src/local_agent.rs",
+              "src-tauri/src/openagent_security.rs",
+          }
+          output = subprocess.check_output(["git", "diff", "--cached", "--name-only", "-z"])
+          staged = {path.decode("utf-8") for path in output.split(b"\0") if path}
+          print("Staged verified diff:")
+          for path in sorted(staged):
+              print(repr(path))
+          if staged != expected:
+              print("Missing:", sorted(expected - staged))
+              print("Unexpected:", sorted(staged - expected))
+              raise SystemExit(1)
+          PY
+
           git diff --cached --check
           git commit -m "feat: add bounded LSP call relationship navigation"
           git push origin HEAD:work/lsp-call-relations
