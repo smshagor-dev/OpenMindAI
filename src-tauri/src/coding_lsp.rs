@@ -536,6 +536,7 @@ async fn call_hierarchy(
     let root = canonical_root(root)?;
     let file = resolve_source_file(&root, relative_path)?;
     let text = read_source(&file)?;
+    let lsp_position = validated_call_hierarchy_position(&text, line, character)?;
 
     if !allow_language_server {
         return Ok(call_hierarchy_unavailable(
@@ -581,7 +582,10 @@ async fn call_hierarchy(
                     "textDocument/prepareCallHierarchy",
                     json!({
                         "textDocument": {"uri": uri},
-                        "position": {"line": line, "character": character}
+                        "position": {
+                            "line": lsp_position.line,
+                            "character": lsp_position.character
+                        }
                     }),
                 )
                 .await
@@ -623,6 +627,31 @@ async fn call_hierarchy(
     }
 }
 
+fn validated_call_hierarchy_position(
+    text: &str,
+    line: u64,
+    character: u64,
+) -> Result<LspPosition, AppError> {
+    if line == 0 {
+        return Err(AppError::internal(
+            "call hierarchy line is 1-based and must be >= 1",
+        ));
+    }
+    let line_index = usize::try_from(line)
+        .map_err(|_| AppError::internal("call hierarchy line is too large"))?;
+    let character_index = usize::try_from(character)
+        .map_err(|_| AppError::internal("call hierarchy character is too large"))?;
+    let line_text = source_line(text, line_index)?;
+    validate_character_position(line_text, character_index)?;
+    let utf16_character = utf16_character_offset(line_text, character_index)?;
+    let utf16_character = u64::try_from(utf16_character)
+        .map_err(|_| AppError::internal("call hierarchy UTF-16 character offset is too large"))?;
+    Ok(LspPosition {
+        line: line - 1,
+        character: utf16_character,
+    })
+}
+
 fn call_hierarchy_unavailable(server: Option<String>, reason: &str) -> NavigationResult {
     NavigationResult {
         engine: "lsp-unavailable".to_string(),
@@ -643,11 +672,14 @@ fn first_scoped_call_hierarchy_item(
     let Some(items) = result.as_array() else {
         return Ok(None);
     };
-    for item in items {
+    for item in items.iter().take(MAX_CALL_HIERARCHY_RESULTS) {
         let Some(uri) = item.get("uri").and_then(Value::as_str) else {
             continue;
         };
-        if uri_is_scoped(root, uri)? && uri_matches_file(uri, file) {
+        if uri_is_scoped(root, uri)?
+            && uri_matches_file(uri, file)
+            && sanitize_call_hierarchy_item(root, item)?.is_some()
+        {
             return Ok(Some(item.clone()));
         }
     }
@@ -751,6 +783,9 @@ fn sanitize_call_hierarchy_item(root: &Path, value: &Value) -> Result<Option<Val
             "detail".to_string(),
             Value::String(truncate_preview(detail, MAX_SYMBOL_DETAIL_CHARS)),
         );
+    }
+    if let Some(tags) = sanitize_symbol_tags(value.get("tags")) {
+        safe.insert("tags".to_string(), tags);
     }
     Ok(Some(Value::Object(safe)))
 }
@@ -1145,6 +1180,7 @@ impl LspSession {
                                 "hierarchicalDocumentSymbolSupport": true,
                                 "tagSupport": {"valueSet": [1]}
                             },
+                            "callHierarchy": {"dynamicRegistration": false},
                             "publishDiagnostics": {
                                 "relatedInformation": false,
                                 "tagSupport": {"valueSet": [1, 2]},
@@ -3109,6 +3145,99 @@ mod tests {
         assert!(!result_has_items(&Value::Null));
         assert!(!result_has_items(&Value::Array(Vec::new())));
         assert!(result_has_items(&json!({"uri":"file:///tmp/a.rs"})));
+    }
+
+    #[test]
+    fn call_hierarchy_position_is_one_based_and_utf16_safe() {
+        let position = validated_call_hierarchy_position("🙂Router\n", 1, 1).unwrap();
+        assert_eq!(position.line, 0);
+        assert_eq!(position.character, 2);
+        assert!(validated_call_hierarchy_position("Router\n", 0, 0).is_err());
+        assert!(validated_call_hierarchy_position("Router\n", 1, 99).is_err());
+    }
+
+    #[test]
+    fn call_hierarchy_results_and_ranges_are_bounded() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let file = root.join("inside.rs");
+        fs::write(&file, "fn caller() {}\n").unwrap();
+        let uri = file_uri(&file).unwrap();
+        let ranges = (0..(MAX_CALL_HIERARCHY_RANGES + 5))
+            .map(|index| {
+                json!({
+                    "start": {"line": index, "character": 0},
+                    "end": {"line": index, "character": 1}
+                })
+            })
+            .collect::<Vec<_>>();
+        let calls = (0..(MAX_CALL_HIERARCHY_RESULTS + 5))
+            .map(|index| {
+                json!({
+                    "to": {
+                        "name": format!("callee_{index}"),
+                        "kind": 12,
+                        "uri": uri,
+                        "range": {
+                            "start": {"line": 0, "character": 0},
+                            "end": {"line": 0, "character": 10}
+                        },
+                        "selectionRange": {
+                            "start": {"line": 0, "character": 3},
+                            "end": {"line": 0, "character": 9}
+                        },
+                        "data": {"opaque": index}
+                    },
+                    "fromRanges": ranges
+                })
+            })
+            .collect::<Vec<_>>();
+        let safe = sanitize_call_hierarchy_result(
+            &root,
+            Value::Array(calls),
+            CallHierarchyDirection::Outgoing,
+        )
+        .unwrap();
+        let safe = safe.as_array().unwrap();
+        assert_eq!(safe.len(), MAX_CALL_HIERARCHY_RESULTS);
+        assert_eq!(
+            safe[0]["fromRanges"].as_array().unwrap().len(),
+            MAX_CALL_HIERARCHY_RANGES
+        );
+        assert!(safe[0]["to"].get("data").is_none());
+    }
+
+    #[test]
+    fn prepared_call_hierarchy_data_is_internal_only_but_round_trippable() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let file = root.join("requested.rs");
+        fs::write(&file, "fn requested() {}\n").unwrap();
+        let result = json!([{
+            "name": "requested",
+            "kind": 12,
+            "uri": file_uri(&file).unwrap(),
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 15}
+            },
+            "selectionRange": {
+                "start": {"line": 0, "character": 3},
+                "end": {"line": 0, "character": 12}
+            },
+            "data": {"opaque": "server-token"}
+        }]);
+        let prepared = first_scoped_call_hierarchy_item(&root, &file, &result)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            prepared.pointer("/data/opaque").and_then(Value::as_str),
+            Some("server-token")
+        );
+        let visible = sanitize_call_hierarchy_item(&root, &prepared)
+            .unwrap()
+            .unwrap();
+        assert!(visible.get("data").is_none());
     }
 
     #[test]
