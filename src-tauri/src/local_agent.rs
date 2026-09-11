@@ -54,6 +54,9 @@ const MAX_SEARCH_MATCHES: usize = 80;
 const MAX_SEARCH_QUERY_CHARS: usize = 500;
 const MAX_TERMINAL_COMMAND_CHARS: usize = 12_000;
 const MAX_TERMINAL_OUTPUT_CHARS: usize = 20_000;
+const MAX_POST_EDIT_DIAGNOSTIC_FILES: usize = 8;
+const MAX_POST_EDIT_DIAGNOSTIC_PREVIEW: usize = 6;
+const MAX_POST_EDIT_DIAGNOSTIC_CHARS: usize = 6_000;
 const DEFAULT_TERMINAL_TIMEOUT_SECS: u64 = 180;
 const MAX_TERMINAL_TIMEOUT_SECS: u64 = 600;
 
@@ -1933,13 +1936,17 @@ async fn execute_tool(
             };
             let outcome =
                 coding_patch::apply_patch_transaction(&root, &json!({"operations":[operation]}))?;
+            let diagnostics =
+                collect_post_edit_diagnostics(config, root_id.as_deref(), "write_file", action)
+                    .await;
             Ok(AgentTurnResult {
                 trace_label: format!("Wrote {} transactionally", display_path(&file)),
                 transcript_result: format!(
-                    "ok path={} chars={} transaction={}",
+                    "ok path={} chars={} transaction={}\npost_edit_diagnostics={}",
                     display_path(&file),
                     content.chars().count(),
-                    outcome.transaction_id
+                    outcome.transaction_id,
+                    diagnostics
                 ),
             })
         }
@@ -1993,12 +2000,16 @@ async fn execute_tool(
                     "expectedSha256":expected
                 }]}),
             )?;
+            let diagnostics =
+                collect_post_edit_diagnostics(config, root_id.as_deref(), "replace_text", action)
+                    .await;
             Ok(AgentTurnResult {
                 trace_label: format!("Updated {} transactionally", display_path(&file)),
                 transcript_result: format!(
-                    "ok path={} exact_replacements=1 transaction={}",
+                    "ok path={} exact_replacements=1 transaction={}\npost_edit_diagnostics={}",
                     display_path(&file),
-                    outcome.transaction_id
+                    outcome.transaction_id,
+                    diagnostics
                 ),
             })
         }
@@ -2011,12 +2022,22 @@ async fn execute_tool(
                     "failed to encode patch_transaction result: {error}"
                 ))
             })?;
+            let diagnostics = collect_post_edit_diagnostics(
+                config,
+                root_id.as_deref(),
+                "patch_transaction",
+                action,
+            )
+            .await;
             Ok(AgentTurnResult {
                 trace_label: format!(
                     "Applied patch transaction {} across {} files",
                     outcome.transaction_id, outcome.changed_files
                 ),
-                transcript_result: bounded(&result, MAX_TOOL_RESULT_CHARS),
+                transcript_result: bounded(
+                    &format!("{result}\npost_edit_diagnostics={diagnostics}"),
+                    MAX_TOOL_RESULT_CHARS,
+                ),
             })
         }
         "create_dir" => {
@@ -2187,6 +2208,147 @@ async fn execute_tool(
             "unknown OpenAgent tool: {other}"
         ))),
     }
+}
+
+fn post_edit_candidate_paths(tool: &str, action: &Value) -> Result<Vec<String>, AppError> {
+    let raw = match tool {
+        "write_file" | "replace_text" => vec![required_string(action, "path")?],
+        "patch_transaction" => coding_patch::transaction_paths(action)?,
+        _ => Vec::new(),
+    };
+    let mut seen = HashSet::new();
+    let mut paths = Vec::new();
+    for path in raw {
+        if Path::new(&path).is_absolute() || !seen.insert(path.clone()) {
+            continue;
+        }
+        paths.push(path);
+    }
+    Ok(paths)
+}
+
+async fn collect_post_edit_diagnostics(
+    config: &AgentWorkspaceConfig,
+    root_id: Option<&str>,
+    tool: &str,
+    action: &Value,
+) -> String {
+    let candidates = match post_edit_candidate_paths(tool, action) {
+        Ok(paths) => paths,
+        Err(error) => {
+            return json!({
+                "status": "unavailable",
+                "published": false,
+                "reason": one_line(&error.to_string(), 240),
+            })
+            .to_string();
+        }
+    };
+    if candidates.is_empty() {
+        return json!({
+            "status": "skipped",
+            "published": false,
+            "reason": "no relative file paths were changed",
+        })
+        .to_string();
+    }
+    let root = match selected_root_path(config, root_id) {
+        Ok(root) => root,
+        Err(error) => {
+            return json!({
+                "status": "unavailable",
+                "published": false,
+                "reason": one_line(&error.to_string(), 240),
+            })
+            .to_string();
+        }
+    };
+    let requested = candidates.len();
+    let truncated_files = requested > MAX_POST_EDIT_DIAGNOSTIC_FILES;
+    let mut results = Vec::new();
+    for relative_path in candidates.into_iter().take(MAX_POST_EDIT_DIAGNOSTIC_FILES) {
+        let resolved = match resolve_agent_path(config, root_id, &relative_path, true) {
+            Ok(path) => path,
+            Err(error) => {
+                let missing_after_mutation = !root.join(&relative_path).exists();
+                results.push(json!({
+                    "path": relative_path,
+                    "status": if missing_after_mutation { "skipped" } else { "unavailable" },
+                    "published": false,
+                    "reason": if missing_after_mutation {
+                        "changed path no longer exists after the mutation".to_string()
+                    } else {
+                        one_line(&error.to_string(), 240)
+                    },
+                }));
+                continue;
+            }
+        };
+        if !resolved.is_file() {
+            results.push(json!({
+                "path": relative_path,
+                "status": "skipped",
+                "published": false,
+                "reason": "changed path is not a regular file after the mutation",
+            }));
+            continue;
+        }
+        match coding_lsp::diagnostics(&root, &relative_path, config.full_pc_access).await {
+            Ok(navigation) => {
+                let published = navigation
+                    .result
+                    .get("published")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let diagnostics = navigation
+                    .result
+                    .get("diagnostics")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let diagnostic_count = diagnostics.len();
+                let preview = diagnostics
+                    .into_iter()
+                    .take(MAX_POST_EDIT_DIAGNOSTIC_PREVIEW)
+                    .collect::<Vec<_>>();
+                let reason = navigation
+                    .result
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .map(|value| one_line(value, 240));
+                results.push(json!({
+                    "path": relative_path,
+                    "status": if published { "published" } else { "non_authoritative" },
+                    "engine": navigation.engine,
+                    "server": navigation.server,
+                    "published": published,
+                    "diagnosticCount": diagnostic_count,
+                    "diagnosticsTruncated": diagnostic_count > MAX_POST_EDIT_DIAGNOSTIC_PREVIEW,
+                    "diagnostics": preview,
+                    "reason": reason,
+                }));
+            }
+            Err(error) => {
+                results.push(json!({
+                    "path": relative_path,
+                    "status": "unavailable",
+                    "published": false,
+                    "reason": one_line(&error.to_string(), 240),
+                }));
+            }
+        }
+    }
+    bounded(
+        &json!({
+            "status": "completed",
+            "requestedFiles": requested,
+            "checkedFiles": results.len(),
+            "filesTruncated": truncated_files,
+            "results": results,
+        })
+        .to_string(),
+        MAX_POST_EDIT_DIAGNOSTIC_CHARS,
+    )
 }
 
 async fn run_terminal(
@@ -3007,6 +3169,8 @@ mod tests {
         .await
         .unwrap();
         assert!(first.transcript_result.contains("transaction="));
+        assert!(first.transcript_result.contains("post_edit_diagnostics="));
+        assert!(first.transcript_result.contains("\"published\":false"));
         assert_eq!(
             fs::read_to_string(temp.path().join("nested/file.txt")).unwrap(),
             "first"
@@ -3047,11 +3211,50 @@ mod tests {
         .await
         .unwrap();
         assert!(result.transcript_result.contains("transaction="));
+        assert!(result.transcript_result.contains("post_edit_diagnostics="));
+        assert!(result.transcript_result.contains("\"published\":false"));
         assert_eq!(
             fs::read_to_string(temp.path().join("file.txt")).unwrap(),
             "before changed after"
         );
         assert!(!temp.path().join(".openmindai-patch-transactions").exists());
+    }
+
+    #[test]
+    fn post_edit_candidate_paths_are_deduplicated_and_leave_bounding_to_collection() {
+        let action = json!({
+            "operations": [
+                {"op": "create", "path": "a.rs", "content": "fn a() {}"},
+                {"op": "write", "path": "a.rs", "content": "fn a() { println!(\"a\"); }", "expectedSha256": "00"},
+                {"op": "create", "path": "b.rs", "content": "fn b() {}"}
+            ]
+        });
+        let paths = post_edit_candidate_paths("patch_transaction", &action).unwrap();
+        assert_eq!(paths, vec!["a.rs".to_string(), "b.rs".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn post_edit_diagnostics_are_bounded_and_non_fatal_without_lsp_access() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = test_workspace_config(temp.path());
+        let operations = (0..(MAX_POST_EDIT_DIAGNOSTIC_FILES + 2))
+            .map(|index| {
+                let path = format!("file-{index}.rs");
+                fs::write(temp.path().join(&path), format!("fn item_{index}() {{}}")).unwrap();
+                json!({
+                    "op": "create",
+                    "path": path,
+                    "content": format!("fn item_{index}() {{}}"),
+                })
+            })
+            .collect::<Vec<_>>();
+        let action = json!({"rootId": "root", "operations": operations});
+        let diagnostics =
+            collect_post_edit_diagnostics(&config, Some("root"), "patch_transaction", &action)
+                .await;
+        assert!(diagnostics.contains("\"filesTruncated\":true"));
+        assert!(diagnostics.contains("\"published\":false"));
+        assert!(diagnostics.contains("\"checkedFiles\":8"));
     }
 
     #[test]
