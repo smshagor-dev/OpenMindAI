@@ -1,0 +1,93 @@
+name: Call Relationship Integration
+
+on:
+  push:
+    branches:
+      - work/lsp-call-relations
+
+permissions:
+  contents: write
+
+jobs:
+  integrate-and-verify:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: work/lsp-call-relations
+          fetch-depth: 0
+
+      - name: Port validated call hierarchy slice
+        run: |
+          git config user.name "OpenMindAI Engineering Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git fetch origin work/lsp-call-hierarchy
+          git cherry-pick 250e6bf0f24dc04d60fa00b6752f90bbb86313ac
+
+      - name: Apply correctness hardening
+        run: python scripts/fix_call_hierarchy.py
+
+      - name: Remove one-shot integration files
+        run: |
+          rm scripts/fix_call_hierarchy.py
+          rm .github/workflows/call-relations-integration.yml
+          find scripts -type d -name __pycache__ -prune -exec rm -rf {} +
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Format generated Rust
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
+
+      - name: Verify Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Rust check
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Strict Clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+      - name: Focused LSP tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml coding_lsp::tests
+
+      - name: Focused local agent tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml local_agent::tests
+
+      - name: Security policy tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml openagent_security::tests
+
+      - name: Full Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Deterministic coding evaluation
+        run: python scripts/coding_workspace_eval.py
+
+      - name: Adversarial security evaluation
+        run: python scripts/coding_security_suite.py
+
+      - name: Diff safety
+        run: |
+          git diff --check
+          test -z "$(find scripts -type f \( -name '*.pyc' -o -name '*.pyo' \) -print -quit)"
+          test -z "$(find scripts -type d -name __pycache__ -print -quit)"
+
+      - name: Commit verified implementation
+        run: |
+          git add -A src-tauri/src/coding_lsp.rs src-tauri/src/local_agent.rs src-tauri/src/openagent_security.rs scripts/fix_call_hierarchy.py .github/workflows/call-relations-integration.yml
+          git diff --cached --exit-code && { echo "No corrected implementation changes to commit"; exit 1; } || true
+          git commit -m "fix: harden LSP call relationship navigation"
+          git push origin HEAD:work/lsp-call-relations
