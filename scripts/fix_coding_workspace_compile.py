@@ -76,8 +76,10 @@ replace_exact(
     "",
 )
 
-# Integration uses the bounded parallel implementation directly. Remove the
-# compatibility wrapper so the production module has no unused public helper.
+# Integration uses the bounded parallel implementation directly in production.
+# Keep the single-worker compatibility wrapper only for the repository
+# intelligence unit tests that exercise the legacy public contract. This avoids
+# dead-code warnings in production while preserving meaningful test coverage.
 replace_exact(
     "src-tauri/src/coding_intelligence.rs",
     '''pub fn build_repository_context(
@@ -88,7 +90,15 @@ replace_exact(
 }
 
 ''',
-    "",
+    '''#[cfg(test)]
+fn build_repository_context(
+    roots: &[(String, String)],
+    goal: &str,
+) -> Result<String, AppError> {
+    build_repository_context_parallel(roots, goal, 1)
+}
+
+''',
 )
 
 # Delivery policy and log summarization are production behavior, not test-only
