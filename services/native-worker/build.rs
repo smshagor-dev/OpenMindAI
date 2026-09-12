@@ -1,4 +1,5 @@
 use std::{env, fs, path::PathBuf, process::Command};
+
 fn main() {
     const PIN: &str = "7798007a29a90e3053e799394da48cf53a2f8e0f";
     let project = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap())
@@ -26,9 +27,13 @@ fn main() {
         "LLAMA_CPP_LIB_DIR",
         "LLAMA_CPP_BACKEND_LIB_DIR",
         "OPENMINDAI_NATIVE_DYNAMIC_BACKENDS",
+        "LLAMA_CPP_COMMIT",
+        "OPENMINDAI_NATIVE_STRICT_ABI",
+        "OPENMINDAI_PORTABLE_BUILD",
     ] {
         println!("cargo:rerun-if-env-changed={name}");
     }
+
     // Stage original sources without maintaining a second bridge implementation.
     // Relative bridge paths keep the same generated CXX include prefix as Tauri.
     let stage = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("bridge-source");
@@ -48,6 +53,8 @@ fn main() {
         stage.join("openmind/native/inference.h"),
     )
     .unwrap();
+
+    let previous_dir = env::current_dir().expect("current directory");
     env::set_current_dir(&stage).unwrap();
     cxx_build::CFG.include_prefix = "openmind";
     let mut build = cxx_build::bridge("src/native_bridge.rs");
@@ -57,13 +64,16 @@ fn main() {
         .include(llama.join("include"))
         .include(llama.join("ggml/include"))
         .std("c++17");
+
     let windows = env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
     if windows {
         build.flag("/O2").flag("/EHsc");
     } else {
         build.flag("-O3").flag_if_supported("-fPIC");
     }
-    if env::var("OPENMINDAI_NATIVE_DYNAMIC_BACKENDS").as_deref() == Ok("1") {
+
+    let dynamic_backends = env::var("OPENMINDAI_NATIVE_DYNAMIC_BACKENDS").as_deref() == Ok("1");
+    if dynamic_backends {
         assert!(windows, "dynamic plugins currently require MSVC");
         let backend = PathBuf::from(
             env::var_os("LLAMA_CPP_BACKEND_LIB_DIR").expect("backend import directory"),
@@ -73,14 +83,22 @@ fn main() {
         for name in ["ggml", "ggml-base"] {
             assert!(
                 backend.join(format!("{name}.lib")).is_file(),
-                "missing backend import library"
+                "missing backend import library: {name}.lib"
             );
-            println!("cargo:rustc-link-lib=dylib={name}");
         }
+
+        // Keep search paths ahead of link directives. This matches the known-good
+        // Vulkan CXX probe and avoids toolchain-dependent ordering of /LIBPATH and
+        // import-library arguments on MSVC.
         println!("cargo:rustc-link-search=native={}", backend.display());
+        println!("cargo:rustc-link-lib=dylib=ggml");
+        println!("cargo:rustc-link-lib=dylib=ggml-base");
         build.define("OPENMINDAI_DYNAMIC_BACKENDS", None);
     }
+
     build.compile("openmind_llama_bridge");
+    env::set_current_dir(previous_dir).expect("restore current directory");
+
     println!("cargo:rustc-link-search=native={}", lib.display());
     println!("cargo:rustc-link-lib=dylib=llama");
 }
