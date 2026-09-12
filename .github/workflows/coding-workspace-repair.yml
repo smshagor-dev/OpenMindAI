@@ -1,9 +1,9 @@
-name: Coding Workspace Repair
+name: OpenAgent Parallel Sub-Agent Repair
 
 on:
   push:
     branches:
-      - work/coding-ci-repair
+      - work/openagent-parallel-repair
 
 permissions:
   contents: write
@@ -20,17 +20,25 @@ jobs:
       - name: Normalize integration bootstrap
         run: python3 scripts/normalize_coding_bootstrap.py
 
+      - name: Normalize current context API drift
+        run: python3 scripts/normalize_parallel_bootstrap.py
+
       - name: Apply production integration
         run: python3 scripts/integrate_coding_workspace.py
 
       - name: Apply compile repairs
         run: python3 scripts/fix_coding_workspace_compile.py
 
+      - name: Integrate parallel sub-agents
+        run: python3 scripts/integrate_parallel_subagents.py
+
       - name: Remove one-shot files
         run: |
           rm -f scripts/normalize_coding_bootstrap.py
+          rm -f scripts/normalize_parallel_bootstrap.py
           rm -f scripts/integrate_coding_workspace.py
           rm -f scripts/fix_coding_workspace_compile.py
+          rm -f scripts/integrate_parallel_subagents.py
           rm -f .github/workflows/coding-workspace-validation.yml
           rm -f .github/workflows/coding-workspace-repair.yml
 
@@ -67,7 +75,7 @@ jobs:
           git config user.email "actions@users.noreply.github.com"
           git add -f clippy-output.txt
           git commit -m "ci: capture clippy failure"
-          git push origin HEAD:work/coding-ci-repair
+          git push origin HEAD:work/openagent-parallel-repair
 
       - name: Rust tests
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
@@ -101,5 +109,5 @@ jobs:
           git config user.email "actions@users.noreply.github.com"
           git add -A
           git diff --cached --quiet && exit 0
-          git commit -m "feat: complete coding workspace orchestration"
-          git push origin HEAD:work/coding-ci-repair
+          git commit -m "feat: integrate parallel OpenAgent sub-agents"
+          git push origin HEAD:work/openagent-parallel-repair
