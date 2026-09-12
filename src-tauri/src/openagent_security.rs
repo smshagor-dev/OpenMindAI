@@ -30,6 +30,7 @@ enum RiskLevel {
     WorkspaceWrite,
     Destructive,
     HostExecution,
+    RemoteMutation,
     Prohibited,
 }
 
@@ -42,6 +43,7 @@ pub fn authorize_tool(tool: &str, action: &Value, mode: ApprovalMode) -> (Policy
             ApprovalMode::AlwaysAsk => PolicyDecision::RequireApproval,
             ApprovalMode::RiskBased | ApprovalMode::TrustedWorkspace => PolicyDecision::Allow,
         },
+        RiskLevel::RemoteMutation => PolicyDecision::RequireApproval,
         RiskLevel::Destructive | RiskLevel::HostExecution => match mode {
             ApprovalMode::TrustedWorkspace => PolicyDecision::Allow,
             ApprovalMode::RiskBased | ApprovalMode::AlwaysAsk => PolicyDecision::RequireApproval,
@@ -62,6 +64,9 @@ pub fn authorize_tool(tool: &str, action: &Value, mode: ApprovalMode) -> (Policy
         }
         (PolicyDecision::RequireApproval, RiskLevel::HostExecution) => {
             "host command requires approval"
+        }
+        (PolicyDecision::RequireApproval, RiskLevel::RemoteMutation) => {
+            "remote repository mutation requires exact approval"
         }
         (PolicyDecision::Deny, RiskLevel::Prohibited) => {
             "command violates the non-bypassable safety policy"
@@ -90,6 +95,7 @@ fn classify_tool(tool: &str, action: &Value) -> RiskLevel {
             RiskLevel::WorkspaceWrite
         }
         "move_path" | "delete_path" => RiskLevel::Destructive,
+        "delivery" => classify_delivery(action),
         "terminal" => classify_terminal(
             action
                 .get("command")
@@ -100,6 +106,23 @@ fn classify_tool(tool: &str, action: &Value) -> RiskLevel {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
         ),
+        _ => RiskLevel::Prohibited,
+    }
+}
+
+fn classify_delivery(action: &Value) -> RiskLevel {
+    match action
+        .get("operation")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+    {
+        "branches" | "pull_request" | "checks" | "check_jobs" | "check_logs" => RiskLevel::ReadOnly,
+        "create_branch"
+        | "commit_files"
+        | "create_pull_request"
+        | "update_pull_request"
+        | "rerun_checks"
+        | "merge_pull_request" => RiskLevel::RemoteMutation,
         _ => RiskLevel::Prohibited,
     }
 }

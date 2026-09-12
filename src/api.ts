@@ -104,6 +104,14 @@ export type CheckpointRestoreResult = {
   validationRequired: boolean;
 };
 
+export type CodingPlanStep = { id: string; title: string; status: string };
+export type CodingPlan = { revision: number; reason: string; steps: CodingPlanStep[] };
+export type CodingEvent = { id: string; runId: string; sequence: number; kind: string; label: string; detailJson: string | null; createdAt: string };
+export type CodingApproval = { id: string; runId: string; stepId: string | null; actionHash: string; tool: string; actionJson: string; reason: string; status: "pending" | "approved" | "rejected" | "consumed"; requestedAt: string; decidedAt: string | null; consumedAt: string | null };
+export type CodingMetrics = { runId: string; promptTokens: number; completionTokens: number; modelMs: number; toolMs: number; toolCalls: number; workerCalls: number; localCostMicros: number; hardwareJson: string; budgetStopReason: string | null; updatedAt: string };
+export type CodingRunSnapshot = { details: OpenAgentRunDetails; plan: CodingPlan | null; events: CodingEvent[]; approvals: CodingApproval[]; metrics: CodingMetrics | null; parentRunId: string | null };
+export type CodingQualificationReport = { id: string; passed: boolean; modelId: string | null; checks: { id: string; passed: boolean; detail: string }[]; startedAt: string; completedAt: string };
+
 type RuntimeBootstrapSnapshot = {
   inventory: RuntimeInventory;
   status: LlamaRuntimeStatus;
@@ -336,6 +344,16 @@ export const api = {
     connectedInvoke<CheckpointRestoreResult>("restore_openagent_checkpoint", {
       checkpointId,
     }),
+  codingRunSnapshot: (runId: string) =>
+    connectedInvoke<CodingRunSnapshot | null>("coding_run_snapshot", { runId }),
+  approveCodingAction: (approvalId: string) =>
+    connectedInvoke<CodingApproval>("approve_coding_action", { approvalId }),
+  rejectCodingAction: (approvalId: string) =>
+    connectedInvoke<CodingApproval>("reject_coding_action", { approvalId }),
+  resumeCodingRun: (runId: string) =>
+    connectedInvoke<Message>("resume_coding_run", { runId }),
+  runCodingQualification: () =>
+    connectedInvoke<CodingQualificationReport>("run_coding_qualification"),
   sendChatMessage: async (
     conversationId: string,
     content: string,

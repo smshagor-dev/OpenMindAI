@@ -62,3 +62,12 @@ The initial tool set covers directory listing, bounded file reads, text search, 
 Stage 1 is complete. The bounded agent loop is connected to installed Nemotron 3.5 Lightning packages, uses the selected model ID, retains compatible lower-memory fallbacks, and runs inside the attached-root file boundary.
 
 Stage 2 is in progress. OpenAgent now persists run state, ordered tool steps, bounded results, validation state, before/after checkpoints, and restore audit events. File-tool checkpoints include bounded file contents plus SHA-256 evidence and block destructive mutations that exceed the entry or byte limits. Completed mutations can be restored only after the matching after-state passes conflict, digest, symlink, and attached-root checks; active runs cannot be restored. Restore payloads are verified before mutation, failed restores attempt a compensating rollback to the captured after-state, and restored runs return to a validation-required state. Startup recovery marks abandoned runs as interrupted, blocks their active steps, and flags unfinished restore events for operator verification. Typed desktop APIs expose run history, checkpoint IDs, step details, restore results, and restore-event status. When terminal access is disabled, a mutated run reports that required validation was not run instead of presenting an unqualified success. True filesystem transactions, handle-based protection against every symlink race, automatic interrupted-run replay, terminal-command snapshots, token/runtime metrics, and the visible timeline UI are still pending and must not be represented as complete. The OS-level process sandbox remains Stage 3.
+
+
+## Implemented parallel sub-agent safety boundary
+
+- OpenAgent can run 2–4 bounded read-only model workers concurrently before the parent mutation loop.
+- Workers receive compressed project/repository/workspace evidence and cannot call tools, execute commands, edit files, access credentials, or change Git state.
+- Worker output is explicitly labeled advisory/untrusted before it enters the parent transcript, preserving the parent approval and sandbox policy boundary.
+- Per-worker token/runtime usage is charged to the durable coding-run metrics and worker outcomes are recorded on the visible run timeline.
+- Failure of the parallel analysis layer is non-destructive: the parent agent records the failure and continues with normal inspection rather than weakening policy or mutating concurrently.

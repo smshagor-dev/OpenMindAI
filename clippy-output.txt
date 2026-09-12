@@ -1,22 +1,2 @@
 [1m[92m   Compiling[0m open-mind-ai v3.0.1 (/home/runner/work/OpenMindAI/OpenMindAI/src-tauri)
-[1m[91merror[E0425][0m[1m: cannot find function `build_repository_context` in this scope[0m
-   [1m[94m--> [0msrc/coding_intelligence.rs:630:23
-    [1m[94m|[0m
-[1m[94m630[0m [1m[94m|[0m         let context = build_repository_context(
-    [1m[94m|[0m                       [1m[91m^^^^^^^^^^^^^^^^^^^^^^^^[0m [1m[91mnot found in this scope[0m
-
-[1m[91merror[E0425][0m[1m: cannot find function `build_repository_context` in this scope[0m
-   [1m[94m--> [0msrc/coding_intelligence.rs:652:23
-    [1m[94m|[0m
-[1m[94m652[0m [1m[94m|[0m         let context = build_repository_context(
-    [1m[94m|[0m                       [1m[91m^^^^^^^^^^^^^^^^^^^^^^^^[0m [1m[91mnot found in this scope[0m
-
-[1m[91merror[E0425][0m[1m: cannot find function `build_repository_context` in this scope[0m
-   [1m[94m--> [0msrc/coding_intelligence.rs:668:23
-    [1m[94m|[0m
-[1m[94m668[0m [1m[94m|[0m         let context = build_repository_context(
-    [1m[94m|[0m                       [1m[91m^^^^^^^^^^^^^^^^^^^^^^^^[0m [1m[91mnot found in this scope[0m
-
-[1mFor more information about this error, try `rustc --explain E0425`.[0m
-[1m[91merror[0m: could not compile `open-mind-ai` (lib test) due to 3 previous errors
-[1m[33mwarning[0m: build failed, waiting for other jobs to finish...
+[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 12.82s

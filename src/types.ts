@@ -421,6 +421,15 @@ export interface AppPreferences {
   openagentApprovalMode: "risk_based" | "always_ask" | "trusted_workspace";
   openagentSandboxMode: "attached_workspace" | "isolated_sandbox";
   openagentMaxParallelAgents: number;
+  codingEnabled: boolean;
+  codingTokenBudget: number;
+  codingRuntimeBudgetMinutes: number;
+  codingMaxParallelWorkers: number;
+  codingCiRepairLimit: number;
+  codingContextSize: number;
+  codingGpuLayers: number;
+  codingNetworkEnabled: boolean;
+  codingAutonomy: "bounded" | "review_first";
 }
 
 export interface OpenAgentSandboxCapability {

@@ -2,7 +2,7 @@ use std::{
     collections::{HashSet, VecDeque},
     fs,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::{
     app_error::AppError,
     chat::{ChatRepository, Message},
-    coding_lsp, coding_patch,
+    coding_control, coding_delivery, coding_intelligence, coding_lsp, coding_patch,
     database::Database,
     inference::{StreamChunkEvent, StreamDoneEvent, StreamStartedEvent},
     isolated_runtime,
@@ -26,7 +26,7 @@ use crate::{
     local_workspace,
     model_catalog::entry_by_id,
     model_registry::{ModelRecord, ModelRegistry},
-    openagent_context::build_repository_context,
+    openagent_parallel,
     openagent_prompt_context::{build_prompt_context, PromptContextInput},
     openagent_runs::OpenAgentRunRepository,
     openagent_security::{authorize_tool, ApprovalMode, PolicyDecision},
@@ -93,6 +93,14 @@ struct AgentWorkspaceRoot {
 struct AgentTurnResult {
     trace_label: String,
     transcript_result: String,
+}
+
+#[derive(Debug, Clone)]
+struct AgentDecisionResult {
+    action: Value,
+    prompt_tokens: i64,
+    completion_tokens: i64,
+    elapsed_ms: u128,
 }
 
 #[derive(Debug, Clone)]
@@ -176,7 +184,7 @@ pub async fn send_project_agent_message(
     content: String,
     state: State<'_, AppState>,
 ) -> Result<Message, AppError> {
-    run_agent_message(&app, &state, &conversation_id, &content, None).await
+    run_agent_message(&app, &state, &conversation_id, &content, None, None).await
 }
 
 #[tauri::command]
@@ -208,7 +216,31 @@ pub async fn regenerate_project_agent_message(
     };
 
     let content = user.content.clone();
-    run_agent_message(&app, &state, &conversation_id, &content, Some(user)).await
+    run_agent_message(&app, &state, &conversation_id, &content, Some(user), None).await
+}
+
+#[tauri::command]
+pub async fn resume_coding_run(
+    app: AppHandle,
+    run_id: String,
+    state: State<'_, AppState>,
+) -> Result<Message, AppError> {
+    let (conversation_id, goal, status) = {
+        let db = state
+            .database
+            .lock()
+            .map_err(|_| AppError::internal("database lock poisoned"))?;
+        let run = OpenAgentRunRepository::new(&db)
+            .find(&run_id)?
+            .ok_or_else(|| AppError::internal("coding run not found"))?;
+        (run.conversation_id, run.goal, run.status)
+    };
+    if !matches!(status.as_str(), "interrupted" | "failed") {
+        return Err(AppError::internal(
+            "only interrupted or failed coding runs can be resumed",
+        ));
+    }
+    run_agent_message(&app, &state, &conversation_id, &goal, None, Some(run_id)).await
 }
 
 #[tauri::command]
@@ -323,35 +355,54 @@ pub fn restore_openagent_checkpoint(
     }
 }
 
+#[allow(unused_assignments)]
 async fn run_agent_message(
     app: &AppHandle,
     state: &State<'_, AppState>,
     conversation_id: &str,
     content: &str,
     existing_user: Option<Message>,
+    resume_parent: Option<String>,
 ) -> Result<Message, AppError> {
     if content.trim().is_empty() {
         return Err(AppError::internal("OpenAgent request cannot be empty"));
     }
 
+    let preferences = {
+        let db = state
+            .database
+            .lock()
+            .map_err(|_| AppError::internal("database lock poisoned"))?;
+        SettingsRepository::new(&db).get_preferences()?
+    };
+    if !preferences.coding_enabled {
+        return Err(AppError::internal(
+            "coding workspace execution is disabled in Settings",
+        ));
+    }
+    let approval_mode = ApprovalMode::parse(&preferences.openagent_approval_mode);
+    let sandbox_mode = preferences.openagent_sandbox_mode.clone();
+    let token_budget = preferences.coding_token_budget;
+    let runtime_budget_minutes = preferences.coding_runtime_budget_minutes;
+    let ci_repair_limit = usize::from(preferences.coding_ci_repair_limit.clamp(1, 5));
+
     let mut agent_context = load_agent_context(state, conversation_id, content)?;
+    if let Some(parent) = resume_parent.as_deref() {
+        let seed = {
+            let db = state
+                .database
+                .lock()
+                .map_err(|_| AppError::internal("database lock poisoned"))?;
+            coding_control::resume_seed(&db, parent)?
+        };
+        agent_context.repository_context.push_str("\n\n");
+        agent_context.repository_context.push_str(&seed);
+    }
     if agent_context.workspace.roots.is_empty() {
         return Err(AppError::internal(
             "attach a local folder to this project before using OpenAgent",
         ));
     }
-    let (approval_mode, sandbox_mode) = {
-        let db = state
-            .database
-            .lock()
-            .map_err(|_| AppError::internal("database lock poisoned"))?;
-        let preferences = SettingsRepository::new(&db).get_preferences()?;
-        (
-            ApprovalMode::parse(&preferences.openagent_approval_mode),
-            preferences.openagent_sandbox_mode,
-        )
-    };
-
     // Keep the hidden project context fresh before routing/model execution.
     {
         let db = state
@@ -363,7 +414,14 @@ async fn run_agent_message(
 
     let (model, routing_reason) = resolve_openagent_model(state, conversation_id, content)?;
     let hardware = state.hardware.clone();
-    let plan = ModelLaunchPlanner::plan(&model, &hardware, allocate_local_port()?);
+    let mut plan = ModelLaunchPlanner::plan(&model, &hardware, allocate_local_port()?);
+    if preferences.coding_context_size > 0 {
+        plan.config.context_size = preferences.coding_context_size.clamp(4_096, 131_072);
+    }
+    if preferences.coding_gpu_layers >= 0 {
+        plan.config.gpu_layers = preferences.coding_gpu_layers.clamp(0, 999);
+    }
+    plan.config.parallelism = u32::from(preferences.coding_max_parallel_workers.clamp(1, 4));
     let context_window_tokens = plan.config.context_size as usize;
     let endpoint = {
         let mut runtime = state
@@ -402,6 +460,18 @@ async fn run_agent_message(
             .id
     };
 
+    {
+        let db = state
+            .database
+            .lock()
+            .map_err(|_| AppError::internal("database lock poisoned"))?;
+        let hardware_json = serde_json::to_string(&hardware).unwrap_or_else(|_| "{}".to_string());
+        coding_control::initialize_run(&db, &run_id, content, &hardware_json)?;
+        if let Some(parent) = resume_parent.as_deref() {
+            coding_control::link_runs(&db, parent, &run_id)?;
+        }
+    }
+
     if let Err(error) = app.emit(
         "inference:started",
         StreamStartedEvent {
@@ -425,6 +495,7 @@ async fn run_agent_message(
     let mut validation_deferrals = 0usize;
     let mut last_validation_command: Option<String> = None;
     let mut status = "completed";
+    let mut ci_repairs = 0usize;
     let intro = format!(
         "OpenAgent started for **{}** using **{}**. I can inspect and change the attached workspace{}.",
         agent_context.project.name,
@@ -447,6 +518,97 @@ async fn run_agent_message(
         return Err(error);
     }
 
+    if preferences.coding_max_parallel_workers > 1 {
+        let parallel_result = tokio::select! {
+            result = openagent_parallel::run_parallel_analysis(openagent_parallel::ParallelAnalysisInput {
+                client: state.http.clone(),
+                endpoint: endpoint.clone(),
+                model_id: model.id.clone(),
+                goal: content.to_string(),
+                project_instructions: agent_context.project.instructions.clone(),
+                repository_context: agent_context.repository_context.clone(),
+                workspace_context: agent_context.workspace_context.clone(),
+                max_workers: usize::from(preferences.coding_max_parallel_workers),
+                context_window_tokens,
+            }) => Some(result),
+            _ = cancellation.cancelled() => None,
+        };
+
+        if let Some(result) = parallel_result {
+            match result {
+                Ok(report) => {
+                    {
+                        let db = state
+                            .database
+                            .lock()
+                            .map_err(|_| AppError::internal("database lock poisoned"))?;
+                        for usage in &report.usages {
+                            coding_control::record_model_usage(
+                                &db,
+                                &run_id,
+                                usage.prompt_tokens,
+                                usage.completion_tokens,
+                                usage.elapsed_ms,
+                                true,
+                            )?;
+                        }
+                        coding_control::record_event(
+                            &db,
+                            &run_id,
+                            "workers",
+                            &format!(
+                                "Parallel sub-agents completed {}/{} read-only analyses",
+                                report.successful_workers, report.total_workers
+                            ),
+                            Some(&json!({
+                                "successfulWorkers": report.successful_workers,
+                                "totalWorkers": report.total_workers,
+                                "elapsedMs": report.elapsed_ms,
+                                "workers": report.results,
+                            })),
+                        )?;
+                    }
+                    if !report.transcript_context.is_empty() {
+                        push_transcript(&mut transcript, report.transcript_context);
+                    }
+                    emit_agent_chunk(
+                        app,
+                        state,
+                        conversation_id,
+                        &assistant.id,
+                        &format!(
+                            "• Parallel sub-agents completed {}/{} read-only analyses in {} ms.\n",
+                            report.successful_workers, report.total_workers, report.elapsed_ms
+                        ),
+                    )?;
+                }
+                Err(error) => {
+                    let warning = bounded(&error.to_string(), 1_200);
+                    {
+                        let db = state
+                            .database
+                            .lock()
+                            .map_err(|_| AppError::internal("database lock poisoned"))?;
+                        coding_control::record_event(
+                            &db,
+                            &run_id,
+                            "workers",
+                            "Parallel sub-agent analysis unavailable; parent agent continued",
+                            Some(&json!({"error": warning})),
+                        )?;
+                    }
+                    push_transcript(
+                        &mut transcript,
+                        format!(
+                            "HOST WARNING: parallel read-only sub-agent analysis failed; continue with parent-agent inspection only. Error: {}",
+                            warning
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
     let loop_result = async {
         for step in 0..MAX_AGENT_STEPS {
             if cancellation.is_cancelled() {
@@ -461,7 +623,16 @@ async fn run_agent_message(
                 return Ok::<(), AppError>(());
             }
 
-            let decision = tokio::select! {
+            let plan_text = {
+                let db = state.database.lock().map_err(|_| AppError::internal("database lock poisoned"))?;
+                if let Some(reason) = coding_control::budget_exceeded(&db, &run_id, token_budget, runtime_budget_minutes)? {
+                    coding_control::set_budget_stop(&db, &run_id, &reason)?;
+                    return Err(AppError::InferenceFailed(reason));
+                }
+                coding_control::plan_text(&db, &run_id)?
+            };
+
+            let decision_result = tokio::select! {
                 result = request_agent_decision(
                 &state.http,
                 &endpoint,
@@ -472,6 +643,7 @@ async fn run_agent_message(
                 &model.id,
                 &sandbox_mode,
                 context_window_tokens,
+                &plan_text,
             ) => result?,
                 _ = cancellation.cancelled() => {
                     status = "cancelled";
@@ -479,6 +651,18 @@ async fn run_agent_message(
                     return Ok::<(), AppError>(());
                 }
             };
+            {
+                let db = state.database.lock().map_err(|_| AppError::internal("database lock poisoned"))?;
+                coding_control::record_model_usage(
+                    &db,
+                    &run_id,
+                    decision_result.prompt_tokens,
+                    decision_result.completion_tokens,
+                    decision_result.elapsed_ms,
+                    false,
+                )?;
+            }
+            let decision = decision_result.action;
 
             let decision_type = decision
                 .get("type")
@@ -627,52 +811,34 @@ async fn run_agent_message(
 
             let (policy_decision, policy_reason) =
                 authorize_tool(tool, &decision, approval_mode);
-            if policy_decision != PolicyDecision::Allow {
-                let prefix = if policy_decision == PolicyDecision::Deny {
-                    "denied"
-                } else {
-                    "requires approval"
+            let exact_approved = if policy_decision == PolicyDecision::RequireApproval {
+                let db = state.database.lock().map_err(|_| AppError::internal("database lock poisoned"))?;
+                coding_control::consume_exact_approval(&db, &run_id, tool, &action_signature)?
+            } else {
+                false
+            };
+            if policy_decision == PolicyDecision::Deny {
+                let text = format!("denied: {policy_reason}");
+                finish_durable_step(state, &step_id, "blocked", false, None, None, Some(&text))?;
+                emit_agent_chunk(app, state, conversation_id, &assistant.id, &format!("• {tool} denied by policy: {policy_reason}\n"))?;
+                return Err(AppError::internal(text));
+            }
+            if policy_decision == PolicyDecision::RequireApproval && !exact_approved {
+                let approval = {
+                    let db = state.database.lock().map_err(|_| AppError::internal("database lock poisoned"))?;
+                    coding_control::request_approval(&db, &run_id, Some(&step_id), tool, &action_signature, &policy_reason)?
                 };
-                let text = format!("{prefix}: {policy_reason}");
-                finish_durable_step(
-                    state,
-                    &step_id,
-                    "blocked",
-                    false,
-                    None,
-                    None,
-                    Some(&text),
-                )?;
+                let text = format!("approval pending: {}", approval.reason);
+                finish_durable_step(state, &step_id, "blocked", false, None, None, Some(&text))?;
                 emit_agent_chunk(
                     app,
                     state,
                     conversation_id,
                     &assistant.id,
-                    &format!("• {tool} blocked by policy: {policy_reason}\n"),
+                    &format!("• {tool} paused for exact approval. Review the Coding run timeline to approve or reject it.\n"),
                 )?;
-                push_transcript(
-                    &mut transcript,
-                    format!(
-                        "STEP {}\nACTION {}\nPOLICY {}",
-                        step + 1,
-                        action_signature,
-                        text
-                    ),
-                );
-                consecutive_failures += 1;
-                update_durable_progress(
-                    state,
-                    &run_id,
-                    consecutive_failures,
-                    validation_required,
-                    last_validation_command.as_deref(),
-                )?;
-                if policy_decision == PolicyDecision::Deny
-                    || consecutive_failures >= MAX_AGENT_FAILURES
-                {
-                    return Err(AppError::internal(text));
-                }
-                continue;
+                status = "interrupted";
+                return Ok::<(), AppError>(());
             }
 
             if tool_mutates_workspace(tool)
@@ -691,8 +857,25 @@ async fn run_agent_message(
                 )?;
             }
 
+            if tool == "delivery"
+                && decision.get("operation").and_then(Value::as_str) == Some("rerun_checks")
+            {
+                ci_repairs += 1;
+                if ci_repairs > ci_repair_limit {
+                    return Err(AppError::InferenceFailed(format!(
+                        "CI repair limit reached ({ci_repair_limit})"
+                    )));
+                }
+            }
+            let tool_started = Instant::now();
             let result = tokio::select! {
-                result = execute_tool(tool, &decision, &agent_context.workspace, &sandbox_mode) => result,
+                result = async {
+                    if tool == "delivery" {
+                        execute_delivery_tool(state, &decision, exact_approved).await
+                    } else {
+                        execute_tool(tool, &decision, &agent_context.workspace, &sandbox_mode).await
+                    }
+                } => result,
                 _ = cancellation.cancelled() => {
                     status = "cancelled";
                     finish_durable_step(
@@ -708,6 +891,10 @@ async fn run_agent_message(
                     return Ok::<(), AppError>(());
                 }
             };
+            {
+                let db = state.database.lock().map_err(|_| AppError::internal("database lock poisoned"))?;
+                coding_control::record_tool_usage(&db, &run_id, tool_started.elapsed().as_millis())?;
+            }
             match result {
                 Ok(outcome) => {
                     consecutive_failures = 0;
@@ -813,6 +1000,11 @@ async fn run_agent_message(
                 Err(error) => {
                     consecutive_failures += 1;
                     let text = error.to_string();
+                    {
+                        let db = state.database.lock().map_err(|_| AppError::internal("database lock poisoned"))?;
+                        coding_control::record_event(&db, &run_id, "tool", &format!("{tool} failed"), Some(&json!({"error": bounded(&text, 1200)})))?;
+                        coding_control::replan_after_failure(&db, &run_id, &text)?;
+                    }
                     finish_durable_step(
                         state,
                         &step_id,
@@ -1404,14 +1596,21 @@ fn load_agent_context(
     let workspace_context = local_workspace::workspace_context_for_project(&db, &project.id)?
         .unwrap_or_else(|| "No workspace snapshot is available yet.".to_string());
     let conversation_context = recent_conversation_context(&db, conversation_id)?;
+    let workers = usize::from(
+        SettingsRepository::new(&db)
+            .get_preferences()?
+            .coding_max_parallel_workers
+            .clamp(1, 4),
+    );
     drop(db);
-    let repository_context = build_repository_context(
+    let repository_context = coding_intelligence::build_repository_context_parallel(
         &workspace
             .roots
             .iter()
             .map(|root| (root.id.clone(), root.path.clone()))
             .collect::<Vec<_>>(),
         goal,
+        workers,
     )?;
     Ok(AgentContext {
         project,
@@ -1434,8 +1633,14 @@ fn refresh_agent_workspace_context(
     context.workspace_context =
         local_workspace::workspace_context_for_project(&db, &context.project.id)?
             .unwrap_or_else(|| "No workspace snapshot is available yet.".to_string());
+    let workers = usize::from(
+        SettingsRepository::new(&db)
+            .get_preferences()?
+            .coding_max_parallel_workers
+            .clamp(1, 4),
+    );
     drop(db);
-    context.repository_context = build_repository_context(
+    context.repository_context = coding_intelligence::build_repository_context_parallel(
         &context
             .workspace
             .roots
@@ -1443,6 +1648,7 @@ fn refresh_agent_workspace_context(
             .map(|root| (root.id.clone(), root.path.clone()))
             .collect::<Vec<_>>(),
         &context.goal,
+        workers,
     )?;
     Ok(())
 }
@@ -1510,7 +1716,8 @@ async fn request_agent_decision(
     model_id: &str,
     sandbox_mode: &str,
     context_window_tokens: usize,
-) -> Result<Value, AppError> {
+    plan_text: &str,
+) -> Result<AgentDecisionResult, AppError> {
     let root_summary = context
         .workspace
         .roots
@@ -1568,6 +1775,7 @@ Tool JSON shapes:\n\
 {{\"type\":\"tool\",\"tool\":\"git_status\",\"rootId\":\"ID\"}}\n\
 {{\"type\":\"tool\",\"tool\":\"git_diff\",\"rootId\":\"ID\"}}\n\
 {{\"type\":\"tool\",\"tool\":\"terminal\",\"rootId\":\"ID\",\"cwd\":\"relative/path\",\"command\":\"command\",\"timeoutSec\":180,\"hostExecution\":false}}\n\
+{{\"type\":\"tool\",\"tool\":\"delivery\",\"operation\":\"branches|pull_request|checks|check_jobs|check_logs|create_branch|commit_files|create_pull_request|update_pull_request|rerun_checks|merge_pull_request\",\"params\":{{}}}}\n\\
 {{\"type\":\"final\",\"message\":\"concise summary of completed work, validation, and any remaining issue\",\"validationSkippedReason\":\"optional only when no meaningful validation applies\"}}\n\
 Rules:\n\
 - Inspect relevant files before editing. Use search/read/list rather than guessing.\n\
@@ -1586,6 +1794,7 @@ Rules:\n\
 - Follow the host shell syntax described below; do not assume Bash on Windows or PowerShell on macOS/Linux.\n\
 - After changing workspace files, do not finalize before a successful applicable validation. Only use validationSkippedReason when no meaningful automated validation exists for the change.\n\
 - Never claim a command/test passed unless a tool result showed it.\n\
+- For Git delivery use delivery read operations to inspect branches/PR/checks/jobs/logs. Remote mutations always pause for exact approval, including in trusted workspace mode. Before merge include host-only localValidationPassed=true and checkStates from observed repository checks; the host strips these gate fields before calling GitHub. CI reruns are bounded by the configured repair limit.\n\
 - Do not delete unrelated data. delete_path is only for task-required paths.\n\
 - Absolute file paths are only allowed when Full PC access is enabled. Isolated terminal cwd must stay inside its attached root; absolute host cwd requires hostExecution=true and Full PC permission.\n\
 - {terminal_rule}\n\
@@ -1604,10 +1813,11 @@ Attached roots:\n{root_summary}"
         system_chars: system.chars().count(),
     });
     let user = format!(
-        "Project: {}\nStep: {}/{}\nContext selection: selectedChars={}/{} compressed={}\nProject instructions:\n{}\n\nDiscovered repository context:\n{}\n\nWorkspace snapshot:\n{}\n\nRecent project chat:\n{}\n\nUser goal:\n{}\n\nRecent tool history:\n{}\n\nReturn the next single JSON action.",
+        "Project: {}\nStep: {}/{}\nActive persisted plan:\n{}\n\nContext selection: selectedChars={}/{} compressed={}\nProject instructions:\n{}\n\nDiscovered repository context:\n{}\n\nWorkspace snapshot:\n{}\n\nRecent project chat:\n{}\n\nUser goal:\n{}\n\nRecent tool history:\n{}\n\nReturn the next single JSON action.",
         context.project.name,
         step + 1,
         MAX_AGENT_STEPS,
+        plan_text,
         prompt_context.selected_chars,
         prompt_context.budget_chars,
         prompt_context.compressed,
@@ -1643,6 +1853,7 @@ Attached roots:\n{root_summary}"
         },
     );
 
+    let estimated_prompt_tokens = coding_control::estimate_tokens(&format!("{system}\n{user}"));
     let body = json!({
         "model": model_id,
         "messages": [
@@ -1658,6 +1869,7 @@ Attached roots:\n{root_summary}"
         "chat_template_kwargs": {"enable_thinking": false}
     });
 
+    let model_started = Instant::now();
     let url = format!("{}/v1/chat/completions", endpoint.trim_end_matches('/'));
     let mut retry = 0u8;
     let response = loop {
@@ -1697,9 +1909,63 @@ Attached roots:\n{root_summary}"
             "agent model response exceeded the safety limit".to_string(),
         ));
     }
-    parse_agent_json(content)
+    let action = parse_agent_json(content)?;
+    let prompt_tokens = payload
+        .pointer("/usage/prompt_tokens")
+        .and_then(Value::as_i64)
+        .unwrap_or(estimated_prompt_tokens);
+    let completion_tokens = payload
+        .pointer("/usage/completion_tokens")
+        .and_then(Value::as_i64)
+        .unwrap_or_else(|| coding_control::estimate_tokens(content));
+    Ok(AgentDecisionResult {
+        action,
+        prompt_tokens,
+        completion_tokens,
+        elapsed_ms: model_started.elapsed().as_millis(),
+    })
 }
 
+async fn execute_delivery_tool(
+    state: &State<'_, AppState>,
+    action: &Value,
+    exact_approved: bool,
+) -> Result<AgentTurnResult, AppError> {
+    let operation = action
+        .get("operation")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::internal("delivery operation is required"))?;
+    let mut params = action.get("params").cloned().unwrap_or_else(|| json!({}));
+    if operation == "merge_pull_request" {
+        let local_validation = params
+            .get("localValidationPassed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let check_states = params
+            .get("checkStates")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        coding_delivery::completion_gate(local_validation, &check_states)?;
+        if let Some(object) = params.as_object_mut() {
+            object.remove("localValidationPassed");
+            object.remove("checkStates");
+        }
+    }
+    let result = coding_delivery::execute(state, operation, params, exact_approved).await?;
+    Ok(AgentTurnResult {
+        trace_label: format!("Delivery operation {operation} completed"),
+        transcript_result: bounded(&result.to_string(), MAX_TOOL_RESULT_CHARS),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn execute_tool(
     tool: &str,
     action: &Value,

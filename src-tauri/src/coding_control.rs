@@ -111,7 +111,11 @@ pub fn initialize_run(
     database.connection().execute(
         "INSERT OR IGNORE INTO coding_run_plans (run_id, revision, plan_json, updated_at)
          VALUES (?1, 1, ?2, ?3)",
-        params![run_id, serde_json::to_string(&plan)?, now],
+        params![
+            run_id,
+            serde_json::to_string(&plan).map_err(|error| AppError::internal(error.to_string()))?,
+            now
+        ],
     )?;
     database.connection().execute(
         "INSERT OR IGNORE INTO coding_run_metrics
@@ -146,7 +150,9 @@ pub fn load_plan(database: &Database, run_id: &str) -> Result<Option<CodingPlan>
         )
         .optional()?;
     value
-        .map(|raw| serde_json::from_str(&raw).map_err(|error| AppError::internal(error.to_string())))
+        .map(|raw| {
+            serde_json::from_str(&raw).map_err(|error| AppError::internal(error.to_string()))
+        })
         .transpose()
 }
 
@@ -182,7 +188,9 @@ pub fn update_plan(
     if steps.is_empty() {
         return Err(AppError::internal("coding plan cannot be empty"));
     }
-    let current = load_plan(database, run_id)?.map(|plan| plan.revision).unwrap_or(0);
+    let current = load_plan(database, run_id)?
+        .map(|plan| plan.revision)
+        .unwrap_or(0);
     let plan = CodingPlan {
         revision: current.saturating_add(1),
         reason: bounded(reason, 1_000),
@@ -196,7 +204,7 @@ pub fn update_plan(
         params![
             run_id,
             plan.revision,
-            serde_json::to_string(&plan)?,
+            serde_json::to_string(&plan).map_err(|error| AppError::internal(error.to_string()))?,
             Utc::now().to_rfc3339()
         ],
     )?;
@@ -270,7 +278,16 @@ pub fn request_approval(
         "INSERT INTO coding_run_approvals
          (id, run_id, step_id, action_hash, tool, action_json, reason, status, requested_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', ?8)",
-        params![id, run_id, step_id, hash, tool, action_json, bounded(reason, 2_000), now],
+        params![
+            id,
+            run_id,
+            step_id,
+            hash,
+            tool,
+            action_json,
+            bounded(reason, 2_000),
+            now
+        ],
     )?;
     record_event(
         database,
@@ -387,7 +404,10 @@ pub fn resume_seed(database: &Database, parent_run_id: &str) -> Result<String, A
         "Do not replay a mutation that already succeeded. Inspect current workspace state before changing anything.".to_string(),
     ];
     if let Some(plan) = load_plan(database, parent_run_id)? {
-        lines.push(format!("Previous plan revision {}: {}", plan.revision, plan.reason));
+        lines.push(format!(
+            "Previous plan revision {}: {}",
+            plan.revision, plan.reason
+        ));
         for step in plan.steps {
             lines.push(format!("- [{}] {}", step.status, step.title));
         }
@@ -466,9 +486,13 @@ pub fn budget_exceeded(
 ) -> Result<Option<String>, AppError> {
     let metrics = load_metrics(database, run_id)?;
     if let Some(metrics) = metrics {
-        let used = metrics.prompt_tokens.saturating_add(metrics.completion_tokens);
+        let used = metrics
+            .prompt_tokens
+            .saturating_add(metrics.completion_tokens);
         if token_budget > 0 && used >= token_budget {
-            return Ok(Some(format!("token budget exhausted ({used}/{token_budget})")));
+            return Ok(Some(format!(
+                "token budget exhausted ({used}/{token_budget})"
+            )));
         }
     }
     let started_at: Option<String> = database
@@ -500,7 +524,13 @@ pub fn set_budget_stop(database: &Database, run_id: &str, reason: &str) -> Resul
         "UPDATE coding_run_metrics SET budget_stop_reason = ?1, updated_at = ?2 WHERE run_id = ?3",
         params![bounded(reason, 1_000), Utc::now().to_rfc3339(), run_id],
     )?;
-    record_event(database, run_id, "budget", "Run stopped by budget controller", Some(&json!({"reason": reason})))
+    record_event(
+        database,
+        run_id,
+        "budget",
+        "Run stopped by budget controller",
+        Some(&json!({"reason": reason})),
+    )
 }
 
 fn load_metrics(database: &Database, run_id: &str) -> Result<Option<CodingMetrics>, AppError> {
@@ -693,7 +723,7 @@ mod tests {
             params![project, now],
         ).unwrap();
         database.connection().execute(
-            "INSERT INTO conversations (id, title, mode, created_at, updated_at) VALUES (?1, 'test', 'chat', ?2, ?2)",
+            "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?1, 'test', ?2, ?2)",
             params![conversation, now],
         ).unwrap();
         database.connection().execute(
@@ -701,13 +731,13 @@ mod tests {
             params![project, conversation, now],
         ).unwrap();
         database.connection().execute(
-            "INSERT INTO model_registry (id, name, path, format, quantization, capabilities_json, min_ram_bytes, min_vram_bytes, enabled, created_at, updated_at)
-             VALUES (?1, 'test', 'test.gguf', 'gguf', 'Q4', '[]', 0, NULL, 1, ?2, ?2)",
+            "INSERT INTO model_registry (id, name, path, format, quantization, enabled, created_at, updated_at)
+             VALUES (?1, 'test', 'test.gguf', 'gguf', 'Q4', 1, ?2, ?2)",
             params![model, now],
         ).unwrap();
         database.connection().execute(
             "INSERT INTO messages (id, conversation_id, role, content, status, model_id, created_at, updated_at)
-             VALUES (?1, ?2, 'assistant', '', 'complete', ?3, ?4, ?4)",
+             VALUES (?1, ?2, 'assistant', '', 'completed', ?3, ?4, ?4)",
             params![message, conversation, model, now],
         ).unwrap();
         OpenAgentRunRepository::new(database)
@@ -731,20 +761,14 @@ mod tests {
         )
         .unwrap();
         decide_approval(&database, &approval.id, "approved").unwrap();
-        assert!(consume_exact_approval(
-            &database,
-            &run_id,
-            "delete_path",
-            "{\"path\":\"a.txt\"}"
-        )
-        .unwrap());
-        assert!(!consume_exact_approval(
-            &database,
-            &run_id,
-            "delete_path",
-            "{\"path\":\"a.txt\"}"
-        )
-        .unwrap());
+        assert!(
+            consume_exact_approval(&database, &run_id, "delete_path", "{\"path\":\"a.txt\"}")
+                .unwrap()
+        );
+        assert!(
+            !consume_exact_approval(&database, &run_id, "delete_path", "{\"path\":\"a.txt\"}")
+                .unwrap()
+        );
     }
 
     #[test]
@@ -752,7 +776,9 @@ mod tests {
         let database = Database::in_memory().unwrap();
         let run_id = seed_run(&database);
         initialize_run(&database, &run_id, "goal", "{}").unwrap();
-        let steps = (0..20).map(|index| format!("step {index}")).collect::<Vec<_>>();
+        let steps = (0..20)
+            .map(|index| format!("step {index}"))
+            .collect::<Vec<_>>();
         let plan = update_plan(&database, &run_id, &steps, "test").unwrap();
         assert_eq!(plan.revision, 2);
         assert_eq!(plan.steps.len(), MAX_PLAN_STEPS);

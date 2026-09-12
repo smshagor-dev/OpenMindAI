@@ -44,6 +44,11 @@ macro_rules! openmind_generate_handler {
             restore_openagent_checkpoint,
             send_project_agent_message,
             regenerate_project_agent_message,
+            resume_coding_run,
+            coding_run_snapshot,
+            approve_coding_action,
+            reject_coding_action,
+            run_coding_qualification,
             openagent_sandbox_capability
         ]
     };
@@ -54,6 +59,10 @@ mod tauri {
     pub use crate::tauri_crate::*;
 }
 
+mod coding_control;
+mod coding_delivery;
+mod coding_eval;
+mod coding_intelligence;
 mod coding_lsp;
 mod coding_patch;
 mod connected_agent;
@@ -76,7 +85,7 @@ pub mod native_runtime;
 pub mod native_stream;
 #[cfg(feature = "native-cxx-llama")]
 pub mod native_supervisor;
-mod openagent_context;
+mod openagent_parallel;
 mod openagent_prompt_context;
 mod openagent_runs;
 mod openagent_security;
@@ -86,6 +95,8 @@ mod speech_runtime;
 mod vision_batch;
 mod warm_start;
 
+pub(crate) use coding_control::{approve_coding_action, coding_run_snapshot, reject_coding_action};
+pub(crate) use coding_eval::run_coding_qualification;
 pub(crate) use connected_agent::{
     connected_app_agent_status_for_conversation, regenerate_connected_app_message,
     send_connected_app_message,
@@ -102,7 +113,7 @@ pub(crate) use google_workspace::{
 };
 pub(crate) use local_agent::{
     project_agent_status_for_conversation, regenerate_project_agent_message,
-    restore_openagent_checkpoint, send_project_agent_message,
+    restore_openagent_checkpoint, resume_coding_run, send_project_agent_message,
 };
 pub(crate) use local_workspace::{
     attach_project_workspace_folder, create_project_workspace_directory,

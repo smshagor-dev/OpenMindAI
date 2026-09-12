@@ -18,7 +18,10 @@ pub fn operation_risk(operation: &str) -> Option<DeliveryRisk> {
         "branches" | "pull_request" | "checks" | "check_jobs" | "check_logs" => {
             Some(DeliveryRisk::ReadOnly)
         }
-        "create_branch" | "commit_files" | "create_pull_request" | "update_pull_request"
+        "create_branch"
+        | "commit_files"
+        | "create_pull_request"
+        | "update_pull_request"
         | "rerun_checks" => Some(DeliveryRisk::RemoteMutation),
         "merge_pull_request" => Some(DeliveryRisk::Merge),
         _ => None,
@@ -35,21 +38,24 @@ pub async fn execute(
     params: Value,
     approved: bool,
 ) -> Result<Value, AppError> {
-    let risk = operation_risk(operation)
-        .ok_or_else(|| AppError::internal(format!("unsupported delivery operation: {operation}")))?;
-    if risk != DeliveryRisk::ReadOnly && !approved {
+    operation_risk(operation).ok_or_else(|| {
+        AppError::internal(format!("unsupported delivery operation: {operation}"))
+    })?;
+    if policy_requires_approval(operation) && !approved {
         return Err(AppError::internal(
             "remote delivery mutation requires an exact approved action",
         ));
     }
     let action = action_name(operation)?;
-    let value = crate::execute_github_workspace_action(
-        action.to_string(),
-        params,
-        approved,
-        state.clone(),
-    )
-    .await?;
+    let value =
+        crate::execute_github_workspace_action(action.to_string(), params, approved, state.clone())
+            .await?;
+    if operation == "check_logs" && value.to_string().chars().count() > MAX_DELIVERY_RESULT_CHARS {
+        return Ok(json!({
+            "truncated": true,
+            "diagnostic": summarize_check_failure(&value),
+        }));
+    }
     Ok(bound_value(value, MAX_DELIVERY_RESULT_CHARS))
 }
 
@@ -95,7 +101,10 @@ pub fn summarize_check_failure(value: &Value) -> String {
     }
 }
 
-pub fn completion_gate(local_validation_passed: bool, check_states: &[String]) -> Result<(), AppError> {
+pub fn completion_gate(
+    local_validation_passed: bool,
+    check_states: &[String],
+) -> Result<(), AppError> {
     if !local_validation_passed {
         return Err(AppError::internal(
             "delivery merge gate rejected: local validation has not passed",
