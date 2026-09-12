@@ -77,12 +77,49 @@ def main() -> int:
         "repository intelligence contains explicit secret exclusion and untrusted-data labeling",
     ))
 
+    security = (ROOT / "src-tauri" / "src" / "openagent_security.rs").read_text(encoding="utf-8")
+    results.append(case(
+        "compound-shell-approval-boundary",
+        "contains_shell_control_syntax" in security
+        and "compound_shell_syntax_cannot_inherit_read_only_trust" in security
+        and "RiskLevel::ShellCompound" in security,
+        "read-only terminal prefixes cannot hide chained, piped, redirected, or substituted shell operations",
+    ))
+
     delivery = (ROOT / "src-tauri" / "src" / "coding_delivery.rs").read_text(encoding="utf-8")
     results.append(case(
         "delivery-fail-closed",
         "remote delivery mutation requires an exact approved action" in delivery
         and "delivery merge gate rejected" in delivery,
         "remote writes and merge gates are explicitly fail-closed",
+    ))
+    results.append(case(
+        "stale-pr-head-gate",
+        "expectedHeadSha" in delivery
+        and "localValidationPassed" in delivery
+        and "checkStates" in delivery
+        and "pull request head changed" in delivery,
+        "merge requires local validation, observed green checks, and the exact live PR head",
+    ))
+
+    github = (ROOT / "src-tauri" / "src" / "github_workspace.rs").read_text(encoding="utf-8")
+    results.append(case(
+        "github-server-side-merge-sha",
+        "required_commit_sha(&params, \"expectedHeadSha\")" in github
+        and "\"sha\": expected_head" in github,
+        "GitHub merge requests carry the exact expected head SHA so a race fails at the API boundary",
+    ))
+
+    worker = (ROOT / "services" / "native-worker" / "build.rs").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "native-vulkan-ci.yml").read_text(encoding="utf-8")
+    results.append(case(
+        "native-worker-vulkan-build-contract",
+        "cargo:rustc-link-search=native" in worker
+        and "restore current directory" in worker
+        and "CARGO_TARGET_DIR" in workflow
+        and "OPENMINDAI_NATIVE_STRICT_ABI" in workflow
+        and "Native service worker output was not found" in workflow,
+        "persistent native worker uses deterministic MSVC link search and artifact staging under the Vulkan workflow",
     ))
 
     passed = all(bool(item["passed"]) for item in results)
