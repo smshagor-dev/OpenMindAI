@@ -6,6 +6,7 @@ const MIN_OUTPUT_TOKENS: usize = 640;
 const MAX_OUTPUT_TOKENS: usize = 1_536;
 const FIXED_USER_OVERHEAD_CHARS: usize = 900;
 const MAX_SELECTED_CONTEXT_CHARS: usize = 24_000;
+const DELIVERY_MERGE_CONTRACT: &str = "HOST DELIVERY MERGE CONTRACT\nFor merge_pull_request, first inspect the pull request and repository checks. params must include expectedHeadSha set to the full 40-character head SHA observed for that PR, localValidationPassed=true only after a real successful local validation result, and checkStates containing the observed repository check conclusions for that same head. Never invent these values. If the PR head changes, inspect checks again and request a new exact approval for the new merge action.";
 
 pub(crate) struct PromptContextInput<'a> {
     pub project_instructions: &'a str,
@@ -49,10 +50,15 @@ pub(crate) fn build_prompt_context(input: PromptContextInput<'_>) -> PromptConte
         .cloned()
         .collect::<Vec<_>>()
         .join("\n\n");
+    let repository_raw = if input.repository_context.trim().is_empty() {
+        DELIVERY_MERGE_CONTRACT.to_string()
+    } else {
+        format!("{DELIVERY_MERGE_CONTRACT}\n\n{}", input.repository_context)
+    };
     let raw = [
         input.goal,
         transcript_raw.as_str(),
-        input.repository_context,
+        repository_raw.as_str(),
         input.project_instructions,
         input.conversation_context,
         input.workspace_context,
@@ -68,7 +74,7 @@ pub(crate) fn build_prompt_context(input: PromptContextInput<'_>) -> PromptConte
 
     let goal = compress_middle(input.goal, budgets[0]);
     let transcript = compress_transcript(input.transcript, budgets[1]);
-    let repository_context = compress_middle(input.repository_context, budgets[2]);
+    let repository_context = compress_middle(&repository_raw, budgets[2]);
     let project_instructions = compress_head(input.project_instructions, budgets[3]);
     let conversation_context = compress_tail(input.conversation_context, budgets[4]);
     let workspace_context = compress_middle(input.workspace_context, budgets[5]);
@@ -289,8 +295,26 @@ mod tests {
         assert!(pack.selected_chars <= pack.budget_chars);
         assert!(pack.goal.contains("session compiler failure"));
         assert!(pack.transcript.contains("LATEST_FAILURE_MARKER"));
+        assert!(pack.repository_context.contains("expectedHeadSha"));
         assert!(pack.compressed);
         assert!(pack.max_output_tokens <= MAX_OUTPUT_TOKENS);
+    }
+
+    #[test]
+    fn exact_head_merge_contract_survives_small_context_windows() {
+        let transcript = VecDeque::new();
+        let repository = "repository evidence ".repeat(4_000);
+        let pack = build_prompt_context(input(
+            "merge the pull request only when safe",
+            &repository,
+            &transcript,
+            4_096,
+        ));
+
+        assert!(pack.repository_context.contains("HOST DELIVERY MERGE CONTRACT"));
+        assert!(pack.repository_context.contains("expectedHeadSha"));
+        assert!(pack.repository_context.contains("localValidationPassed"));
+        assert!(pack.repository_context.contains("checkStates"));
     }
 
     #[test]
