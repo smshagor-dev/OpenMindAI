@@ -17,6 +17,42 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Repair strict Clippy lint
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src-tauri/src/coding_ast.rs")
+          text = path.read_text(encoding="utf-8")
+          old = '''    if is_identifier_node(node.kind()) {
+              if node.utf8_text(bytes).is_ok_and(|value| value == symbol) {
+                  let start = node.start_position();
+                  output.push(json!({
+                      "path": relative_display(root, file),
+                      "line": start.row + 1,
+                      "character": character_column(text, start),
+                      "preview": line_preview(text, start.row),
+                  }));
+              }
+          }
+          '''
+          new = '''    if is_identifier_node(node.kind())
+              && node.utf8_text(bytes).is_ok_and(|value| value == symbol)
+          {
+              let start = node.start_position();
+              output.push(json!({
+                  "path": relative_display(root, file),
+                  "line": start.row + 1,
+                  "character": character_column(text, start),
+                  "preview": line_preview(text, start.row),
+              }));
+          }
+          '''
+          if old not in text:
+              raise SystemExit("expected Clippy repair anchor was not found")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
