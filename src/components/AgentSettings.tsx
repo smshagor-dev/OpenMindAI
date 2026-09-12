@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Download, Play, RefreshCw, Server, StopCircle } from "lucide-react";
+import { CheckCircle2, Download, Play, RefreshCw, Server, ShieldCheck, StopCircle } from "lucide-react";
 import { api } from "../api";
 import type {
   AppPreferences,
@@ -28,6 +28,7 @@ export function AgentSettings(props: {
   const [download, setDownload] = useState<DownloadStatus | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [sandbox, setSandbox] = useState<OpenAgentSandboxCapability | null>(null);
+  const [qualification, setQualification] = useState<string | null>(null);
 
   const refreshCatalog = async () => {
     try {
@@ -113,6 +114,21 @@ export function AgentSettings(props: {
           {sandbox?.processTreeControl ? " Process-tree cleanup enabled." : ""}
           {sandbox?.boundedOutput ? " Output capture is bounded." : ""}
         </p>
+      </section>
+
+      <section className="sub-panel">
+        <strong>Coding Workspace controls</strong>
+        <label className="agent-setting-field"><span>Enabled</span><input type="checkbox" checked={props.preferences.codingEnabled} onChange={(event) => save("codingEnabled", event.target.checked)} /></label>
+        <label className="agent-setting-field"><span>Autonomy</span><select value={props.preferences.codingAutonomy} onChange={(event) => save("codingAutonomy", event.target.value as AppPreferences["codingAutonomy"])}><option value="bounded">Bounded execution</option><option value="review_first">Review first</option></select></label>
+        <label className="agent-setting-field"><span>Token budget</span><input type="number" min={4000} max={500000} step={1000} value={props.preferences.codingTokenBudget} onChange={(event) => save("codingTokenBudget", Number(event.target.value))} /></label>
+        <label className="agent-setting-field"><span>Runtime budget (minutes)</span><input type="number" min={5} max={240} value={props.preferences.codingRuntimeBudgetMinutes} onChange={(event) => save("codingRuntimeBudgetMinutes", Number(event.target.value))} /></label>
+        <label className="agent-setting-field"><span>Parallel read workers</span><input type="number" min={1} max={4} value={props.preferences.codingMaxParallelWorkers} onChange={(event) => save("codingMaxParallelWorkers", Number(event.target.value))} /></label>
+        <label className="agent-setting-field"><span>CI repair limit</span><input type="number" min={1} max={5} value={props.preferences.codingCiRepairLimit} onChange={(event) => save("codingCiRepairLimit", Number(event.target.value))} /></label>
+        <label className="agent-setting-field"><span>Context size</span><input type="number" min={4096} max={131072} step={4096} value={props.preferences.codingContextSize} onChange={(event) => save("codingContextSize", Number(event.target.value))} /></label>
+        <label className="agent-setting-field"><span>GPU layers (-1 auto)</span><input type="number" min={-1} max={999} value={props.preferences.codingGpuLayers} onChange={(event) => save("codingGpuLayers", Number(event.target.value))} /></label>
+        <label className="agent-setting-field"><span>Sandbox network</span><select value={props.preferences.codingNetworkEnabled ? "on" : "off"} onChange={(event) => save("codingNetworkEnabled", event.target.value === "on")}><option value="off">Off · default</option><option value="on" disabled>On · reserved for explicit future policy</option></select></label>
+        <div className="button-row"><button type="button" onClick={() => void api.runCodingQualification().then((report) => setQualification(report.passed ? `Qualification passed · ${report.checks.length} checks` : `Qualification failed · ${report.checks.filter((item) => !item.passed).map((item) => item.id).join(", ")}`)).catch((error) => setQualification(String(error)))}><ShieldCheck size={16} /> Run qualification</button></div>
+        {qualification ? <p className="muted">{qualification}</p> : null}
       </section>
 
       <section className="model-catalog-section">

@@ -66,6 +66,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "008_openagent_restore_audit",
         sql: include_str!("../migrations/008_openagent_restore_audit.sql"),
     },
+    Migration {
+        number: 9,
+        name: "009_coding_workspace_control",
+        sql: include_str!("../migrations/009_coding_workspace_control.sql"),
+    },
 ];
 
 pub struct Database {

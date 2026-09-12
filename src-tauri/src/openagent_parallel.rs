@@ -1,15 +1,5 @@
-from pathlib import Path
-
-
-def patch(path: str, old: str, new: str, count: int = 1) -> None:
-    file = Path(path)
-    text = file.read_text(encoding="utf-8")
-    if old not in text:
-        raise SystemExit(f"anchor not found in {path}: {old[:120]!r}")
-    file.write_text(text.replace(old, new, count), encoding="utf-8")
-
-
-module = r'''use std::{
+use std::{
+    net::IpAddr,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -255,7 +245,9 @@ async fn run_worker(
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| AppError::InferenceFailed("parallel sub-agent returned no content".to_string()))?;
+        .ok_or_else(|| {
+            AppError::InferenceFailed("parallel sub-agent returned no content".to_string())
+        })?;
     let elapsed_ms = started.elapsed().as_millis();
     let prompt_tokens = payload
         .pointer("/usage/prompt_tokens")
@@ -349,7 +341,12 @@ fn validate_loopback_endpoint(endpoint: &str) -> Result<(), AppError> {
     let host = url
         .host_str()
         .ok_or_else(|| AppError::internal("local model endpoint has no host"))?;
-    if !matches!(host, "127.0.0.1" | "localhost" | "::1") {
+    let normalized_host = host.trim_matches(|character| character == '[' || character == ']');
+    let is_loopback = normalized_host.eq_ignore_ascii_case("localhost")
+        || normalized_host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    if !is_loopback {
         return Err(AppError::internal(
             "parallel sub-agents refuse non-loopback model endpoints",
         ));
@@ -365,7 +362,10 @@ fn bounded(value: &str, max_chars: usize) -> String {
     if value.chars().count() <= max_chars {
         return value.to_string();
     }
-    let mut output = value.chars().take(max_chars.saturating_sub(20)).collect::<String>();
+    let mut output = value
+        .chars()
+        .take(max_chars.saturating_sub(20))
+        .collect::<String>();
     output.push_str("\n...[truncated]");
     output
 }
@@ -408,128 +408,3 @@ mod tests {
         assert!(text.contains("src/main.rs is relevant"));
     }
 }
-'''
-
-Path("src-tauri/src/openagent_parallel.rs").write_text(module, encoding="utf-8")
-
-patch(
-    "src-tauri/src/lib.rs",
-    "mod coding_patch;\n",
-    "mod coding_patch;\nmod openagent_parallel;\n",
-)
-
-patch(
-    "src-tauri/src/local_agent.rs",
-    "    coding_control, coding_delivery, coding_intelligence, coding_lsp, coding_patch,\n",
-    "    coding_control, coding_delivery, coding_intelligence, coding_lsp, coding_patch,\n    openagent_parallel,\n",
-)
-
-parallel_block = r'''    if preferences.coding_max_parallel_workers > 1 {
-        let parallel_result = tokio::select! {
-            result = openagent_parallel::run_parallel_analysis(openagent_parallel::ParallelAnalysisInput {
-                client: state.http.clone(),
-                endpoint: endpoint.clone(),
-                model_id: model.id.clone(),
-                goal: content.to_string(),
-                project_instructions: agent_context.project.instructions.clone(),
-                repository_context: agent_context.repository_context.clone(),
-                workspace_context: agent_context.workspace_context.clone(),
-                max_workers: usize::from(preferences.coding_max_parallel_workers),
-                context_window_tokens,
-            }) => Some(result),
-            _ = cancellation.cancelled() => None,
-        };
-
-        if let Some(result) = parallel_result {
-            match result {
-                Ok(report) => {
-                    {
-                        let db = state.database.lock().map_err(|_| AppError::internal("database lock poisoned"))?;
-                        for usage in &report.usages {
-                            coding_control::record_model_usage(
-                                &db,
-                                &run_id,
-                                usage.prompt_tokens,
-                                usage.completion_tokens,
-                                usage.elapsed_ms,
-                                true,
-                            )?;
-                        }
-                        coding_control::record_event(
-                            &db,
-                            &run_id,
-                            "workers",
-                            &format!(
-                                "Parallel sub-agents completed {}/{} read-only analyses",
-                                report.successful_workers, report.total_workers
-                            ),
-                            Some(&json!({
-                                "successfulWorkers": report.successful_workers,
-                                "totalWorkers": report.total_workers,
-                                "elapsedMs": report.elapsed_ms,
-                                "workers": report.results,
-                            })),
-                        )?;
-                    }
-                    if !report.transcript_context.is_empty() {
-                        push_transcript(&mut transcript, report.transcript_context);
-                    }
-                    emit_agent_chunk(
-                        app,
-                        state,
-                        conversation_id,
-                        &assistant.id,
-                        &format!(
-                            "• Parallel sub-agents completed {}/{} read-only analyses in {} ms.\n",
-                            report.successful_workers, report.total_workers, report.elapsed_ms
-                        ),
-                    )?;
-                }
-                Err(error) => {
-                    let warning = bounded(&error.to_string(), 1_200);
-                    {
-                        let db = state.database.lock().map_err(|_| AppError::internal("database lock poisoned"))?;
-                        coding_control::record_event(
-                            &db,
-                            &run_id,
-                            "workers",
-                            "Parallel sub-agent analysis unavailable; parent agent continued",
-                            Some(&json!({"error": warning})),
-                        )?;
-                    }
-                    push_transcript(
-                        &mut transcript,
-                        format!(
-                            "HOST WARNING: parallel read-only sub-agent analysis failed; continue with parent-agent inspection only. Error: {}",
-                            warning
-                        ),
-                    );
-                }
-            }
-        }
-    }
-
-'''
-
-patch(
-    "src-tauri/src/local_agent.rs",
-    "    let loop_result = async {\n",
-    parallel_block + "    let loop_result = async {\n",
-)
-
-plan = Path("docs/OPENAGENT_ENGINEERING_PLAN.md")
-if plan.exists():
-    text = plan.read_text(encoding="utf-8")
-    marker = "## Implemented parallel sub-agent safety boundary"
-    if marker not in text:
-        text += r'''
-
-## Implemented parallel sub-agent safety boundary
-
-- OpenAgent can run 2–4 bounded read-only model workers concurrently before the parent mutation loop.
-- Workers receive compressed project/repository/workspace evidence and cannot call tools, execute commands, edit files, access credentials, or change Git state.
-- Worker output is explicitly labeled advisory/untrusted before it enters the parent transcript, preserving the parent approval and sandbox policy boundary.
-- Per-worker token/runtime usage is charged to the durable coding-run metrics and worker outcomes are recorded on the visible run timeline.
-- Failure of the parallel analysis layer is non-destructive: the parent agent records the failure and continues with normal inspection rather than weakening policy or mutating concurrently.
-'''
-        plan.write_text(text, encoding="utf-8")

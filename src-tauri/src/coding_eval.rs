@@ -66,7 +66,11 @@ pub fn run_coding_qualification(
     checks.push(check(
         "isolation",
         capability.available && capability.strong_isolation,
-        format!("{}: {}", capability.provider, capability.message),
+        format!(
+            "{}: {}",
+            capability.provider.as_deref().unwrap_or("unavailable"),
+            capability.message
+        ),
     ));
 
     let database = state
@@ -132,23 +136,25 @@ pub fn run_coding_qualification(
         installed_lightning.is_some() || lightning.is_some(),
         installed_lightning
             .map(|model| format!("installed and registered: {}", model.name))
-            .unwrap_or_else(|| "catalog verified; local package can be downloaded from Settings".to_string()),
+            .unwrap_or_else(|| {
+                "catalog verified; local package can be downloaded from Settings".to_string()
+            }),
     ));
 
     checks.push(check(
         "prompt-injection-boundary",
         true,
-        "repository intelligence labels ordinary repository/source content as untrusted data and excludes credential-like files",
+        "repository intelligence labels ordinary repository/source content as untrusted data and excludes credential-like files".to_string(),
     ));
     checks.push(check(
         "atomic-editing",
         true,
-        "multi-file transaction and symbol navigation modules are compiled into the coding workspace",
+        "multi-file transaction and symbol navigation modules are compiled into the coding workspace".to_string(),
     ));
     checks.push(check(
         "delivery-repair",
         true,
-        "delivery operations are allowlisted, remote mutations require exact approval, and merge checks require local plus repository validation",
+        "delivery operations are allowlisted, remote mutations require exact approval, and merge checks require local plus repository validation".to_string(),
     ));
 
     let completed_at = Utc::now().to_rfc3339();
