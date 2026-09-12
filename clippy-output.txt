@@ -1,2 +1,0 @@
-[1m[92m   Compiling[0m open-mind-ai v3.0.1 (/home/runner/work/OpenMindAI/OpenMindAI/src-tauri)
-[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 12.82s
