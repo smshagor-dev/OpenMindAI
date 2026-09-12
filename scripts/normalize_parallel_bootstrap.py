@@ -32,7 +32,7 @@ if prompt_start_marker not in text:
     raise SystemExit("parallel bootstrap normalization anchor missing: prompt-format block")
 start = text.index(prompt_start_marker)
 end = text.index(prompt_end_marker, start)
-replacement = r'''local_path = Path("src-tauri/src/local_agent.rs")
+replacement = r"""local_path = Path("src-tauri/src/local_agent.rs")
 local_text = local_path.read_text(encoding="utf-8")
 current_prompt = '"Project: {}\\nStep: {}/{}\\nContext selection: selectedChars={}/{} compressed={}\\nProject instructions:'
 planned_prompt = '"Project: {}\\nStep: {}/{}\\nActive persisted plan:\\n{}\\n\\nContext selection: selectedChars={}/{} compressed={}\\nProject instructions:'
@@ -51,7 +51,7 @@ if current_args not in local_text:
 local_text = local_text.replace(current_args, planned_args, 1)
 local_path.write_text(local_text, encoding="utf-8")
 
-'''
+"""
 text = text[:start] + replacement + text[end:]
 
 path.write_text(text, encoding="utf-8")
