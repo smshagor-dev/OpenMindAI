@@ -59,10 +59,12 @@ mod tauri {
     pub use crate::tauri_crate::*;
 }
 
+mod coding_ast;
 mod coding_control;
 mod coding_delivery;
 mod coding_eval;
 mod coding_intelligence;
+#[path = "coding_lsp_ast.rs"]
 mod coding_lsp;
 mod coding_patch;
 mod connected_agent;
