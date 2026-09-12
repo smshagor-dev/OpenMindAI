@@ -20,6 +20,9 @@ jobs:
       - name: Normalize integration bootstrap
         run: python3 scripts/normalize_coding_bootstrap.py
 
+      - name: Normalize current context API drift
+        run: python3 scripts/normalize_parallel_bootstrap.py
+
       - name: Apply production integration
         run: python3 scripts/integrate_coding_workspace.py
 
@@ -32,6 +35,7 @@ jobs:
       - name: Remove one-shot files
         run: |
           rm -f scripts/normalize_coding_bootstrap.py
+          rm -f scripts/normalize_parallel_bootstrap.py
           rm -f scripts/integrate_coding_workspace.py
           rm -f scripts/fix_coding_workspace_compile.py
           rm -f scripts/integrate_parallel_subagents.py
