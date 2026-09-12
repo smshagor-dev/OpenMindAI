@@ -32,68 +32,8 @@ jobs:
       - name: Integrate parallel sub-agents
         run: python3 scripts/integrate_parallel_subagents.py
 
-      - name: Repair generated test fixtures and loopback guard
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          coding_path = Path("src-tauri/src/coding_control.rs")
-          coding = coding_path.read_text(encoding="utf-8")
-          replacements = [
-              (
-                  "INSERT INTO conversations (id, title, mode, created_at, updated_at) VALUES (?1, 'test', 'chat', ?2, ?2)",
-                  "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?1, 'test', ?2, ?2)",
-              ),
-              (
-                  "INSERT INTO model_registry (id, name, path, format, quantization, capabilities_json, min_ram_bytes, min_vram_bytes, enabled, created_at, updated_at)\n             VALUES (?1, 'test', 'test.gguf', 'gguf', 'Q4', '[]', 0, NULL, 1, ?2, ?2)",
-                  "INSERT INTO model_registry (id, name, path, format, quantization, enabled, created_at, updated_at)\n             VALUES (?1, 'test', 'test.gguf', 'gguf', 'Q4', 1, ?2, ?2)",
-              ),
-              (
-                  "VALUES (?1, ?2, 'assistant', '', 'complete', ?3, ?4, ?4)",
-                  "VALUES (?1, ?2, 'assistant', '', 'completed', ?3, ?4, ?4)",
-              ),
-          ]
-          for old, new in replacements:
-              if old not in coding:
-                  raise SystemExit(f"coding_control repair anchor missing: {old[:100]!r}")
-              coding = coding.replace(old, new, 1)
-          coding_path.write_text(coding, encoding="utf-8")
-
-          parallel_path = Path("src-tauri/src/openagent_parallel.rs")
-          parallel = parallel_path.read_text(encoding="utf-8")
-          old_import = "use std::{\n    sync::Arc,\n    time::{Duration, Instant},\n};"
-          new_import = "use std::{\n    net::IpAddr,\n    sync::Arc,\n    time::{Duration, Instant},\n};"
-          if old_import not in parallel:
-              raise SystemExit("openagent_parallel import repair anchor missing")
-          parallel = parallel.replace(old_import, new_import, 1)
-          old_guard = '''    let host = url
-        .host_str()
-        .ok_or_else(|| AppError::internal("local model endpoint has no host"))?;
-    if !matches!(host, "127.0.0.1" | "localhost" | "::1") {
-        return Err(AppError::internal(
-            "parallel sub-agents refuse non-loopback model endpoints",
-        ));
-    }
-'''
-          new_guard = '''    let host = url
-        .host_str()
-        .ok_or_else(|| AppError::internal("local model endpoint has no host"))?;
-    let normalized_host = host.trim_matches(|character| character == '[' || character == ']');
-    let is_loopback = normalized_host.eq_ignore_ascii_case("localhost")
-        || normalized_host
-            .parse::<IpAddr>()
-            .is_ok_and(|address| address.is_loopback());
-    if !is_loopback {
-        return Err(AppError::internal(
-            "parallel sub-agents refuse non-loopback model endpoints",
-        ));
-    }
-'''
-          if old_guard not in parallel:
-              raise SystemExit("openagent_parallel loopback repair anchor missing")
-          parallel = parallel.replace(old_guard, new_guard, 1)
-          parallel_path.write_text(parallel, encoding="utf-8")
-          PY
+      - name: Repair generated tests and loopback guard
+        run: python3 scripts/repair_parallel_generated.py
 
       - name: Remove one-shot files
         run: |
@@ -102,6 +42,7 @@ jobs:
           rm -f scripts/integrate_coding_workspace.py
           rm -f scripts/fix_coding_workspace_compile.py
           rm -f scripts/integrate_parallel_subagents.py
+          rm -f scripts/repair_parallel_generated.py
           rm -f .github/workflows/coding-workspace-validation.yml
           rm -f .github/workflows/coding-workspace-repair.yml
 
