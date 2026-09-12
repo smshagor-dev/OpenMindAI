@@ -15,6 +15,7 @@ const USER_AGENT: &str = "OpenMindAI-Desktop";
 const REQUEST_TIMEOUT_SECS: u64 = 30;
 const MAX_JSON_BYTES: usize = 4 * 1024 * 1024;
 const MAX_LOG_BYTES: usize = 4 * 1024 * 1024;
+const GIT_SHA1_HEX_LEN: usize = 40;
 
 fn connector_error(message: impl Into<String>) -> AppError {
     AppError::GithubApiError(message.into())
@@ -59,6 +60,16 @@ fn required_str<'a>(params: &'a Value, key: &str) -> Result<&'a str, AppError> {
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| connector_error(format!("missing required parameter '{key}'")))
+}
+
+fn required_commit_sha<'a>(params: &'a Value, key: &str) -> Result<&'a str, AppError> {
+    let sha = required_str(params, key)?.trim();
+    if sha.len() != GIT_SHA1_HEX_LEN || !sha.chars().all(|character| character.is_ascii_hexdigit()) {
+        return Err(connector_error(format!(
+            "parameter '{key}' must be a full 40-character Git commit SHA"
+        )));
+    }
+    Ok(sha)
 }
 
 fn optional_str<'a>(params: &'a Value, key: &str) -> Option<&'a str> {
@@ -361,10 +372,12 @@ pub async fn execute_github_workspace_action(
         "pr.merge" => {
             let repo = required_str(&params, "repo")?;
             let number = required_u64(&params, "number")?;
+            let expected_head = required_commit_sha(&params, "expectedHeadSha")?;
             let body = json!({
                 "commit_title": optional_str(&params, "commitTitle"),
                 "commit_message": optional_str(&params, "commitMessage"),
-                "merge_method": optional_str(&params, "mergeMethod").unwrap_or("squash")
+                "merge_method": optional_str(&params, "mergeMethod").unwrap_or("squash"),
+                "sha": expected_head
             });
             github_request(
                 &state.http,
@@ -846,6 +859,8 @@ async fn create_tag(client: &Client, token: &str, params: &Value) -> Result<Valu
 mod tests {
     use super::*;
 
+    const HEAD_SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
     #[test]
     fn repository_validation_blocks_traversal() {
         assert!(validate_repo("owner/repo").is_ok());
@@ -858,6 +873,26 @@ mod tests {
         assert!(validate_repo_path("src/main.rs").is_ok());
         assert!(validate_repo_path(".github/workflows/ci.yml").is_ok());
         assert!(validate_repo_path("src/../secret").is_err());
+    }
+
+    #[test]
+    fn commit_sha_validation_requires_exact_full_sha() {
+        assert_eq!(
+            required_commit_sha(&json!({"expectedHeadSha": HEAD_SHA}), "expectedHeadSha")
+                .unwrap(),
+            HEAD_SHA
+        );
+        assert!(required_commit_sha(&json!({}), "expectedHeadSha").is_err());
+        assert!(required_commit_sha(
+            &json!({"expectedHeadSha": "deadbee"}),
+            "expectedHeadSha"
+        )
+        .is_err());
+        assert!(required_commit_sha(
+            &json!({"expectedHeadSha": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"}),
+            "expectedHeadSha"
+        )
+        .is_err());
     }
 
     #[test]
