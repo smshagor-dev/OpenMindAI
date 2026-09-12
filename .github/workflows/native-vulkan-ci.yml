@@ -259,10 +259,19 @@ jobs:
           LLAMA_CPP_LIB_DIR: ${{ steps.llama-lib.outputs.dir }}
           LLAMA_CPP_BACKEND_LIB_DIR: ${{ steps.llama-lib.outputs.backend-dir }}
           OPENMINDAI_NATIVE_DYNAMIC_BACKENDS: "1"
+          LLAMA_CPP_COMMIT: ${{ env.LLAMA_CPP_COMMIT }}
+          OPENMINDAI_NATIVE_STRICT_ABI: "1"
+          OPENMINDAI_PORTABLE_BUILD: "1"
+          CARGO_TARGET_DIR: ${{ github.workspace }}/native-worker-target
         run: |
+          $ErrorActionPreference = 'Stop'
           cargo build --locked --release --manifest-path services/native-worker/Cargo.toml
           if ($LASTEXITCODE -ne 0) { throw 'Native service worker build failed' }
-          Copy-Item services/native-worker/target/release/openmind-native-worker.exe native-vulkan-artifact
+          $worker = Join-Path $env:CARGO_TARGET_DIR 'release/openmind-native-worker.exe'
+          if (-not (Test-Path -LiteralPath $worker)) {
+            throw "Native service worker output was not found at $worker"
+          }
+          Copy-Item -LiteralPath $worker -Destination native-vulkan-artifact
 
       - name: Upload Vulkan runtime probe artifact
         uses: actions/upload-artifact@v4
