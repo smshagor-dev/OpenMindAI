@@ -203,9 +203,9 @@ fn parse_file(file: &Path, text: &str) -> Result<Option<tree_sitter::Tree>, AppE
         return Ok(None);
     };
     let mut parser = Parser::new();
-    parser
-        .set_language(&language)
-        .map_err(|error| AppError::internal(format!("failed to load Tree-sitter grammar: {error}")))?;
+    parser.set_language(&language).map_err(|error| {
+        AppError::internal(format!("failed to load Tree-sitter grammar: {error}"))
+    })?;
     let tree = parser
         .parse(text, None)
         .ok_or_else(|| AppError::internal("Tree-sitter parser returned no syntax tree"))?;
@@ -357,16 +357,14 @@ fn collect_reference_nodes(
     if output.len() >= MAX_REFERENCE_RESULTS {
         return;
     }
-    if is_identifier_node(node.kind()) {
-        if node.utf8_text(bytes).is_ok_and(|value| value == symbol) {
-            let start = node.start_position();
-            output.push(json!({
-                "path": relative_display(root, file),
-                "line": start.row + 1,
-                "character": character_column(text, start),
-                "preview": line_preview(text, start.row),
-            }));
-        }
+    if is_identifier_node(node.kind()) && node.utf8_text(bytes).is_ok_and(|value| value == symbol) {
+        let start = node.start_position();
+        output.push(json!({
+            "path": relative_display(root, file),
+            "line": start.row + 1,
+            "character": character_column(text, start),
+            "preview": line_preview(text, start.row),
+        }));
     }
 
     let mut cursor = node.walk();
@@ -399,9 +397,7 @@ fn language_for_file(file: &Path) -> Option<Language> {
         "py" => Some(tree_sitter_python::LANGUAGE.into()),
         "go" => Some(tree_sitter_go::LANGUAGE.into()),
         "c" | "h" => Some(tree_sitter_c::LANGUAGE.into()),
-        "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => {
-            Some(tree_sitter_cpp::LANGUAGE.into())
-        }
+        "cc" | "cpp" | "cxx" | "hh" | "hpp" | "hxx" => Some(tree_sitter_cpp::LANGUAGE.into()),
         _ => None,
     }
 }
@@ -462,11 +458,16 @@ fn symbol_at_position(text: &str, line: usize, character: usize) -> Result<Strin
     }
 
     let mut index = character.min(chars.len().saturating_sub(1));
-    if chars.get(index).is_none_or(|character| !is_identifier_char(*character)) {
+    if chars
+        .get(index)
+        .is_none_or(|character| !is_identifier_char(*character))
+    {
         if index > 0 && is_identifier_char(chars[index - 1]) {
             index -= 1;
         } else {
-            return Err(AppError::internal("no symbol found at the requested position"));
+            return Err(AppError::internal(
+                "no symbol found at the requested position",
+            ));
         }
     }
 
@@ -559,7 +560,9 @@ fn read_source(path: &Path) -> Result<String, AppError> {
 fn canonical_root(root: &Path) -> Result<PathBuf, AppError> {
     let root = fs::canonicalize(root)?;
     if !root.is_dir() {
-        return Err(AppError::internal("Tree-sitter navigation root is not a directory"));
+        return Err(AppError::internal(
+            "Tree-sitter navigation root is not a directory",
+        ));
     }
     Ok(root)
 }
@@ -666,6 +669,8 @@ mod tests {
     fn unsupported_language_returns_none_for_ast_outline() {
         let temp = tempfile::tempdir().unwrap();
         fs::write(temp.path().join("Main.java"), "class Main {}\n").unwrap();
-        assert!(document_symbols(temp.path(), "Main.java").unwrap().is_none());
+        assert!(document_symbols(temp.path(), "Main.java")
+            .unwrap()
+            .is_none());
     }
 }

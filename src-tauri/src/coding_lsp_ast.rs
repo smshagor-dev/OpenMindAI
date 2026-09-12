@@ -49,14 +49,8 @@ pub async fn definition(
     character: u64,
     allow_language_server: bool,
 ) -> Result<NavigationResult, AppError> {
-    let fallback = legacy::definition(
-        root,
-        relative_path,
-        line,
-        character,
-        allow_language_server,
-    )
-    .await?;
+    let fallback =
+        legacy::definition(root, relative_path, line, character, allow_language_server).await?;
     if !uses_lexical_fallback(&fallback) {
         return Ok(fallback);
     }
@@ -73,14 +67,8 @@ pub async fn references(
     character: u64,
     allow_language_server: bool,
 ) -> Result<NavigationResult, AppError> {
-    let fallback = legacy::references(
-        root,
-        relative_path,
-        line,
-        character,
-        allow_language_server,
-    )
-    .await?;
+    let fallback =
+        legacy::references(root, relative_path, line, character, allow_language_server).await?;
     if !uses_lexical_fallback(&fallback) {
         return Ok(fallback);
     }
@@ -97,14 +85,8 @@ pub async fn hover(
     character: u64,
     allow_language_server: bool,
 ) -> Result<NavigationResult, AppError> {
-    let fallback = legacy::hover(
-        root,
-        relative_path,
-        line,
-        character,
-        allow_language_server,
-    )
-    .await?;
+    let fallback =
+        legacy::hover(root, relative_path, line, character, allow_language_server).await?;
     if !uses_lexical_fallback(&fallback) {
         return Ok(fallback);
     }
