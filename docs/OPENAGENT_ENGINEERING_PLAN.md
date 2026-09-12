@@ -4,70 +4,34 @@ OpenAgent is OpenMindAI's local-first coding agent. It is designed to inspect re
 
 ## Model baseline
 
-The preferred model is NVIDIA Nemotron 3.5 Lightning 30B-A3B through the verified GGUF repository `ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF`. OpenAgent chooses the installed Lightning package first, then compatible Nemotron Nano packages, and finally the existing general reasoning model so lower-memory machines remain usable. The actual selected model ID is sent to the local OpenAI-compatible llama.cpp endpoint; it is never replaced by a hardcoded Qwen identifier.
+The preferred agent model is NVIDIA Nemotron 3.5 Lightning 30B-A3B through the verified GGUF package configured in the OpenMindAI model catalog. OpenAgent prefers an installed compatible Nemotron package and retains lower-memory fallbacks. The selected model ID is passed to the local OpenAI-compatible llama.cpp endpoint rather than being replaced by a hardcoded model identifier.
 
 ## Execution architecture
 
-OpenAgent uses a bounded inspect, act, observe, validate loop. Each model turn returns one structured JSON action. Host code validates the action before execution, records a bounded tool result, refreshes workspace context after mutations, prevents identical-action loops, stops after repeated failures, supports cancellation, and enforces a maximum step count.
+OpenAgent uses a bounded inspect, plan, act, observe, validate, review, and delivery loop. Model output is parsed as structured actions. Host code owns policy, workspace containment, approvals, durable state, checkpointing, validation evidence, sandbox selection, delivery gates, and failure budgets.
 
-The initial tool set covers directory listing, bounded file reads, text search, full-file writes, exact text replacement, directory creation, path moves, deletion, Git status, Git diff, and terminal execution. File tools are contained inside explicitly attached project roots. Absolute paths and terminal execution remain behind the separate Full PC + Terminal grant. Project files and command output are treated as untrusted data rather than agent instructions.
+Repository content, command output, worker analysis, and connected-service responses are treated as untrusted evidence. Repository guidance is scoped and bounded and never overrides user intent, secret handling, sandbox restrictions, approval policy, or other host safety controls.
 
-## Delivery stages
+## Production capabilities
 
-### Stage 1: Nemotron-powered foundation
+1. **Strong isolated execution.** Linux uses bubblewrap when available, macOS uses the system sandbox profile backend when available, and Windows uses the disposable Windows Sandbox microVM. Isolated execution clears inherited host environment data, constrains writable workspace access, disables networking, applies process/output/time/resource guards, and does not silently fall back to host execution.
+2. **Patch-based atomic editing.** Coordinated multi-file patch transactions are preflighted, journaled, stale-file protected, and rolled back on failure. Single-file workspace writes use the same transaction boundary where applicable.
+3. **Symbol-aware navigation.** LSP-backed symbols, definitions, references, hover, diagnostics, and call hierarchy are available when a trusted language server can run. Navigation falls back through Tree-sitter AST analysis before bounded lexical fallback for supported operations.
+4. **Repository instruction discovery.** Root guidance and scoped nested `AGENTS.md` files are discovered with precedence rules, size/file-count limits, secret filtering, symlink avoidance, and explicit untrusted-data boundaries.
+5. **Automatic context selection and compression.** Goal terms, repository evidence, recent execution results, instructions, conversation context, and workspace state are ranked and compressed against the active model context budget while preserving recent failure evidence and host delivery policy.
+6. **Interrupted-run resume and recovery.** Runs, ordered steps, plans, validation state, approvals, checkpoints, restore events, parent/child continuation links, and recovery evidence are durable. Resume seeds explicitly prevent replaying successful mutations. Checkpoint restore verifies containment, symlinks, digests, after-state conflicts, and rollback behavior before changing files.
+7. **Git branch, commit, PR, CI, and merge automation.** Delivery tools cover branch creation, bounded multi-file commits, PR create/update/read, workflow/check/job/log inspection, bounded reruns, and merge. Merge is fail-closed: it requires exact approval, successful local validation evidence, observed acceptable repository check conclusions, an open/unmerged PR, the full observed 40-character PR head SHA, and the same SHA as a server-side GitHub merge precondition.
+8. **Approval and risk policy engine.** Read-only work remains low-friction; workspace writes, destructive actions, host execution, compound shell syntax, and remote mutations are classified separately. Exact approvals are action-hashed, persisted, single-use, auditable, and inherited only through explicit run continuation lineage. Shell chaining, pipes, redirects, substitutions, and multiline commands cannot inherit a trusted read-only prefix.
+9. **Parallel sub-agents.** Two to four bounded read-only workers can analyze implementation, validation/security, architecture, and delivery evidence concurrently. Workers cannot mutate files, call tools, run commands, access credentials, or change Git state; the parent remains the sole mutator.
+10. **Token, cost, and runtime metrics.** Durable metrics account for prompt/completion tokens, model time, tool time, worker calls, local cost estimates, hardware metadata, and budget stop reasons.
+11. **Visible timeline and recovery data.** Plans, events, approvals, tool steps, checkpoints, metrics, restore outcomes, and continuation links are persisted through typed desktop APIs for the coding-run UI and recovery workflow.
+12. **Nemotron end-to-end qualification.** The repository includes deterministic workspace evaluation plus a live Nemotron qualification harness and workflow for a local OpenAI-compatible endpoint. The model is never granted benchmark host authority during qualification.
+13. **Adversarial security testing.** The coding security suite covers path traversal, credential-like file access, host execution, catastrophic commands, prompt injection, exact approval boundaries, compound-shell bypass attempts, stale PR-head merge protection, server-side merge SHA enforcement, and native-worker Vulkan build-contract assertions.
 
-- Brand the project coding workflow as OpenAgent.
-- Prefer Nemotron 3.5 Lightning when its verified local package is installed.
-- Send the selected model ID to llama.cpp.
-- Preserve compatible fallbacks for machines that cannot load the 30B package.
-- Keep workspace containment, cancellation, failure budgets, and validation gates.
-- Add routing and regression tests.
+## Native Vulkan runtime packaging
 
-### Stage 2: Durable run state
+The Windows Vulkan package workflow builds the pinned shared llama.cpp runtime, stages ABI-locked runtime files, runs a CXX initialization probe, builds the persistent Rust native worker against the same dynamic runtime contract, and validates the packaged runtime on a fresh runner. The persistent worker build uses explicit import-library search paths, restores its build working directory, shares the strict ABI/portable build environment, writes to a deterministic Cargo target directory, and verifies the expected worker executable before artifact staging.
 
-- Add persistent run, step, tool-call, checkpoint, and validation records.
-- Resume interrupted runs without replaying completed mutations.
-- Record changed files and reversible checkpoints before destructive edits.
-- Expose a run timeline, token/runtime metrics, and clear failure reasons in the UI.
+## Remaining verification before merge
 
-### Stage 3: Strong process sandbox
-
-- Add a platform adapter for Windows Sandbox/Job Objects, macOS sandbox profiles, and Linux bubblewrap or containers.
-- Default terminal execution to a disposable workspace copy with explicit mount and network policies.
-- Apply CPU, memory, process, output, and wall-clock limits.
-- Export reviewed patches back to the attached project instead of granting broad host access.
-
-### Stage 4: Codex-grade editing and context
-
-- Add patch-based edits, symbol-aware search, repository instruction discovery, ignore rules, and binary/generated-file protection.
-- Build adaptive context packs from repository maps, relevant files, Git state, diagnostics, and recent tool evidence.
-- Add language-aware validation profiles for Rust, TypeScript, Python, Go, PHP, Java, .NET, and mobile projects.
-
-### Stage 5: Git delivery workflow
-
-- Add explicit branch policy, commit composition, remote status checks, PR creation, CI monitoring, and merge controls.
-- Never include unrelated user changes in an agent commit.
-- Require passing local validation and repository checks before automatic merge.
-- Preserve a complete audit trail for every remote mutation.
-
-### Stage 6: Production qualification
-
-- Run adversarial prompt-injection, path escape, symlink, archive, command injection, timeout, cancellation, and resource exhaustion tests.
-- Run real-model tool-use evaluations with Nemotron 3.5 Lightning and every supported fallback.
-- Validate packaged Windows, macOS, and Linux builds on clean machines.
-- Publish operator documentation, privacy behavior, limitations, and recovery procedures.
-
-## Current implementation status
-
-Stage 1 is complete. The bounded agent loop is connected to installed Nemotron 3.5 Lightning packages, uses the selected model ID, retains compatible lower-memory fallbacks, and runs inside the attached-root file boundary.
-
-Stage 2 is in progress. OpenAgent now persists run state, ordered tool steps, bounded results, validation state, before/after checkpoints, and restore audit events. File-tool checkpoints include bounded file contents plus SHA-256 evidence and block destructive mutations that exceed the entry or byte limits. Completed mutations can be restored only after the matching after-state passes conflict, digest, symlink, and attached-root checks; active runs cannot be restored. Restore payloads are verified before mutation, failed restores attempt a compensating rollback to the captured after-state, and restored runs return to a validation-required state. Startup recovery marks abandoned runs as interrupted, blocks their active steps, and flags unfinished restore events for operator verification. Typed desktop APIs expose run history, checkpoint IDs, step details, restore results, and restore-event status. When terminal access is disabled, a mutated run reports that required validation was not run instead of presenting an unqualified success. True filesystem transactions, handle-based protection against every symlink race, automatic interrupted-run replay, terminal-command snapshots, token/runtime metrics, and the visible timeline UI are still pending and must not be represented as complete. The OS-level process sandbox remains Stage 3.
-
-
-## Implemented parallel sub-agent safety boundary
-
-- OpenAgent can run 2–4 bounded read-only model workers concurrently before the parent mutation loop.
-- Workers receive compressed project/repository/workspace evidence and cannot call tools, execute commands, edit files, access credentials, or change Git state.
-- Worker output is explicitly labeled advisory/untrusted before it enters the parent transcript, preserving the parent approval and sandbox policy boundary.
-- Per-worker token/runtime usage is charged to the durable coding-run metrics and worker outcomes are recorded on the visible run timeline.
-- Failure of the parallel analysis layer is non-destructive: the parent agent records the failure and continues with normal inspection rather than weakening policy or mutating concurrently.
+The code-side pending hardening work is implemented on the feature branch, but this document does not claim that the branch has passed the user's local validation or a fresh post-change CI run. Before merge, run formatting, Rust checks/tests/Clippy, frontend lint/build, deterministic coding evaluation, the adversarial coding security suite, the native worker Windows build against the pinned dynamic runtime, and the Native Vulkan packaging workflow. Any failing check must be diagnosed and fixed without weakening the corresponding guard.
