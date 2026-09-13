@@ -1,0 +1,65 @@
+name: Nemotron Live Qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model ID exposed by the local OpenAI-compatible endpoint"
+        required: true
+        default: "nemotron35-lightning-30b-a3b-q4"
+      runs:
+        description: "Number of full scenario repetitions (1-100)"
+        required: true
+        default: "5"
+      timeout_seconds:
+        description: "Per-model-request timeout in seconds"
+        required: true
+        default: "180"
+      max_p95_ms:
+        description: "Optional p95 scenario latency ceiling; 0 disables"
+        required: true
+        default: "0"
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    runs-on:
+      - self-hosted
+      - openmindai-nemotron
+    timeout-minutes: 120
+    env:
+      QUAL_MODEL: ${{ inputs.model }}
+      QUAL_RUNS: ${{ inputs.runs }}
+      QUAL_TIMEOUT: ${{ inputs.timeout_seconds }}
+      QUAL_MAX_P95_MS: ${{ inputs.max_p95_ms }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify local endpoint contract
+        run: |
+          python3 -m py_compile \
+            scripts/coding_workspace_eval.py \
+            scripts/nemotron_e2e_eval.py
+
+      - name: Run live Nemotron qualification
+        run: |
+          python3 scripts/nemotron_e2e_eval.py \
+            --live \
+            --endpoint http://127.0.0.1:8080 \
+            --model "$QUAL_MODEL" \
+            --runs "$QUAL_RUNS" \
+            --timeout "$QUAL_TIMEOUT" \
+            --min-pass-rate 1.0 \
+            --max-p95-ms "$QUAL_MAX_P95_MS" \
+            --output nemotron-e2e-report.json
+
+      - name: Upload qualification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nemotron-e2e-report
+          path: nemotron-e2e-report.json
+          if-no-files-found: warn
+          retention-days: 14

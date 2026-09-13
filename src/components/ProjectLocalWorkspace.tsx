@@ -330,7 +330,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
         <div>
           <span className="tools-eyebrow">Local machine</span>
           <h3><HardDrive size={16} /> Local Workspace</h3>
-          <p>Attach real PC folders. OpenMindAI can browse and edit them directly; terminal access is a separate explicit grant.</p>
+          <p>Attach real PC folders. File tools stay folder-scoped; supported systems can run terminal commands inside strong network-off isolation without granting Full PC access.</p>
         </div>
         <div className="local-workspace-heading-actions">
           <button type="button" className="ghost-button" disabled={busy !== null} onClick={() => void attachFolder()}>
@@ -343,7 +343,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
             </button>
           ) : (
             <button type="button" className="local-access-button" disabled={busy !== null} onClick={() => setConfirmFullAccess(true)}>
-              <LockKeyhole size={15} /> Enable Full PC + Terminal
+              <LockKeyhole size={15} /> Enable Full PC / Host shell
             </button>
           )}
         </div>
@@ -481,16 +481,16 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
             </div>
           ) : null}
 
-          <div className={status.fullPcAccess ? "local-terminal unlocked" : "local-terminal locked"}>
+          <div className={status.terminalEnabled ? "local-terminal unlocked" : "local-terminal locked"}>
             <div className="local-terminal-heading">
               <div>
                 <TerminalSquare size={17} />
-                <span><strong>Project Terminal</strong><small>{status.fullPcAccess ? terminalCwd || activeRoot?.path : "Full PC access is disabled"}</small></span>
+                <span><strong>Project Terminal</strong><small>{status.fullPcAccess ? terminalCwd || activeRoot?.path : status.terminalEnabled ? `${terminalCwd || activeRoot?.path} · isolated workspace` : "No strong isolation provider available"}</small></span>
               </div>
-              {status.fullPcAccess ? <span className="terminal-access-pill"><ShieldCheck size={12} /> OS permissions</span> : <span className="terminal-access-pill locked"><LockKeyhole size={12} /> Locked</span>}
+              {status.fullPcAccess ? <span className="terminal-access-pill"><ShieldCheck size={12} /> Explicit host shell</span> : status.terminalEnabled ? <span className="terminal-access-pill"><ShieldCheck size={12} /> Isolated · network off</span> : <span className="terminal-access-pill locked"><LockKeyhole size={12} /> Locked</span>}
             </div>
 
-            {status.fullPcAccess ? (
+            {status.terminalEnabled ? (
               <>
                 <div className="local-terminal-output" aria-live="polite">
                   {terminalHistory.length ? terminalHistory.map((item, index) => (
@@ -498,9 +498,9 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
                       <div className="terminal-command-line"><span>$</span> {item.command}</div>
                       {item.stdout ? <pre>{item.stdout}</pre> : null}
                       {item.stderr ? <pre className="terminal-stderr">{item.stderr}</pre> : null}
-                      <small>exit {item.exitCode} · {item.durationMs} ms{item.truncated ? " · output truncated" : ""}</small>
+                      <small>{item.backend} · {item.isolated ? "isolated" : "host"}{item.networkDisabled ? " · network off" : ""} · exit {item.exitCode} · {item.durationMs} ms{item.truncated ? " · output truncated" : ""}</small>
                     </div>
-                  )) : <div className="terminal-empty">Terminal commands run with the current OS user permissions.</div>}
+                  )) : <div className="terminal-empty">{status.fullPcAccess ? "Host commands use the current OS-user permissions." : "Commands run inside the detected strong isolation backend with networking disabled."}</div>}
                 </div>
                 <div className="local-terminal-input">
                   <span>&gt;</span>
@@ -521,7 +521,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
             ) : (
               <div className="local-terminal-locked-copy">
                 <LockKeyhole size={21} />
-                <div><strong>Terminal is intentionally locked by default.</strong><span>Enable Full PC + Terminal access to run arbitrary local commands with your user account permissions.</span></div>
+                <div><strong>No strong isolation provider is available.</strong><span>Install/enable the platform isolation backend, or explicitly enable Full PC access if you intentionally need an unsandboxed host shell.</span></div>
               </div>
             )}
           </div>

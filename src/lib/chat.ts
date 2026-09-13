@@ -2,6 +2,7 @@ import type { Message } from "../types";
 import { formatBytes } from "./format";
 import { analyzeVideoFile, transcribeAudioFile } from "./media";
 import { extractPdfText } from "./pdf";
+import { isImageGenerationIntent } from "./imageGeneration";
 
 export type ChatMode =
   | "chat"
@@ -203,8 +204,12 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
     const status = [
       `${extracted.pageCount} page${extracted.pageCount === 1 ? "" : "s"}`,
       `${extracted.pagesRead} processed`,
-      extracted.scannedPages.length ? `${extracted.scannedPages.length} image/scanned page(s) detected` : null,
-      extracted.visionPages.length ? `${extracted.visionPages.length} representative page(s) sent to Lens` : null,
+      extracted.scannedPages.length
+        ? `${extracted.scannedPages.length} image/scanned page(s) detected`
+        : null,
+      extracted.visionPages.length
+        ? `${extracted.visionPages.length} representative page(s) sent to Lens`
+        : null,
       extracted.truncated ? "text truncated to fit local chat context" : null,
     ]
       .filter(Boolean)
@@ -240,10 +245,16 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
 }
 
 export function attachmentMedia(attachments: AttachmentDraft[]): InferenceMediaDraft[] {
-  return attachments.flatMap((attachment) => attachment.mediaItems).slice(0, MAX_INFERENCE_MEDIA_ITEMS);
+  return attachments
+    .flatMap((attachment) => attachment.mediaItems)
+    .slice(0, MAX_INFERENCE_MEDIA_ITEMS);
 }
 
-export function buildMessageContent(prompt: string, attachments: AttachmentDraft[], mode: ChatMode) {
+export function buildMessageContent(
+  prompt: string,
+  attachments: AttachmentDraft[],
+  mode: ChatMode,
+) {
   const modePrefix = modeInstruction(mode);
   if (attachments.length === 0) return [modePrefix, prompt].filter(Boolean).join("\n\n");
 
@@ -334,12 +345,7 @@ export function inferChatMode(prompt: string, attachments: AttachmentDraft[]): C
   if (/\b(pdf|export pdf|make a pdf|pdf ready)\b/.test(text)) return "pdf";
   if (/\b(document|write a doc|report|proposal|resume|cv|letter|contract|outline)\b/.test(text))
     return "document";
-  if (
-    /\b(create image|make image|generate image|draw|poster|logo|thumbnail|illustration)\b/.test(
-      text,
-    )
-  )
-    return "image";
+  if (isImageGenerationIntent(text)) return "image";
   if (/\b(create video|make video|generate video|video clip|animation|animate)\b/.test(text))
     return "video";
   if (
@@ -354,7 +360,9 @@ export function inferChatMode(prompt: string, attachments: AttachmentDraft[]): C
     )
   )
     return "sound";
-  if (/\b(think deeply|reason deeply|reason carefully|step by step|show your reasoning)\b/.test(text))
+  if (
+    /\b(think deeply|reason deeply|reason carefully|step by step|show your reasoning)\b/.test(text)
+  )
     return "thinking";
   return "chat";
 }

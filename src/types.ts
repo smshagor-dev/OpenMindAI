@@ -417,6 +417,31 @@ export interface AppPreferences {
   notifyModelUpdates: boolean;
   autoDownloadModelUpdates: boolean;
   updateChannel: string;
+  openagentModelId: string;
+  openagentApprovalMode: "risk_based" | "always_ask" | "trusted_workspace";
+  openagentSandboxMode: "attached_workspace" | "isolated_sandbox";
+  openagentMaxParallelAgents: number;
+  codingEnabled: boolean;
+  codingTokenBudget: number;
+  codingRuntimeBudgetMinutes: number;
+  codingMaxParallelWorkers: number;
+  codingCiRepairLimit: number;
+  codingContextSize: number;
+  codingGpuLayers: number;
+  codingNetworkEnabled: boolean;
+  codingAutonomy: "bounded" | "review_first";
+}
+
+export interface OpenAgentSandboxCapability {
+  platform: string;
+  provider: string | null;
+  available: boolean;
+  strongIsolation: boolean;
+  processTreeControl: boolean;
+  boundedOutput: boolean;
+  disposableScratch: boolean;
+  resourceLimits: string[];
+  message: string;
 }
 
 export interface ModelCatalogEntry {

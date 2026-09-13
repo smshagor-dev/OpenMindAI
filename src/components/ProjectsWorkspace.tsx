@@ -748,10 +748,10 @@ export function ProjectsWorkspace(props: {
                     <span className="project-work-orb">
                       <Bot size={22} />
                     </span>
-                    <span className="tools-eyebrow">Project Work</span>
+                    <span className="tools-eyebrow">OpenAgent</span>
                     <h2>What should I work on?</h2>
                     <p>
-                      Describe the outcome. OpenMindAI can inspect the attached project, edit files,
+                      Describe the outcome. OpenAgent can inspect the attached project, edit files,
                       run permitted commands, recover from errors, and validate its changes.
                     </p>
                   </div>

@@ -1,0 +1,61 @@
+name: Nemotron E2E Contract
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "scripts/coding_workspace_eval.py"
+      - "scripts/coding_security_suite.py"
+      - "scripts/nemotron_e2e_eval.py"
+      - "scripts/nemotron_e2e_contract_test.py"
+      - ".github/workflows/nemotron-e2e-contract.yml"
+      - ".github/workflows/nemotron-live-qualification.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "scripts/coding_workspace_eval.py"
+      - "scripts/coding_security_suite.py"
+      - "scripts/nemotron_e2e_eval.py"
+      - "scripts/nemotron_e2e_contract_test.py"
+      - ".github/workflows/nemotron-e2e-contract.yml"
+      - ".github/workflows/nemotron-live-qualification.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Python syntax
+        run: |
+          python3 -m py_compile \
+            scripts/coding_workspace_eval.py \
+            scripts/coding_security_suite.py \
+            scripts/nemotron_e2e_eval.py \
+            scripts/nemotron_e2e_contract_test.py
+
+      - name: Nemotron qualification contract tests
+        run: python3 scripts/nemotron_e2e_contract_test.py
+
+      - name: Deterministic qualification self-test
+        run: |
+          python3 scripts/nemotron_e2e_eval.py \
+            --self-test \
+            --runs 2 \
+            --min-pass-rate 1.0 \
+            --output nemotron-e2e-self-test.json
+
+      - name: Existing deterministic coding evaluation
+        run: python3 scripts/coding_workspace_eval.py
+
+      - name: Existing adversarial security evaluation
+        run: python3 scripts/coding_security_suite.py
+
+      - name: Diff safety
+        run: git diff --check

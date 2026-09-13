@@ -52,6 +52,7 @@ import {
   type ChatMode,
 } from "./lib/chat";
 import { formatError } from "./lib/format";
+import { imageRendererPrompt } from "./lib/imageGeneration";
 
 type View = "chat" | "work" | "settings" | "tools" | "projects";
 
@@ -469,7 +470,10 @@ export function App() {
       );
       const generationKind = generationKindForMode(inferredMode);
       if (generationKind) {
-        const generationPrompt = assistant.content.trim() || content;
+        const generationPrompt =
+          generationKind === "image"
+            ? imageRendererPrompt(assistant.content, messageContent)
+            : assistant.content.trim() || content;
         const artifact = await api.createGenerationArtifact(
           conversationId,
           assistant.id,
@@ -876,8 +880,20 @@ export function App() {
       }
       if (artifact.kind === "image" || artifact.kind === "video" || artifact.kind === "audio") {
         const generationKind = artifact.kind === "audio" ? "voice" : artifact.kind;
+        const sourceIndex = messages.findIndex((message) => message.id === source.id);
+        const precedingUser =
+          sourceIndex > 0
+            ? messages
+                .slice(0, sourceIndex)
+                .reverse()
+                .find((message) => message.role === "user")
+            : null;
+        const generationPrompt =
+          generationKind === "image" && precedingUser
+            ? imageRendererPrompt(source.content, precedingUser.content)
+            : source.content;
         void api
-          .createGenerationArtifact(activeId, artifact.messageId, generationKind, source.content)
+          .createGenerationArtifact(activeId, artifact.messageId, generationKind, generationPrompt)
           .then((next) => {
             setArtifacts((items) => upsertArtifactInList(items, next));
             if (preferences?.openArtifactsAfterGeneration && next.status === "ready") {
@@ -1251,7 +1267,12 @@ export function App() {
             . All rights reserved.
           </p>
           {view !== "work" ? (
-            <StatusBar models={models} activeModelId={activeModelId} runtime={runtime} root={root} />
+            <StatusBar
+              models={models}
+              activeModelId={activeModelId}
+              runtime={runtime}
+              root={root}
+            />
           ) : null}
         </footer>
       </section>

@@ -44,6 +44,19 @@ pub struct AppPreferences {
     pub notify_model_updates: bool,
     pub auto_download_model_updates: bool,
     pub update_channel: String,
+    pub openagent_model_id: String,
+    pub openagent_approval_mode: String,
+    pub openagent_sandbox_mode: String,
+    pub openagent_max_parallel_agents: u8,
+    pub coding_enabled: bool,
+    pub coding_token_budget: i64,
+    pub coding_runtime_budget_minutes: i64,
+    pub coding_max_parallel_workers: u8,
+    pub coding_ci_repair_limit: u8,
+    pub coding_context_size: u32,
+    pub coding_gpu_layers: i32,
+    pub coding_network_enabled: bool,
+    pub coding_autonomy: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -130,6 +143,19 @@ impl Default for AppPreferences {
             notify_model_updates: true,
             auto_download_model_updates: false,
             update_channel: "Stable".to_string(),
+            openagent_model_id: String::new(),
+            openagent_approval_mode: "risk_based".to_string(),
+            openagent_sandbox_mode: "attached_workspace".to_string(),
+            openagent_max_parallel_agents: 1,
+            coding_enabled: true,
+            coding_token_budget: 48_000,
+            coding_runtime_budget_minutes: 45,
+            coding_max_parallel_workers: 2,
+            coding_ci_repair_limit: 2,
+            coding_context_size: 8_192,
+            coding_gpu_layers: -1,
+            coding_network_enabled: false,
+            coding_autonomy: "bounded".to_string(),
         }
     }
 }

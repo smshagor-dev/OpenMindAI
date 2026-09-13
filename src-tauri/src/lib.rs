@@ -39,8 +39,17 @@ macro_rules! openmind_generate_handler {
             delete_project_workspace_path,
             run_project_terminal_command,
             project_agent_status_for_conversation,
+            list_openagent_runs,
+            openagent_run_details,
+            restore_openagent_checkpoint,
             send_project_agent_message,
-            regenerate_project_agent_message
+            regenerate_project_agent_message,
+            resume_coding_run,
+            coding_run_snapshot,
+            approve_coding_action,
+            reject_coding_action,
+            run_coding_qualification,
+            openagent_sandbox_capability
         ]
     };
 }
@@ -50,12 +59,21 @@ mod tauri {
     pub use crate::tauri_crate::*;
 }
 
+mod coding_ast;
+mod coding_control;
+mod coding_delivery;
+mod coding_eval;
+mod coding_intelligence;
+#[path = "coding_lsp_ast.rs"]
+mod coding_lsp;
+mod coding_patch;
 mod connected_agent;
 mod connector_ecosystem;
 mod connector_input_guard;
 mod connector_stabilization;
 mod github_workspace;
 mod google_workspace;
+mod isolated_runtime;
 mod local_agent;
 mod local_workspace;
 mod multimodal;
@@ -69,11 +87,18 @@ pub mod native_runtime;
 pub mod native_stream;
 #[cfg(feature = "native-cxx-llama")]
 pub mod native_supervisor;
+mod openagent_parallel;
+mod openagent_prompt_context;
+mod openagent_runs;
+mod openagent_security;
 mod pdf_ocr;
+mod runtime_guards;
 mod speech_runtime;
 mod vision_batch;
 mod warm_start;
 
+pub(crate) use coding_control::{approve_coding_action, coding_run_snapshot, reject_coding_action};
+pub(crate) use coding_eval::run_coding_qualification;
 pub(crate) use connected_agent::{
     connected_app_agent_status_for_conversation, regenerate_connected_app_message,
     send_connected_app_message,
@@ -90,7 +115,7 @@ pub(crate) use google_workspace::{
 };
 pub(crate) use local_agent::{
     project_agent_status_for_conversation, regenerate_project_agent_message,
-    send_project_agent_message,
+    restore_openagent_checkpoint, resume_coding_run, send_project_agent_message,
 };
 pub(crate) use local_workspace::{
     attach_project_workspace_folder, create_project_workspace_directory,
@@ -103,6 +128,8 @@ pub(crate) use multimodal::{
     artifact_media_data_url, create_soundscape_artifact, regenerate_multimodal_message,
     send_multimodal_chat_message, transcribe_audio,
 };
+pub(crate) use openagent_runs::{list_openagent_runs, openagent_run_details};
+pub(crate) use openagent_security::openagent_sandbox_capability;
 pub(crate) use pdf_ocr::ocr_pdf_pages;
 pub(crate) use warm_start::{prepare_default_chat_runtime, reveal_main_window};
 

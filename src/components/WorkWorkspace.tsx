@@ -23,6 +23,7 @@ import { formatBytes, formatError, formatTime } from "../lib/format";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { OpenFolderProjectButton } from "./OpenFolderProjectButton";
 import { ProjectLocalWorkspace } from "./ProjectLocalWorkspace";
+import { CodingRunTimeline } from "./CodingRunTimeline";
 
 const MAX_PROJECT_INSTRUCTIONS_CHARS = 20_000;
 const QUICK_TASKS = [
@@ -368,6 +369,8 @@ export function WorkWorkspace(props: {
                 );
               })}
             </div>
+
+            <CodingRunTimeline conversationIds={activeProject.conversationIds} />
 
             {projectConversations.length ? (
               <section className="cg-work-recents">

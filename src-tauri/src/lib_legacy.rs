@@ -1943,7 +1943,7 @@ pub fn run() {
     let runtime_installer = RuntimeInstaller::new(root.clone());
     let hardware = HardwareProfiler::detect();
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
@@ -2049,8 +2049,14 @@ pub fn run() {
             save_google_credentials,
             clear_google_credentials
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running OpenMindAI");
+        .build(tauri::generate_context!())
+        .expect("error while building OpenMindAI");
+
+    app.run(|_app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            tauri::async_runtime::block_on(coding_lsp::shutdown_pooled_sessions());
+        }
+    });
 }
 
 #[cfg(test)]
