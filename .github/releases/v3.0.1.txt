@@ -29,3 +29,11 @@ The production release contract requires:
 - `openmindai.marker`
 
 The GitHub release should remain a draft until signing, updater metadata, checksums, clean installation, and v3.0.0 → v3.0.1 upgrade validation have passed.
+
+## Additional application packages
+
+The draft includes supplied Windows x64/x86 EXE and MSI installers, Linux amd64/i386 AppImage and DEB packages, macOS Apple Silicon/Intel/Universal DMGs, Android APKs for three ABIs, and the iOS IPA and Runner app archive.
+
+Android build metadata reports version `0.0.1`; these are companion mobile builds included with desktop `v3.0.1`. iOS installation requires compatible signing and provisioning. These supplied packages have not been installation-tested as part of this upload.
+
+`release-output-SHA256SUMS.txt` covers all 16 application packages. Original platform checksums are preserved as `Windows-SHA256SUMS.txt` and `MacOS-SHA256SUMS.txt`; Android build metadata is attached as `output-metadata.json`.

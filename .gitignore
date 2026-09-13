@@ -96,6 +96,7 @@ target/
 
 # Machine-local cargo override (target-dir redirected off exFAT G: — see file comment)
 /src-tauri/.cargo/config.toml
+/src-tauri/tauri.*.local.conf.json
 
 # Frontend build output
 /dist/

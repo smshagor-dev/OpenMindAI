@@ -8,6 +8,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "build:release": "tauri build",
+    "build:microsoft-store": "powershell -ExecutionPolicy Bypass -File scripts/build-microsoft-store-exe.ps1",
+    "build:microsoft-store-msix": "powershell -ExecutionPolicy Bypass -File scripts/build-microsoft-store-msix.ps1",
     "preview": "vite preview",
     "tauri": "tauri",
     "lint": "eslint .",
