@@ -10,6 +10,7 @@ public static class NativeRuntimeProbe
 {
     private const uint System32 = 0x00000800;
     private const uint DllLoadDir = 0x00000100;
+    private static readonly Encoding Latin1 = Encoding.GetEncoding("iso-8859-1");
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool SetDefaultDllDirectories(uint flags);
@@ -42,21 +43,21 @@ public static class NativeRuntimeProbe
         // preserves PE offsets and forces a missing transitive dependency even on
         // hosts that have a working system Vulkan loader.
         byte[] bytes = File.ReadAllBytes(path);
-        string contents = Encoding.Latin1.GetString(bytes);
+        string contents = Latin1.GetString(bytes);
         const string original = "vulkan-1.dll\0", missing = "omai-mis.dll\0";
         int offset = contents.IndexOf(original, StringComparison.OrdinalIgnoreCase);
         if (offset < 0 || contents.IndexOf(original, offset + 1, StringComparison.OrdinalIgnoreCase) >= 0)
             throw new InvalidOperationException("Expected exactly one Vulkan loader import name");
-        Encoding.Latin1.GetBytes(missing).CopyTo(bytes, offset);
+        Latin1.GetBytes(missing).CopyTo(bytes, offset);
         File.WriteAllBytes(path, bytes);
     }
 
-    private static T Export<T>(IntPtr module, string name) where T : Delegate
+    private static T Export<T>(IntPtr module, string name) where T : class
     {
         IntPtr address = GetProcAddress(module, name);
         if (address == IntPtr.Zero)
             throw new InvalidOperationException("Missing native export: " + name);
-        return Marshal.GetDelegateForFunctionPointer<T>(address);
+        return (T)(object)Marshal.GetDelegateForFunctionPointer(address, typeof(T));
     }
 
     private static IntPtr Load(string directory, string name)
@@ -72,8 +73,9 @@ public static class NativeRuntimeProbe
     public static int Run(string directory, bool dynamicBackends, bool cpuOnly)
     {
         try { return RunCore(directory, dynamicBackends, cpuOnly); }
-        catch (Win32Exception error) when (error.NativeErrorCode == 126)
+        catch (Win32Exception error)
         {
+            if (error.NativeErrorCode != 126) throw;
             Console.Error.WriteLine("runtime.load: missing DLL (Win32 126)");
             return 20;
         }
@@ -103,8 +105,9 @@ public static class NativeRuntimeProbe
                 if (!cpuOnly)
                 {
                     try { vulkan = Load(directory, "ggml-vulkan.dll"); }
-                    catch (Win32Exception error) when (error.NativeErrorCode == 126)
+                    catch (Win32Exception error)
                     {
+                        if (error.NativeErrorCode != 126) throw;
                         Console.WriteLine("runtime.vulkan: unavailable (Win32 126); CPU remains usable");
                     }
                     if (vulkan != IntPtr.Zero)

@@ -5,7 +5,18 @@ import hooks from "eslint-plugin-react-hooks";
 
 export default [
   {
-    ignores: ["dist/**", "node_modules/**", "src-tauri/**"],
+    ignores: [
+      "dist/**",
+      "generated/**",
+      "native-backend-smoke/**",
+      "native-smoke-reports/**",
+      "native-vulkan-artifact/**",
+      "node_modules/**",
+      "release-output/**",
+      "src-tauri/**",
+      "temp/**",
+      "vendor/**",
+    ],
   },
   js.configs.recommended,
   {

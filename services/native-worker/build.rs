@@ -5,12 +5,8 @@ fn main() {
         .join("../../src-tauri")
         .canonicalize()
         .unwrap();
-    let llama = PathBuf::from(env::var_os("LLAMA_CPP_DIR").expect("LLAMA_CPP_DIR"))
-        .canonicalize()
-        .unwrap();
-    let lib = PathBuf::from(env::var_os("LLAMA_CPP_LIB_DIR").expect("LLAMA_CPP_LIB_DIR"))
-        .canonicalize()
-        .unwrap();
+    let llama = PathBuf::from(env::var_os("LLAMA_CPP_DIR").expect("LLAMA_CPP_DIR"));
+    let lib = PathBuf::from(env::var_os("LLAMA_CPP_LIB_DIR").expect("LLAMA_CPP_LIB_DIR"));
     let revision = Command::new("git")
         .arg("-C")
         .arg(&llama)
@@ -67,9 +63,7 @@ fn main() {
         assert!(windows, "dynamic plugins currently require MSVC");
         let backend = PathBuf::from(
             env::var_os("LLAMA_CPP_BACKEND_LIB_DIR").expect("backend import directory"),
-        )
-        .canonicalize()
-        .unwrap();
+        );
         for name in ["ggml", "ggml-base"] {
             assert!(
                 backend.join(format!("{name}.lib")).is_file(),
