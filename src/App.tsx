@@ -521,7 +521,6 @@ export function App() {
     preferences?.autoGenerateTitles,
     preferences?.openArtifactsAfterGeneration,
     prompt,
-    refreshApp,
     showError,
     streamingId,
     submitting,
@@ -565,7 +564,7 @@ export function App() {
         setSubmitting(false);
       }
     },
-    [refreshApp, showError, streamingId, submitting],
+    [showError, streamingId, submitting],
   );
 
   const stopGeneration = useCallback(async () => {

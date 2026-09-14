@@ -16,8 +16,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-if (-not $IsWindows -or -not [Environment]::Is64BitProcess) {
-  throw 'Native runtime validation requires Windows x64 PowerShell 7'
+$runningOnWindows = if (Get-Variable -Name IsWindows -ErrorAction SilentlyContinue) {
+  $IsWindows
+} else {
+  $env:OS -eq 'Windows_NT'
+}
+if (-not $runningOnWindows -or -not [Environment]::Is64BitProcess) {
+  throw 'Native runtime validation requires Windows x64 PowerShell'
 }
 $runtimeRoot = (Resolve-Path -LiteralPath $RuntimeDir).Path
 if ($Probe) {
@@ -70,6 +75,16 @@ $scratch = Join-Path ([IO.Path]::GetTempPath()) ("openmind-runtime-probe-" + [Gu
 New-Item -ItemType Directory -Path $scratch | Out-Null
 $shell = (Get-Process -Id $PID).Path
 
+function Join-ProcessArguments([string[]]$Arguments) {
+  ($Arguments | ForEach-Object {
+    if ($_ -notmatch '[\s"]') {
+      $_
+    } else {
+      '"' + ($_ -replace '"', '\"') + '"'
+    }
+  }) -join ' '
+}
+
 function Invoke-IsolatedProbe([string]$Directory, [int]$ExpectedExit, [string]$Scenario,
                               [string]$ExpectedOutput = '', [switch]$OnlyCpu,
                               [string]$WrapperMode = '', [string]$InferenceReport = '',
@@ -80,24 +95,26 @@ function Invoke-IsolatedProbe([string]$Directory, [int]$ExpectedExit, [string]$S
   $start.RedirectStandardOutput = $true
   $start.RedirectStandardError = $true
   $start.WorkingDirectory = $scratch
+  $arguments = @()
   if ($InferenceReport) {
     $start.FileName = Join-Path $Directory 'native-inference-smoke.exe'
     foreach ($argument in @('--model', $ModelPath, '--timeout-seconds', '25',
                             '--report', (Join-Path $reportRoot.FullName $InferenceReport))) {
-      $start.ArgumentList.Add($argument)
+      $arguments += $argument
     }
-    if ($ExpectGpuUnavailable) { $start.ArgumentList.Add('--expect-gpu-unavailable') }
+    if ($ExpectGpuUnavailable) { $arguments += '--expect-gpu-unavailable' }
   } elseif ($WrapperMode) {
     $start.FileName = Join-Path $Directory 'native-backend-probe.exe'
-    $start.ArgumentList.Add($WrapperMode)
+    $arguments += $WrapperMode
   } else {
     foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $PSCommandPath,
                           '-RuntimeDir', $Directory, '-Probe')) {
-      $start.ArgumentList.Add($argument)
+      $arguments += $argument
     }
-    if ($DynamicBackends) { $start.ArgumentList.Add('-DynamicBackends') }
-    if ($OnlyCpu) { $start.ArgumentList.Add('-CpuOnly') }
+    if ($DynamicBackends) { $arguments += '-DynamicBackends' }
+    if ($OnlyCpu) { $arguments += '-CpuOnly' }
   }
+  $start.Arguments = Join-ProcessArguments $arguments
   # Keep OS/driver support, but remove all SDK/build paths and Vulkan overrides.
   $start.Environment['PATH'] = "$env:SystemRoot\System32;$env:SystemRoot"
   foreach ($key in @($start.Environment.Keys)) {

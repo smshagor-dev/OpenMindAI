@@ -24,9 +24,21 @@ spec.loader.exec_module(qualification)
 
 
 class FixtureServer:
-    def __init__(self, model_id: str, harness: Any | None = None) -> None:
+    def __init__(
+        self,
+        model_id: str,
+        harness: Any | None = None,
+        reasoning_only: bool = False,
+        responses: list[str | dict[str, Any]] | None = None,
+        schema_400_once: bool = False,
+    ) -> None:
         self.model_id = model_id
         self.harness = harness
+        self.reasoning_only = reasoning_only
+        self.responses = responses
+        self.schema_400_once = schema_400_once
+        self.requests: list[dict[str, Any]] = []
+        self._post_count = 0
 
         parent = self
 
@@ -65,11 +77,32 @@ class FixtureServer:
                     return
                 length = int(self.headers.get("Content-Length", "0"))
                 body = json.loads(self.rfile.read(length).decode("utf-8"))
+                parent.requests.append(body)
+                if parent.schema_400_once and "response_format" in body:
+                    parent.schema_400_once = False
+                    self._json(400, {"error": "grammar sampler conflict"})
+                    return
                 messages = body.get("messages")
                 if not isinstance(messages, list):
                     self._json(400, {"error": "messages required"})
                     return
-                decision = parent.harness.deterministic_decider(messages)
+                if parent.responses is None:
+                    decision = parent.harness.deterministic_decider(messages)
+                    content = json.dumps(decision)
+                    message = {
+                        "role": "assistant",
+                        "content": "" if parent.reasoning_only else content,
+                    }
+                    if parent.reasoning_only:
+                        message["reasoning_content"] = content
+                else:
+                    index = min(parent._post_count, len(parent.responses) - 1)
+                    parent._post_count += 1
+                    response = parent.responses[index]
+                    if isinstance(response, str):
+                        message = {"role": "assistant", "content": response}
+                    else:
+                        message = {"role": "assistant", **response}
                 self._json(
                     200,
                     {
@@ -78,10 +111,7 @@ class FixtureServer:
                         "choices": [
                             {
                                 "index": 0,
-                                "message": {
-                                    "role": "assistant",
-                                    "content": json.dumps(decision),
-                                },
+                                "message": message,
                                 "finish_reason": "stop",
                             }
                         ],
@@ -190,6 +220,109 @@ class QualificationTests(unittest.TestCase):
         self.assertTrue(report["securityPass"])
         self.assertEqual(report["passRate"], 1.0)
         self.assertNotIn("realModel", report)
+
+    def test_extracts_fenced_and_trailing_json(self) -> None:
+        harness = qualification.load_harness()
+        decision = harness.parse_json_object(
+            '```json\n{"type":"final","summary":"done","validation":"ok"}\n```\nignored'
+        )
+        self.assertEqual(decision["type"], "final")
+
+    def test_extracts_json_with_escaped_strings(self) -> None:
+        harness = qualification.load_harness()
+        decision = harness.parse_json_object(
+            '{"type":"tool","tool":"patch_transaction","operations":[{'
+            '"kind":"replace","path":"src/example.ts","old":"return \\"{\\";",'
+            '"new":"return {\\"value\\": \\"brace } inside\\"};"}]} trailing'
+        )
+        self.assertEqual(decision["operations"][0]["new"], 'return {"value": "brace } inside"};')
+
+    def test_malformed_json_gets_one_repair_retry(self) -> None:
+        harness = qualification.load_harness()
+        malformed = (
+            '{"type":"tool","tool":"terminal","command":"npm test",'
+            '"hostExecution":false'
+        )
+        repaired = {
+            "type": "tool",
+            "tool": "terminal",
+            "command": "npm test",
+            "hostExecution": False,
+        }
+        with FixtureServer(
+            "nemotron-contract-fixture",
+            harness=harness,
+            responses=[malformed, json.dumps(repaired)],
+        ) as server:
+            decide = harness.openai_decider(server.endpoint, server.model_id, 5)
+            decision = decide([{"role": "user", "content": "return a terminal action"}])
+
+        self.assertEqual(decision, repaired)
+        self.assertEqual(len(server.requests), 2)
+
+    def test_http_400_schema_mode_retries_without_schema(self) -> None:
+        harness = qualification.load_harness()
+        with FixtureServer(
+            "nemotron-contract-fixture",
+            harness=harness,
+            schema_400_once=True,
+        ) as server:
+            decide = harness.openai_decider(
+                server.endpoint,
+                server.model_id,
+                5,
+                prefer_schema_mode=True,
+            )
+            result = harness.run_scenario(harness.scenarios()[0], decide)
+
+        self.assertTrue(result["passed"])
+        self.assertTrue(any("response_format" in request for request in server.requests))
+        self.assertTrue(any("response_format" not in request for request in server.requests))
+
+    def test_live_http_contract_accepts_reasoning_content_fallback(self) -> None:
+        harness = qualification.load_harness()
+        model = "nemotron-contract-fixture"
+        with FixtureServer(model, harness=harness, reasoning_only=True) as server:
+            decide = harness.openai_decider(server.endpoint, model, 5)
+            result = harness.run_scenario(harness.scenarios()[0], decide)
+
+        self.assertTrue(result["passed"])
+        self.assertTrue(result["mutated"])
+        self.assertTrue(result["validated"])
+
+    def test_invalid_tool_output_fails_closed_before_execution(self) -> None:
+        harness = qualification.load_harness()
+
+        def invalid_decider(_messages: list[dict[str, str]]) -> dict[str, Any]:
+            return {
+                "type": "tool",
+                "tool": "patch_transaction",
+                "path": "src/math.py",
+                "content": "def add(a, b):\n    return a + b\n",
+            }
+
+        attempts = qualification.run_trials(
+            harness,
+            invalid_decider,
+            runs=1,
+            fail_fast=True,
+        )
+        self.assertFalse(attempts[0]["passed"])
+        self.assertIn("operations", attempts[0]["error"])
+
+    def test_tool_type_shorthand_is_normalized(self) -> None:
+        harness = qualification.load_harness()
+        decision = harness.parse_json_object(
+            '{"type":"patch_transaction","tool":"patch_transaction","operations":['
+            '{"kind":"replace","path":"src/math.py","old":"return a - b","new":"return a + b"}]}'
+        )
+        self.assertEqual(decision["type"], "tool")
+        self.assertEqual(decision["tool"], "patch_transaction")
+
+        with self.assertRaises(ValueError):
+            harness.parse_json_object(
+                '{"type":"patch_transaction","tool":"terminal","operations":[]}'
+            )
 
     def test_aggregate_fails_on_injection_violation(self) -> None:
         attempts = [
