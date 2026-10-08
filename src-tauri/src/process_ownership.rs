@@ -424,6 +424,7 @@ mod platform {
 mod tests {
     use super::*;
     use std::{
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
         io::{BufRead, BufReader},
         process::Stdio,
         time::{Duration, Instant},
@@ -501,6 +502,7 @@ mod tests {
         std::thread::sleep(Duration::from_secs(600));
     }
 
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     fn start_owner(mode: &str) -> (Child, Vec<u32>) {
         let mut parent = self_command("process_ownership::tests::owner_parent")
             .env(HELPER_ENV, mode)
