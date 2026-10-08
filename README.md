@@ -27,49 +27,49 @@
 
 ---
 
-## OpenMindAI v3.0.1
+## OpenMindAI v4.0.0
 
-**Current source version:** `v3.0.1`  
-**Release target:** [v3.0.1](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v3.0.1)  
+**Current source version:** `v4.0.0`  
+**Release target:** [v4.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v4.0.0)  
 **Previous stable release:** [v3.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v3.0.0)
 
-v3.0.1 is the maintenance release for the current OpenMindAI 3.x desktop line. It keeps the existing local-first architecture while consolidating the latest validated fixes, native runtime work, model routing improvements, and release-pipeline hardening on top of v3.0.0.
+v4.0.0 is the maintenance release for the current OpenMindAI 3.x desktop line. It keeps the existing local-first architecture while consolidating the latest validated fixes, native runtime work, model routing improvements, and release-pipeline hardening on top of v3.0.0.
 
 ### Download
 
 | Platform | Package |
 | --- | --- |
-| IOS | [openmindai-mobile.ipa](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.1/openmindai-mobile.ipa) |
-| IOS | [Runner.app.zip](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.1/Runner.app.zip) |
-| Linux | [OpenMindAI_3.0.1_amd64.AppImage](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.1/OpenMindAI_3.0.1_amd64.AppImage) |
-| Linux | [OpenMindAI_3.0.1_amd64.deb](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.1/OpenMindAI_3.0.1_amd64.deb) |
-| Linux | [OpenMindAI_3.0.1_i386.AppImage](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.1/OpenMindAI_3.0.1_i386.AppImage) |
-| Linux | [OpenMindAI_3.0.1_i386.deb](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.1/OpenMindAI_3.0.1_i386.deb) |
-| MacOS | [OpenMindAI_3.0.1_aarch64.dmg](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.1/OpenMindAI_3.0.1_aarch64.dmg) |
-| MacOS | [OpenMindAI_3.0.1_universal.dmg](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.1/OpenMindAI_3.0.1_universal.dmg) |
-| MacOS | [OpenMindAI_3.0.1_x64.dmg](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.1/OpenMindAI_3.0.1_x64.dmg) |
-| Mobile | [app-arm64-v8a-release.apk](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.1/app-arm64-v8a-release.apk) |
-| Mobile | [app-armeabi-v7a-release.apk](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.1/app-armeabi-v7a-release.apk) |
-| Mobile | [app-x86_64-release.apk](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.1/app-x86_64-release.apk) |
-| Windows | [OpenMindAI_3.0.1_x64_en-US.msi](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.1/OpenMindAI_3.0.1_x64_en-US.msi) |
-| Windows | [OpenMindAI_3.0.1_x64-setup.exe](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.1/OpenMindAI_3.0.1_x64-setup.exe) |
-| Windows | [OpenMindAI_3.0.1_x86_en-US.msi](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.1/OpenMindAI_3.0.1_x86_en-US.msi) |
-| Windows | [OpenMindAI_3.0.1_x86-setup.exe](https://github.com/smshagor-dev/OpenMindAI/releases/download/v3.0.1/OpenMindAI_3.0.1_x86-setup.exe) |
+| IOS | [openmindai-mobile.ipa](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/openmindai-mobile.ipa) |
+| IOS | [Runner.app.zip](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/Runner.app.zip) |
+| Linux | [OpenMindAI_4.0.0_amd64.AppImage](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_amd64.AppImage) |
+| Linux | [OpenMindAI_4.0.0_amd64.deb](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_amd64.deb) |
+| Linux | [OpenMindAI_4.0.0_i386.AppImage](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_i386.AppImage) |
+| Linux | [OpenMindAI_4.0.0_i386.deb](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_i386.deb) |
+| MacOS | [OpenMindAI_4.0.0_aarch64.dmg](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_aarch64.dmg) |
+| MacOS | [OpenMindAI_4.0.0_universal.dmg](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_universal.dmg) |
+| MacOS | [OpenMindAI_4.0.0_x64.dmg](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x64.dmg) |
+| Mobile | [app-arm64-v8a-release.apk](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/app-arm64-v8a-release.apk) |
+| Mobile | [app-armeabi-v7a-release.apk](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/app-armeabi-v7a-release.apk) |
+| Mobile | [app-x86_64-release.apk](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/app-x86_64-release.apk) |
+| Windows | [OpenMindAI_4.0.0_x64_en-US.msi](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x64_en-US.msi) |
+| Windows | [OpenMindAI_4.0.0_x64-setup.exe](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x64-setup.exe) |
+| Windows | [OpenMindAI_4.0.0_x86_en-US.msi](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x86_en-US.msi) |
+| Windows | [OpenMindAI_4.0.0_x86-setup.exe](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x86-setup.exe) |
 
-These packages are staged for the **v3.0.1 draft release**; download links become public after publication. Android build metadata reports app version `0.0.1`; these are companion mobile builds included with desktop `v3.0.1`. iOS installation requires compatible signing and provisioning.
+These packages are staged for the **v4.0.0 draft release**; download links become public after publication. Android build metadata reports app version `0.0.1`; these are companion mobile builds included with desktop `v4.0.0`. iOS installation requires compatible signing and provisioning.
 
 `release-output-SHA256SUMS.txt` covers all application packages. Original platform checksums are attached as `Windows-SHA256SUMS.txt` and `MacOS-SHA256SUMS.txt`, alongside Android `output-metadata.json`.
 
-### What changed in v3.0.1
+### What changed in v4.0.0
 
-- Synchronizes the desktop application, Tauri bundle, Rust crate, lockfiles, bootstrap launchers, and portable marker on version `3.0.1`.
+- Synchronizes the desktop application, Tauri bundle, Rust crate, lockfiles, bootstrap launchers, and portable marker on version `4.0.0`.
 - Preserves the local-first desktop architecture and current native model/runtime behavior from the validated `main` branch.
 - Carries forward the native personalization and runtime integration work merged after v3.0.0.
 - Keeps CI, CodeQL, dependency auditing, multi-platform Rust validation, Windows Tauri build validation, and release-contract checks as release gates.
-- Adds explicit v3.0.0 → v3.0.1 upgrade validation in addition to clean-install validation.
-- Produces release-specific notes and installer naming for `v3.0.1` while retaining v3.0.0 as the upgrade source.
+- Adds explicit v3.0.0 → v4.0.0 upgrade validation in addition to clean-install validation.
+- Produces release-specific notes and installer naming for `v4.0.0` while retaining v3.0.0 as the upgrade source.
 
-For the focused release summary, see [`.github/releases/v3.0.1.txt`](.github/releases/v3.0.1.txt).
+For the focused release summary, see [`.github/releases/v4.0.0.txt`](.github/releases/v4.0.0.txt).
 
 ## Why OpenMindAI
 
@@ -122,7 +122,7 @@ When acceleration is unavailable, compatible CPU execution remains the fallback 
 
 ## Projects and Project Agent
 
-v3.0.1 makes Projects a first-class local development workspace.
+v4.0.0 makes Projects a first-class local development workspace.
 
 A Project can contain:
 
@@ -285,7 +285,7 @@ A configured storage location that is temporarily unavailable should be reported
 
 ## Default Local Model
 
-The v3.0.1 baseline setup targets **Qwen3 4B (`Q4_K_M`)** as the default local language model.
+The v4.0.0 baseline setup targets **Qwen3 4B (`Q4_K_M`)** as the default local language model.
 
 Model weights are deliberately excluded from this repository. They are downloaded separately and stored under the selected AI data root, keeping multi-gigabyte model binaries out of normal Git history.
 
@@ -411,13 +411,13 @@ Tagged releases use the dedicated release workflow in [`.github/workflows/releas
 
 The release path checks version consistency, application builds, installer output, updater configuration, release metadata, and other release-readiness requirements. Signing and trust requirements are handled by the production release workflow rather than being embedded in source code or committed secrets.
 
-For v3.0.1 release expectations and validation scope, see [`.github/releases/v3.0.1.txt`](.github/releases/v3.0.1.txt).
+For v4.0.0 release expectations and validation scope, see [`.github/releases/v4.0.0.txt`](.github/releases/v4.0.0.txt).
 
 ## Platform Notes
 
 ### Windows
 
-Windows x64 is the primary packaged and tested platform for v3.0.1. The desktop release uses a Tauri NSIS installer. GPU/runtime behavior depends on installed hardware and backend support, while CPU execution remains the compatibility path when acceleration is unavailable.
+Windows x64 is the primary packaged and tested platform for v4.0.0. The desktop release uses a Tauri NSIS installer. GPU/runtime behavior depends on installed hardware and backend support, while CPU execution remains the compatibility path when acceleration is unavailable.
 
 ### Linux
 

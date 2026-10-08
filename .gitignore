@@ -15,6 +15,7 @@
 /backups/**
 /config/**
 /app/**
+/extensions/
 
 # Generated native inference build/runtime bundles. Source and manifests are
 # produced by CI; compiled libraries never belong in the repository.

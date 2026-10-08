@@ -8,8 +8,8 @@ npm run build:microsoft-store -- -CertificateThumbprint YOUR_CERT_THUMBPRINT
 npm run build:microsoft-store -- -PfxPath C:\path\code-signing.pfx -PfxPassword "password"
 
 # Output:
-# release-output\microsoftstore-exe\OpenMindAI_3.0.1_x64-setup.exe
-# release-output\microsoftstore-exe\OpenMindAI_3.0.1_x86-setup.exe
+# release-output\microsoftstore-exe\OpenMindAI_4.0.0_x64-setup.exe
+# release-output\microsoftstore-exe\OpenMindAI_4.0.0_x86-setup.exe
 
 # No paid code-signing certificate route:
 # Submit the generated MSIX/MSIXBUNDLE package as an MSIX packaged app in Partner Center.
@@ -17,4 +17,4 @@ npm run build:microsoft-store -- -PfxPath C:\path\code-signing.pfx -PfxPassword 
 npm run build:microsoft-store-msix
 
 # Output:
-# release-output\microsoftstore-msix\OpenMindAI_3.0.1_x86_x64.msixbundle
+# release-output\microsoftstore-msix\OpenMindAI_4.0.0_x86_x64.msixbundle
