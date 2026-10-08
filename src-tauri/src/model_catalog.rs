@@ -112,6 +112,11 @@ pub fn check_model_updates(
     hardware: &HardwareProfile,
     root: &PortableRootManager,
 ) -> Result<ModelCatalogReport, AppError> {
+    if !hardware.is_detected() {
+        return Err(AppError::internal(
+            "hardware detection is still in progress; model compatibility cannot be checked yet",
+        ));
+    }
     let catalog = load_catalog()?;
     let total_ram = hardware.memory.total_bytes;
     let max_vram = hardware
@@ -447,6 +452,7 @@ mod tests {
                 hip: false,
                 metal: false,
             },
+            detection_complete: true,
         }
     }
 
@@ -537,6 +543,24 @@ mod tests {
         let report = check_model_updates(&[], &low_ram_hardware, &root).unwrap();
 
         assert!(!report.entries[0].compatible);
+    }
+
+    #[test]
+    fn compatibility_is_not_judged_from_the_startup_placeholder() {
+        let mut placeholder = hardware_with(0, None);
+        placeholder.detection_complete = false;
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+
+        let error = check_model_updates(&[], &placeholder, &root)
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            error.contains("hardware detection is still in progress"),
+            "{error}"
+        );
     }
 
     #[test]

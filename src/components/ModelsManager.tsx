@@ -43,8 +43,12 @@ export function ModelsManager(props: {
   useEffect(() => {
     let cancelled = false;
     const refreshStatus = async () => {
-      const status = await api.modelDownloadStatus();
-      if (!cancelled) setDownloadStatus(status);
+      try {
+        const status = await api.modelDownloadStatus();
+        if (!cancelled) setDownloadStatus(status);
+      } catch (error) {
+        if (!cancelled) setCatalogError(error instanceof Error ? error.message : String(error));
+      }
     };
     void refreshStatus();
     void refreshCatalog();
@@ -98,12 +102,28 @@ export function ModelsManager(props: {
 
   const downloadModel = async (modelId: string) => {
     setLaunchPlan(null);
+    setCatalogError(null);
+    const item = catalog?.entries.find((candidate) => candidate.entry.id === modelId);
+    if (item) {
+      setDownloadStatus(preparingDownloadStatus(item));
+    }
     try {
       setDownloadStatus(await api.downloadCatalogModel(modelId));
       await props.refresh();
       await refreshCatalog();
-    } catch {
-      setDownloadStatus(await api.modelDownloadStatus());
+    } catch (error) {
+      setCatalogError(error instanceof Error ? error.message : String(error));
+      try {
+        setDownloadStatus(await api.modelDownloadStatus());
+      } catch {
+        if (item) {
+          setDownloadStatus({
+            ...preparingDownloadStatus(item),
+            state: "failed",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
     }
   };
 
@@ -217,10 +237,7 @@ function ModelCatalogOverview(props: {
   onCancel: () => void | Promise<void>;
 }) {
   const primaryStatus = props.downloadStatus?.modelId === props.primary?.entry.id ? props.downloadStatus : null;
-  const busy =
-    props.downloadStatus?.state === "resolving" ||
-    props.downloadStatus?.state === "downloading" ||
-    props.downloadStatus?.state === "verifying";
+  const busy = props.downloadStatus !== null && isActiveDownload(props.downloadStatus);
   const title = props.variant === "setup" ? "Start with the best local model" : "Model library";
   const hardwareLabel = props.hardware?.backends.cuda
     ? "NVIDIA CUDA ready"
@@ -291,10 +308,7 @@ function CatalogModelCard(props: {
   onDelete?: () => void;
 }) {
   const entry = props.item.entry;
-  const busy =
-    props.status?.state === "resolving" ||
-    props.status?.state === "downloading" ||
-    props.status?.state === "verifying";
+  const busy = props.status !== null && isActiveDownload(props.status);
   const paused = props.status?.state === "pausedInterrupted";
   const availabilityBadge = props.item.installed
     ? "Downloaded"
@@ -320,7 +334,7 @@ function CatalogModelCard(props: {
         <small>{entry.description}</small>
       </div>
       <div className="download-progress">
-        <span>{catalogAvailabilityLabel(props.item)}</span>
+        <span>{catalogAvailabilityLabel(props.item, props.status)}</span>
         {props.status?.totalBytes ? (
           <small>
             {formatBytes(props.status.downloadedBytes)} / {formatBytes(props.status.totalBytes)}
@@ -381,7 +395,7 @@ function collectionLabel(kind: string) {
   const labels: Record<string, string> = {
     chat: "OpenMindAI Core",
     reasoning: "OpenMindAI Reasoning",
-    agent: "OpenMindAI Agent",
+    agent: "OpenAgent - Your personal Agent",
     vision: "OpenMindAI Vision",
     "speech-to-text": "OpenMindAI Hear",
     "text-to-speech": "OpenMindAI Speak",
@@ -516,7 +530,39 @@ function modelSortScore(item: ModelCatalogStatus, recommendedIds: Set<string>) {
   return score;
 }
 
-function catalogAvailabilityLabel(item: ModelCatalogStatus) {
+function isActiveDownload(status: DownloadStatus) {
+  return (
+    status.state === "resolving" ||
+    status.state === "downloading" ||
+    status.state === "verifying"
+  );
+}
+
+function preparingDownloadStatus(item: ModelCatalogStatus): DownloadStatus {
+  return {
+    modelId: item.entry.id,
+    name: item.entry.name,
+    state: "resolving",
+    repo: item.entry.repo,
+    quantization: item.entry.quantization,
+    filename: null,
+    downloadedBytes: 0,
+    totalBytes: item.entry.sizeBytes,
+    percentage: 0,
+    speedBytesPerSec: null,
+    destination: null,
+    error: null,
+  };
+}
+
+function catalogAvailabilityLabel(item: ModelCatalogStatus, status: DownloadStatus | null) {
+  if (status?.state === "resolving") return "Preparing download";
+  if (status?.state === "downloading") return "Downloading";
+  if (status?.state === "verifying") return "Verifying";
+  if (status?.state === "completed") return "Ready";
+  if (status?.state === "pausedInterrupted") return "Paused";
+  if (status?.state === "failed") return "Download failed";
+  if (status?.state === "cancelled") return "Cancelled";
   if (item.installed) return "Ready";
   if (!item.downloadSupported) return "Manual license/access";
   if (item.compatible) return "Available";

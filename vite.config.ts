@@ -8,7 +8,20 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
     watch: {
-      ignored: ["**/src-tauri/target/**"],
+      ignored: [
+        "**/src-tauri/target/**",
+        "**/target/**",
+        "**/target-check/**",
+        "**/native-backend-smoke/target/**",
+        "**/services/**/target/**",
+        "**/dist/**",
+        "**/release-output/**",
+        "**/node_modules/**",
+        // VS Code extension packaging output (extension dist/ is covered above).
+        // npm run package rewrites these while tauri dev runs; extension sources stay watched.
+        "**/extensions/*/.vsix-stage/**",
+        "**/*.vsix",
+      ],
     },
   },
   envPrefix: ["VITE_", "TAURI_"],

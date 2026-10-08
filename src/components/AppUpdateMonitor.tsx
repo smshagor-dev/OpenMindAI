@@ -1,6 +1,6 @@
 import { useEffect } from "react";
-import { check as checkForAppUpdate } from "@tauri-apps/plugin-updater";
 import { api } from "../api";
+import { checkForAppUpdate } from "../lib/appUpdate";
 import { notifyUser } from "../lib/notify";
 
 const UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1000;

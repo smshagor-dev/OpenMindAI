@@ -95,7 +95,9 @@ fn require_confirmed(confirmed: bool, action: &str) -> Result<(), AppError> {
     if confirmed {
         Ok(())
     } else {
-        Err(github_error(format!("{action} requires explicit confirmation")))
+        Err(github_error(format!(
+            "{action} requires explicit confirmation"
+        )))
     }
 }
 
@@ -122,7 +124,9 @@ fn validate_path(path: &str) -> Result<&str, AppError> {
     let path = path.trim().trim_start_matches('/');
     if path.is_empty()
         || path.len() > 1024
-        || path.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
         || path.chars().any(char::is_control)
     {
         return Err(github_error("invalid repository path"));
@@ -148,7 +152,7 @@ fn validate_ref(value: &str) -> Result<&str, AppError> {
 }
 
 fn client() -> Result<Client, AppError> {
-    Client::builder()
+    crate::net::with_proxy(Client::builder())
         .timeout(Duration::from_secs(API_TIMEOUT_SECS))
         .build()
         .map_err(|error| github_error(error.to_string()))
@@ -183,7 +187,9 @@ async fn success(response: reqwest::Response, action: &str) -> Result<reqwest::R
     }
     let status = response.status();
     let detail = response.text().await.unwrap_or_default();
-    Err(github_error(format!("{action} failed ({status}): {detail}")))
+    Err(github_error(format!(
+        "{action} failed ({status}): {detail}"
+    )))
 }
 
 fn encode_path(path: &str) -> String {
@@ -206,10 +212,25 @@ fn encode_path(path: &str) -> String {
 
 fn pr_from_value(value: &Value) -> GithubPullRequestInfo {
     GithubPullRequestInfo {
-        number: value.get("number").and_then(Value::as_u64).unwrap_or_default(),
-        title: value.get("title").and_then(Value::as_str).unwrap_or_default().to_string(),
-        state: value.get("state").and_then(Value::as_str).unwrap_or_default().to_string(),
-        html_url: value.get("html_url").and_then(Value::as_str).unwrap_or_default().to_string(),
+        number: value
+            .get("number")
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
+        title: value
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        state: value
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        html_url: value
+            .get("html_url")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         merged: value.get("merged").and_then(Value::as_bool),
         head_ref: value
             .pointer("/head/ref")
@@ -244,13 +265,20 @@ pub async fn github_list_branches(
     Ok(values
         .into_iter()
         .map(|value| GithubBranchInfo {
-            name: value.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
+            name: value
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
             sha: value
                 .pointer("/commit/sha")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
-            protected: value.get("protected").and_then(Value::as_bool).unwrap_or(false),
+            protected: value
+                .get("protected")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         })
         .collect())
 }
@@ -293,22 +321,42 @@ pub async fn github_get_file(
         .decode(encoded)
         .map_err(|error| github_error(format!("could not decode repository file: {error}")))?;
     if bytes.len() > MAX_TEXT_FILE_BYTES {
-        return Err(github_error("repository file exceeds the 2 MB in-app read limit"));
+        return Err(github_error(
+            "repository file exceeds the 2 MB in-app read limit",
+        ));
     }
-    let content = String::from_utf8(bytes)
-        .map_err(|_| github_error("repository file is not UTF-8 text"))?;
+    let content =
+        String::from_utf8(bytes).map_err(|_| github_error("repository file is not UTF-8 text"))?;
     Ok(GithubFileContent {
-        path: value.get("path").and_then(Value::as_str).unwrap_or(path).to_string(),
-        sha: value.get("sha").and_then(Value::as_str).unwrap_or_default().to_string(),
-        html_url: value.get("html_url").and_then(Value::as_str).map(ToOwned::to_owned),
+        path: value
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or(path)
+            .to_string(),
+        sha: value
+            .get("sha")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        html_url: value
+            .get("html_url")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
         content,
         encoding: "utf-8".to_string(),
     })
 }
 
-async fn branch_sha(state: &State<'_, AppState>, repo: &str, reference: &str) -> Result<String, AppError> {
+async fn branch_sha(
+    state: &State<'_, AppState>,
+    repo: &str,
+    reference: &str,
+) -> Result<String, AppError> {
     let reference = validate_ref(reference)?;
-    let url = format!("{GITHUB_API}/repos/{repo}/git/ref/heads/{}", encode_path(reference));
+    let url = format!(
+        "{GITHUB_API}/repos/{repo}/git/ref/heads/{}",
+        encode_path(reference)
+    );
     let response = request(state, Method::GET, url)
         .await?
         .send()
@@ -383,7 +431,10 @@ async fn existing_file_sha(
         .json()
         .await
         .map_err(|error| github_error(error.to_string()))?;
-    Ok(value.get("sha").and_then(Value::as_str).map(ToOwned::to_owned))
+    Ok(value
+        .get("sha")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned))
 }
 
 #[tauri::command]
@@ -401,7 +452,9 @@ pub async fn github_write_file(
     let path = validate_path(&path)?;
     let branch = validate_ref(&branch)?;
     if content.len() > MAX_TEXT_FILE_BYTES {
-        return Err(github_error("file content exceeds the 2 MB in-app write limit"));
+        return Err(github_error(
+            "file content exceeds the 2 MB in-app write limit",
+        ));
     }
     if commit_message.trim().is_empty() {
         return Err(github_error("commit message is required"));
@@ -433,8 +486,14 @@ pub async fn github_write_file(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
-        content_sha: value.pointer("/content/sha").and_then(Value::as_str).map(ToOwned::to_owned),
-        html_url: value.pointer("/content/html_url").and_then(Value::as_str).map(ToOwned::to_owned),
+        content_sha: value
+            .pointer("/content/sha")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        html_url: value
+            .pointer("/content/html_url")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
     })
 }
 
@@ -473,7 +532,10 @@ pub async fn github_delete_file(
             .unwrap_or_default()
             .to_string(),
         content_sha: None,
-        html_url: value.pointer("/commit/html_url").and_then(Value::as_str).map(ToOwned::to_owned),
+        html_url: value
+            .pointer("/commit/html_url")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
     })
 }
 
@@ -605,10 +667,18 @@ pub async fn github_update_pull_request(
     }
     let url = format!("{GITHUB_API}/repos/{repo}/pulls/{pull_number}");
     let mut payload = serde_json::Map::new();
-    if let Some(value) = title { payload.insert("title".to_string(), json!(value)); }
-    if let Some(value) = body { payload.insert("body".to_string(), json!(value)); }
-    if let Some(value) = state_value { payload.insert("state".to_string(), json!(value)); }
-    if let Some(value) = base { payload.insert("base".to_string(), json!(value)); }
+    if let Some(value) = title {
+        payload.insert("title".to_string(), json!(value));
+    }
+    if let Some(value) = body {
+        payload.insert("body".to_string(), json!(value));
+    }
+    if let Some(value) = state_value {
+        payload.insert("state".to_string(), json!(value));
+    }
+    if let Some(value) = base {
+        payload.insert("base".to_string(), json!(value));
+    }
     let response = request(&state, Method::PATCH, url)
         .await?
         .json(&Value::Object(payload))
@@ -636,7 +706,9 @@ pub async fn github_merge_pull_request(
     let repo = validate_repo(&repo_full_name)?;
     let method = merge_method.unwrap_or_else(|| "squash".to_string());
     if !matches!(method.as_str(), "merge" | "squash" | "rebase") {
-        return Err(github_error("merge method must be merge, squash, or rebase"));
+        return Err(github_error(
+            "merge method must be merge, squash, or rebase",
+        ));
     }
     let url = format!("{GITHUB_API}/repos/{repo}/pulls/{pull_number}/merge");
     let response = request(&state, Method::PUT, url)
@@ -659,10 +731,16 @@ pub async fn github_list_workflow_runs(
     state: State<'_, AppState>,
 ) -> Result<Vec<GithubWorkflowRun>, AppError> {
     let repo = validate_repo(&repo_full_name)?;
-    if let Some(value) = branch.as_deref() { validate_ref(value)?; }
+    if let Some(value) = branch.as_deref() {
+        validate_ref(value)?;
+    }
     let url = format!("{GITHUB_API}/repos/{repo}/actions/runs");
-    let mut builder = request(&state, Method::GET, url).await?.query(&[("per_page", "50")]);
-    if let Some(value) = branch.as_deref() { builder = builder.query(&[("branch", value)]); }
+    let mut builder = request(&state, Method::GET, url)
+        .await?
+        .query(&[("per_page", "50")]);
+    if let Some(value) = branch.as_deref() {
+        builder = builder.query(&[("branch", value)]);
+    }
     let response = builder
         .send()
         .await
@@ -679,13 +757,36 @@ pub async fn github_list_workflow_runs(
         .flatten()
         .map(|run| GithubWorkflowRun {
             id: run.get("id").and_then(Value::as_u64).unwrap_or_default(),
-            name: run.get("name").and_then(Value::as_str).map(ToOwned::to_owned),
-            status: run.get("status").and_then(Value::as_str).map(ToOwned::to_owned),
-            conclusion: run.get("conclusion").and_then(Value::as_str).map(ToOwned::to_owned),
-            event: run.get("event").and_then(Value::as_str).map(ToOwned::to_owned),
-            head_branch: run.get("head_branch").and_then(Value::as_str).map(ToOwned::to_owned),
-            head_sha: run.get("head_sha").and_then(Value::as_str).unwrap_or_default().to_string(),
-            html_url: run.get("html_url").and_then(Value::as_str).unwrap_or_default().to_string(),
+            name: run
+                .get("name")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            status: run
+                .get("status")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            conclusion: run
+                .get("conclusion")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            event: run
+                .get("event")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            head_branch: run
+                .get("head_branch")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            head_sha: run
+                .get("head_sha")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            html_url: run
+                .get("html_url")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
         })
         .collect())
 }
@@ -715,10 +816,24 @@ pub async fn github_list_workflow_jobs(
         .flatten()
         .map(|job| GithubWorkflowJob {
             id: job.get("id").and_then(Value::as_u64).unwrap_or_default(),
-            name: job.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
-            status: job.get("status").and_then(Value::as_str).unwrap_or_default().to_string(),
-            conclusion: job.get("conclusion").and_then(Value::as_str).map(ToOwned::to_owned),
-            html_url: job.get("html_url").and_then(Value::as_str).map(ToOwned::to_owned),
+            name: job
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            status: job
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            conclusion: job
+                .get("conclusion")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            html_url: job
+                .get("html_url")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
         })
         .collect())
 }
@@ -765,7 +880,10 @@ pub async fn github_dispatch_workflow(
     if workflow_id.trim().is_empty() || workflow_id.contains('/') || workflow_id.contains("..") {
         return Err(github_error("invalid workflow identifier"));
     }
-    let url = format!("{GITHUB_API}/repos/{repo}/actions/workflows/{}/dispatches", encode_path(workflow_id.trim()));
+    let url = format!(
+        "{GITHUB_API}/repos/{repo}/actions/workflows/{}/dispatches",
+        encode_path(workflow_id.trim())
+    );
     let response = request(&state, Method::POST, url)
         .await?
         .json(&json!({"ref": git_ref, "inputs": inputs}))
@@ -831,7 +949,9 @@ pub async fn github_create_release(
     require_confirmed(confirmed, "creating a GitHub release")?;
     let repo = validate_repo(&repo_full_name)?;
     validate_ref(&tag_name)?;
-    if let Some(target) = target_commitish.as_deref() { validate_ref(target)?; }
+    if let Some(target) = target_commitish.as_deref() {
+        validate_ref(target)?;
+    }
     let url = format!("{GITHUB_API}/repos/{repo}/releases");
     let response = request(&state, Method::POST, url)
         .await?
@@ -853,11 +973,25 @@ pub async fn github_create_release(
         .map_err(|error| github_error(error.to_string()))?;
     Ok(GithubReleaseInfo {
         id: value.get("id").and_then(Value::as_u64).unwrap_or_default(),
-        tag_name: value.get("tag_name").and_then(Value::as_str).unwrap_or_default().to_string(),
-        name: value.get("name").and_then(Value::as_str).map(ToOwned::to_owned),
+        tag_name: value
+            .get("tag_name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        name: value
+            .get("name")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
         draft: value.get("draft").and_then(Value::as_bool).unwrap_or(false),
-        prerelease: value.get("prerelease").and_then(Value::as_bool).unwrap_or(false),
-        html_url: value.get("html_url").and_then(Value::as_str).unwrap_or_default().to_string(),
+        prerelease: value
+            .get("prerelease")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        html_url: value
+            .get("html_url")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
     })
 }
 

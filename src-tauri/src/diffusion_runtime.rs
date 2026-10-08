@@ -12,10 +12,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::windows::process::CommandExt;
 
 use chrono::Utc;
-use futures_util::StreamExt;
-use reqwest::{header, Client, StatusCode};
+use reqwest::{header, Client};
 use serde::{Deserialize, Serialize};
-use tokio::{fs as async_fs, io::AsyncWriteExt, process::Command, time::timeout};
+use tokio::{process::Command, time::timeout};
 use uuid::Uuid;
 use zip::ZipArchive;
 
@@ -177,18 +176,19 @@ pub async fn generate_image(
         "starting local diffusion image generation"
     );
 
-    let output = timeout(GENERATION_TIMEOUT, command.output())
-        .await
-        .map_err(|_| {
-            AppError::ArtifactGenerationFailed(
-                "local image generation timed out after 20 minutes".to_string(),
-            )
-        })?
-        .map_err(|error| {
-            AppError::ArtifactGenerationFailed(format!(
-                "could not start stable-diffusion.cpp: {error}"
-            ))
-        })?;
+    let output = timeout(
+        GENERATION_TIMEOUT,
+        crate::process_ownership::output_owned(command),
+    )
+    .await
+    .map_err(|_| {
+        AppError::ArtifactGenerationFailed(
+            "local image generation timed out after 20 minutes".to_string(),
+        )
+    })?
+    .map_err(|error| {
+        AppError::ArtifactGenerationFailed(format!("could not start stable-diffusion.cpp: {error}"))
+    })?;
 
     if !output.status.success() {
         let detail = process_error_detail(&output.stdout, &output.stderr);
@@ -316,18 +316,21 @@ pub async fn generate_video(
         "starting local Wan video generation"
     );
 
-    let output = timeout(VIDEO_GENERATION_TIMEOUT, command.output())
-        .await
-        .map_err(|_| {
-            AppError::ArtifactGenerationFailed(
-                "local video generation timed out after 90 minutes".to_string(),
-            )
-        })?
-        .map_err(|error| {
-            AppError::ArtifactGenerationFailed(format!(
-                "could not start stable-diffusion.cpp video runtime: {error}"
-            ))
-        })?;
+    let output = timeout(
+        VIDEO_GENERATION_TIMEOUT,
+        crate::process_ownership::output_owned(command),
+    )
+    .await
+    .map_err(|_| {
+        AppError::ArtifactGenerationFailed(
+            "local video generation timed out after 90 minutes".to_string(),
+        )
+    })?
+    .map_err(|error| {
+        AppError::ArtifactGenerationFailed(format!(
+            "could not start stable-diffusion.cpp video runtime: {error}"
+        ))
+    })?;
 
     if !output.status.success() {
         let detail = process_error_detail(&output.stdout, &output.stderr);
@@ -370,18 +373,22 @@ async fn ensure_runtime(
         )));
     }
 
-    let release = client
-        .get(RELEASE_URL)
-        .header(header::USER_AGENT, "OpenMindAI/2")
-        .timeout(Duration::from_secs(60))
-        .send()
-        .await
-        .map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?
-        .error_for_status()
-        .map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?
-        .json::<GithubRelease>()
-        .await
-        .map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?;
+    let release = crate::net::send_with_retry(
+        || {
+            client
+                .get(RELEASE_URL)
+                .header(header::USER_AGENT, "OpenMindAI/2")
+                .timeout(Duration::from_secs(60))
+        },
+        None,
+    )
+    .await
+    .map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?
+    .error_for_status()
+    .map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?
+    .json::<GithubRelease>()
+    .await
+    .map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?;
     if release.tag_name != PINNED_RUNTIME_TAG {
         return Err(AppError::RuntimeInstallFailed(format!(
             "pinned stable-diffusion.cpp release endpoint returned unexpected tag {}; expected {PINNED_RUNTIME_TAG}",
@@ -405,12 +412,11 @@ async fn ensure_runtime(
             ))
         })?;
 
-    install_runtime_asset(root, client, &release.tag_name, backend, asset).await
+    install_runtime_asset(root, &release.tag_name, backend, asset).await
 }
 
 async fn install_runtime_asset(
     root: &PortableRootManager,
-    client: &Client,
     version: &str,
     backend: BackendKind,
     asset: &GithubAsset,
@@ -433,7 +439,7 @@ async fn install_runtime_asset(
 
     let archive_path = temp_dir.join(format!("{}.part", asset.name));
     ensure_contained(root.root(), &archive_path)?;
-    download_asset(client, asset, &archive_path).await?;
+    download_asset(asset, &archive_path).await?;
 
     let actual_sha256 = sha256_file(&archive_path)?;
     if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
@@ -484,69 +490,21 @@ async fn install_runtime_asset(
     Ok(manifest)
 }
 
-async fn download_asset(
-    client: &Client,
-    asset: &GithubAsset,
-    destination: &Path,
-) -> Result<(), AppError> {
-    let mut existing = fs::metadata(destination)
-        .map(|meta| meta.len())
-        .unwrap_or(0);
-    if existing > asset.size {
-        fs::remove_file(destination)?;
-        existing = 0;
-    }
-
-    let mut request = client
-        .get(&asset.browser_download_url)
-        .header(header::USER_AGENT, "OpenMindAI/2")
-        .timeout(Duration::from_secs(10 * 60));
-    if existing > 0 {
-        request = request.header(header::RANGE, format!("bytes={existing}-"));
-    }
-    let response = request
-        .send()
-        .await
-        .map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?;
-    let resumed = existing > 0 && response.status() == StatusCode::PARTIAL_CONTENT;
-    if existing > 0 && !resumed {
-        async_fs::remove_file(destination).await.ok();
-        existing = 0;
-    }
-    if !response.status().is_success() {
-        return Err(AppError::RuntimeInstallFailed(format!(
-            "HTTP {} while downloading stable-diffusion.cpp runtime",
-            response.status()
-        )));
-    }
-
-    let mut file = async_fs::OpenOptions::new()
-        .create(true)
-        .append(resumed)
-        .write(true)
-        .truncate(!resumed)
-        .open(destination)
-        .await?;
-    let mut downloaded = existing;
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?;
-        file.write_all(&chunk).await?;
-        downloaded = downloaded.saturating_add(chunk.len() as u64);
-        if downloaded > asset.size {
-            return Err(AppError::RuntimeInstallFailed(
-                "stable-diffusion.cpp runtime download exceeded expected size".to_string(),
-            ));
-        }
-    }
-    file.flush().await?;
-    let size = fs::metadata(destination)?.len();
-    if size != asset.size {
-        return Err(AppError::RuntimeInstallFailed(format!(
-            "stable-diffusion.cpp runtime download size {size} did not match expected {}",
-            asset.size
-        )));
-    }
+async fn download_asset(asset: &GithubAsset, destination: &Path) -> Result<(), AppError> {
+    crate::net::download_resumable(
+        &crate::net::download_client(),
+        &asset.browser_download_url,
+        destination,
+        Some(asset.size),
+        None,
+        |_| {},
+    )
+    .await
+    .map_err(|error| {
+        AppError::RuntimeInstallFailed(format!(
+            "stable-diffusion.cpp runtime download from GitHub failed: {error}"
+        ))
+    })?;
     Ok(())
 }
 
@@ -1024,6 +982,7 @@ mod tests {
                 hip: false,
                 metal: false,
             },
+            detection_complete: true,
         }
     }
 

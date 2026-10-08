@@ -7,6 +7,8 @@ export default [
   {
     ignores: [
       "dist/**",
+      // Separate Node packages with their own tsc/test setup (VS Code extension).
+      "extensions/**",
       "generated/**",
       "native-backend-smoke/**",
       "native-smoke-reports/**",
@@ -41,6 +43,7 @@ export default [
         document: "readonly",
         console: "readonly",
         HTMLElement: "readonly",
+        SVGSVGElement: "readonly",
         HTMLCanvasElement: "readonly",
         OffscreenCanvas: "readonly",
         HTMLTextAreaElement: "readonly",

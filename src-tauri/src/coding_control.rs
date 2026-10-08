@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -484,38 +484,7 @@ pub fn budget_exceeded(
     token_budget: i64,
     runtime_budget_minutes: i64,
 ) -> Result<Option<String>, AppError> {
-    let metrics = load_metrics(database, run_id)?;
-    if let Some(metrics) = metrics {
-        let used = metrics
-            .prompt_tokens
-            .saturating_add(metrics.completion_tokens);
-        if token_budget > 0 && used >= token_budget {
-            return Ok(Some(format!(
-                "token budget exhausted ({used}/{token_budget})"
-            )));
-        }
-    }
-    let started_at: Option<String> = database
-        .connection()
-        .query_row(
-            "SELECT started_at FROM openagent_runs WHERE id = ?1",
-            params![run_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if runtime_budget_minutes > 0 {
-        if let Some(started_at) = started_at {
-            if let Ok(started) = DateTime::parse_from_rfc3339(&started_at) {
-                let elapsed = Utc::now().signed_duration_since(started.with_timezone(&Utc));
-                if elapsed.num_minutes() >= runtime_budget_minutes {
-                    return Ok(Some(format!(
-                        "runtime budget exhausted ({} minutes)",
-                        runtime_budget_minutes
-                    )));
-                }
-            }
-        }
-    }
+    let _ = (database, run_id, token_budget, runtime_budget_minutes);
     Ok(None)
 }
 

@@ -5,6 +5,7 @@ import type {
   Conversation,
   AppPreferences,
   DownloadStatus,
+  DatasetDownloadStatus,
   GithubAccount,
   GithubIssue,
   GithubRepo,
@@ -24,6 +25,7 @@ import type {
   LlamaRuntimeStatus,
   Message,
   ModelRecord,
+  CodingAgentStatus,
   OpenAgentSandboxCapability,
   PerformanceProfile,
   PortableRootInfo,
@@ -251,9 +253,12 @@ export const api = {
   models: () => call<ModelRecord[]>("discover_models"),
   qwenDownloadStatus: () => call<DownloadStatus>("get_qwen_download_status"),
   modelDownloadStatus: () => call<DownloadStatus>("get_model_download_status"),
+  datasetDownloadStatus: () => call<DatasetDownloadStatus>("get_dataset_download_status"),
   downloadQwenModel: () => call<DownloadStatus>("download_qwen_model"),
   downloadCatalogModel: (modelId: string) =>
     call<DownloadStatus>("download_catalog_model", { modelId }),
+  downloadOpenMindDataset: (datasetId: string) =>
+    call<DatasetDownloadStatus>("download_openmindai_dataset", { datasetId }),
   cancelQwenDownload: () => call<DownloadStatus>("cancel_qwen_download"),
   cancelModelDownload: () => call<DownloadStatus>("cancel_model_download"),
   pauseModelDownload: () => call<DownloadStatus>("pause_model_download"),
@@ -279,6 +284,8 @@ export const api = {
   stopRuntime: () => call<void>("stop_llama_runtime"),
   openagentSandboxCapability: () =>
     call<OpenAgentSandboxCapability>("openagent_sandbox_capability"),
+  codingAgentStatus: () => call<CodingAgentStatus>("coding_agent_status"),
+  startCodingAgent: () => call<CodingAgentStatus>("start_coding_agent"),
   sendChatMessage: async (
     conversationId: string,
     content: string,
@@ -301,6 +308,7 @@ export const api = {
   preferences: () => call<AppPreferences>("get_app_preferences"),
   savePreferences: (preferences: AppPreferences) =>
     call<AppPreferences>("save_app_preferences", { preferences }),
+  networkProxyForUrl: (url: string) => call<string | null>("network_proxy_for_url", { url }),
   userProfile: () => call<UserProfile>("get_user_profile"),
   saveUserProfile: (profile: UserProfile) => call<UserProfile>("save_user_profile", { profile }),
   githubAccount: () => call<GithubAccount | null>("get_github_account"),
@@ -559,6 +567,24 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
       error: null,
     } as T);
   }
+  if (command === "get_dataset_download_status" || command === "download_openmindai_dataset") {
+    return Promise.resolve({
+      datasetId: (args?.datasetId as string) ?? "",
+      state: command === "download_openmindai_dataset" ? "completed" : "queued",
+      filesDownloaded: command === "download_openmindai_dataset" ? 1 : 0,
+      totalFiles: command === "download_openmindai_dataset" ? 1 : null,
+      downloadedBytes: command === "download_openmindai_dataset" ? 1024 : 0,
+      totalBytes: command === "download_openmindai_dataset" ? 1024 : null,
+      percentage: command === "download_openmindai_dataset" ? 100 : null,
+      speedBytesPerSec: null,
+      currentFile: command === "download_openmindai_dataset" ? "Ready" : null,
+      destination:
+        command === "download_openmindai_dataset"
+          ? "Development preview/datasets/openmindai"
+          : null,
+      error: null,
+    } as T);
+  }
   if (command === "get_llama_runtime_inventory") {
     return Promise.resolve({ runtimes: [], selected: null, serverState: "stopped" } as T);
   }
@@ -673,7 +699,7 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
       defaultPerformanceProfile: "Auto",
       telemetryEnabled: false,
       saveChatHistory: true,
-      localRuntimeAutostart: false,
+      localRuntimeAutostart: true,
       confirmBeforeDelete: true,
       webSearchEnabled: true,
       deepResearchEnabled: true,
@@ -687,6 +713,8 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
       notifyModelUpdates: true,
       autoDownloadModelUpdates: false,
       updateChannel: "Stable",
+      networkProxyMode: "direct",
+      networkProxyUrl: "",
     } as T);
   }
   if (command === "get_user_profile") {

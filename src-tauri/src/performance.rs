@@ -127,6 +127,7 @@ mod tests {
                 hip: false,
                 metal: false,
             },
+            detection_complete: true,
         };
 
         let profile = PerformanceProfileManager::auto(&hardware);

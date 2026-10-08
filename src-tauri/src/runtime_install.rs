@@ -2,14 +2,11 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Instant,
 };
 
 use chrono::Utc;
-use futures_util::StreamExt;
-use reqwest::{header, Client, StatusCode};
+use reqwest::{header, Client};
 use serde::{Deserialize, Serialize};
-use tokio::{fs as async_fs, io::AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -202,7 +199,7 @@ impl RuntimeInstaller {
     pub fn new(root: PortableRootManager) -> Self {
         Self {
             root,
-            client: Client::new(),
+            client: crate::net::download_client(),
             status: Arc::new(Mutex::new(RuntimeInstallStatus::idle())),
             cancel_token: Arc::new(Mutex::new(None)),
         }
@@ -244,18 +241,18 @@ impl RuntimeInstaller {
 
         let os = target_os();
         let arch = target_arch();
-        let releases = match fetch_recent_releases(&self.client).await {
-            Ok(releases) => releases,
-            Err(error) => {
-                *self
-                    .cancel_token
-                    .lock()
-                    .map_err(|_| AppError::internal("runtime install cancel lock poisoned"))? = None;
-                let message = error.to_string();
-                self.set_state(RuntimeInstallState::Failed, Some(message))?;
-                return Err(error);
-            }
-        };
+        let releases =
+            match fetch_recent_releases(&self.client).await {
+                Ok(releases) => releases,
+                Err(error) => {
+                    *self.cancel_token.lock().map_err(|_| {
+                        AppError::internal("runtime install cancel lock poisoned")
+                    })? = None;
+                    let message = error.to_string();
+                    self.set_state(RuntimeInstallState::Failed, Some(message))?;
+                    return Err(error);
+                }
+            };
         let mut last_error: Option<AppError> = None;
         for backend in preferred_backend_order(hardware) {
             let Some(pattern) = catalog_pattern(os, arch, &backend) else {
@@ -335,68 +332,44 @@ impl RuntimeInstaller {
         let archive_path = temp_dir.join(&asset.name);
         let part_path = temp_dir.join(format!("{}.part", asset.name));
 
-        let existing = fs::metadata(&part_path).map(|meta| meta.len()).unwrap_or(0);
-        let mut request = self.client.get(&asset.browser_download_url);
-        if existing > 0 {
-            request = request.header(header::RANGE, format!("bytes={existing}-"));
-        }
-        let response = request
-            .send()
-            .await
-            .map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?;
-        let response_status = response.status();
-        let resumed = existing > 0 && response_status == StatusCode::PARTIAL_CONTENT;
-        if existing > 0 && !resumed {
-            async_fs::remove_file(&part_path).await.ok();
-        }
-        if !response_status.is_success() {
-            return Err(AppError::RuntimeInstallFailed(format!(
-                "HTTP {response_status} while downloading runtime"
-            )));
-        }
-
         self.update_status(|status| {
             status.state = RuntimeInstallState::Downloading;
             status.version = Some(release.tag_name.clone());
-            status.downloaded_bytes = if resumed { existing } else { 0 };
             status.total_bytes = Some(asset.size);
             status.error = None;
         })?;
-
-        let mut file = async_fs::OpenOptions::new()
-            .create(true)
-            .append(resumed)
-            .write(true)
-            .truncate(!resumed)
-            .open(&part_path)
-            .await?;
-        let started = Instant::now();
-        let mut downloaded = if resumed { existing } else { 0 };
-        let mut stream = response.bytes_stream();
-
-        while let Some(chunk) = stream.next().await {
-            if token.is_cancelled() {
-                file.flush().await?;
+        let downloaded = crate::net::download_resumable(
+            &self.client,
+            &asset.browser_download_url,
+            &part_path,
+            Some(asset.size),
+            Some(token),
+            |progress| {
+                let _ = self.update_status(|status| {
+                    status.downloaded_bytes = progress.downloaded;
+                    status.percentage =
+                        Some((progress.downloaded as f64 / asset.size as f64) * 100.0);
+                    status.speed_bytes_per_sec = Some(progress.bytes_per_sec);
+                });
+            },
+        )
+        .await;
+        if let Err(error) = downloaded {
+            if error.is_cancelled() {
                 self.set_state(RuntimeInstallState::Cancelled, None)?;
                 return Err(AppError::RuntimeInstallFailed(
                     "runtime install cancelled".to_string(),
                 ));
             }
-            let chunk = chunk.map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?;
-            file.write_all(&chunk).await?;
-            downloaded += chunk.len() as u64;
-            let elapsed = started.elapsed().as_secs_f64().max(0.001);
-            self.update_status(|status| {
-                status.downloaded_bytes = downloaded;
-                status.percentage = Some((downloaded as f64 / asset.size as f64) * 100.0);
-                status.speed_bytes_per_sec = Some(downloaded as f64 / elapsed);
-            })?;
+            return Err(AppError::RuntimeInstallFailed(format!(
+                "llama.cpp runtime download from GitHub failed: {error}"
+            )));
         }
-        file.flush().await?;
 
         self.set_state(RuntimeInstallState::Verifying, None)?;
         let part_size = fs::metadata(&part_path)?.len();
         if part_size != asset.size {
+            fs::remove_file(&part_path).ok();
             return Err(AppError::RuntimeInstallFailed(format!(
                 "downloaded size {part_size} did not match expected {}",
                 asset.size
@@ -404,6 +377,9 @@ impl RuntimeInstaller {
         }
         let actual_sha256 = sha256_file(&part_path)?;
         if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
+            // A full-size corrupt partial would otherwise be "resumed" as
+            // complete and fail the same check on every retry.
+            fs::remove_file(&part_path).ok();
             return Err(AppError::RuntimeInstallFailed(format!(
                 "checksum mismatch: expected {expected_sha256}, got {actual_sha256}"
             )));
@@ -412,18 +388,15 @@ impl RuntimeInstaller {
         fs::rename(&part_path, &archive_path)?;
 
         self.set_state(RuntimeInstallState::Extracting, None)?;
-        fs::create_dir_all(&install_dir)?;
-        extract_archive(&archive_path, &install_dir)?;
+        let staging_dir = temp_dir.join(format!("{}.extract", asset.name));
+        ensure_contained(self.root.root(), &staging_dir)?;
+        let installed = install_runtime_archive(&archive_path, &staging_dir, &install_dir);
         fs::remove_file(&archive_path).ok();
+        installed?;
 
         let server = find_binary(&install_dir, "llama-server");
         let cli = find_binary(&install_dir, "llama-cli");
         let bench = find_binary(&install_dir, "llama-bench");
-        if server.is_none() && cli.is_none() {
-            return Err(AppError::RuntimeInstallFailed(
-                "archive did not contain llama-server or llama-cli".to_string(),
-            ));
-        }
         for path in [&server, &cli, &bench].into_iter().flatten() {
             ensure_executable(path)?;
         }
@@ -483,17 +456,67 @@ impl RuntimeInstaller {
 }
 
 async fn fetch_recent_releases(client: &Client) -> Result<Vec<GithubRelease>, AppError> {
-    client
-        .get(RELEASES_URL)
-        .header(header::USER_AGENT, "OpenMindAI")
-        .send()
-        .await
-        .map_err(|error| AppError::GithubApiError(error.to_string()))?
-        .error_for_status()
-        .map_err(|error| AppError::GithubApiError(error.to_string()))?
-        .json::<Vec<GithubRelease>>()
-        .await
-        .map_err(|error| AppError::GithubApiError(error.to_string()))
+    crate::net::send_with_retry(
+        || {
+            client
+                .get(RELEASES_URL)
+                .header(header::USER_AGENT, "OpenMindAI")
+        },
+        None,
+    )
+    .await
+    .map_err(|error| AppError::GithubApiError(error.to_string()))?
+    .error_for_status()
+    .map_err(|error| AppError::GithubApiError(error.to_string()))?
+    .json::<Vec<GithubRelease>>()
+    .await
+    .map_err(|error| AppError::GithubApiError(error.to_string()))
+}
+
+/// Extracts `archive_path` into `staging_dir`, checks it contains llama-server or
+/// llama-cli, and only then moves it to `install_dir`. A failed or incomplete
+/// archive never touches `install_dir`. A working copy of the same release that
+/// is already installed (possibly the runtime in use) is kept as it is.
+fn install_runtime_archive(
+    archive_path: &Path,
+    staging_dir: &Path,
+    install_dir: &Path,
+) -> Result<(), AppError> {
+    if staging_dir.exists() {
+        fs::remove_dir_all(staging_dir)?;
+    }
+    fs::create_dir_all(staging_dir)?;
+    let staged = extract_archive(archive_path, staging_dir).and_then(|()| {
+        if has_runtime_binary(staging_dir) {
+            Ok(())
+        } else {
+            Err(AppError::RuntimeInstallFailed(
+                "archive did not contain llama-server or llama-cli".to_string(),
+            ))
+        }
+    });
+    if let Err(error) = staged {
+        fs::remove_dir_all(staging_dir).ok();
+        return Err(error);
+    }
+
+    if install_dir.exists() {
+        if has_runtime_binary(install_dir) {
+            tracing::info!(path = %install_dir.display(), "runtime release already installed; keeping it");
+            fs::remove_dir_all(staging_dir).ok();
+            return Ok(());
+        }
+        fs::remove_dir_all(install_dir)?;
+    }
+    if let Some(parent) = install_dir.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::rename(staging_dir, install_dir)?;
+    Ok(())
+}
+
+fn has_runtime_binary(dir: &Path) -> bool {
+    find_binary(dir, "llama-server").is_some() || find_binary(dir, "llama-cli").is_some()
 }
 
 fn extract_archive(archive_path: &Path, dest_dir: &Path) -> Result<(), AppError> {
@@ -694,6 +717,140 @@ mod tests {
         let found = find_binary(temp.path(), "llama-server").unwrap();
         assert_eq!(found, nested.join("llama-server.exe"));
         assert!(find_binary(temp.path(), "llama-cli").is_none());
+    }
+
+    fn zip_with(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = fs::File::create(path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        for (name, data) in entries {
+            writer
+                .start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            std::io::Write::write_all(&mut writer, data).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    fn runtime_archive_is_staged_then_moved_into_place() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("runtime.zip");
+        zip_with(&archive, &[("bin/llama-server.exe", b"server"), ("bin/ggml.dll", b"lib")]);
+        let staging = temp.path().join("temp/runtime.zip.extract");
+        let install = temp.path().join("runtimes/llama/vulkan/b1");
+
+        install_runtime_archive(&archive, &staging, &install).unwrap();
+
+        assert!(install.join("bin/llama-server.exe").is_file());
+        assert!(!staging.exists(), "staging directory must not be left behind");
+    }
+
+    #[test]
+    fn invalid_runtime_archive_never_creates_the_install_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("runtime.zip");
+        fs::write(&archive, b"this is not a zip archive").unwrap();
+        let staging = temp.path().join("staging");
+        let install = temp.path().join("runtimes/llama/vulkan/b1");
+
+        assert!(install_runtime_archive(&archive, &staging, &install).is_err());
+        assert!(!install.exists());
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn archive_without_runtime_executable_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("runtime.zip");
+        zip_with(&archive, &[("README.md", b"docs only"), ("bin/ggml.dll", b"lib")]);
+        let staging = temp.path().join("staging");
+        let install = temp.path().join("runtimes/llama/vulkan/b1");
+
+        let error = install_runtime_archive(&archive, &staging, &install)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("did not contain llama-server or llama-cli"), "{error}");
+        assert!(!install.exists());
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn working_installed_runtime_of_same_release_is_left_untouched() {
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join("runtimes/llama/vulkan/b1");
+        fs::create_dir_all(&install).unwrap();
+        fs::write(install.join("llama-server.exe"), b"live server in use").unwrap();
+        let archive = temp.path().join("runtime.zip");
+        zip_with(&archive, &[("llama-server.exe", b"freshly downloaded")]);
+        let staging = temp.path().join("staging");
+
+        install_runtime_archive(&archive, &staging, &install).unwrap();
+
+        assert_eq!(
+            fs::read(install.join("llama-server.exe")).unwrap(),
+            b"live server in use"
+        );
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn broken_install_dir_of_same_release_is_replaced() {
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join("runtimes/llama/vulkan/b1");
+        fs::create_dir_all(&install).unwrap();
+        fs::write(install.join("partial.dll"), b"left by a failed install").unwrap();
+        let archive = temp.path().join("runtime.zip");
+        zip_with(&archive, &[("llama-server.exe", b"server")]);
+
+        install_runtime_archive(&archive, &temp.path().join("staging"), &install).unwrap();
+
+        assert!(install.join("llama-server.exe").is_file());
+        assert!(!install.join("partial.dll").exists());
+    }
+
+    /// Exercises the real production path end to end (GitHub release discovery,
+    /// asset selection for this OS/architecture, resumable download, SHA-256
+    /// check, staged extraction, executable discovery, manifest, and runtime
+    /// discovery with `--version`) against a throwaway OpenMindAI root, so the
+    /// runtime in the real installation is never touched.
+    #[tokio::test]
+    #[ignore = "downloads a real llama.cpp release from GitHub"]
+    async fn real_github_runtime_install_into_isolated_root() {
+        let base = std::env::var_os("OPENMINDAI_RUNTIME_TEST_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let temp = tempfile::tempdir_in(base).unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let hardware = crate::hardware::HardwareProfiler::detect();
+        let installer = RuntimeInstaller::new(root.clone());
+
+        let status = installer.install_recommended(&hardware).await.unwrap();
+
+        assert_eq!(status.state, RuntimeInstallState::Completed);
+        let version = status.version.clone().unwrap();
+        let backend = status.backend.clone().unwrap();
+        println!("installed llama.cpp {version} ({backend:?}) into {}", root.root().display());
+        let manifest = root
+            .resolve_relative(format!(
+                "runtimes/llama/manifests/llama-{}-{version}.json",
+                backend_slug(&backend)
+            ))
+            .unwrap();
+        assert!(manifest.is_file(), "{}", manifest.display());
+        assert!(fs::read_dir(root.resolve_relative("temp/downloads").unwrap())
+            .unwrap()
+            .next()
+            .is_none(), "download/staging files must be cleaned up");
+
+        let inventory = crate::runtime::LlamaRuntimeManager::new(root.clone())
+            .inventory(&hardware)
+            .unwrap();
+        let selected = inventory.selected.expect("installed runtime is discoverable");
+        println!("discovered: {} / {:?}", selected.message, selected.version_output);
+        assert!(selected.usable, "{}", selected.message);
+        assert!(selected.server_exists);
     }
 
     #[test]

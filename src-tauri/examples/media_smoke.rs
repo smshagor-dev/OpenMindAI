@@ -20,8 +20,12 @@ mod model_catalog;
 mod model_download;
 #[path = "../src/model_registry.rs"]
 mod model_registry;
+#[path = "../src/net.rs"]
+mod net;
 #[path = "../src/portable_root.rs"]
 mod portable_root;
+#[path = "../src/process_ownership.rs"]
+mod process_ownership;
 #[path = "../src/voice_runtime.rs"]
 mod voice_runtime;
 

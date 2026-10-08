@@ -14,11 +14,13 @@ mod maintenance;
 mod model_catalog;
 mod model_download;
 mod model_registry;
+mod net;
 mod performance;
 mod portable_root;
 mod projects;
 mod runtime;
 mod runtime_install;
+mod sampling;
 mod settings;
 mod storage;
 mod voice_runtime;
@@ -37,6 +39,7 @@ use hardware::{HardwareProfile, HardwareProfiler};
 use inference::{
     ActiveGenerations, InferenceMedia, InferenceMode, StreamRequest, StreamStartedEvent,
 };
+use dataset_download::{DatasetDownloadManager, DatasetDownloadStatus};
 use launch_planner::{LaunchPlan, ModelLaunchPlanner};
 use maintenance::{BackupInfo, DiagnosticReport, RepairSummary};
 use model_catalog::ModelCatalogReport;
@@ -56,7 +59,7 @@ use runtime::{allocate_local_port, LlamaRuntimeManager, LlamaRuntimeStatus, Runt
 use runtime_install::{RuntimeInstallStatus, RuntimeInstaller};
 use settings::{AppPreferences, SettingsRepository, UserProfile};
 use storage::{CacheClearResult, StorageMonitor, StorageSummary};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -73,7 +76,12 @@ struct AppState {
     active_database_path: PathBuf,
     database: Mutex<Database>,
     runtime: Mutex<LlamaRuntimeManager>,
+    // Second llama-server for the coding agent when Agent Setup places it in a dedicated
+    // runtime (see agent_runtime::decide_placement). Idle unless that placement is chosen.
+    agent_runtime: Mutex<LlamaRuntimeManager>,
+    agent_startup: agent_runtime::AgentStartup,
     downloads: ModelDownloadManager,
+    dataset_downloads: DatasetDownloadManager,
     runtime_installer: RuntimeInstaller,
     active_generations: ActiveGenerations,
     warm_start: warm_start::WarmStartCoordinator,
@@ -627,11 +635,12 @@ async fn create_generation_artifact(
     } else {
         kind.as_str()
     };
-    if let Some(report) = artifacts::media_preflight::preflight_for_hardware(
-        &state.root,
-        artifact_kind,
-        &state.hardware,
-    )? {
+    // `state.hardware` is the startup placeholder (0 bytes RAM, no GPUs); the
+    // memory and GPU checks need the completed hardware scan.
+    let hardware = HardwareProfiler::for_inference(&state.hardware);
+    if let Some(report) =
+        artifacts::media_preflight::preflight_for_hardware(&state.root, artifact_kind, &hardware)?
+    {
         report.ensure_ready()?;
     }
     let (artifact, path) = {
@@ -710,7 +719,7 @@ async fn generate_local_media_artifact(
                 )
             })?;
             let model_path = state.root.resolve_relative(relative_model_path)?;
-            let hardware = state.hardware.clone();
+            let hardware = HardwareProfiler::for_inference(&state.hardware);
             diffusion_runtime::generate_image(
                 &state.root,
                 &state.http,
@@ -774,7 +783,7 @@ async fn generate_local_media_artifact(
                 &text_dependency.filename_pattern,
             )
             .ok_or_else(|| app_error::AppError::ArtifactGenerationFailed("OpenMindAI Motion text encoder is missing; validate or re-download the model package".to_string()))?;
-            let hardware = state.hardware.clone();
+            let hardware = HardwareProfiler::for_inference(&state.hardware);
             diffusion_runtime::generate_video(
                 &state.root,
                 &state.http,
@@ -843,7 +852,7 @@ fn installed_catalog_entry_by_id(
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
     let installed = ModelRegistry::new(&db, &state.root).discover_gguf_models()?;
     drop(db);
-    let hardware = state.hardware.clone();
+    let hardware = HardwareProfiler::for_inference(&state.hardware);
     Ok(
         model_catalog::check_model_updates(&installed, &hardware, &state.root)?
             .entries
@@ -954,14 +963,22 @@ fn reveal_artifact_in_folder(
     Ok(())
 }
 
+/// Waits for the completed hardware scan instead of returning the startup
+/// placeholder (0 bytes RAM, no GPUs).
 #[tauri::command]
-fn detect_hardware(state: State<AppState>) -> HardwareProfile {
-    state.hardware.clone()
+async fn detect_hardware(
+    state: State<'_, AppState>,
+) -> Result<HardwareProfile, app_error::AppError> {
+    Ok(HardwareProfiler::for_inference(&state.hardware))
 }
 
 #[tauri::command]
-fn get_performance_profile(state: State<AppState>) -> PerformanceProfile {
-    PerformanceProfileManager::auto(&state.hardware)
+async fn get_performance_profile(
+    state: State<'_, AppState>,
+) -> Result<PerformanceProfile, app_error::AppError> {
+    Ok(PerformanceProfileManager::auto(&HardwareProfiler::for_inference(
+        &state.hardware,
+    )))
 }
 
 #[tauri::command]
@@ -983,6 +1000,13 @@ fn get_model_download_status(
     state: State<AppState>,
 ) -> Result<DownloadStatus, app_error::AppError> {
     state.downloads.status()
+}
+
+#[tauri::command]
+fn get_dataset_download_status(
+    state: State<AppState>,
+) -> Result<DatasetDownloadStatus, app_error::AppError> {
+    state.dataset_downloads.status()
 }
 
 #[tauri::command]
@@ -1010,6 +1034,14 @@ async fn download_catalog_model(
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
     ModelRegistry::new(&db, &state.root).discover_gguf_models()?;
     Ok(status)
+}
+
+#[tauri::command]
+async fn download_openmindai_dataset(
+    dataset_id: String,
+    state: State<'_, AppState>,
+) -> Result<DatasetDownloadStatus, app_error::AppError> {
+    state.dataset_downloads.download_dataset(&dataset_id).await
 }
 
 #[tauri::command]
@@ -1057,11 +1089,11 @@ fn validate_model(
 }
 
 #[tauri::command]
-fn plan_model_launch(
+async fn plan_model_launch(
     model_id: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<LaunchPlan, app_error::AppError> {
-    let hardware = state.hardware.clone();
+    let hardware = HardwareProfiler::for_inference(&state.hardware);
     let db = state
         .database
         .lock()
@@ -1084,17 +1116,10 @@ async fn activate_model(
             .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
         ModelRegistry::new(&db, &state.root).validate_model(&model_id)?
     };
-    let hardware = state.hardware.clone();
+    let hardware = HardwareProfiler::for_inference(&state.hardware);
     let plan = ModelLaunchPlanner::plan(&model, &hardware, allocate_local_port()?);
-    let status = {
-        let mut runtime = state
-            .runtime
-            .lock()
-            .map_err(|_| app_error::AppError::internal("runtime lock poisoned"))?;
-        let status = runtime.ensure_model_server(&hardware, &plan.config)?;
-        state.warm_start.mark_runtime_ready(&model.id);
-        status
-    };
+    let (status, _lease) = runtime::ensure_model_ready(&state.runtime, &hardware, &plan.config)?;
+    state.warm_start.mark_runtime_ready(&model.id);
 
     let db = state
         .database
@@ -1117,8 +1142,10 @@ fn clear_cache(state: State<AppState>) -> Result<CacheClearResult, app_error::Ap
 }
 
 #[tauri::command]
-fn run_diagnostics(state: State<AppState>) -> Result<DiagnosticReport, app_error::AppError> {
-    let hardware = state.hardware.clone();
+async fn run_diagnostics(
+    state: State<'_, AppState>,
+) -> Result<DiagnosticReport, app_error::AppError> {
+    let hardware = HardwareProfiler::for_inference(&state.hardware);
     let db = state
         .database
         .lock()
@@ -1138,7 +1165,7 @@ fn run_diagnostics(state: State<AppState>) -> Result<DiagnosticReport, app_error
 async fn repair_installation(
     state: State<'_, AppState>,
 ) -> Result<RepairSummary, app_error::AppError> {
-    let hardware = state.hardware.clone();
+    let hardware = HardwareProfiler::for_inference(&state.hardware);
     let mut actions = Vec::new();
 
     state.root.ensure_directories()?;
@@ -1210,8 +1237,10 @@ fn list_backups(state: State<AppState>) -> Result<Vec<BackupInfo>, app_error::Ap
 }
 
 #[tauri::command]
-fn check_model_updates(state: State<AppState>) -> Result<ModelCatalogReport, app_error::AppError> {
-    let hardware = state.hardware.clone();
+async fn check_model_updates(
+    state: State<'_, AppState>,
+) -> Result<ModelCatalogReport, app_error::AppError> {
+    let hardware = HardwareProfiler::for_inference(&state.hardware);
     let db = state
         .database
         .lock()
@@ -1250,10 +1279,10 @@ fn read_recent_logs(state: State<AppState>) -> Result<String, app_error::AppErro
 }
 
 #[tauri::command]
-fn get_llama_runtime_status(
-    state: State<AppState>,
+async fn get_llama_runtime_status(
+    state: State<'_, AppState>,
 ) -> Result<LlamaRuntimeStatus, app_error::AppError> {
-    let hardware = state.hardware.clone();
+    let hardware = HardwareProfiler::for_inference(&state.hardware);
     let runtime = state
         .runtime
         .lock()
@@ -1262,10 +1291,10 @@ fn get_llama_runtime_status(
 }
 
 #[tauri::command]
-fn get_llama_runtime_inventory(
-    state: State<AppState>,
+async fn get_llama_runtime_inventory(
+    state: State<'_, AppState>,
 ) -> Result<RuntimeInventory, app_error::AppError> {
-    let hardware = state.hardware.clone();
+    let hardware = HardwareProfiler::for_inference(&state.hardware);
     let runtime = state
         .runtime
         .lock()
@@ -1284,7 +1313,7 @@ fn get_runtime_install_status(
 async fn install_recommended_runtime(
     state: State<'_, AppState>,
 ) -> Result<RuntimeInstallStatus, app_error::AppError> {
-    let hardware = state.hardware.clone();
+    let hardware = HardwareProfiler::for_inference(&state.hardware);
     state.runtime_installer.install_recommended(&hardware).await
 }
 
@@ -1296,8 +1325,10 @@ fn cancel_runtime_install(
 }
 
 #[tauri::command]
-fn start_llama_runtime(state: State<AppState>) -> Result<LlamaRuntimeStatus, app_error::AppError> {
-    let hardware = state.hardware.clone();
+async fn start_llama_runtime(
+    state: State<'_, AppState>,
+) -> Result<LlamaRuntimeStatus, app_error::AppError> {
+    let hardware = HardwareProfiler::for_inference(&state.hardware);
     let mut runtime = state
         .runtime
         .lock()
@@ -1360,11 +1391,36 @@ fn resolve_conversation_model(
     })
 }
 
+/// `Some(previous model file, if any)` when `model_path` is not already resident and ready.
+fn model_switch_needed(
+    state: &State<'_, AppState>,
+    model_path: &str,
+) -> Result<Option<Option<String>>, app_error::AppError> {
+    let runtime = state
+        .runtime
+        .lock()
+        .map_err(|_| app_error::AppError::internal("runtime lock poisoned"))?;
+    let expected = runtime.resolved_model_path(model_path)?;
+    let loaded = runtime.loaded_model_path().map(str::to_string);
+    if loaded.as_deref() == Some(expected.as_str())
+        && runtime.state() == runtime::ServerState::Ready
+    {
+        return Ok(None);
+    }
+    Ok(Some(loaded.filter(|path| path != &expected).map(|path| {
+        std::path::Path::new(&path)
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or(path)
+    })))
+}
+
 struct ModelRoutingDecision {
     model: ModelRecord,
     reason: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_streaming_completion(
     app: &AppHandle,
     state: &State<'_, AppState>,
@@ -1373,20 +1429,29 @@ async fn run_streaming_completion(
     assistant: &Message,
     mode: &str,
     media: &[InferenceMedia],
+    dataset_context: Option<&str>,
 ) -> Result<(), app_error::AppError> {
-    let hardware = state.hardware.clone();
+    let hardware = HardwareProfiler::for_inference(&state.hardware);
     let plan = ModelLaunchPlanner::plan(model, &hardware, allocate_local_port()?);
-    let endpoint = {
-        let mut runtime = state
-            .runtime
-            .lock()
-            .map_err(|_| app_error::AppError::internal("runtime lock poisoned"))?;
-        let status = runtime.ensure_model_server(&hardware, &plan.config)?;
-        state.warm_start.mark_runtime_ready(&model.id);
-        status.endpoint.ok_or_else(|| {
-            app_error::AppError::InferenceServerUnavailable("runtime endpoint missing".to_string())
-        })?
-    };
+    // A model switch in the shared runtime can take minutes; tell the chat what it waits for.
+    if let Some(replacing) = model_switch_needed(state, &plan.config.model_path)? {
+        let _ = app.emit(
+            "runtime:model-loading",
+            serde_json::json!({
+                "conversationId": conversation_id,
+                "modelName": model.name,
+                "replacing": replacing,
+            }),
+        );
+    }
+    // Held until this chat response finishes streaming, so a coding-agent request cannot
+    // swap the shared runtime away mid-answer.
+    let (status, _model_lease) =
+        runtime::ensure_model_ready(&state.runtime, &hardware, &plan.config)?;
+    state.warm_start.mark_runtime_ready(&model.id);
+    let endpoint = status.endpoint.ok_or_else(|| {
+        app_error::AppError::InferenceServerUnavailable("runtime endpoint missing".to_string())
+    })?;
 
     let inference_mode = if mode.eq_ignore_ascii_case("thinking") {
         InferenceMode::Thinking
@@ -1404,6 +1469,8 @@ async fn run_streaming_completion(
         assistant,
         mode: inference_mode,
         media,
+        dataset_context,
+        sampling: sampling::SamplingProfile::for_chat_model(model.family.as_deref().unwrap_or("")),
     })
     .await;
 
@@ -1463,6 +1530,12 @@ async fn send_chat_message(
     let model = routing.model;
     state.warm_start.note_foreground_request(&model.id);
     sync_project_context(&state, &conversation_id)?;
+    let dataset_context = dataset_context::build_dataset_context(
+        &state.root,
+        trimmed,
+        &model.name,
+        &routing.reason,
+    )?;
 
     let (user, assistant) = {
         let db = state
@@ -1507,6 +1580,7 @@ async fn send_chat_message(
         &assistant,
         &mode,
         &media,
+        dataset_context.as_deref(),
     )
     .await?;
 
@@ -1562,6 +1636,12 @@ async fn regenerate_message(
     let model = routing.model;
     state.warm_start.note_foreground_request(&model.id);
     sync_project_context(&state, &conversation_id)?;
+    let dataset_context = dataset_context::build_dataset_context(
+        &state.root,
+        &user.content,
+        &model.name,
+        &routing.reason,
+    )?;
     let assistant = {
         let db = state
             .database
@@ -1596,6 +1676,7 @@ async fn regenerate_message(
         &assistant,
         &mode,
         &[],
+        dataset_context.as_deref(),
     )
     .await?;
     Ok(assistant)
@@ -1769,7 +1850,19 @@ fn save_app_preferences(
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-    SettingsRepository::new(&db).save_preferences(&preferences)
+    net::validate_proxy_settings(
+        &preferences.network_proxy_mode,
+        &preferences.network_proxy_url,
+    )?;
+    let saved = SettingsRepository::new(&db).save_preferences(&preferences)?;
+    net::apply_proxy_settings(&saved.network_proxy_mode, &saved.network_proxy_url);
+    Ok(saved)
+}
+
+/// Proxy the app updater should use for `url` (it runs its own HTTP client).
+#[tauri::command]
+fn network_proxy_for_url(url: String) -> Option<String> {
+    net::proxy_for_url(&url)
 }
 
 #[tauri::command]
@@ -1938,8 +2031,26 @@ pub fn run() {
         .unwrap_or_else(|| root.database_path());
     let database =
         Database::open(database_path.clone()).expect("failed to initialize SQLite database");
+    match SettingsRepository::new(&database).get_preferences() {
+        Ok(preferences) => net::apply_proxy_settings(
+            &preferences.network_proxy_mode,
+            &preferences.network_proxy_url,
+        ),
+        Err(error) => {
+            tracing::warn!(%error, "could not load network preferences; connecting directly");
+            net::apply_proxy_settings("direct", "");
+        }
+    }
+    // Remove runtimes a crashed earlier instance left behind, but only processes whose PID,
+    // start time and executable match what that instance recorded.
+    let sweep = process_ownership::sweep_stale(&LlamaRuntimeManager::ownership_registry(&root));
+    if !sweep.terminated.is_empty() {
+        tracing::warn!(pids = ?sweep.terminated, "terminated runtimes left by a previous instance");
+    }
     let runtime = LlamaRuntimeManager::new(root.clone());
+    let agent_runtime = LlamaRuntimeManager::new(root.clone());
     let downloads = ModelDownloadManager::new(root.clone());
+    let dataset_downloads = DatasetDownloadManager::new(root.clone());
     let runtime_installer = RuntimeInstaller::new(root.clone());
     let hardware = HardwareProfiler::detect();
 
@@ -1954,20 +2065,27 @@ pub fn run() {
             active_database_path: database_path,
             database: Mutex::new(database),
             runtime: Mutex::new(runtime),
+            agent_runtime: Mutex::new(agent_runtime),
+            agent_startup: agent_runtime::AgentStartup::default(),
             downloads,
+            dataset_downloads,
             runtime_installer,
             active_generations: ActiveGenerations::default(),
             warm_start: warm_start::WarmStartCoordinator::default(),
-            http: Client::new(),
+            http: net::http_client(),
         })
         .setup(|app| {
             // Window creation stays non-blocking. Only OpenMindAI Core is
             // preloaded; heavier reasoning, vision and media models stay on-demand.
             warm_start::spawn_background_services(app.handle().clone());
+            // Lets the VS Code extension reach the coding agent from Settings -> Agent Setup.
+            coding_agent_gateway::spawn(app.handle().clone());
+            agent_runtime::spawn_idle_monitor(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_portable_root,
+            network_proxy_for_url,
             installation_status,
             complete_setup,
             save_setup_progress,
@@ -2008,8 +2126,10 @@ pub fn run() {
             discover_models,
             get_qwen_download_status,
             get_model_download_status,
+            get_dataset_download_status,
             download_qwen_model,
             download_catalog_model,
+            download_openmindai_dataset,
             cancel_qwen_download,
             cancel_model_download,
             pause_model_download,
@@ -2052,9 +2172,16 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building OpenMindAI");
 
-    app.run(|_app_handle, event| {
+    app.run(|app_handle, event| {
         if matches!(event, tauri::RunEvent::Exit) {
             tauri::async_runtime::block_on(coding_lsp::shutdown_pooled_sessions());
+            coding_agent_gateway::remove_descriptor();
+            let state = app_handle.state::<AppState>();
+            for runtime in [&state.agent_runtime, &state.runtime] {
+                if let Ok(mut runtime) = runtime.lock() {
+                    let _ = runtime.stop();
+                }
+            }
         }
     });
 }

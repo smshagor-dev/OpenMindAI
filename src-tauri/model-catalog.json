@@ -1,5 +1,5 @@
 {
-  "catalogVersion": 7,
+  "catalogVersion": 8,
   "models": [
     {
       "id": "qwen3-06b-q4",
@@ -182,7 +182,7 @@
     },
     {
       "id": "nemotron3-nano-4b-q4km",
-      "name": "OpenMindAI Agent Lite",
+      "name": "OpenAgent Lite",
       "version": "1",
       "family": "nemotron",
       "kind": "agent",
@@ -198,14 +198,14 @@
       "description": "Lightweight agent-focused local model for tool use, coding, reasoning, and fast autonomous task execution.",
       "download": {
         "strategy": "singleFile",
-        "filenamePattern": "NVIDIA-Nemotron3-Nano-4B-Q4_K_M.gguf",
+        "filenamePattern": "*Q4_K_M.gguf",
         "destinationDir": "models/llm/openmind/agent-lite",
         "format": "gguf"
       }
     },
     {
       "id": "nemotron3-nano-30b-a3b-q4km",
-      "name": "OpenMindAI Agent",
+      "name": "OpenAgent",
       "version": "1",
       "family": "nemotron",
       "kind": "agent",
@@ -221,14 +221,14 @@
       "description": "High-throughput local agent model for multi-step reasoning, coding, tool use, and autonomous workflows.",
       "download": {
         "strategy": "singleFile",
-        "filenamePattern": "NVIDIA-Nemotron-3-Nano-30B-A3B-Q4_K_M.gguf",
+        "filenamePattern": "*30B-A3B-Q4_K_M.gguf",
         "destinationDir": "models/llm/openmind/agent",
         "format": "gguf"
       }
     },
     {
       "id": "nemotron35-lightning-30b-a3b-q4",
-      "name": "OpenMindAI Agent Lightning",
+      "name": "OpenAgent Lightning",
       "version": "3.5",
       "family": "nemotron",
       "kind": "agent",
@@ -251,7 +251,7 @@
     },
     {
       "id": "nemotron3-super-120b-q4k",
-      "name": "OpenMindAI Agent Pro",
+      "name": "OpenAgent Pro",
       "version": "3",
       "family": "nemotron",
       "kind": "agent",
@@ -267,7 +267,7 @@
       "description": "Large local agent model for advanced reasoning, collaborative agent workflows, coding, and high-complexity automation.",
       "download": {
         "strategy": "singleFile",
-        "filenamePattern": "Nemotron-3-Super-120B-Q4_K.gguf",
+        "filenamePattern": "*120B-Q4_K.gguf",
         "destinationDir": "models/llm/openmind/agent-pro",
         "format": "gguf"
       }
@@ -623,7 +623,7 @@
       "description": "Balanced local image generation package with Vulkan, CUDA, Metal, or CPU execution.",
       "download": {
         "strategy": "singleFile",
-        "filenamePattern": "*.safetensors",
+        "filenamePattern": "sd_xl_base_1.0_0.9vae.safetensors",
         "destinationDir": "models/image/sdxl",
         "format": "safetensors"
       },

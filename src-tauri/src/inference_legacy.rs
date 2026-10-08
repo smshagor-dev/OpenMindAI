@@ -16,6 +16,7 @@ use crate::{
     app_error::AppError,
     chat::{ChatRepository, Message},
     database::Database,
+    sampling::{SamplingProfile, CORE_CHAT_MAX_TOKENS},
 };
 
 const WEB_SEARCH_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
@@ -126,30 +127,9 @@ pub struct StreamRequest<'a> {
     pub assistant: &'a Message,
     pub mode: InferenceMode,
     pub media: &'a [InferenceMedia],
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChatGenerationConfig {
-    pub temperature: f32,
-    pub top_p: f32,
-    pub top_k: u32,
-    pub min_p: f32,
-    pub max_tokens: u32,
-    pub presence_penalty: f32,
-}
-
-impl Default for ChatGenerationConfig {
-    fn default() -> Self {
-        Self {
-            temperature: 0.6,
-            top_p: 0.95,
-            top_k: 20,
-            min_p: 0.0,
-            max_tokens: 768,
-            presence_penalty: 0.0,
-        }
-    }
+    pub dataset_context: Option<&'a str>,
+    /// Chosen for the conversation's model family; see `SamplingProfile::for_chat_model`.
+    pub sampling: SamplingProfile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,19 +157,16 @@ pub async fn stream_chat_completion(
     let cancellation = request.active.start(request.conversation_id)?;
     let started = Instant::now();
     let mut messages = build_context(request.database, request.conversation_id)?;
+    if let Some(dataset_context) = request.dataset_context.filter(|value| !value.trim().is_empty()) {
+        messages.push(json!({ "role": "system", "content": dataset_context }));
+    }
     append_live_web_context(request.client, &mut messages, &cancellation).await;
     attach_media_to_latest_user_message(&mut messages, request.media)?;
-    let config = ChatGenerationConfig::default();
-    let body = json!({
+    let mut body = json!({
         "model": request.model,
         "messages": messages,
         "stream": true,
-        "temperature": config.temperature,
-        "top_p": config.top_p,
-        "top_k": config.top_k,
-        "min_p": config.min_p,
-        "max_tokens": config.max_tokens,
-        "presence_penalty": config.presence_penalty,
+        "max_tokens": CORE_CHAT_MAX_TOKENS,
         // Keep llama-server's KV prompt cache enabled so the shared prefix of
         // an ongoing conversation can be reused instead of fully prefilling
         // it on every turn.
@@ -198,6 +175,7 @@ pub async fn stream_chat_completion(
             "enable_thinking": matches!(request.mode, InferenceMode::Thinking)
         }
     });
+    request.sampling.apply(&mut body);
 
     let response =
         post_completion_with_retry(request.client, request.endpoint, &body, &cancellation).await?;

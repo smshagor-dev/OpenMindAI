@@ -1,6 +1,5 @@
 import { Archive, Check, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
-import { check as checkForAppUpdate } from "@tauri-apps/plugin-updater";
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { io, type Socket } from "socket.io-client";
 import { api } from "./api";
@@ -33,6 +32,7 @@ import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ChatModeSwitcher } from "./components/ChatModeSwitcher";
 import { Library } from "./components/Library";
 import { ModelsManager } from "./components/ModelsManager";
+import { DatasetsManager } from "./components/DatasetsManager";
 import { TitleBarControls } from "./components/TitleBarControls";
 import { StatusBar } from "./components/StatusBar";
 import { PreviewPanel, type PreviewTarget } from "./components/PreviewPanel";
@@ -51,6 +51,7 @@ import {
   type AttachmentDraft,
   type ChatMode,
 } from "./lib/chat";
+import { checkForAppUpdate } from "./lib/appUpdate";
 import { formatError } from "./lib/format";
 import { imageRendererPrompt } from "./lib/imageGeneration";
 
@@ -61,6 +62,21 @@ interface RealtimeActivity {
   searching: boolean;
   researching: boolean;
   detail: string | null;
+}
+
+type RuntimeAction = "start" | "restart" | "stop";
+
+function optimisticRuntimeStatus(
+  current: LlamaRuntimeStatus | null,
+  state: LlamaRuntimeStatus["state"],
+): LlamaRuntimeStatus {
+  return {
+    available: state !== "stopped" && state !== "failed",
+    backend: current?.backend ?? current?.selectedRuntime?.manifest.backend ?? null,
+    endpoint: state === "stopped" || state === "failed" ? null : (current?.endpoint ?? null),
+    state,
+    selectedRuntime: current?.selectedRuntime ?? null,
+  };
 }
 
 export function App() {
@@ -104,6 +120,7 @@ export function App() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [modelsOpen, setModelsOpen] = useState(false);
+  const [datasetsOpen, setDatasetsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState("general");
   const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(null);
   const [pendingModelId, setPendingModelId] = useState<string | null>(null);
@@ -111,7 +128,9 @@ export function App() {
   const [modelSwitchError, setModelSwitchError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [workThreadId, setWorkThreadId] = useState<string | null>(null);
+  const [runtimeAction, setRuntimeAction] = useState<RuntimeAction | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const runtimeAutostartAttemptedRef = useRef(false);
 
   const showError = useCallback((caught: unknown) => {
     setError(formatError(caught));
@@ -178,6 +197,29 @@ export function App() {
     const runtimeReady = runtime?.selected != null;
     setWizardActive(installationStatus.setupRequired || !modelReady || !runtimeReady);
   }, [refreshedOnce, installationStatus, models, runtime, wizardActive]);
+
+  useEffect(() => {
+    if (!preferences?.localRuntimeAutostart) {
+      runtimeAutostartAttemptedRef.current = false;
+      return;
+    }
+    if (runtimeAutostartAttemptedRef.current || !refreshedOnce || !runtime?.selected || runtimeAction) return;
+    const state = runtimeStatus?.state ?? "stopped";
+    if (state !== "stopped" && state !== "failed") {
+      runtimeAutostartAttemptedRef.current = true;
+      return;
+    }
+    runtimeAutostartAttemptedRef.current = true;
+    void startRuntime("start");
+    // startRuntime is intentionally omitted so autostart stays one-shot per runtime state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    preferences?.localRuntimeAutostart,
+    refreshedOnce,
+    runtime?.selected,
+    runtimeAction,
+    runtimeStatus?.state,
+  ]);
 
   const updateCheckStartedRef = useRef(false);
   useEffect(() => {
@@ -310,7 +352,11 @@ export function App() {
         ]);
         setStreamingId(event.payload.assistant.id);
         setSubmitting(false);
-        setActivity((current) => ({ ...current, typing: true }));
+        setActivity((current) => ({
+          ...current,
+          typing: true,
+          detail: current.detail?.startsWith("Loading ") ? null : current.detail,
+        }));
         setConversations((items) =>
           items.map((item) =>
             item.id === event.payload.conversationId
@@ -319,6 +365,18 @@ export function App() {
           ),
         );
       }),
+      // The shared runtime is switching models (for example from the coding agent back to
+      // Core), which can take minutes; say so instead of looking frozen.
+      listen<{ conversationId: string; modelName: string; replacing: string | null }>(
+        "runtime:model-loading",
+        (event) => {
+          const { modelName, replacing } = event.payload;
+          setActivity((current) => ({
+            ...current,
+            detail: `Loading ${modelName}…${replacing ? ` (switching from ${replacing})` : ""} This can take a few minutes.`,
+          }));
+        },
+      ),
       listen<StreamChunkEvent>("inference:chunk", (event) => {
         setMessages((items) =>
           items.map((message) =>
@@ -817,15 +875,35 @@ export function App() {
     await refreshApp();
   }
 
-  async function startRuntime() {
-    setRuntimeStatus(await api.startRuntime());
-    setRuntime(await api.runtimeInventory());
+  async function startRuntime(action: RuntimeAction = "restart") {
+    if (runtimeAction) return;
+    setRuntimeAction(action);
+    setRuntimeStatus((current) => optimisticRuntimeStatus(current, action === "stop" ? "stopping" : "starting"));
+    try {
+      setRuntimeStatus(await api.startRuntime());
+      setRuntime(await api.runtimeInventory());
+    } catch (caught) {
+      showError(caught);
+      setRuntimeStatus((current) => optimisticRuntimeStatus(current, "failed"));
+    } finally {
+      setRuntimeAction(null);
+    }
   }
 
   async function stopRuntime() {
-    await api.stopRuntime();
-    setRuntimeStatus(await api.runtimeStatus());
-    setRuntime(await api.runtimeInventory());
+    if (runtimeAction) return;
+    setRuntimeAction("stop");
+    setRuntimeStatus((current) => optimisticRuntimeStatus(current, "stopping"));
+    try {
+      await api.stopRuntime();
+      setRuntimeStatus(await api.runtimeStatus());
+      setRuntime(await api.runtimeInventory());
+    } catch (caught) {
+      showError(caught);
+      setRuntimeStatus((current) => optimisticRuntimeStatus(current, "failed"));
+    } finally {
+      setRuntimeAction(null);
+    }
   }
 
   async function updatePreferences(next: AppPreferences) {
@@ -991,6 +1069,7 @@ export function App() {
         onDuplicate={duplicateConversation}
         onOpenLibrary={() => setLibraryOpen(true)}
         onOpenModels={() => setModelsOpen(true)}
+        onOpenDatasets={() => setDatasetsOpen(true)}
         onOpenTools={() => setView("tools")}
         onOpenProjects={() => setView("projects")}
         onOpenSettings={(section) => {
@@ -1238,6 +1317,7 @@ export function App() {
             refresh={refreshApp}
             startRuntime={startRuntime}
             stopRuntime={stopRuntime}
+            runtimeAction={runtimeAction}
             initialSection={settingsSection}
           />
         )}
@@ -1316,6 +1396,29 @@ export function App() {
             />
             <div className="modal-actions">
               <button type="button" className="ghost-button" onClick={() => setModelsOpen(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {datasetsOpen ? (
+        <div className="modal-overlay" role="presentation" onClick={() => setDatasetsOpen(false)}>
+          <div
+            className="modal-card models-modal-card datasets-modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Datasets"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2>Datasets</h2>
+            <DatasetsManager />
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => setDatasetsOpen(false)}
+              >
                 Close
               </button>
             </div>

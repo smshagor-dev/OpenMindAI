@@ -5,9 +5,11 @@ import {
   Database,
   Download,
   FolderOpen,
+  Globe,
   HardDrive,
   Info as InfoIcon,
   Keyboard,
+  LoaderCircle,
   MessageSquarePlus,
   Palette,
   Play,
@@ -35,7 +37,7 @@ import type {
   StorageSummary,
   UserProfile,
 } from "../types";
-import { formatBytes } from "../lib/format";
+import { formatBytes, formatError } from "../lib/format";
 import { readImageAsDataUrl } from "../lib/avatar";
 import { ModelsManager } from "./ModelsManager";
 import { AppsSettings } from "./AppsSettings";
@@ -56,8 +58,9 @@ export function SettingsDialog(props: {
   updatePreferences: (preferences: AppPreferences) => void;
   updateUserProfile: (profile: UserProfile) => void;
   refresh: () => void;
-  startRuntime: () => void;
+  startRuntime: (action?: "start" | "restart") => void;
   stopRuntime: () => void;
+  runtimeAction: "start" | "restart" | "stop" | null;
   initialSection?: string;
 }) {
   const [activeSection, setActiveSection] = useState(props.initialSection ?? "general");
@@ -65,6 +68,7 @@ export function SettingsDialog(props: {
   const [profileDraft, setProfileDraft] = useState<UserProfile | null>(props.userProfile);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
   const [avatarError, setAvatarError] = useState<string | null>(null);
+  const [networkError, setNetworkError] = useState<string | null>(null);
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -102,6 +106,20 @@ export function SettingsDialog(props: {
     await props.updatePreferences(preferenceDraft);
     setSaveState("saved");
   };
+  const saveNetwork = async () => {
+    if (!preferenceDraft) return;
+    setNetworkError(null);
+    if (preferenceDraft.networkProxyMode === "manual" && !preferenceDraft.networkProxyUrl.trim()) {
+      setNetworkError("Enter a proxy address, for example 127.0.0.1:8080.");
+      return;
+    }
+    try {
+      await savePreferences();
+    } catch (error) {
+      setSaveState("idle");
+      setNetworkError(formatError(error));
+    }
+  };
   const saveProfile = async () => {
     if (!profileDraft) return;
     setSaveState("saving");
@@ -121,6 +139,7 @@ export function SettingsDialog(props: {
     { id: "hardware", label: "Hardware", icon: Cpu },
     { id: "storage", label: "Storage", icon: HardDrive },
     { id: "maintenance", label: "Maintenance", icon: Wrench },
+    { id: "network", label: "Network", icon: Globe },
     { id: "updates", label: "Updates", icon: Download },
     { id: "files", label: "Files & Artifacts", icon: FolderOpen },
     { id: "privacy", label: "Privacy", icon: Shield },
@@ -367,6 +386,7 @@ export function SettingsDialog(props: {
               refresh={props.refresh}
               startRuntime={props.startRuntime}
               stopRuntime={props.stopRuntime}
+              runtimeAction={props.runtimeAction}
             />
           </SettingsGroup>
         ) : null}
@@ -397,11 +417,29 @@ export function SettingsDialog(props: {
               <button type="button" onClick={props.refresh} title="Validate">
                 <RefreshCw size={16} />
               </button>
-              <button type="button" onClick={props.startRuntime} title="Restart Runtime">
-                <Play size={16} />
+              <button
+                type="button"
+                onClick={() => props.startRuntime("restart")}
+                title="Restart Runtime"
+                disabled={props.runtimeAction !== null}
+              >
+                {props.runtimeAction === "start" || props.runtimeAction === "restart" ? (
+                  <LoaderCircle className="spin" size={16} />
+                ) : (
+                  <Play size={16} />
+                )}
               </button>
-              <button type="button" onClick={props.stopRuntime} title="Stop Runtime">
-                <StopCircle size={16} />
+              <button
+                type="button"
+                onClick={props.stopRuntime}
+                title="Stop Runtime"
+                disabled={props.runtimeAction !== null}
+              >
+                {props.runtimeAction === "stop" ? (
+                  <LoaderCircle className="spin" size={16} />
+                ) : (
+                  <StopCircle size={16} />
+                )}
               </button>
             </div>
           </SettingsGroup>
@@ -525,6 +563,50 @@ export function SettingsDialog(props: {
               value={formatBytes(props.performance?.systemMemoryBudgetBytes)}
             />
             <SaveBar state={saveState} onSave={savePreferences} />
+          </SettingsGroup>
+        ) : null}
+
+        {activeSection === "network" && preferenceDraft ? (
+          <SettingsGroup title="Network">
+            <label className="setting-row">
+              <span>Proxy</span>
+              <select
+                value={preferenceDraft.networkProxyMode}
+                onChange={(event) =>
+                  setPreference(
+                    "networkProxyMode",
+                    event.target.value as AppPreferences["networkProxyMode"],
+                  )
+                }
+              >
+                <option value="direct">OpenMindAI download manager (ignore PC proxy)</option>
+                <option value="manual">Manual proxy</option>
+                <option value="system">Use PC proxy settings</option>
+              </select>
+            </label>
+            {preferenceDraft.networkProxyMode === "manual" ? (
+              <TextRow
+                label="Proxy address"
+                value={preferenceDraft.networkProxyUrl}
+                onChange={(value) => setPreference("networkProxyUrl", value)}
+              />
+            ) : null}
+            <p className="muted">
+              Model, dataset and runtime downloads (including GitHub releases), app updates and
+              connected apps use this setting. Interrupted downloads resume automatically.
+              {preferenceDraft.networkProxyMode === "direct"
+                ? " OpenMindAI connects on its own and ignores the PC's proxy, so a proxy that blocks GitHub does not stop runtime downloads."
+                : null}
+              {preferenceDraft.networkProxyMode === "system"
+                ? " Uses HTTPS_PROXY / HTTP_PROXY when set, otherwise the Windows proxy settings."
+                : null}
+              {preferenceDraft.networkProxyMode === "manual"
+                ? " Use host:port or http://user:password@host:port."
+                : null}
+              {" The local AI runtime and other local network addresses are always reached directly."}
+            </p>
+            {networkError ? <p className="muted avatar-error">{networkError}</p> : null}
+            <SaveBar state={saveState} onSave={() => void saveNetwork()} />
           </SettingsGroup>
         ) : null}
 

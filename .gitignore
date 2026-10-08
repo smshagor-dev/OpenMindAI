@@ -85,6 +85,10 @@ SHA256SUMS.txt
 *.7z
 *.tar
 *.tar.gz
+/native-vulkan-artifact/
+/native-smoke-reports/
+/target-check/
+/scripts/__pycache__/
 
 # Temporary files
 *.tmp

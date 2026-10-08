@@ -49,7 +49,9 @@ macro_rules! openmind_generate_handler {
             approve_coding_action,
             reject_coding_action,
             run_coding_qualification,
-            openagent_sandbox_capability
+            openagent_sandbox_capability,
+            coding_agent_status,
+            start_coding_agent
         ]
     };
 }
@@ -59,6 +61,8 @@ mod tauri {
     pub use crate::tauri_crate::*;
 }
 
+mod agent_runtime;
+mod coding_agent_gateway;
 mod coding_ast;
 mod coding_control;
 mod coding_delivery;
@@ -71,6 +75,8 @@ mod connected_agent;
 mod connector_ecosystem;
 mod connector_input_guard;
 mod connector_stabilization;
+mod dataset_context;
+mod dataset_download;
 mod github_workspace;
 mod google_workspace;
 mod isolated_runtime;
@@ -92,11 +98,13 @@ mod openagent_prompt_context;
 mod openagent_runs;
 mod openagent_security;
 mod pdf_ocr;
+mod process_ownership;
 mod runtime_guards;
 mod speech_runtime;
 mod vision_batch;
 mod warm_start;
 
+pub(crate) use agent_runtime::{coding_agent_status, start_coding_agent};
 pub(crate) use coding_control::{approve_coding_action, coding_run_snapshot, reject_coding_action};
 pub(crate) use coding_eval::run_coding_qualification;
 pub(crate) use connected_agent::{

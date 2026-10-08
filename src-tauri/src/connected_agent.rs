@@ -414,15 +414,12 @@ fn ensure_model_endpoint(
     state: &State<'_, AppState>,
     model: &crate::model_registry::ModelRecord,
 ) -> Result<String, AppError> {
-    let hardware = state.hardware.clone();
+    let hardware = crate::hardware::HardwareProfiler::for_inference(&state.hardware);
     let plan = ModelLaunchPlanner::plan(model, &hardware, allocate_local_port()?);
-    let mut runtime = state
-        .runtime
-        .lock()
-        .map_err(|_| AppError::internal("runtime lock poisoned"))?;
-    runtime.ensure_model_server(&hardware, &plan.config)?;
-    runtime
-        .status(&hardware)?
+    // The lease ends here; this caller only needs the endpoint of a loaded model.
+    let (status, _lease) =
+        crate::runtime::ensure_model_ready(&state.runtime, &hardware, &plan.config)?;
+    status
         .endpoint
         .ok_or_else(|| AppError::InferenceServerUnavailable("runtime endpoint missing".to_string()))
 }
@@ -555,20 +552,17 @@ Available actions:\n{catalog}"
             &history
         },
     );
-    let body = json!({
+    let mut body = json!({
         "model": "qwen3-4b-q4_k_m",
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user}
         ],
         "stream": false,
-        "temperature": 0.1,
-        "top_p": 0.85,
-        "top_k": 20,
         "max_tokens": 2048,
-        "presence_penalty": 0.0,
         "chat_template_kwargs": {"enable_thinking": false}
     });
+    crate::sampling::SamplingProfile::STRUCTURED.apply(&mut body);
     let url = format!("{}/v1/chat/completions", endpoint.trim_end_matches('/'));
     let mut retry = 0u8;
     let response = loop {

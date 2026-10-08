@@ -1,9 +1,7 @@
 use std::{fs, path::Path};
 
-use futures_util::StreamExt;
-use reqwest::{header, Client, StatusCode};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tokio::{fs as async_fs, io::AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -130,9 +128,7 @@ pub async fn ensure_dependencies(
 
 async fn fetch_model_metadata(client: &Client, repo: &str) -> Result<HuggingFaceModel, AppError> {
     let api_url = format!("https://huggingface.co/api/models/{repo}?blobs=true");
-    client
-        .get(api_url)
-        .send()
+    crate::net::send_with_retry(|| client.get(&api_url), None)
         .await
         .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?
         .error_for_status()
@@ -235,7 +231,7 @@ async fn download_dependency(
         dependency.size_bytes.saturating_add(PACKAGE_SPACE_MARGIN),
     )?;
 
-    let existing = match prepare_partial_download(
+    match prepare_partial_download(
         &part_path,
         dependency.size_bytes,
         dependency.sha256.as_deref(),
@@ -256,46 +252,27 @@ async fn download_dependency(
                 verification,
             ));
         }
-        PartialDownloadState::Resume(bytes) => bytes,
-        PartialDownloadState::Fresh => 0,
-    };
-    let mut request = client.get(&dependency.source_url);
-    if existing > 0 {
-        request = request.header(header::RANGE, format!("bytes={existing}-"));
+        PartialDownloadState::Resume(_) | PartialDownloadState::Fresh => {}
     }
-    let response = request
-        .send()
-        .await
-        .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?;
-    let resumed = existing > 0 && response.status() == StatusCode::PARTIAL_CONTENT;
-    if existing > 0 && !resumed {
-        async_fs::remove_file(&part_path).await.ok();
-    }
-    if !response.status().is_success() {
-        return Err(AppError::ModelDownloadFailed(format!(
-            "HTTP {} while downloading {} dependency",
-            response.status(),
-            dependency.role
-        )));
-    }
-
-    let mut file = async_fs::OpenOptions::new()
-        .create(true)
-        .append(resumed)
-        .write(true)
-        .truncate(!resumed)
-        .open(&part_path)
-        .await?;
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        if cancellation.is_cancelled() {
-            file.flush().await?;
-            return Err(AppError::InferenceCancelled("download stopped".to_string()));
+    crate::net::download_resumable(
+        client,
+        &dependency.source_url,
+        &part_path,
+        Some(dependency.size_bytes),
+        Some(cancellation),
+        |_| {},
+    )
+    .await
+    .map_err(|error| {
+        if error.is_cancelled() {
+            AppError::InferenceCancelled("download stopped".to_string())
+        } else {
+            AppError::ModelDownloadFailed(format!(
+                "{} dependency download failed: {error}",
+                dependency.role
+            ))
         }
-        let chunk = chunk.map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?;
-        file.write_all(&chunk).await?;
-    }
-    file.flush().await?;
+    })?;
 
     let actual_size = fs::metadata(&part_path)?.len();
     if actual_size != dependency.size_bytes {

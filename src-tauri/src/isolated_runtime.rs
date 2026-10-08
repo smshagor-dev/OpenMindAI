@@ -550,6 +550,7 @@ async fn run_windows_sandbox(
         .kill_on_drop(true)
         .spawn()
         .map_err(|error| AppError::internal(format!("failed to start Windows Sandbox: {error}")))?;
+    crate::process_ownership::adopt_tokio_child(&child);
 
     loop {
         if result_path.is_file() {

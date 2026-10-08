@@ -121,6 +121,7 @@ pub async fn run_process(
         .kill_on_drop(true);
 
     let mut child = command.spawn()?;
+    crate::process_ownership::adopt_tokio_child(&child);
     let stdout = child
         .stdout
         .take()

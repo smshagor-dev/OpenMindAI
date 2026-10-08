@@ -3,16 +3,13 @@ use std::{
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Instant,
 };
 
 use chrono::Utc;
-use futures_util::StreamExt;
-use reqwest::{header, Client, StatusCode};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sysinfo::Disks;
-use tokio::{fs as async_fs, io::AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -130,7 +127,7 @@ impl ModelDownloadManager {
             root,
             status: Arc::new(Mutex::new(DownloadStatus::queued(&catalog_entry))),
             cancel_token: Arc::new(Mutex::new(None)),
-            client: Client::new(),
+            client: crate::net::download_client(),
             catalog_entry,
         }
     }
@@ -222,8 +219,10 @@ impl ModelDownloadManager {
         fs::create_dir_all(&model_dir)?;
         ensure_contained(self.root.root(), &model_dir)?;
 
+        // The catalog size covers the whole package (main file plus extras).
+        let package_size = entry.size_bytes.max(metadata.size_bytes);
         let (final_path, verification) = self
-            .download_primary_file(&metadata, &model_dir, &token)
+            .download_primary_file(&metadata, &model_dir, package_size, &token)
             .await?;
         self.write_manifest(&model_dir, &metadata, &final_path, verification)?;
 
@@ -261,6 +260,7 @@ impl ModelDownloadManager {
         &self,
         metadata: &QwenModelManifest,
         model_dir: &Path,
+        package_size: u64,
         token: &CancellationToken,
     ) -> Result<(PathBuf, VerificationState), AppError> {
         let filename = metadata.filename.clone();
@@ -301,16 +301,19 @@ impl ModelDownloadManager {
             fs::remove_file(&final_path)?;
         }
 
+        // Refuse before the first byte when the whole package cannot fit. Bytes
+        // of an interrupted download are already on disk and are not needed twice.
+        let partial_bytes = fs::metadata(&part_path)
+            .map(|meta| meta.len())
+            .unwrap_or(0)
+            .min(metadata.size_bytes);
         validate_free_space(
             model_dir,
-            metadata.size_bytes.saturating_add(SAFE_SPACE_MARGIN),
+            package_space_required(package_size, partial_bytes),
         )?;
 
-        let mut existing = match prepare_partial_download(
-            &part_path,
-            metadata.size_bytes,
-            metadata.sha256.as_deref(),
-        )? {
+        match prepare_partial_download(&part_path, metadata.size_bytes, metadata.sha256.as_deref())?
+        {
             PartialDownloadState::Complete { verification, .. } => {
                 fs::rename(&part_path, &final_path)?;
                 tracing::info!(
@@ -319,68 +322,39 @@ impl ModelDownloadManager {
                 );
                 return Ok((final_path, verification));
             }
-            PartialDownloadState::Resume(bytes) => bytes,
-            PartialDownloadState::Fresh => 0,
-        };
-        let mut request = self.client.get(&metadata.source_url);
-        if existing > 0 {
-            request = request.header(header::RANGE, format!("bytes={existing}-"));
-        }
-
-        let response = request
-            .send()
-            .await
-            .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?;
-        let resumed = existing > 0 && response.status() == StatusCode::PARTIAL_CONTENT;
-        if existing > 0 && !resumed {
-            async_fs::remove_file(&part_path).await.ok();
-            existing = 0;
-        }
-        if !response.status().is_success() {
-            return Err(AppError::ModelDownloadFailed(format!(
-                "HTTP {} while downloading model",
-                response.status()
-            )));
+            PartialDownloadState::Resume(_) | PartialDownloadState::Fresh => {}
         }
 
         self.update_status(|status| {
             status.state = DownloadState::Downloading;
             status.filename = Some(filename.clone());
-            status.downloaded_bytes = existing;
             status.total_bytes = Some(metadata.size_bytes);
-            status.percentage = Some((existing as f64 / metadata.size_bytes as f64) * 100.0);
             status.destination = Some(final_path.display().to_string());
             status.error = None;
         })?;
-
-        let mut file = async_fs::OpenOptions::new()
-            .create(true)
-            .append(resumed)
-            .write(true)
-            .truncate(!resumed)
-            .open(&part_path)
-            .await?;
-        let started = Instant::now();
-        let mut downloaded = existing;
-        let mut stream = response.bytes_stream();
-
-        while let Some(chunk) = stream.next().await {
-            if token.is_cancelled() {
-                file.flush().await?;
-                return Err(AppError::InferenceCancelled("download stopped".to_string()));
+        crate::net::download_resumable(
+            &self.client,
+            &metadata.source_url,
+            &part_path,
+            Some(metadata.size_bytes),
+            Some(token),
+            |progress| {
+                let _ = self.update_status(|status| {
+                    status.downloaded_bytes = progress.downloaded;
+                    status.percentage =
+                        Some((progress.downloaded as f64 / metadata.size_bytes as f64) * 100.0);
+                    status.speed_bytes_per_sec = Some(progress.bytes_per_sec);
+                });
+            },
+        )
+        .await
+        .map_err(|error| {
+            if error.is_cancelled() {
+                AppError::InferenceCancelled("download stopped".to_string())
+            } else {
+                AppError::ModelDownloadFailed(format!("model download failed: {error}"))
             }
-            let chunk = chunk.map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?;
-            file.write_all(&chunk).await?;
-            downloaded += chunk.len() as u64;
-            let elapsed = started.elapsed().as_secs_f64().max(0.001);
-            self.update_status(|status| {
-                status.downloaded_bytes = downloaded;
-                status.percentage = Some((downloaded as f64 / metadata.size_bytes as f64) * 100.0);
-                status.speed_bytes_per_sec =
-                    Some(downloaded.saturating_sub(existing) as f64 / elapsed);
-            })?;
-        }
-        file.flush().await?;
+        })?;
 
         self.set_state(DownloadState::Verifying, None)?;
         let part_size = fs::metadata(&part_path)?.len();
@@ -423,17 +397,15 @@ impl ModelDownloadManager {
             ))
         })?;
         let api_url = format!("https://huggingface.co/api/models/{repo}?blobs=true");
-        let model: HuggingFaceModel = self
-            .client
-            .get(&api_url)
-            .send()
-            .await
-            .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?
-            .error_for_status()
-            .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?
-            .json()
-            .await
-            .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?;
+        let model: HuggingFaceModel =
+            crate::net::send_with_retry(|| self.client.get(&api_url), None)
+                .await
+                .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?
+                .error_for_status()
+                .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?
+                .json()
+                .await
+                .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?;
 
         let sibling = select_sibling(&model.siblings, download).ok_or_else(|| {
             AppError::ModelDownloadFailed(format!(
@@ -706,6 +678,52 @@ pub(crate) fn ensure_contained(root: &Path, path: &Path) -> Result<(), AppError>
     Ok(())
 }
 
+const MIB: u64 = 1024 * 1024;
+const GIB: u64 = 1024 * MIB;
+
+/// Free space a package install needs: what is still to be downloaded plus the
+/// safety margin for temporary files.
+fn package_space_required(package_size: u64, partial_bytes: u64) -> u64 {
+    package_size
+        .saturating_sub(partial_bytes)
+        .saturating_add(SAFE_SPACE_MARGIN)
+}
+
+/// Human-readable size, e.g. "7.9 GiB" or "512 MiB".
+pub(crate) fn format_bytes(bytes: u64) -> String {
+    format_bytes_with(bytes, 1)
+}
+
+/// Formats two sizes that are being compared with just enough precision that
+/// different values never print the same: "7.98 GiB" vs "8.00 GiB" rather than
+/// "8.0 GiB" vs "8.0 GiB". Comparisons must still use the raw byte values.
+pub(crate) fn format_byte_pair(first: u64, second: u64) -> (String, String) {
+    for decimals in 1..=3 {
+        let pair = (
+            format_bytes_with(first, decimals),
+            format_bytes_with(second, decimals),
+        );
+        if first == second || pair.0 != pair.1 {
+            return pair;
+        }
+    }
+    (format!("{first} bytes"), format!("{second} bytes"))
+}
+
+fn format_bytes_with(bytes: u64, decimals: usize) -> String {
+    if bytes >= GIB {
+        format!("{:.decimals$} GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!(
+            "{:.precision$} MiB",
+            bytes as f64 / MIB as f64,
+            precision = decimals.saturating_sub(1)
+        )
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
 pub(crate) fn validate_free_space(destination: &Path, required: u64) -> Result<(), AppError> {
     let disks = Disks::new_with_refreshed_list();
     let canonical_destination =
@@ -717,9 +735,9 @@ pub(crate) fn validate_free_space(destination: &Path, required: u64) -> Result<(
         .map(|disk| disk.available_space());
     if let Some(available) = available {
         if available < required {
+            let (available, required) = format_byte_pair(available, required);
             return Err(AppError::InsufficientStorage(format!(
-                "need {} bytes free including safety margin, have {available}",
-                required
+                "not enough free disk space: need {required} free (including a safety margin for temporary files), have {available}"
             )));
         }
     }
@@ -730,6 +748,57 @@ pub(crate) fn validate_free_space(destination: &Path, required: u64) -> Result<(
 mod tests {
     use super::*;
     use std::{thread, time::Duration};
+
+    #[test]
+    fn byte_pairs_show_enough_precision_to_differ() {
+        let at = |gib: f64| (gib * GIB as f64) as u64;
+        let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+        assert_eq!(
+            format_byte_pair(at(7.98), 8 * GIB),
+            pair("7.98 GiB", "8.00 GiB")
+        );
+        assert_eq!(
+            format_byte_pair(at(7.94), 8 * GIB),
+            pair("7.9 GiB", "8.0 GiB")
+        );
+        assert_eq!(
+            format_byte_pair(8 * GIB, 8 * GIB),
+            pair("8.0 GiB", "8.0 GiB")
+        );
+        assert_eq!(
+            format_byte_pair(at(8.01), 8 * GIB),
+            pair("8.01 GiB", "8.00 GiB")
+        );
+        // Even a one-byte difference never prints as two equal sizes.
+        let (low, high) = format_byte_pair(8 * GIB - 1, 8 * GIB);
+        assert_ne!(low, high);
+        assert_eq!(format_bytes(512 * MIB), "512 MiB");
+    }
+
+    #[test]
+    fn canvas_install_is_refused_up_front_on_a_nearly_full_drive() {
+        let canvas = entry_by_id("sdxl-base-1").unwrap();
+        let available = 5_640 * MIB; // G: during the live test
+        let required = package_space_required(canvas.size_bytes, 0);
+        assert!(required > available, "{required} vs {available}");
+        assert!(required >= canvas.size_bytes + SAFE_SPACE_MARGIN);
+
+        // Resuming counts the bytes already on disk.
+        let resumed = package_space_required(canvas.size_bytes, 6 * GIB);
+        assert_eq!(resumed, canvas.size_bytes - 6 * GIB + SAFE_SPACE_MARGIN);
+        assert!(resumed < available);
+    }
+
+    #[test]
+    fn insufficient_disk_space_is_refused_with_readable_sizes() {
+        let temp = tempfile::tempdir().unwrap();
+        let error = validate_free_space(temp.path(), u64::MAX / 4)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not enough free disk space"), "{error}");
+        assert!(error.contains("GiB free"), "{error}");
+        assert!(!error.contains(" bytes free"), "{error}");
+    }
 
     #[test]
     fn rejects_gguf_outside_root() {
@@ -753,6 +822,33 @@ mod tests {
             .unwrap();
         fs::create_dir_all(destination.parent().unwrap()).unwrap();
         assert!(ensure_contained(root.root(), &destination).is_ok());
+    }
+
+    /// The SDXL repo also holds a larger diffusers-format UNet. Canvas must
+    /// download the single-file checkpoint stable-diffusion.cpp loads.
+    #[test]
+    fn canvas_selects_single_file_sdxl_checkpoint_not_diffusers_unet() {
+        let sibling = |name: &str, size: u64| HuggingFaceSibling {
+            rfilename: name.to_string(),
+            size: None,
+            lfs: Some(HuggingFaceLfs {
+                sha256: None,
+                size: Some(size),
+            }),
+        };
+        let siblings = vec![
+            sibling("unet/diffusion_pytorch_model.safetensors", 10_270_077_736),
+            sibling("sd_xl_base_1.0.safetensors", 6_938_078_334),
+            sibling("sd_xl_base_1.0_0.9vae.safetensors", 6_938_078_334),
+            sibling(
+                "unet/diffusion_pytorch_model.fp16.safetensors",
+                5_135_149_760,
+            ),
+            sibling("vae/diffusion_pytorch_model.safetensors", 334_643_268),
+        ];
+        let entry = entry_by_id("sdxl-base-1").unwrap();
+        let selected = select_sibling(&siblings, entry.download.as_ref().unwrap()).unwrap();
+        assert_eq!(selected.rfilename, "sd_xl_base_1.0_0.9vae.safetensors");
     }
 
     #[test]
