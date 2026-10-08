@@ -19,12 +19,7 @@ use sha2::{Digest, Sha256};
 use tauri::State;
 use uuid::Uuid;
 
-use crate::{
-    app_error::AppError,
-    github::secret_store,
-    google::GoogleRepository,
-    AppState,
-};
+use crate::{app_error::AppError, github::secret_store, google::GoogleRepository, AppState};
 
 const GOOGLE_CLIENT_SECRET_SLOT: &str = "google-client-secret";
 const GOOGLE_ACCESS_TOKEN_SLOT: &str = "google-access-token";
@@ -238,7 +233,7 @@ fn google_error(message: impl Into<String>) -> AppError {
 }
 
 fn http_client() -> Result<Client, AppError> {
-    Client::builder()
+    crate::net::with_proxy(Client::builder())
         .timeout(Duration::from_secs(API_TIMEOUT_SECS))
         .build()
         .map_err(|error| google_error(error.to_string()))
@@ -267,7 +262,8 @@ fn save_oauth_metadata(
     state: &State<'_, AppState>,
     metadata: &GoogleOAuthMetadata,
 ) -> Result<(), AppError> {
-    let payload = serde_json::to_string(metadata).map_err(|error| google_error(error.to_string()))?;
+    let payload =
+        serde_json::to_string(metadata).map_err(|error| google_error(error.to_string()))?;
     let now = Utc::now().to_rfc3339();
     let db = state
         .database
@@ -327,7 +323,10 @@ fn open_browser(url: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn receive_oauth_callback(listener: TcpListener, expected_state: String) -> Result<String, AppError> {
+fn receive_oauth_callback(
+    listener: TcpListener,
+    expected_state: String,
+) -> Result<String, AppError> {
     listener.set_nonblocking(true)?;
     let started = Instant::now();
     loop {
@@ -403,7 +402,9 @@ async fn refresh_access_token(state: &State<'_, AppState>) -> Result<String, App
     if !response.status().is_success() {
         let status = response.status();
         let detail = response.text().await.unwrap_or_default();
-        return Err(google_error(format!("token refresh failed ({status}): {detail}")));
+        return Err(google_error(format!(
+            "token refresh failed ({status}): {detail}"
+        )));
     }
     let token: OAuthTokenResponse = response
         .json()
@@ -427,7 +428,9 @@ async fn access_token(state: &State<'_, AppState>) -> Result<String, AppError> {
         .expires_at
         .as_deref()
         .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-        .is_some_and(|expires| expires.with_timezone(&Utc) > Utc::now() + ChronoDuration::seconds(60));
+        .is_some_and(|expires| {
+            expires.with_timezone(&Utc) > Utc::now() + ChronoDuration::seconds(60)
+        });
     if still_valid {
         if let Some(token) = secret_store::get_secret(GOOGLE_ACCESS_TOKEN_SLOT)? {
             return Ok(token);
@@ -448,13 +451,18 @@ async fn google_request(
         .header(header::ACCEPT, "application/json"))
 }
 
-async fn ensure_success(response: reqwest::Response, operation: &str) -> Result<reqwest::Response, AppError> {
+async fn ensure_success(
+    response: reqwest::Response,
+    operation: &str,
+) -> Result<reqwest::Response, AppError> {
     if response.status().is_success() {
         return Ok(response);
     }
     let status = response.status();
     let detail = response.text().await.unwrap_or_default();
-    Err(google_error(format!("{operation} failed ({status}): {detail}")))
+    Err(google_error(format!(
+        "{operation} failed ({status}): {detail}"
+    )))
 }
 
 #[tauri::command]
@@ -482,7 +490,9 @@ pub fn google_connection_status(
 }
 
 #[tauri::command]
-pub async fn google_connect(state: State<'_, AppState>) -> Result<GoogleConnectionStatus, AppError> {
+pub async fn google_connect(
+    state: State<'_, AppState>,
+) -> Result<GoogleConnectionStatus, AppError> {
     let (client_id, client_secret) = google_credentials(&state)?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
@@ -491,8 +501,8 @@ pub async fn google_connect(state: State<'_, AppState>) -> Result<GoogleConnecti
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let expected_state = Uuid::new_v4().simple().to_string();
 
-    let mut authorize = Url::parse(OAUTH_AUTHORIZE_ENDPOINT)
-        .map_err(|error| google_error(error.to_string()))?;
+    let mut authorize =
+        Url::parse(OAUTH_AUTHORIZE_ENDPOINT).map_err(|error| google_error(error.to_string()))?;
     authorize
         .query_pairs_mut()
         .append_pair("client_id", &client_id)
@@ -537,7 +547,9 @@ pub async fn google_connect(state: State<'_, AppState>) -> Result<GoogleConnecti
         secret_store::set_secret(GOOGLE_REFRESH_TOKEN_SLOT, refresh)?;
     }
     if secret_store::get_secret(GOOGLE_REFRESH_TOKEN_SLOT)?.is_none() {
-        return Err(google_error("Google did not return a refresh token; disconnect and sign in again"));
+        return Err(google_error(
+            "Google did not return a refresh token; disconnect and sign in again",
+        ));
     }
 
     let userinfo_response = http_client()?
@@ -563,7 +575,12 @@ pub async fn google_connect(state: State<'_, AppState>) -> Result<GoogleConnecti
         scopes: token
             .scope
             .map(|scope| scope.split_whitespace().map(ToOwned::to_owned).collect())
-            .unwrap_or_else(|| GOOGLE_SCOPES.iter().map(|scope| (*scope).to_string()).collect()),
+            .unwrap_or_else(|| {
+                GOOGLE_SCOPES
+                    .iter()
+                    .map(|scope| (*scope).to_string())
+                    .collect()
+            }),
     };
     save_oauth_metadata(&state, &metadata)?;
     Ok(GoogleConnectionStatus {
@@ -646,7 +663,10 @@ fn map_gmail_message(message: GmailApiMessage) -> GmailMessage {
     }
 }
 
-async fn gmail_get_api_message(state: &State<'_, AppState>, id: &str) -> Result<GmailApiMessage, AppError> {
+async fn gmail_get_api_message(
+    state: &State<'_, AppState>,
+    id: &str,
+) -> Result<GmailApiMessage, AppError> {
     let url = format!("https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}");
     let response = google_request(state, reqwest::Method::GET, &url)
         .await?
@@ -685,7 +705,9 @@ pub async fn gmail_search(
         .map_err(|error| google_error(error.to_string()))?;
     let mut messages = Vec::with_capacity(list.messages.len());
     for item in list.messages.into_iter().take(limit) {
-        messages.push(map_gmail_message(gmail_get_api_message(&state, &item.id).await?));
+        messages.push(map_gmail_message(
+            gmail_get_api_message(&state, &item.id).await?,
+        ));
     }
     Ok(messages)
 }
@@ -695,7 +717,9 @@ pub async fn gmail_get_message(
     message_id: String,
     state: State<'_, AppState>,
 ) -> Result<GmailMessage, AppError> {
-    Ok(map_gmail_message(gmail_get_api_message(&state, &message_id).await?))
+    Ok(map_gmail_message(
+        gmail_get_api_message(&state, &message_id).await?,
+    ))
 }
 
 fn reject_header_injection(value: &str, label: &str) -> Result<(), AppError> {
@@ -717,7 +741,10 @@ async fn gmail_send_raw(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
     )
     .await?
-    .json(&GmailSendBody { raw: encoded, thread_id })
+    .json(&GmailSendBody {
+        raw: encoded,
+        thread_id,
+    })
     .send()
     .await
     .map_err(|error| google_error(error.to_string()))?;
@@ -726,7 +753,9 @@ async fn gmail_send_raw(
         .json()
         .await
         .map_err(|error| google_error(error.to_string()))?;
-    Ok(map_gmail_message(gmail_get_api_message(state, &sent.id).await?))
+    Ok(map_gmail_message(
+        gmail_get_api_message(state, &sent.id).await?,
+    ))
 }
 
 #[tauri::command]
@@ -765,7 +794,12 @@ pub async fn gmail_send(
     if let Some(value) = bcc.filter(|value| !value.trim().is_empty()) {
         headers.insert(1, format!("Bcc: {}", value.trim()));
     }
-    gmail_send_raw(&state, format!("{}\r\n\r\n{}", headers.join("\r\n"), body), None).await
+    gmail_send_raw(
+        &state,
+        format!("{}\r\n\r\n{}", headers.join("\r\n"), body),
+        None,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -776,7 +810,9 @@ pub async fn gmail_reply(
     state: State<'_, AppState>,
 ) -> Result<GmailMessage, AppError> {
     if !confirmed {
-        return Err(google_error("replying to email requires explicit confirmation"));
+        return Err(google_error(
+            "replying to email requires explicit confirmation",
+        ));
     }
     let original = gmail_get_api_message(&state, &message_id).await?;
     let payload = original
@@ -784,7 +820,11 @@ pub async fn gmail_reply(
         .as_ref()
         .ok_or_else(|| google_error("original message headers are unavailable"))?;
     let to = gmail_header(payload, "Reply-To");
-    let to = if to.is_empty() { gmail_header(payload, "From") } else { to };
+    let to = if to.is_empty() {
+        gmail_header(payload, "From")
+    } else {
+        to
+    };
     let original_subject = gmail_header(payload, "Subject");
     let subject = if original_subject.to_ascii_lowercase().starts_with("re:") {
         original_subject
@@ -825,9 +865,12 @@ async fn gmail_post_no_body(
     confirmed: bool,
 ) -> Result<GmailMessage, AppError> {
     if !confirmed {
-        return Err(google_error(format!("Gmail {action} requires explicit confirmation")));
+        return Err(google_error(format!(
+            "Gmail {action} requires explicit confirmation"
+        )));
     }
-    let url = format!("https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}/{action}");
+    let url =
+        format!("https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}/{action}");
     let response = google_request(state, reqwest::Method::POST, &url)
         .await?
         .send()
@@ -846,9 +889,12 @@ pub async fn gmail_modify_labels(
     state: State<'_, AppState>,
 ) -> Result<GmailMessage, AppError> {
     if !confirmed {
-        return Err(google_error("modifying Gmail labels requires explicit confirmation"));
+        return Err(google_error(
+            "modifying Gmail labels requires explicit confirmation",
+        ));
     }
-    let url = format!("https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}/modify");
+    let url =
+        format!("https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}/modify");
     let response = google_request(&state, reqwest::Method::POST, &url)
         .await?
         .json(&json!({"addLabelIds": add_label_ids, "removeLabelIds": remove_label_ids}))
@@ -865,7 +911,14 @@ pub async fn gmail_archive(
     confirmed: bool,
     state: State<'_, AppState>,
 ) -> Result<GmailMessage, AppError> {
-    gmail_modify_labels(message_id, Vec::new(), vec!["INBOX".to_string()], confirmed, state).await
+    gmail_modify_labels(
+        message_id,
+        Vec::new(),
+        vec!["INBOX".to_string()],
+        confirmed,
+        state,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -875,7 +928,9 @@ pub async fn gmail_trash(
     state: State<'_, AppState>,
 ) -> Result<GmailMessage, AppError> {
     if !confirmed {
-        return Err(google_error("moving email to Trash requires explicit confirmation"));
+        return Err(google_error(
+            "moving email to Trash requires explicit confirmation",
+        ));
     }
     let url = format!("https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}/trash");
     let response = google_request(&state, reqwest::Method::POST, &url)
@@ -894,9 +949,12 @@ pub async fn gmail_untrash(
     state: State<'_, AppState>,
 ) -> Result<GmailMessage, AppError> {
     if !confirmed {
-        return Err(google_error("restoring email from Trash requires explicit confirmation"));
+        return Err(google_error(
+            "restoring email from Trash requires explicit confirmation",
+        ));
     }
-    let url = format!("https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}/untrash");
+    let url =
+        format!("https://gmail.googleapis.com/gmail/v1/users/me/messages/{message_id}/untrash");
     let response = google_request(&state, reqwest::Method::POST, &url)
         .await?
         .send()
@@ -921,7 +979,10 @@ pub async fn drive_search(
     .await?
     .query(&[
         ("pageSize", limit.to_string()),
-        ("fields", "files(id,name,mimeType,modifiedTime,size,webViewLink,parents)".to_string()),
+        (
+            "fields",
+            "files(id,name,mimeType,modifiedTime,size,webViewLink,parents)".to_string(),
+        ),
         ("orderBy", "modifiedTime desc".to_string()),
     ]);
     if !query.trim().is_empty() {
@@ -943,7 +1004,10 @@ async fn drive_metadata(state: &State<'_, AppState>, file_id: &str) -> Result<Dr
     let url = format!("https://www.googleapis.com/drive/v3/files/{file_id}");
     let response = google_request(state, reqwest::Method::GET, &url)
         .await?
-        .query(&[("fields", "id,name,mimeType,modifiedTime,size,webViewLink,parents")])
+        .query(&[(
+            "fields",
+            "id,name,mimeType,modifiedTime,size,webViewLink,parents",
+        )])
         .send()
         .await
         .map_err(|error| google_error(error.to_string()))?;
@@ -997,7 +1061,9 @@ pub async fn drive_read_file(
         .await
         .map_err(|error| google_error(error.to_string()))?;
     if bytes.len() > MAX_DRIVE_CONTENT_BYTES {
-        return Err(google_error("Drive file exceeds the 5 MB in-app read limit"));
+        return Err(google_error(
+            "Drive file exceeds the 5 MB in-app read limit",
+        ));
     }
     Ok(DriveFileContent {
         file,
@@ -1009,8 +1075,16 @@ pub async fn drive_read_file(
 fn multipart_drive_body(metadata: &Value, content: &[u8], content_type: &str) -> (String, Vec<u8>) {
     let boundary = format!("openmindai-{}", Uuid::new_v4().simple());
     let mut body = Vec::new();
-    body.extend_from_slice(format!("--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{}\r\n", metadata).as_bytes());
-    body.extend_from_slice(format!("--{boundary}\r\nContent-Type: {content_type}\r\n\r\n").as_bytes());
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{}\r\n",
+            metadata
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(
+        format!("--{boundary}\r\nContent-Type: {content_type}\r\n\r\n").as_bytes(),
+    );
     body.extend_from_slice(content);
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
     (boundary, body)
@@ -1026,7 +1100,9 @@ pub async fn drive_upload_file(
     state: State<'_, AppState>,
 ) -> Result<DriveFile, AppError> {
     if !confirmed {
-        return Err(google_error("uploading to Drive requires explicit confirmation"));
+        return Err(google_error(
+            "uploading to Drive requires explicit confirmation",
+        ));
     }
     let content = STANDARD
         .decode(content_base64)
@@ -1045,8 +1121,17 @@ pub async fn drive_upload_file(
         "https://www.googleapis.com/upload/drive/v3/files",
     )
     .await?
-    .query(&[("uploadType", "multipart"), ("fields", "id,name,mimeType,modifiedTime,size,webViewLink,parents")])
-    .header(header::CONTENT_TYPE, format!("multipart/related; boundary={boundary}"))
+    .query(&[
+        ("uploadType", "multipart"),
+        (
+            "fields",
+            "id,name,mimeType,modifiedTime,size,webViewLink,parents",
+        ),
+    ])
+    .header(
+        header::CONTENT_TYPE,
+        format!("multipart/related; boundary={boundary}"),
+    )
     .body(body)
     .send()
     .await
@@ -1066,7 +1151,9 @@ pub async fn drive_create_folder(
     state: State<'_, AppState>,
 ) -> Result<DriveFile, AppError> {
     if !confirmed {
-        return Err(google_error("creating a Drive folder requires explicit confirmation"));
+        return Err(google_error(
+            "creating a Drive folder requires explicit confirmation",
+        ));
     }
     let mut payload = json!({"name": name, "mimeType": "application/vnd.google-apps.folder"});
     if let Some(parent) = parent_id.filter(|value| !value.trim().is_empty()) {
@@ -1078,7 +1165,10 @@ pub async fn drive_create_folder(
         "https://www.googleapis.com/drive/v3/files",
     )
     .await?
-    .query(&[("fields", "id,name,mimeType,modifiedTime,size,webViewLink,parents")])
+    .query(&[(
+        "fields",
+        "id,name,mimeType,modifiedTime,size,webViewLink,parents",
+    )])
     .json(&payload)
     .send()
     .await
@@ -1100,9 +1190,13 @@ pub async fn drive_update_file(
     state: State<'_, AppState>,
 ) -> Result<DriveFile, AppError> {
     if !confirmed {
-        return Err(google_error("updating a Drive file requires explicit confirmation"));
+        return Err(google_error(
+            "updating a Drive file requires explicit confirmation",
+        ));
     }
-    let metadata = name.map(|value| json!({"name": value})).unwrap_or_else(|| json!({}));
+    let metadata = name
+        .map(|value| json!({"name": value}))
+        .unwrap_or_else(|| json!({}));
     let response = if let Some(encoded) = content_base64 {
         let content = STANDARD
             .decode(encoded)
@@ -1115,8 +1209,17 @@ pub async fn drive_update_file(
         let url = format!("https://www.googleapis.com/upload/drive/v3/files/{file_id}");
         google_request(&state, reqwest::Method::PATCH, &url)
             .await?
-            .query(&[("uploadType", "multipart"), ("fields", "id,name,mimeType,modifiedTime,size,webViewLink,parents")])
-            .header(header::CONTENT_TYPE, format!("multipart/related; boundary={boundary}"))
+            .query(&[
+                ("uploadType", "multipart"),
+                (
+                    "fields",
+                    "id,name,mimeType,modifiedTime,size,webViewLink,parents",
+                ),
+            ])
+            .header(
+                header::CONTENT_TYPE,
+                format!("multipart/related; boundary={boundary}"),
+            )
             .body(body)
             .send()
             .await
@@ -1125,7 +1228,10 @@ pub async fn drive_update_file(
         let url = format!("https://www.googleapis.com/drive/v3/files/{file_id}");
         google_request(&state, reqwest::Method::PATCH, &url)
             .await?
-            .query(&[("fields", "id,name,mimeType,modifiedTime,size,webViewLink,parents")])
+            .query(&[(
+                "fields",
+                "id,name,mimeType,modifiedTime,size,webViewLink,parents",
+            )])
             .json(&metadata)
             .send()
             .await
@@ -1145,7 +1251,9 @@ pub async fn drive_delete_file(
     state: State<'_, AppState>,
 ) -> Result<(), AppError> {
     if !confirmed {
-        return Err(google_error("deleting a Drive file requires explicit confirmation"));
+        return Err(google_error(
+            "deleting a Drive file requires explicit confirmation",
+        ));
     }
     let url = format!("https://www.googleapis.com/drive/v3/files/{file_id}");
     let response = google_request(&state, reqwest::Method::DELETE, &url)
@@ -1158,9 +1266,7 @@ pub async fn drive_delete_file(
 }
 
 #[tauri::command]
-pub async fn calendar_list(
-    state: State<'_, AppState>,
-) -> Result<Vec<CalendarSummary>, AppError> {
+pub async fn calendar_list(state: State<'_, AppState>) -> Result<Vec<CalendarSummary>, AppError> {
     let response = google_request(
         &state,
         reqwest::Method::GET,
@@ -1185,14 +1291,24 @@ pub async fn calendar_events(
     max_results: Option<usize>,
     state: State<'_, AppState>,
 ) -> Result<Vec<CalendarEvent>, AppError> {
-    let calendar = if calendar_id.trim().is_empty() { "primary" } else { calendar_id.trim() };
-    let url = format!("https://www.googleapis.com/calendar/v3/calendars/{}/events", encode_path_segment(calendar));
+    let calendar = if calendar_id.trim().is_empty() {
+        "primary"
+    } else {
+        calendar_id.trim()
+    };
+    let url = format!(
+        "https://www.googleapis.com/calendar/v3/calendars/{}/events",
+        encode_path_segment(calendar)
+    );
     let mut request = google_request(&state, reqwest::Method::GET, &url)
         .await?
         .query(&[
             ("singleEvents", "true".to_string()),
             ("orderBy", "startTime".to_string()),
-            ("maxResults", max_results.unwrap_or(50).clamp(1, 100).to_string()),
+            (
+                "maxResults",
+                max_results.unwrap_or(50).clamp(1, 100).to_string(),
+            ),
         ]);
     if let Some(value) = time_min.filter(|value| !value.trim().is_empty()) {
         request = request.query(&[("timeMin", value)]);
@@ -1248,10 +1364,19 @@ pub async fn calendar_create_event(
     state: State<'_, AppState>,
 ) -> Result<CalendarEvent, AppError> {
     if !confirmed {
-        return Err(google_error("creating a calendar event requires explicit confirmation"));
+        return Err(google_error(
+            "creating a calendar event requires explicit confirmation",
+        ));
     }
-    let calendar = if calendar_id.trim().is_empty() { "primary" } else { calendar_id.trim() };
-    let url = format!("https://www.googleapis.com/calendar/v3/calendars/{}/events", encode_path_segment(calendar));
+    let calendar = if calendar_id.trim().is_empty() {
+        "primary"
+    } else {
+        calendar_id.trim()
+    };
+    let url = format!(
+        "https://www.googleapis.com/calendar/v3/calendars/{}/events",
+        encode_path_segment(calendar)
+    );
     let response = google_request(&state, reqwest::Method::POST, &url)
         .await?
         .query(&[("sendUpdates", "all")])
@@ -1275,9 +1400,15 @@ pub async fn calendar_update_event(
     state: State<'_, AppState>,
 ) -> Result<CalendarEvent, AppError> {
     if !confirmed {
-        return Err(google_error("updating a calendar event requires explicit confirmation"));
+        return Err(google_error(
+            "updating a calendar event requires explicit confirmation",
+        ));
     }
-    let calendar = if calendar_id.trim().is_empty() { "primary" } else { calendar_id.trim() };
+    let calendar = if calendar_id.trim().is_empty() {
+        "primary"
+    } else {
+        calendar_id.trim()
+    };
     let url = format!(
         "https://www.googleapis.com/calendar/v3/calendars/{}/events/{}",
         encode_path_segment(calendar),
@@ -1305,9 +1436,15 @@ pub async fn calendar_delete_event(
     state: State<'_, AppState>,
 ) -> Result<(), AppError> {
     if !confirmed {
-        return Err(google_error("deleting a calendar event requires explicit confirmation"));
+        return Err(google_error(
+            "deleting a calendar event requires explicit confirmation",
+        ));
     }
-    let calendar = if calendar_id.trim().is_empty() { "primary" } else { calendar_id.trim() };
+    let calendar = if calendar_id.trim().is_empty() {
+        "primary"
+    } else {
+        calendar_id.trim()
+    };
     let url = format!(
         "https://www.googleapis.com/calendar/v3/calendars/{}/events/{}",
         encode_path_segment(calendar),
@@ -1337,21 +1474,33 @@ fn contact_from_person(person: &Value) -> GoogleContact {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|item| item.get("value").and_then(Value::as_str).map(ToOwned::to_owned))
+        .filter_map(|item| {
+            item.get("value")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
         .collect();
     let phones = person
         .get("phoneNumbers")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|item| item.get("value").and_then(Value::as_str).map(ToOwned::to_owned))
+        .filter_map(|item| {
+            item.get("value")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
         .collect();
     let organizations = person
         .get("organizations")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|item| item.get("name").and_then(Value::as_str).map(ToOwned::to_owned))
+        .filter_map(|item| {
+            item.get("name")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
         .collect();
     GoogleContact {
         resource_name: person
@@ -1380,7 +1529,10 @@ pub async fn contacts_list(
     )
     .await?
     .query(&[
-        ("personFields", "names,emailAddresses,phoneNumbers,organizations"),
+        (
+            "personFields",
+            "names,emailAddresses,phoneNumbers,organizations",
+        ),
         ("pageSize", &limit.to_string()),
         ("sortOrder", "LAST_NAME_ASCENDING"),
     ])
@@ -1402,8 +1554,14 @@ pub async fn contacts_list(
         .filter(|contact| {
             needle.is_empty()
                 || contact.display_name.to_ascii_lowercase().contains(&needle)
-                || contact.emails.iter().any(|email| email.to_ascii_lowercase().contains(&needle))
-                || contact.phones.iter().any(|phone| phone.to_ascii_lowercase().contains(&needle))
+                || contact
+                    .emails
+                    .iter()
+                    .any(|email| email.to_ascii_lowercase().contains(&needle))
+                || contact
+                    .phones
+                    .iter()
+                    .any(|phone| phone.to_ascii_lowercase().contains(&needle))
         })
         .take(limit)
         .collect();

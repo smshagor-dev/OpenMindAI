@@ -18,7 +18,7 @@ pub async fn analyze_image(
     media: &InferenceMedia,
 ) -> Result<String, AppError> {
     validate_media(media)?;
-    let body = json!({
+    let mut body = json!({
         "model": "openmindai-lens",
         "messages": [{
             "role": "user",
@@ -28,11 +28,10 @@ pub async fn analyze_image(
             ]
         }],
         "stream": false,
-        "temperature": 0.0,
-        "top_p": 0.9,
         "max_tokens": MAX_RESPONSE_TOKENS,
         "chat_template_kwargs": { "enable_thinking": false }
     });
+    crate::sampling::SamplingProfile::DETERMINISTIC.apply(&mut body);
 
     let url = format!("{endpoint}/v1/chat/completions");
     let mut attempt = 0;

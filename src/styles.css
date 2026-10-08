@@ -2,7 +2,8 @@
   --bg: #000000;
   --surface: #1f1f1f;
   --surface-2: #212121;
-  --sidebar: #090909;
+  --sidebar: #101010;
+  --chrome: #0f0f0f;
   --border: rgba(255, 255, 255, 0.08);
   --border-strong: rgba(255, 255, 255, 0.14);
   --text: #f5f5f5;
@@ -39,6 +40,7 @@
   --surface: #f4f4f4;
   --surface-2: #ffffff;
   --sidebar: #f7f7f7;
+  --chrome: #f1f1f1;
   --border: #e3e3e3;
   --border-strong: #d4d4d4;
   --text: #171717;
@@ -81,8 +83,10 @@ button {
 
 .app-shell {
   display: flex;
+  gap: 6px;
   height: 100vh;
-  background: var(--bg);
+  padding: 6px;
+  background: var(--chrome);
 }
 
 .sidebar {
@@ -92,8 +96,9 @@ button {
   gap: 10px;
   min-width: 0;
   width: 320px;
-  padding: 12px;
-  border-right: 1px solid var(--border);
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
   background: var(--sidebar);
   transition:
     width 180ms ease,
@@ -108,7 +113,7 @@ button {
 
 .sidebar.collapsed {
   width: 64px;
-  padding: 12px 8px;
+  padding: 10px 8px;
   align-items: center;
 }
 
@@ -225,7 +230,7 @@ button {
   padding: 0 10px;
   width: 100%;
   border-radius: 10px;
-  background: var(--bg);
+  background: color-mix(in srgb, var(--surface) 42%, var(--sidebar));
   color: var(--text);
   font-weight: 600;
   flex: 0 0 auto;
@@ -557,7 +562,11 @@ button {
   flex: 1;
   flex-direction: column;
   min-width: 0;
-  height: 100vh;
+  height: 100%;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
 }
 
 .workspace-footer {
@@ -633,16 +642,18 @@ button {
 
 .preview-panel {
   position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
+  top: 6px;
+  right: 6px;
+  bottom: 6px;
   z-index: 60;
   display: flex;
   flex-direction: column;
   width: min(560px, 45vw);
   min-width: 340px;
-  border-left: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: 10px;
   background: var(--surface-2);
+  overflow: hidden;
   box-shadow: -16px 0 40px rgb(0 0 0 / 25%);
   animation: preview-slide-in 160ms ease;
 }
@@ -739,8 +750,12 @@ button {
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 16px;
-  padding: 14px 22px;
-  border-bottom: 1px solid var(--border);
+  min-height: 48px;
+  margin: 6px 6px 0;
+  padding: 6px 8px 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--sidebar);
 }
 
 .topbar-center {
@@ -940,7 +955,11 @@ button {
   gap: 22px;
   min-height: 0;
   overflow: auto;
-  padding: 26px 24px 16px;
+  margin: 6px;
+  padding: 20px 18px 14px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
 }
 
 .latest-message-anchor {
@@ -1852,36 +1871,153 @@ button {
 .messages-empty {
   justify-content: center;
   align-items: center;
+  padding: clamp(18px, 5vh, 46px) 24px 28px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.065), rgba(255, 255, 255, 0.018) 46%),
+    radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.055), transparent 30%),
+    radial-gradient(circle at 86% 18%, rgba(255, 255, 255, 0.035), transparent 28%),
+    color-mix(in srgb, var(--surface-2) 76%, #050505 24%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 5%);
 }
 
 .chat-empty-state {
   display: flex;
   justify-content: center;
   width: 100%;
-  padding-top: 0;
-  transform: translateY(-3vh);
+  padding: 0;
+  transform: translateY(-1.5vh);
 }
 
 .chat-empty-inner {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 18px;
-  width: min(650px, 100%);
+  gap: 16px;
+  width: min(760px, 100%);
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.chat-empty-inner::before {
+  content: none;
+}
+
+.chat-empty-inner > * {
+  position: relative;
+  z-index: 1;
+}
+
+.chat-empty-hero {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  text-align: center;
+}
+
+.chat-empty-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 30px;
+  padding: 4px 11px 4px 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 4%);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.chat-empty-brand img {
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  object-fit: cover;
+  background: #ffffff;
 }
 
 .chat-empty-inner h2 {
   margin: 0;
   color: var(--text);
-  font-size: 26px;
-  font-weight: 650;
+  font-size: clamp(28px, 4vw, 44px);
+  font-weight: 760;
+  line-height: 1.05;
   text-align: center;
+  max-width: none;
+}
+
+.chat-empty-hero p {
+  width: min(570px, 100%);
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.chat-empty-pills {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.chat-empty-pills span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 4%);
+  color: color-mix(in srgb, var(--text) 78%, var(--muted));
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.chat-empty-pills span:nth-child(1) svg {
+  color: var(--success);
+}
+
+.chat-empty-pills span:nth-child(2) svg {
+  color: #f4b860;
+}
+
+.chat-empty-pills span:nth-child(3) svg {
+  color: var(--accent);
 }
 
 .chat-empty-inner .composer {
   width: 100%;
-  padding: 0;
+  padding: 2px 0 0;
   margin: 0;
+}
+
+.chat-empty-inner .composer-box {
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--border-strong));
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 7%), rgb(255 255 255 / 3%)),
+    var(--surface);
+  box-shadow:
+    0 18px 42px rgb(0 0 0 / 32%),
+    0 0 0 1px rgb(255 255 255 / 3%);
+}
+
+.chat-empty-inner .composer-box:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 68%, var(--border-strong));
+  box-shadow:
+    0 18px 36px rgb(0 0 0 / 28%),
+    0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
 .chat-empty-inner .composer-tools-menu {
@@ -1892,22 +2028,40 @@ button {
 
 .suggestion-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
-  gap: 2px 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 0;
 }
 
 .suggestion-row-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   min-width: 0;
-  min-height: 36px;
-  padding: 0 10px;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--muted);
+  min-height: 54px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgb(255 255 255 / 3%);
+  color: color-mix(in srgb, var(--text) 76%, var(--muted));
   font-size: 13px;
+  font-weight: 620;
   text-align: left;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+}
+
+.suggestion-row-item svg {
+  width: 32px;
+  height: 32px;
+  padding: 8px;
+  flex: 0 0 auto;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
 }
 
 .suggestion-row-item span {
@@ -1918,8 +2072,15 @@ button {
 }
 
 .suggestion-row-item:hover {
-  background: var(--surface);
+  transform: translateY(-1px);
+  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--surface) 82%, white 6%);
   color: var(--text);
+}
+
+.suggestion-row-item:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 76%, white);
+  outline-offset: 2px;
 }
 
 .chat-empty-note {
@@ -1939,7 +2100,7 @@ button {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  margin: 4px 0 0;
+  margin: 0;
   color: var(--muted);
   font-size: 12px;
   text-align: center;
@@ -2132,6 +2293,10 @@ button {
   width: min(640px, 100%);
   max-height: 80vh;
   overflow: auto;
+}
+
+.datasets-modal-card {
+  width: min(860px, 100%);
 }
 
 .settings-grid {
@@ -2590,11 +2755,78 @@ button {
   border-radius: 8px;
 }
 
+.agent-runtime-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-runtime-head .muted {
+  margin: 5px 0 0;
+}
+
+.agent-runtime-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.agent-runtime-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.agent-runtime-status-ready {
+  border-color: color-mix(in srgb, var(--success) 42%, var(--border));
+  color: var(--success);
+}
+
+.agent-runtime-status-ready .agent-runtime-dot {
+  animation: agent-dot-pulse 1.4s ease-in-out infinite;
+}
+
+.agent-runtime-status-stopped {
+  border-color: rgba(209, 69, 59, 0.34);
+  color: #ff8a80;
+}
+
+.agent-runtime-status-busy {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  color: var(--accent);
+}
+
+@keyframes agent-dot-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 36%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+
 .agent-settings-stack .button-row button {
   display: inline-flex;
   width: auto;
   padding: 0 12px;
   gap: 7px;
+}
+
+.agent-settings-stack .button-row button:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .agent-setting-field {
@@ -2605,13 +2837,49 @@ button {
   margin-top: 12px;
 }
 
-.agent-setting-field select {
+.agent-setting-field select,
+.agent-setting-field input[type="number"] {
+  width: 100%;
   min-width: 0;
   padding: 9px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
   background: var(--surface);
+}
+
+.agent-toggle-field input[type="checkbox"] {
+  appearance: none;
+  justify-self: start;
+  position: relative;
+  width: 44px;
+  height: 24px;
+  margin: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--border-strong);
+  cursor: pointer;
+}
+
+.agent-toggle-field input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--inverse);
+  transition: transform 140ms ease;
+}
+
+.agent-toggle-field input[type="checkbox"]:checked {
+  border-color: color-mix(in srgb, var(--success) 64%, var(--border));
+  background: var(--success);
+}
+
+.agent-toggle-field input[type="checkbox"]:checked::after {
+  transform: translateX(20px);
 }
 
 .model-catalog-overview {
@@ -2676,7 +2944,155 @@ button {
   margin-top: 0;
 }
 
+.dataset-overview {
+  background: color-mix(in srgb, var(--surface) 82%, var(--accent) 6%);
+}
+
+.dataset-overview-icon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--accent);
+  background: var(--surface);
+}
+
+.dataset-use-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 14px;
+}
+
+.dataset-use-card {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 8px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.dataset-use-card svg {
+  grid-row: span 2;
+  margin-top: 2px;
+  color: var(--accent);
+}
+
+.dataset-use-card strong {
+  font-size: 13px;
+}
+
+.dataset-use-card span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.dataset-toolbar {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 180px 38px;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.dataset-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.dataset-search input,
+.dataset-toolbar select {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+}
+
+.dataset-toolbar select {
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.dataset-toolbar button {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.dataset-type-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+
+.dataset-download-status {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.dataset-download-status strong {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.dataset-download-status > span {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.dataset-progress-track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-2) 80%, var(--border));
+}
+
+.dataset-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 180ms ease;
+}
+
 .model-catalog-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   margin: 16px 0 6px;
   font-size: 13px;
   font-weight: 700;
@@ -2735,6 +3151,59 @@ button {
   border-color: rgba(20, 103, 210, 0.28);
   color: #0b57d0;
   background: rgba(20, 103, 210, 0.08);
+}
+
+.dataset-card small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.dataset-tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dataset-tag-row span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface) 72%, var(--surface-2));
+  font-size: 11px;
+  line-height: 1;
+}
+
+.dataset-actions {
+  margin-top: 0;
+}
+
+.dataset-actions button:last-child {
+  min-width: 72px;
+  width: auto;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.dataset-load-more {
+  width: 100%;
+  min-height: 38px;
+  margin: 6px 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.dataset-load-more:hover {
+  background: var(--surface-2);
 }
 
 .button-row {
@@ -2797,6 +3266,21 @@ button {
     padding: 12px 0;
   }
 
+  .agent-runtime-head,
+  .agent-setting-field {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .agent-runtime-head {
+    flex-direction: column;
+  }
+
+  .agent-runtime-status,
+  .agent-toggle-field input[type="checkbox"] {
+    justify-self: start;
+  }
+
   .info-row {
     grid-template-columns: 1fr;
     gap: 4px;
@@ -2821,8 +3305,25 @@ button {
     width: 100%;
   }
 
+  .datasets-modal-card {
+    width: min(100%, 640px);
+  }
+
+  .dataset-use-grid,
+  .dataset-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .dataset-toolbar button {
+    width: 100%;
+  }
+
   .messages {
     padding: 22px 14px 12px;
+  }
+
+  .messages-empty {
+    padding: 0;
   }
 
   .composer {
@@ -2862,26 +3363,79 @@ button {
 
   .chat-empty-inner {
     gap: 14px;
+    padding: 0;
     width: 100%;
+  }
+
+  .chat-empty-inner h2 {
+    font-size: 28px;
+  }
+
+  .chat-empty-state {
+    padding: 22px 14px;
+  }
+
+  .chat-empty-hero p {
+    font-size: 13px;
   }
 
   .suggestion-list {
     grid-template-columns: 1fr;
-    gap: 2px;
+    gap: 8px;
+    margin-top: 0;
+  }
+
+  .suggestion-row-item {
+    min-height: 48px;
+    border-radius: 12px;
+  }
+
+  .chat-empty-pills {
+    gap: 6px;
+  }
+
+  .chat-empty-pills span {
+    min-height: 26px;
+    padding: 0 8px;
+    font-size: 11px;
   }
 }
 
 @media (max-height: 760px) {
   .chat-empty-state {
-    transform: translateY(-2vh);
+    transform: none;
   }
 
   .chat-empty-inner {
-    gap: 12px;
+    gap: 10px;
+    padding: 0;
   }
 
   .chat-empty-inner h2 {
-    font-size: 22px;
+    font-size: 24px;
+  }
+
+  .chat-empty-hero {
+    gap: 7px;
+  }
+
+  .chat-empty-hero p {
+    display: none;
+  }
+
+  .chat-empty-pills {
+    display: none;
+  }
+
+  .suggestion-row-item {
+    min-height: 40px;
+    padding: 7px 10px;
+  }
+
+  .suggestion-row-item svg {
+    width: 28px;
+    height: 28px;
+    padding: 7px;
   }
 
   .chat-empty-inner .composer-tools-menu {

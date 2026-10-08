@@ -203,20 +203,17 @@ async fn run_worker(
         shared_context,
     );
     let max_tokens = ((context_window_tokens / 10).clamp(384, 1_024)) as u64;
-    let body = json!({
+    let mut body = json!({
         "model": model_id,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user}
         ],
         "stream": false,
-        "temperature": 0.10,
-        "top_p": 0.85,
-        "top_k": 20,
         "max_tokens": max_tokens,
-        "presence_penalty": 0.0,
         "chat_template_kwargs": {"enable_thinking": false}
     });
+    crate::sampling::SamplingProfile::STRUCTURED.apply(&mut body);
 
     let url = format!("{}/v1/chat/completions", endpoint.trim_end_matches('/'));
     let started = Instant::now();

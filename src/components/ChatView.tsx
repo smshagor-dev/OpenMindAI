@@ -1,6 +1,18 @@
 import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
-import { Code2, FileSearch, FileText, HardDrive, Image, Music2, Video, Volume2 } from "lucide-react";
+import {
+  Code2,
+  FileSearch,
+  FileText,
+  HardDrive,
+  Image,
+  Music2,
+  ShieldCheck,
+  Sparkles,
+  Video,
+  Volume2,
+  WandSparkles,
+} from "lucide-react";
 import type {
   AppPreferences,
   Artifact,
@@ -123,7 +135,28 @@ export function ChatView(props: {
         {isEmpty ? (
           <div className="chat-empty-state">
             <div className="chat-empty-inner">
-              <h2>Where should we begin?</h2>
+              <div className="chat-empty-hero">
+                <div className="chat-empty-brand">
+                  <img src="/icon.png" alt="" />
+                  <span>OpenMindAI</span>
+                </div>
+                <h2>What are we building today?</h2>
+                <p>
+                  Ask for code, documents, media, or project work. OpenMindAI keeps the workspace
+                  close and turns your next instruction into action.
+                </p>
+                <div className="chat-empty-pills" aria-label="OpenMindAI workspace status">
+                  <span>
+                    <ShieldCheck size={14} /> Local-first
+                  </span>
+                  <span>
+                    <WandSparkles size={14} /> File editing
+                  </span>
+                  <span>
+                    <Sparkles size={14} /> Multimodal
+                  </span>
+                </div>
+              </div>
               {composer}
               <div className="suggestion-list">
                 {SUGGESTIONS.map((suggestion) => {

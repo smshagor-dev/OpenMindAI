@@ -176,7 +176,7 @@ fn safe_dedicated_vram_budget(total: u64) -> u64 {
     total.saturating_sub(reserve)
 }
 
-fn estimate_context_bytes(context_size: u32) -> u64 {
+pub(crate) fn estimate_context_bytes(context_size: u32) -> u64 {
     // Qwen-class GQA models use far less KV memory than the previous generic
     // 512 KiB/token estimate. 192 KiB/token keeps a safety margin while
     // avoiding false partial-offload decisions on common 8 GB GPUs.
@@ -301,6 +301,7 @@ mod tests {
                 hip: false,
                 metal: false,
             },
+            detection_complete: true,
         }
     }
 }

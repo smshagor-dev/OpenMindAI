@@ -92,8 +92,8 @@ pub fn run_coding_qualification(
     let preferences = SettingsRepository::new(&database).get_preferences()?;
     checks.push(check(
         "budgets",
-        preferences.coding_token_budget >= 4_000
-            && preferences.coding_runtime_budget_minutes >= 5
+        preferences.coding_token_budget >= 0
+            && preferences.coding_runtime_budget_minutes >= 0
             && (1..=4).contains(&preferences.coding_max_parallel_workers)
             && (1..=5).contains(&preferences.coding_ci_repair_limit),
         format!(

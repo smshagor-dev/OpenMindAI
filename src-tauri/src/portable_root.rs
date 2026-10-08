@@ -399,6 +399,8 @@ const REQUIRED_DIRECTORIES: &[&str] = &[
     "data/memory",
     "data/vectors",
     "data/indexes",
+    "datasets",
+    "datasets/openmindai",
     "workspaces",
     "knowledge",
     "generated/images",

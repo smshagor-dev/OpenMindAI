@@ -66,19 +66,18 @@ pub(crate) async fn ocr_pdf_pages(
             })?
     };
 
-    let hardware = state.hardware.clone();
+    let hardware = crate::hardware::HardwareProfiler::for_inference(&state.hardware);
     let plan = ModelLaunchPlanner::plan(&lens_model, &hardware, allocate_local_port()?);
-    let endpoint = {
-        let mut runtime = state
-            .runtime
-            .lock()
-            .map_err(|_| AppError::internal("runtime lock poisoned"))?;
-        runtime.ensure_model_server(&hardware, &plan.config)?;
-        runtime.status(&hardware)?.endpoint.ok_or_else(|| {
+    // Held while the pages are read.
+    let (endpoint, _lens_lease) = {
+        let (status, lease) =
+            crate::runtime::ensure_model_ready(&state.runtime, &hardware, &plan.config)?;
+        let endpoint = status.endpoint.ok_or_else(|| {
             AppError::InferenceServerUnavailable(
                 "OpenMindAI Lens runtime endpoint is missing".to_string(),
             )
-        })?
+        })?;
+        (endpoint, lease)
     };
 
     let mut results = Vec::with_capacity(pages.len());

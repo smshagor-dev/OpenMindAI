@@ -148,7 +148,9 @@ fn prepare_native_request(request: &StreamRequest<'_>) -> Result<PreparedNativeR
     };
 
     let model_path = root.resolve_relative(&model.path)?;
-    let hardware = NATIVE_HARDWARE.get_or_init(HardwareProfiler::detect);
+    // Cache the completed scan, never the startup placeholder.
+    let hardware = NATIVE_HARDWARE
+        .get_or_init(|| HardwareProfiler::for_inference(&HardwareProfiler::detect()));
     let plan = ModelLaunchPlanner::plan(&model, hardware, 0);
     let runtime = native_runtime()?;
     if !runtime.backend.supports(&plan.config.backend) {
@@ -191,10 +193,12 @@ fn prepare_native_request(request: &StreamRequest<'_>) -> Result<PreparedNativeR
     } else {
         None
     };
+    // The native engine only supports temperature and top_p; it shares them
+    // with the llama-server Core chat path.
     let config = GenerationConfig {
-        temperature: 0.6,
-        top_p: 0.95,
-        max_tokens: 768,
+        temperature: crate::sampling::SamplingProfile::CORE_CHAT.temperature as f32,
+        top_p: crate::sampling::SamplingProfile::CORE_CHAT.top_p as f32,
+        max_tokens: crate::sampling::CORE_CHAT_MAX_TOKENS,
         n_ctx: plan.config.context_size,
         n_batch: plan.config.batch_size,
         n_threads,

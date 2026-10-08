@@ -1,0 +1,22 @@
+[package]
+name = "native-backend-probe"
+version = "0.0.0"
+edition = "2021"
+
+[[bin]]
+name = "native-backend-probe"
+path = "../scripts/native-backend-probe.rs"
+
+[[bin]]
+name = "native-inference-smoke"
+path = "../scripts/native-inference-smoke.rs"
+
+[dependencies]
+cxx = "1.0"
+tokio-util = "0.7"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+
+[build-dependencies]
+cxx-build = "1.0"

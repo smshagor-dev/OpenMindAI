@@ -79,6 +79,8 @@ export interface HardwareProfile {
     hip: boolean;
     metal: boolean;
   };
+  /** False only while the startup hardware scan is still running (RAM/VRAM not measured yet). */
+  detectionComplete: boolean;
 }
 
 export interface GpuInfo {
@@ -239,6 +241,20 @@ export interface DownloadStatus {
   totalBytes: number | null;
   percentage: number | null;
   speedBytesPerSec: number | null;
+  destination: string | null;
+  error: string | null;
+}
+
+export interface DatasetDownloadStatus {
+  datasetId: string;
+  state: "queued" | "resolving" | "downloading" | "completed" | "failed";
+  filesDownloaded: number;
+  totalFiles: number | null;
+  downloadedBytes: number;
+  totalBytes: number | null;
+  percentage: number | null;
+  speedBytesPerSec: number | null;
+  currentFile: string | null;
   destination: string | null;
   error: string | null;
 }
@@ -421,6 +437,7 @@ export interface AppPreferences {
   openagentApprovalMode: "risk_based" | "always_ask" | "trusted_workspace";
   openagentSandboxMode: "attached_workspace" | "isolated_sandbox";
   openagentMaxParallelAgents: number;
+  openagentRuntimeMode: "automatic" | "shared" | "dedicated";
   codingEnabled: boolean;
   codingTokenBudget: number;
   codingRuntimeBudgetMinutes: number;
@@ -430,6 +447,38 @@ export interface AppPreferences {
   codingGpuLayers: number;
   codingNetworkEnabled: boolean;
   codingAutonomy: "bounded" | "review_first";
+  /** How downloads and online services reach the internet. */
+  networkProxyMode: "direct" | "manual" | "system";
+  networkProxyUrl: string;
+}
+
+/** Live state of the Agent Setup coding agent (desktop OpenAgent and VS Code). */
+export interface CodingAgentStatus {
+  state: "disabled" | "notInstalled" | "stopped" | "starting" | "loadingModel" | "ready" | "error";
+  codingEnabled: boolean;
+  model: {
+    id: string;
+    name: string;
+    displayName: string;
+    family: string | null;
+    repository: string | null;
+    quantization: string | null;
+    path: string;
+  } | null;
+  configuredContext: number | null;
+  parallelWorkers: number | null;
+  /** Tokens available to one request (one llama-server slot). */
+  effectiveContext: number | null;
+  effectiveContextSource: "runtime" | "estimate" | null;
+  gpuLayers: number | null;
+  runtimeMode: "automatic" | "shared" | "dedicated";
+  runtimePlacement: "shared" | "dedicated" | null;
+  placementReason: string | null;
+  elapsedMs: number | null;
+  lastStartupMs: number | null;
+  error: string | null;
+  sharedRuntimeModel: string | null;
+  message: string | null;
 }
 
 export interface OpenAgentSandboxCapability {

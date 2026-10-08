@@ -9,6 +9,7 @@ import {
   PanelLeftOpen,
   Search,
   SquarePen,
+  TableProperties,
   Wrench,
 } from "lucide-react";
 import type { Conversation, UserProfile } from "../types";
@@ -37,6 +38,7 @@ export function Sidebar(props: {
   onDuplicate: (conversation: Conversation) => void;
   onOpenLibrary: () => void;
   onOpenModels: () => void;
+  onOpenDatasets: () => void;
   onOpenTools: () => void;
   onOpenProjects: () => void;
   onOpenSettings: (section?: string) => void;
@@ -126,6 +128,9 @@ export function Sidebar(props: {
         </button>
         <button className="nav-button" onClick={props.onOpenModels} title="Models">
           <Database size={18} /> {!props.collapsed ? "Models" : null}
+        </button>
+        <button className="nav-button" onClick={props.onOpenDatasets} title="Datasets">
+          <TableProperties size={18} /> {!props.collapsed ? "Datasets" : null}
         </button>
         <button
           className={props.view === "tools" ? "nav-button active" : "nav-button"}

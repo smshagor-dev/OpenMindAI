@@ -24,9 +24,18 @@ pub struct HardwareProfile {
     pub primary_gpu: Option<String>,
     pub recommended_inference_gpu: Option<String>,
     pub backends: BackendProfile,
+    /// False only for the startup placeholder, whose RAM/VRAM are zero because
+    /// they have not been measured yet. Anything that compares requirements
+    /// against this profile must use [`HardwareProfiler::for_inference`], which
+    /// always returns a completed scan.
+    pub detection_complete: bool,
 }
 
 impl HardwareProfile {
+    pub fn is_detected(&self) -> bool {
+        self.detection_complete
+    }
+
     fn clone_fields(&self) -> Self {
         Self {
             operating_system: self.operating_system.clone(),
@@ -37,6 +46,7 @@ impl HardwareProfile {
             primary_gpu: self.primary_gpu.clone(),
             recommended_inference_gpu: self.recommended_inference_gpu.clone(),
             backends: self.backends.clone(),
+            detection_complete: self.detection_complete,
         }
     }
 
@@ -193,7 +203,7 @@ fn latest_detected_hardware() -> Option<HardwareProfile> {
         .and_then(|profile| profile.as_ref().map(HardwareProfile::clone_fields))
 }
 
-#[cfg(not(test))]
+#[cfg_attr(test, allow(dead_code))]
 fn startup_snapshot() -> HardwareProfile {
     let logical_threads = std::thread::available_parallelism()
         .map(|value| value.get())
@@ -222,6 +232,7 @@ fn startup_snapshot() -> HardwareProfile {
             hip: false,
             metal: cfg!(target_os = "macos"),
         },
+        detection_complete: false,
     }
 }
 
@@ -273,6 +284,7 @@ fn detect_full() -> HardwareProfile {
             hip: has_amd,
             metal: cfg!(target_os = "macos"),
         },
+        detection_complete: true,
     }
 }
 
@@ -403,6 +415,52 @@ fn enumerate_gpus() -> Vec<GpuInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_placeholder_is_never_reported_as_detected() {
+        let placeholder = startup_snapshot();
+        assert!(!placeholder.is_detected());
+        assert_eq!(placeholder.memory.total_bytes, 0);
+        assert!(placeholder.gpus.is_empty());
+        // Copies keep the flag, so a copied placeholder stays recognizable.
+        assert!(!placeholder.clone_fields().is_detected());
+
+        let scanned = detect_full();
+        assert!(scanned.is_detected());
+        assert!(scanned.memory.total_bytes > 0);
+    }
+
+    /// `AppState::hardware` holds the startup placeholder (0 bytes RAM, no
+    /// GPUs). Production code must read it only through
+    /// `HardwareProfiler::for_inference`, which returns the completed scan.
+    #[test]
+    fn production_code_reads_hardware_only_through_the_completed_scan() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+        for entry in std::fs::read_dir(&src).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            let code = text.split("#[cfg(test)]").next().unwrap_or(&text);
+            for (offset, _) in code.match_indices("state.hardware") {
+                let line_start = code[..offset].rfind('\n').map_or(0, |index| index + 1);
+                if code[line_start..offset].trim_start().starts_with("//") {
+                    continue;
+                }
+                let before = &code[offset.saturating_sub(48)..offset];
+                if !before.contains("for_inference(") {
+                    let line = code[..offset].matches('\n').count() + 1;
+                    offenders.push(format!("{}:{line}", path.display()));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "read the startup hardware placeholder directly: {offenders:?}"
+        );
+    }
 
     #[test]
     fn returns_schema_with_cpu_fallback() {

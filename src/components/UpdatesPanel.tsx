@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { check as checkForAppUpdate, type Update } from "@tauri-apps/plugin-updater";
+import type { Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { api } from "../api";
 import type { AppPreferences, ModelCatalogReport } from "../types";
 import { SaveBar, SelectRow, ToggleRow } from "./SettingsDialog";
+import { checkForAppUpdate } from "../lib/appUpdate";
 import { formatBytes, formatError } from "../lib/format";
 import { notifyUser } from "../lib/notify";
 

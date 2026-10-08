@@ -26,7 +26,7 @@ const MEMORY_CHECK_INTERVAL_SECS: u64 = 60;
 const IDLE_BEFORE_MEMORY_TRIM_SECS: u64 = 20 * 60;
 const LOW_MEMORY_MIN_AVAILABLE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const LOW_MEMORY_AVAILABLE_PERCENT: u64 = 10;
-const CORE_REPOSITORY: &str = "Qwen/Qwen3-4B-GGUF";
+pub(crate) const CORE_REPOSITORY: &str = "Qwen/Qwen3-4B-GGUF";
 const BACKGROUND_ENV: &str = "OPENMINDAI_BACKGROUND_BOOT";
 const BACKGROUND_PRELOAD_DELAY_SECS: u64 = 8;
 
@@ -166,13 +166,9 @@ fn prepare_default_chat_runtime_sync(app: &AppHandle) -> Result<LlamaRuntimeStat
     // back to CPU just because the initial startup snapshot had no GPU yet.
     let hardware = HardwareProfiler::for_inference(&state.hardware);
     let plan = ModelLaunchPlanner::plan(&model, &hardware, allocate_local_port()?);
-    let status = {
-        let mut runtime = state
-            .runtime
-            .lock()
-            .map_err(|_| AppError::internal("runtime lock poisoned"))?;
-        runtime.ensure_model_server(&hardware, &plan.config)?
-    };
+    // A preload is not a use; release the lease right away.
+    let (status, _lease) =
+        crate::runtime::ensure_model_ready(&state.runtime, &hardware, &plan.config)?;
     state.warm_start.mark_runtime_ready(&model.id);
     Ok(status)
 }
@@ -278,6 +274,22 @@ fn register_windows_autostart() {
 #[cfg(not(target_os = "windows"))]
 fn register_windows_autostart() {}
 
+pub(crate) const IDLE_BEFORE_MEMORY_TRIM: Duration =
+    Duration::from_secs(IDLE_BEFORE_MEMORY_TRIM_SECS);
+pub(crate) const MEMORY_CHECK_INTERVAL: Duration = Duration::from_secs(MEMORY_CHECK_INTERVAL_SECS);
+
+/// Returns the available bytes when system memory is low enough that idle models
+/// should be unloaded, otherwise `None`.
+pub(crate) fn low_system_memory() -> Option<u64> {
+    let mut system = System::new();
+    system.refresh_memory();
+    let available = system.available_memory();
+    let total = system.total_memory();
+    let low_percent =
+        total > 0 && available.saturating_mul(100) / total <= LOW_MEMORY_AVAILABLE_PERCENT;
+    (available <= LOW_MEMORY_MIN_AVAILABLE_BYTES || low_percent).then_some(available)
+}
+
 fn spawn_memory_pressure_monitor(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let idle_limit = Duration::from_secs(IDLE_BEFORE_MEMORY_TRIM_SECS);
@@ -295,15 +307,9 @@ fn spawn_memory_pressure_monitor(app: AppHandle) {
                 model_id
             };
 
-            let mut system = System::new();
-            system.refresh_memory();
-            let available = system.available_memory();
-            let total = system.total_memory();
-            let low_percent =
-                total > 0 && available.saturating_mul(100) / total <= LOW_MEMORY_AVAILABLE_PERCENT;
-            if available > LOW_MEMORY_MIN_AVAILABLE_BYTES && !low_percent {
+            let Some(available) = low_system_memory() else {
                 continue;
-            }
+            };
 
             let stop_app = app.clone();
             let stopped = tauri::async_runtime::spawn_blocking(move || {

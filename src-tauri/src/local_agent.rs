@@ -413,26 +413,37 @@ async fn run_agent_message(
     }
 
     let (model, routing_reason) = resolve_openagent_model(state, conversation_id, content)?;
-    let hardware = state.hardware.clone();
-    let mut plan = ModelLaunchPlanner::plan(&model, &hardware, allocate_local_port()?);
-    if preferences.coding_context_size > 0 {
-        plan.config.context_size = preferences.coding_context_size.clamp(4_096, 131_072);
-    }
-    if preferences.coding_gpu_layers >= 0 {
-        plan.config.gpu_layers = preferences.coding_gpu_layers.clamp(0, 999);
-    }
-    plan.config.parallelism = u32::from(preferences.coding_max_parallel_workers.clamp(1, 4));
-    let context_window_tokens = plan.config.context_size as usize;
-    let endpoint = {
-        let mut runtime = state
-            .runtime
-            .lock()
-            .map_err(|_| AppError::internal("runtime lock poisoned"))?;
-        runtime.ensure_model_server(&hardware, &plan.config)?;
-        runtime.status(&hardware)?.endpoint.ok_or_else(|| {
-            AppError::InferenceServerUnavailable("runtime endpoint missing".to_string())
-        })?
+    let hardware = crate::hardware::HardwareProfiler::for_inference(&state.hardware);
+    let agent_plan = crate::agent_runtime::plan_agent_runtime(app)?
+        .plan
+        .filter(|plan| plan.model.id == model.id);
+    // The lease keeps the model resident for the whole OpenAgent run.
+    let (endpoint, launch_config, _model_lease) = match agent_plan {
+        // The Agent Setup model: same placement, startup coordination and launch settings
+        // as VS Code requests, so the two never reload each other.
+        Some(plan) => {
+            let (endpoint, lease) = crate::agent_runtime::acquire_agent_runtime(app, &plan).await?;
+            (endpoint, plan.config, lease)
+        }
+        // General reasoning fallback when no agent model is installed.
+        None => {
+            let launch_config =
+                openagent_launch_config(&model, &hardware, &preferences, allocate_local_port()?);
+            let (status, lease) =
+                crate::runtime::ensure_model_ready(&state.runtime, &hardware, &launch_config)?;
+            let endpoint = status.endpoint.ok_or_else(|| {
+                AppError::InferenceServerUnavailable("runtime endpoint missing".to_string())
+            })?;
+            (endpoint, launch_config, lease)
+        }
     };
+    // Prompt budgets must fit one llama-server slot, not the whole configured context.
+    let context_window_tokens = crate::agent_runtime::effective_context(
+        crate::agent_runtime::slot_context_size(&state.http, &endpoint).await,
+        launch_config.context_size,
+        launch_config.parallelism,
+    )
+    .0 as usize;
 
     let cancellation = state.active_generations.start(conversation_id)?;
     let (user, assistant) =
@@ -1502,34 +1513,64 @@ fn finish_durable_run(
     )
 }
 
+/// Launch settings for the OpenAgent coding model, taken from Settings -> Agent Setup.
+/// Shared by desktop OpenAgent runs and the VS Code coding-agent endpoint so both load
+/// the resident model with an identical configuration.
+pub(crate) fn openagent_launch_config(
+    model: &ModelRecord,
+    hardware: &crate::hardware::HardwareProfile,
+    preferences: &crate::settings::AppPreferences,
+    port: u16,
+) -> crate::launch_planner::ModelLaunchConfig {
+    let mut plan = ModelLaunchPlanner::plan(model, hardware, port);
+    if preferences.coding_context_size > 0 {
+        plan.config.context_size = preferences.coding_context_size.clamp(4_096, 131_072);
+    }
+    if preferences.coding_gpu_layers >= 0 {
+        plan.config.gpu_layers = preferences.coding_gpu_layers.clamp(0, 999);
+    }
+    plan.config.parallelism = u32::from(preferences.coding_max_parallel_workers.clamp(1, 4));
+    plan.config
+}
+
+/// The installed OpenAgent model chosen in Settings -> Agent Setup, with the same
+/// Nemotron preference order OpenAgent uses when no explicit choice was saved.
+/// Returns `None` when no agent model is installed; callers decide on any fallback.
+pub(crate) fn configured_openagent_model(
+    state: &State<'_, AppState>,
+) -> Result<Option<ModelRecord>, AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| AppError::internal("database lock poisoned"))?;
+    let models = ModelRegistry::new(&db, &state.root).list_models()?;
+    let preferences = SettingsRepository::new(&db).get_preferences()?;
+    let preferred_repository = if preferences.openagent_model_id.is_empty() {
+        None
+    } else {
+        entry_by_id(&preferences.openagent_model_id)
+            .ok()
+            .filter(|entry| entry.kind == "agent")
+            .map(|entry| entry.repo)
+    };
+    Ok(select_openagent_model(
+        &models,
+        preferred_repository.as_deref(),
+    ))
+}
+
 fn resolve_openagent_model(
     state: &State<'_, AppState>,
     conversation_id: &str,
     content: &str,
 ) -> Result<(ModelRecord, String), AppError> {
-    let selected = {
-        let db = state
-            .database
-            .lock()
-            .map_err(|_| AppError::internal("database lock poisoned"))?;
-        let models = ModelRegistry::new(&db, &state.root).list_models()?;
-        let preferences = SettingsRepository::new(&db).get_preferences()?;
-        let preferred_repository = if preferences.openagent_model_id.is_empty() {
-            None
-        } else {
-            entry_by_id(&preferences.openagent_model_id)
-                .ok()
-                .filter(|entry| entry.kind == "agent")
-                .map(|entry| entry.repo)
-        };
-        select_openagent_model(&models, preferred_repository.as_deref())
-    };
+    let selected = configured_openagent_model(state)?;
 
     if let Some(model) = selected {
         let reason = if model.source_repository.as_deref()
             == Some("ggml-org/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF")
         {
-            format!("OpenAgent · NVIDIA Nemotron 3.5 Lightning · {}", model.name)
+            format!("OpenAgent - Your personal Agent - {}", model.name)
         } else {
             format!(
                 "OpenAgent · compatible local agent fallback · {}",
@@ -1854,20 +1895,17 @@ Attached roots:\n{root_summary}"
     );
 
     let estimated_prompt_tokens = coding_control::estimate_tokens(&format!("{system}\n{user}"));
-    let body = json!({
+    let mut body = json!({
         "model": model_id,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user}
         ],
         "stream": false,
-        "temperature": 0.15,
-        "top_p": 0.85,
-        "top_k": 20,
         "max_tokens": prompt_context.max_output_tokens,
-        "presence_penalty": 0.0,
         "chat_template_kwargs": {"enable_thinking": false}
     });
+    crate::sampling::SamplingProfile::AGENT.apply(&mut body);
 
     let model_started = Instant::now();
     let url = format!("{}/v1/chat/completions", endpoint.trim_end_matches('/'));
@@ -1889,15 +1927,31 @@ Attached roots:\n{root_summary}"
         break response;
     };
     let status = response.status();
-    let payload: Value = response.json().await.map_err(|error| {
-        AppError::InferenceFailed(format!("invalid agent model response: {error}"))
+    let response_body = response.text().await.map_err(|error| {
+        AppError::InferenceFailed(format!("failed to read agent model response: {error}"))
     })?;
     if !status.is_success() {
+        let detail = response_body.trim();
         return Err(AppError::InferenceFailed(format!(
             "agent model returned HTTP {status}: {}",
-            bounded(&payload.to_string(), 2_000)
+            if detail.is_empty() {
+                "empty response body".to_string()
+            } else {
+                bounded(detail, 2_000)
+            }
         )));
     }
+    if response_body.trim().is_empty() {
+        return Err(AppError::InferenceFailed(
+            "agent model returned an empty response body".to_string(),
+        ));
+    }
+    let payload: Value = serde_json::from_str(&response_body).map_err(|error| {
+        AppError::InferenceFailed(format!(
+            "invalid agent model response JSON: {error}; body: {}",
+            bounded(response_body.trim(), 2_000)
+        ))
+    })?;
     let content = payload
         .pointer("/choices/0/message/content")
         .and_then(Value::as_str)
@@ -3598,6 +3652,39 @@ mod tests {
         )
         .unwrap();
         assert_eq!(selected.id, "nano");
+    }
+
+    #[test]
+    fn openagent_launch_config_uses_agent_setup_preferences() {
+        let model = agent_model("lite", "nvidia/NVIDIA-Nemotron-3-Nano-4B-GGUF", true);
+        let hardware = crate::hardware::HardwareProfiler::detect();
+        let mut preferences = crate::settings::AppPreferences {
+            coding_context_size: 16_384,
+            coding_gpu_layers: 12,
+            coding_max_parallel_workers: 3,
+            ..Default::default()
+        };
+
+        let config = openagent_launch_config(&model, &hardware, &preferences, 4242);
+        assert_eq!(config.model_path, model.path);
+        assert_eq!(config.context_size, 16_384);
+        assert_eq!(config.gpu_layers, 12);
+        assert_eq!(config.parallelism, 3);
+        assert_eq!(config.port, 4242);
+
+        // Out-of-range values are clamped the same way desktop OpenAgent runs clamp them.
+        preferences.coding_context_size = 1_000;
+        preferences.coding_max_parallel_workers = 9;
+        let config = openagent_launch_config(&model, &hardware, &preferences, 4242);
+        assert_eq!(config.context_size, 4_096);
+        assert_eq!(config.parallelism, 4);
+    }
+
+    #[test]
+    fn openagent_selection_never_substitutes_a_non_agent_model() {
+        let mut core = agent_model("core", "Qwen/Qwen3-4B-GGUF", true);
+        core.family = Some("qwen3".to_string());
+        assert!(select_openagent_model(&[core], None).is_none());
     }
 
     #[test]

@@ -48,6 +48,8 @@ pub struct AppPreferences {
     pub openagent_approval_mode: String,
     pub openagent_sandbox_mode: String,
     pub openagent_max_parallel_agents: u8,
+    /// "automatic", "shared" or "dedicated"; see agent_runtime::decide_placement.
+    pub openagent_runtime_mode: String,
     pub coding_enabled: bool,
     pub coding_token_budget: i64,
     pub coding_runtime_budget_minutes: i64,
@@ -57,6 +59,9 @@ pub struct AppPreferences {
     pub coding_gpu_layers: i32,
     pub coding_network_enabled: bool,
     pub coding_autonomy: String,
+    /// "direct" (default: ignore the PC proxy), "manual" or "system"; see net.rs.
+    pub network_proxy_mode: String,
+    pub network_proxy_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -129,7 +134,7 @@ impl Default for AppPreferences {
             default_performance_profile: "Auto".to_string(),
             telemetry_enabled: false,
             save_chat_history: true,
-            local_runtime_autostart: false,
+            local_runtime_autostart: true,
             confirm_before_delete: true,
             web_search_enabled: true,
             deep_research_enabled: true,
@@ -147,15 +152,18 @@ impl Default for AppPreferences {
             openagent_approval_mode: "risk_based".to_string(),
             openagent_sandbox_mode: "attached_workspace".to_string(),
             openagent_max_parallel_agents: 1,
+            openagent_runtime_mode: "automatic".to_string(),
             coding_enabled: true,
-            coding_token_budget: 48_000,
-            coding_runtime_budget_minutes: 45,
+            coding_token_budget: 0,
+            coding_runtime_budget_minutes: 0,
             coding_max_parallel_workers: 2,
             coding_ci_repair_limit: 2,
             coding_context_size: 8_192,
             coding_gpu_layers: -1,
             coding_network_enabled: false,
             coding_autonomy: "bounded".to_string(),
+            network_proxy_mode: "direct".to_string(),
+            network_proxy_url: String::new(),
         }
     }
 }
@@ -293,6 +301,8 @@ mod tests {
         assert!(loaded.notify_model_updates);
         assert!(!loaded.auto_download_model_updates);
         assert_eq!(loaded.update_channel, "Stable");
+        assert_eq!(loaded.network_proxy_mode, "direct");
+        assert!(loaded.network_proxy_url.is_empty());
     }
 
     #[test]

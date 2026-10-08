@@ -126,6 +126,12 @@ pub(crate) async fn send_multimodal_chat_message(
     }
 
     crate::sync_project_context(&state, &conversation_id)?;
+    let dataset_context = crate::dataset_context::build_dataset_context(
+        &state.root,
+        &content,
+        &model.name,
+        &routing.reason,
+    )?;
     app.emit(
         "inference:started",
         StreamStartedEvent {
@@ -146,6 +152,7 @@ pub(crate) async fn send_multimodal_chat_message(
         &assistant,
         &mode,
         &media,
+        dataset_context.as_deref(),
     )
     .await?;
 
@@ -198,6 +205,12 @@ pub(crate) async fn regenerate_multimodal_message(
     let routing = crate::resolve_conversation_model(&state, &conversation_id, mode, &user.content)?;
     let model = routing.model;
     crate::sync_project_context(&state, &conversation_id)?;
+    let dataset_context = crate::dataset_context::build_dataset_context(
+        &state.root,
+        &user.content,
+        &model.name,
+        &routing.reason,
+    )?;
     let assistant = {
         let db = state
             .database
@@ -232,6 +245,7 @@ pub(crate) async fn regenerate_multimodal_message(
         &assistant,
         mode,
         &media,
+        dataset_context.as_deref(),
     )
     .await?;
 

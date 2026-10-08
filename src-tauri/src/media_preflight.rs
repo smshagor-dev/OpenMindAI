@@ -5,7 +5,8 @@ use crate::{
     hardware::HardwareProfile,
     model_catalog::{entry_by_id, installed_file_for_pattern, wildcard_match, ModelCatalogEntry},
     model_download::{
-        ensure_contained, validate_installed_dependencies, QwenModelManifest, VerificationState,
+        ensure_contained, format_byte_pair, format_bytes, validate_installed_dependencies,
+        QwenModelManifest, VerificationState,
     },
     portable_root::{available_bytes_for_path, PortableRootManager},
 };
@@ -13,6 +14,8 @@ use crate::{
 const MIB: u64 = 1024 * 1024;
 const GIB: u64 = 1024 * MIB;
 const RAM_RESERVATION_TOLERANCE_PERCENT: u64 = 5;
+/// VRAM within this share of the recommendation is reported as "slightly below".
+const VRAM_NEAR_RECOMMENDATION_PERCENT: u64 = 99;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PreflightStatus {
@@ -113,19 +116,18 @@ fn preflight_with_environment(
     });
 
     checks.push(match available_bytes {
-        Some(bytes) if bytes < spec.minimum_free_bytes => check(
-            PreflightStatus::Error,
-            "Free space",
-            format!(
-                "need at least {} free before generation, have {}",
-                human_bytes(spec.minimum_free_bytes),
-                human_bytes(bytes)
-            ),
-        ),
+        Some(bytes) if bytes < spec.minimum_free_bytes => {
+            let (have, need) = format_byte_pair(bytes, spec.minimum_free_bytes);
+            check(
+                PreflightStatus::Error,
+                "Free space",
+                format!("need at least {need} free before generation, have {have}"),
+            )
+        }
         Some(bytes) => check(
             PreflightStatus::Ok,
             "Free space",
-            format!("{} available", human_bytes(bytes)),
+            format!("{} available", format_bytes(bytes)),
         ),
         None => check(
             PreflightStatus::Warning,
@@ -134,9 +136,19 @@ fn preflight_with_environment(
         ),
     });
 
-    checks.push(system_memory_check(&entry, hardware.memory.total_bytes));
+    if !hardware.is_detected() {
+        // The startup placeholder reports 0 bytes RAM and no GPUs; comparing
+        // requirements against it would reject every machine.
+        checks.push(check(
+            PreflightStatus::Error,
+            "Hardware",
+            "hardware detection is still in progress; RAM and GPU requirements are checked once it finishes",
+        ));
+    } else {
+        checks.push(system_memory_check(&entry, hardware.memory.total_bytes));
+    }
 
-    if let Some(required_vram) = entry.min_vram_bytes {
+    if let Some(required_vram) = entry.min_vram_bytes.filter(|_| hardware.is_detected()) {
         let max_vram = hardware
             .gpus
             .iter()
@@ -148,17 +160,13 @@ fn preflight_with_environment(
             check(
                 PreflightStatus::Warning,
                 "GPU memory",
-                format!(
-                    "{} dedicated VRAM is below the {} recommendation; CPU/offload fallback may be much slower",
-                    human_bytes(max_vram),
-                    human_bytes(required_vram)
-                ),
+                vram_shortfall_detail(max_vram, required_vram),
             )
         } else {
             check(
                 PreflightStatus::Ok,
                 "GPU memory",
-                format!("{} dedicated VRAM available", human_bytes(max_vram)),
+                format!("{} dedicated VRAM available", format_bytes(max_vram)),
             )
         });
     }
@@ -359,7 +367,7 @@ fn system_memory_check(entry: &ModelCatalogEntry, detected_bytes: u64) -> Prefli
         return check(
             PreflightStatus::Ok,
             "System memory",
-            format!("{} RAM detected", human_bytes(detected_bytes)),
+            format!("{} RAM detected", format_bytes(detected_bytes)),
         );
     }
 
@@ -367,14 +375,13 @@ fn system_memory_check(entry: &ModelCatalogEntry, detected_bytes: u64) -> Prefli
         .min_ram_bytes
         .saturating_mul(100 - RAM_RESERVATION_TOLERANCE_PERCENT)
         / 100;
+    let (detected, required) = format_byte_pair(detected_bytes, entry.min_ram_bytes);
     if detected_bytes >= tolerated_floor {
         return check(
             PreflightStatus::Warning,
             "System memory",
             format!(
-                "{} RAM detected, slightly below the {} catalog threshold; generation is allowed because OS-reported physical memory can exclude small hardware-reserved regions",
-                human_bytes(detected_bytes),
-                human_bytes(entry.min_ram_bytes)
+                "{detected} RAM detected, slightly below the {required} catalog threshold; generation is allowed because OS-reported physical memory can exclude small hardware-reserved regions"
             ),
         );
     }
@@ -383,11 +390,21 @@ fn system_memory_check(entry: &ModelCatalogEntry, detected_bytes: u64) -> Prefli
         PreflightStatus::Error,
         "System memory",
         format!(
-            "{} requires at least {} RAM; detected {}",
-            entry.name,
-            human_bytes(entry.min_ram_bytes),
-            human_bytes(detected_bytes)
+            "{} requires at least {required} RAM; detected {detected}",
+            entry.name
         ),
+    )
+}
+
+/// Explains a VRAM shortfall with enough precision to be credible: 7.98 GiB is
+/// "slightly below" 8.00 GiB, never "8.0 GiB is below 8.0 GiB".
+fn vram_shortfall_detail(available: u64, recommended: u64) -> String {
+    let (have, want) = format_byte_pair(available, recommended);
+    let near = available.saturating_mul(100)
+        >= recommended.saturating_mul(VRAM_NEAR_RECOMMENDATION_PERCENT);
+    let degree = if near { "slightly below" } else { "below" };
+    format!(
+        "{have} dedicated VRAM is {degree} the {want} recommendation; CPU/offload fallback may be much slower"
     )
 }
 
@@ -431,16 +448,6 @@ fn check(
     }
 }
 
-fn human_bytes(bytes: u64) -> String {
-    if bytes >= GIB {
-        format!("{:.1} GiB", bytes as f64 / GIB as f64)
-    } else if bytes >= MIB {
-        format!("{:.0} MiB", bytes as f64 / MIB as f64)
-    } else {
-        format!("{bytes} bytes")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,6 +477,7 @@ mod tests {
                 hip: false,
                 metal: false,
             },
+            detection_complete: true,
         }
     }
 
@@ -508,6 +516,102 @@ mod tests {
         let error = report.ensure_ready().unwrap_err().to_string();
         assert!(error.contains("OpenMindAI Motion"));
         assert!(error.contains("not installed"));
+    }
+
+    #[test]
+    fn startup_placeholder_is_not_judged_as_zero_ram() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let mut placeholder = hardware(0);
+        placeholder.detection_complete = false;
+        let report = preflight_with_environment(
+            &root,
+            "image",
+            &placeholder,
+            Some(100 * GIB),
+            "windows",
+            "x86_64",
+        )
+        .unwrap()
+        .unwrap();
+        let error = report.ensure_ready().unwrap_err().to_string();
+        assert!(error.contains("hardware detection is still in progress"), "{error}");
+        assert!(!error.contains("System memory"), "{error}");
+        assert!(!error.contains("GPU memory"), "{error}");
+        assert!(!error.contains("0 bytes"), "{error}");
+    }
+
+    #[test]
+    fn vram_messages_never_print_equal_values_for_a_shortfall() {
+        let recommended = 8 * GIB;
+        let at = |gib: f64| (gib * GIB as f64) as u64;
+
+        let slightly = vram_shortfall_detail(at(7.98), recommended);
+        assert!(
+            slightly.starts_with("7.98 GiB dedicated VRAM is slightly below the 8.00 GiB"),
+            "{slightly}"
+        );
+
+        let near = vram_shortfall_detail(at(7.94), recommended);
+        assert!(
+            near.starts_with("7.9 GiB dedicated VRAM is slightly below the 8.0 GiB"),
+            "{near}"
+        );
+
+        let clearly = vram_shortfall_detail(at(7.5), recommended);
+        assert!(
+            clearly.starts_with("7.5 GiB dedicated VRAM is below the 8.0 GiB"),
+            "{clearly}"
+        );
+
+        // The RX 580 from the live test reports 8,567,902,208 bytes.
+        let rx580 = vram_shortfall_detail(8_567_902_208, recommended);
+        assert!(rx580.contains("7.98 GiB") && rx580.contains("8.00 GiB"), "{rx580}");
+        assert!(rx580.contains("slightly below"), "{rx580}");
+    }
+
+    #[test]
+    fn vram_comparison_uses_raw_bytes_at_the_boundary() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let required = entry_by_id("sdxl-base-1").unwrap().min_vram_bytes.unwrap();
+        let gpu_check = |vram: u64| {
+            let mut profile = hardware(32 * GIB);
+            profile.gpus = vec![crate::hardware::GpuInfo {
+                id: "gpu".to_string(),
+                name: "test".to_string(),
+                vendor: crate::hardware::GpuVendor::Amd,
+                vendor_id: None,
+                device_id: None,
+                subsystem_id: None,
+                revision: None,
+                dedicated_vram_bytes: Some(vram),
+                dedicated_system_memory_bytes: None,
+                shared_memory_bytes: None,
+                luid: None,
+                is_discrete: true,
+                is_integrated: false,
+                is_software: false,
+                available_backends: Vec::new(),
+                recommended_backend: crate::hardware::BackendKind::Vulkan,
+            }];
+            preflight_with_environment(&root, "image", &profile, Some(100 * GIB), "windows", "x86_64")
+                .unwrap()
+                .unwrap()
+                .checks
+                .into_iter()
+                .find(|check| check.label == "GPU memory")
+                .unwrap()
+        };
+
+        assert_eq!(gpu_check(required - 1).status, PreflightStatus::Warning);
+        assert_eq!(gpu_check(required).status, PreflightStatus::Ok);
+        assert_eq!(gpu_check(required + 10 * MIB).status, PreflightStatus::Ok);
+        assert!(gpu_check(required)
+            .detail
+            .starts_with("8.0 GiB dedicated VRAM available"));
     }
 
     #[test]
