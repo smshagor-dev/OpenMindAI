@@ -424,11 +424,12 @@ mod platform {
 mod tests {
     use super::*;
     use std::{
-        #[cfg(any(target_os = "windows", target_os = "linux"))]
-        io::{BufRead, BufReader},
         process::Stdio,
         time::{Duration, Instant},
     };
+
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    use std::io::{BufRead, BufReader};
 
     const HELPER_ENV: &str = "OPENMINDAI_OWNERSHIP_HELPER";
     const SLEEPER_ENV: &str = "OPENMINDAI_OWNERSHIP_SLEEPER";
