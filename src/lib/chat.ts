@@ -349,7 +349,7 @@ export function inferChatMode(prompt: string, attachments: AttachmentDraft[]): C
     return "research";
 
   if (
-    /\b(latest|today|currently|recent news|breaking news|up.to.date|web search|search the web|look online|look up|check online|google it|find sources|verify online|this week|this month|application open|scholarship deadline)\b/.test(text) ||
+    /\b(latest|today|currently|recent news|breaking news|up.to.date|web search|search|news|weather|forecast|current|prices|deadline|search the web|look online|look up|check online|google it|find sources|verify online|this week|this month|application open|scholarship deadline)\b/.test(text) ||
     ["সর্বশেষ", "আজকে", "আজ ", "এখনকার", "বর্তমানে", "ইন্টারনেটে", "অনলাইনে", "ওয়েবে", "ওয়েবে", "খুঁজে দেখ", "খুঁজে দাও", "যাচাই কর", "ভেরিফাই কর", "আবেদন খোলা", "আবেদন চলছে", "сегодня", "последние новости", "актуальн", "сейчас", "найди в интернете", "поиск в интернете", "проверь онлайн", "проверь источники"].some(
       (phrase) => text.includes(phrase),
     )
