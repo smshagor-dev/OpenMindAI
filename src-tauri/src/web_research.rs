@@ -683,6 +683,43 @@ fn select_relevant_text(text: &str, query: &str) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn prefers_requested_available_provider_but_keeps_fallbacks() {
+        let empty = SearchCredentials::default();
+        let providers = configured_providers("bing", &empty);
+        assert_eq!(providers, vec![Provider::Bing, Provider::DuckDuckGo]);
+        let providers = configured_providers("brave", &empty);
+        assert_eq!(providers, vec![Provider::DuckDuckGo, Provider::Bing]);
+        let with_key = SearchCredentials { brave: Some("test-only".into()), ..Default::default() };
+        assert_eq!(configured_providers("brave", &with_key)[0], Provider::Brave);
+    }
+
+    #[test]
+    fn distinguishes_retryable_failure_and_rate_limit_cooldown() {
+        assert!(ProviderFailure::Transport.retryable());
+        assert!(ProviderFailure::Server.retryable());
+        assert!(!ProviderFailure::Denied.retryable());
+        assert!(!ProviderFailure::RateLimited(Duration::from_secs(60)).retryable());
+        assert_eq!(ProviderFailure::RateLimited(Duration::from_secs(60)).cooldown(), Some(Duration::from_secs(60)));
+    }
+
+    #[tokio::test]
+    async fn provider_response_honors_retry_after_without_exposing_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 2048];
+            let _ = socket.read(&mut request).await;
+            socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 66\r\nContent-Length: 13\r\nConnection: close\r\n\r\nsecret-info!!").await.unwrap();
+        });
+        let client = Client::builder().no_proxy().build().unwrap();
+        let response = client.get(format!("http://{addr}/test")).send().await.unwrap();
+        assert_eq!(provider_text(response).await.unwrap_err(), ProviderFailure::RateLimited(Duration::from_secs(66)));
+        server.await.unwrap();
+    }
+
+    #[test]
     fn brave_and_google_json_keep_only_public_urls() {
         let json = json!([{"title":"Safe", "url":"https://example.com/article", "description":"Evidence"},
             {"title":"Unsafe", "url":"http://127.0.0.1/", "description":"not allowed"}]);
