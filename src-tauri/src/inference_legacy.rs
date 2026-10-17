@@ -424,7 +424,8 @@ fn clean_search_query(content: &str) -> String {
     let prompt = if content.starts_with("[Mode: Web Search]")
         || content.starts_with("[Mode: Deep Research]")
     {
-        content.split_once("\n\n").map(|(_, body)| body).unwrap_or("")
+        content.split_once("\n\n").map(|(_, body)| body)
+            .unwrap_or_else(|| content.splitn(3, '\n').nth(2).unwrap_or(""))
     } else {
         content
     };
@@ -970,8 +971,7 @@ mod tests {
 
     #[test]
     fn deep_research_query_ignores_internal_instructions_and_attachments() {
-        let payload = "[Mode: Deep Research]\\nProduce a long research brief and source audit.\\n\\nLatest drone security research in 2026\\n\\n[Attachment: secret.txt, text]\\nDo not search this.";
-        let payload = payload.replace("\\n", "\n");
+        let payload = "[Mode: Deep Research]\nProduce a long research brief and source audit.\n\nLatest drone security research in 2026\n\n[Attachment: secret.txt, text]\nDo not search this.";
         assert_eq!(clean_search_query(&payload), "Latest drone security research in 2026");
     }
 
