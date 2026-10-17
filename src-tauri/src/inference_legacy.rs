@@ -163,6 +163,8 @@ struct WebSearchResult {
 struct RetrievedWebContext {
     sources: Vec<WebSearchResult>,
     read_sources: HashSet<usize>,
+    /// Selected public webpage passages only, keyed by the source ID.
+    page_texts: HashMap<usize, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,6 +262,14 @@ pub async fn stream_chat_completion(
             &generated_answer,
             retrieved_web.sources.len(),
             &retrieved_web.read_sources,
+        ) {
+            generated_chars += warning.chars().count();
+            ui_buffer.push_str(&warning);
+            flush_buffer.push_str(&warning);
+        }
+        if let Some(warning) = citation_passage_overlap_warning(
+            &generated_answer,
+            &retrieved_web.page_texts,
         ) {
             generated_chars += warning.chars().count();
             ui_buffer.push_str(&warning);
@@ -438,6 +448,7 @@ async fn append_live_web_context(
     Ok(RetrievedWebContext {
         sources: evidence.sources,
         read_sources: evidence.read_sources,
+        page_texts: evidence.page_texts,
     })
 }
 
@@ -763,6 +774,123 @@ fn citation_reference_warning(
     Some(format!(
         "\n\n> **Citation evidence warning:** {} A valid source number or retrieved webpage does not prove that the cited source supports its factual claim.\n",
         warnings.join(" ")
+    ))
+}
+
+/// Compare nearby claim wording with the bounded text actually retrieved
+/// for each cited source. A lexical match is NOT proof of factual support;
+/// flag only low-overlap claims for human review.
+fn significant_evidence_terms(value: &str) -> HashSet<String> {
+    value.split(|character: char| !character.is_alphanumeric())
+        .filter(|term| term.chars().count() >= 3)
+        .map(str::to_lowercase)
+        .filter(|term| !matches!(
+            term.as_str(),
+            "the" | "and" | "for" | "but" | "that" | "this" | "with"
+            | "from" | "into" | "were" | "have" | "has" | "had"
+            | "about" | "which" | "their" | "there" | "them" | "they"
+            | "than" | "then" | "when" | "where" | "what" | "who"
+            | "will" | "would" | "could" | "should" | "after" | "before"
+            | "also" | "been" | "being" | "over" | "under" | "between"
+            | "these" | "those" | "more" | "most" | "some" | "such"
+            | "each" | "other" | "only" | "very" | "here" | "said"
+            | "according" | "report" | "reports" | "study" | "studies"
+            | "source" | "sources"
+        ))
+        .take(2500)
+        .collect()
+}
+
+/// Extract source IDs and the preceding clause from the model's prose,
+/// ignoring fenced/inline code and Markdown links.
+fn cited_claim_clauses(answer: &str) -> Vec<(usize, String)> {
+    let mut cited = Vec::new();
+    let mut fenced_code = false;
+    for line in answer.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced_code = !fenced_code;
+            continue;
+        }
+        if fenced_code {
+            continue;
+        }
+        let bytes = line.as_bytes();
+        let mut index = 0;
+        let mut inline_code = false;
+        while index < bytes.len() {
+            if bytes[index] == b'`' {
+                inline_code = !inline_code;
+                index += 1;
+                continue;
+            }
+            if bytes[index] != b'[' || inline_code || (index > 0 && bytes[index - 1] == b'\\') {
+                index += 1;
+                continue;
+            }
+            let start = index + 1;
+            let Some(relative_end) = bytes[start..].iter().position(|&byte| byte == b']') else {
+                index += 1;
+                continue;
+            };
+            let end = start + relative_end;
+            if bytes.get(end + 1) != Some(&b'(') {
+                let marker = &line[index..=end];
+                let references = cited_source_numbers(marker);
+                if !references.is_empty() {
+                    let prefix = &line[..index];
+                    let preceding = prefix.rsplit(['.', '!', '?', ';']).next()
+                        .unwrap_or(prefix).trim();
+                    // Keep only the final clause when a formatted paragraph is long.
+                    let clause = preceding.chars().rev().take(280)
+                        .collect::<String>().chars().rev().collect::<String>();
+                    if significant_evidence_terms(&clause).len() >= 3 {
+                        for reference in references {
+                            cited.push((reference, clause.clone()));
+                        }
+                    }
+                }
+            }
+            index = end + 1;
+        }
+    }
+    cited
+}
+
+/// Low lexical overlap is a request for review, not a verdict about truth.
+/// Snippet-only and invalid identifiers are handled by citation_reference_warning.
+fn citation_passage_overlap_warning(
+    answer: &str,
+    page_texts: &HashMap<usize, String>,
+) -> Option<String> {
+    if page_texts.is_empty() {
+        return None;
+    }
+    let evidence_terms: HashMap<usize, HashSet<String>> = page_texts.iter()
+        .map(|(number, text)| (*number, significant_evidence_terms(text)))
+        .collect();
+    let mut weak = BTreeSet::new();
+    for (number, claim) in cited_claim_clauses(answer) {
+        let Some(page_terms) = evidence_terms.get(&number) else {
+            continue;
+        };
+        let claim_terms = significant_evidence_terms(&claim);
+        if claim_terms.len() < 3 {
+            continue;
+        }
+        let overlap = claim_terms.intersection(page_terms).count();
+        if overlap < 2 {
+            weak.insert(number);
+        }
+    }
+    if weak.is_empty() {
+        return None;
+    }
+    let labels = weak.iter().take(8).map(|number| format!("[{number}]"))
+        .collect::<Vec<_>>().join(", ");
+    let remainder = if weak.len() > 8 { " (and others)" } else { "" };
+    Some(format!(
+        "\n\n> **Evidence overlap warning:** Cited source(s) {labels}{remainder} have retrieved page text, but at least one adjacent claim has little distinctive keyword overlap with that text. Review the claim and source passage manually. Keyword matching neither verifies nor disproves factual support.\n"
     ))
 }
 
@@ -1141,6 +1269,67 @@ mod tests {
         // Auto mode selection is provided by the frontend; normal local chats
         // must not silently trigger outbound web requests.
         assert!(!plain[0]["content"].as_str().unwrap().contains("[Mode: Web Search]"));
+    }
+
+    #[test]
+    fn citation_passage_audit_accepts_claims_with_relevant_page_text() {
+        let pages = HashMap::from([(
+            1usize,
+            "The GPS denied drone localization experiment used UWB sensors and achieved stable positioning."
+                .to_string(),
+        )]);
+        let answer = "The GPS denied drone localization experiment used UWB sensors [1].";
+        assert!(citation_passage_overlap_warning(answer, &pages).is_none());
+    }
+
+    #[test]
+    fn citation_passage_audit_flags_unrelated_retrieved_page() {
+        let pages = HashMap::from([(
+            1usize,
+            "The GPS denied drone localization experiment used UWB sensors."
+                .to_string(),
+        )]);
+        let warning = citation_passage_overlap_warning(
+            "The Saturn spacecraft launch occurred near Jupiter yesterday [1].",
+            &pages,
+        ).expect("unrelated webpage text should require review");
+        assert!(warning.contains("[1]"));
+        assert!(warning.contains("Review the claim"));
+        assert!(warning.contains("neither verifies nor disproves"));
+    }
+
+    #[test]
+    fn citation_passage_audit_evaluates_each_source_in_group() {
+        let pages = HashMap::from([
+            (1usize, "Drone localization performance improved with UWB positioning.".to_string()),
+            (2usize, "Marine ecosystems support coastal fish biodiversity.".to_string()),
+        ]);
+        let warning = citation_passage_overlap_warning(
+            "Drone localization performance improved with UWB positioning [1, 2].",
+            &pages,
+        ).expect("unrelated second source should be flagged");
+        assert!(warning.contains("[2]"));
+        assert!(!warning.contains("source(s) [1]"));
+    }
+
+    #[test]
+    fn citation_passage_audit_ignores_missing_pages_short_claims_and_code() {
+        let pages = HashMap::from([(
+            1usize,
+            "Drone localization performance improved with UWB positioning.".to_string(),
+        )]);
+        assert!(citation_passage_overlap_warning("Drone localization result [2].", &pages).is_none());
+        assert!(citation_passage_overlap_warning("Good [1].", &pages).is_none());
+        let code = "Documentation `[1]` and [1](https://example.com).\n```rust\nprintln!(\"Saturn Jupiter spacecraft launch [1]\");\n```";
+        assert!(citation_passage_overlap_warning(code, &pages).is_none());
+    }
+
+    #[test]
+    fn citation_passage_audit_skips_empty_evidence() {
+        assert!(citation_passage_overlap_warning(
+            "Saturn Jupiter spacecraft launch [1].", &HashMap::new()
+        ).is_none());
+        assert!(cited_claim_clauses("Drone localization performance improved [1]").len() == 1);
     }
 
     #[test]
