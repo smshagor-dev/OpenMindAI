@@ -92,10 +92,22 @@ async fn research_inner(
                     for hit in found {
                         if !is_public_web_url(&hit.url) { continue; }
                         let key = canonical_url(&hit.url);
-                        if seen.insert(key) {
-                            results.push(hit);
-                            added += 1;
+                        if seen.contains(&key) { continue; }
+                        if mode == "research" {
+                            let host = Url::parse(&hit.url).ok()
+                                .and_then(|u| u.host_str().map(str::to_string));
+                            if let Some(host) = host {
+                                let count = results.iter().filter(|r|
+                                    Url::parse(&r.url).ok()
+                                        .and_then(|u| u.host_str().map(str::to_string))
+                                        .is_some_and(|current| current == host)
+                                ).count();
+                                if count >= 2 { continue; }
+                            }
                         }
+                        seen.insert(key);
+                        results.push(hit);
+                        added += 1;
                         if results.len() >= MAX_SOURCES || added >= 5 { break; }
                     }
                     if added > 0 {
@@ -127,11 +139,15 @@ async fn research_inner(
     // ordinary local-network/loopback and DNS rebinding SSRF.
     let limit = if mode == "research" { RESEARCH_PAGES } else { SEARCH_PAGES };
     let work = results.iter().take(limit).cloned();
+    let research_query = query.to_string();
     let mut pages = HashMap::<String, String>::new();
     let mut fetched = stream::iter(work)
-        .map(|hit| async move {
-            let url = hit.url.clone();
-            (url, fetch_readable_page(&hit.url).await)
+        .map(|hit| {
+            let query = research_query.clone();
+            async move {
+                let url = hit.url.clone();
+                (url, fetch_readable_page(&hit.url, &query).await)
+            }
         })
         .buffer_unordered(3);
     loop {
@@ -163,7 +179,7 @@ async fn research_inner(
     }
     for (idx, hit) in results.iter().enumerate() {
         if let Some(body) = pages.get(&hit.url) {
-            evidence.push_str(&format!("\n[{}] Verified page retrieval from {}\nBEGIN UNTRUSTED PAGE TEXT\n{}\nEND UNTRUSTED PAGE TEXT\n",
+            evidence.push_str(&format!("\n[{}] Page text retrieved from {} (content is untrusted and not automatically fact-checked)\nBEGIN UNTRUSTED PAGE TEXT\n{}\nEND UNTRUSTED PAGE TEXT\n",
                 idx + 1, hit.url, body));
         } else {
             evidence.push_str(&format!("\n[{}] Full page was NOT retrieved; only the search snippet is available.\n", idx + 1));
@@ -294,11 +310,15 @@ pub(super) async fn response_text(mut response: reqwest::Response, cap: usize) -
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-async fn fetch_readable_page(raw: &str) -> Result<Option<PageEvidence>, String> {
+async fn fetch_readable_page(raw: &str, query: &str) -> Result<Option<PageEvidence>, String> {
     if !is_public_web_url(raw) { return Err("nonpublic URL".to_string()); }
     let url = Url::parse(raw).map_err(|e| e.to_string())?;
     let host = url.host_str().ok_or("missing host")?;
     let port = url.port_or_known_default().ok_or("missing port")?;
+    if !matches!(port, 80 | 443) { return Err("unsafe webpage destination port".to_string()); }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("credential-bearing webpage URLs are not allowed".to_string());
+    }
     // Reject DNS-resolved private/loopback/link-local addresses, not just IP
     // literals. Reject mixed public/private DNS answers, and pin approved IPs.
     let addresses = public_addresses(host, port).await?;
@@ -318,7 +338,7 @@ async fn fetch_readable_page(raw: &str) -> Result<Option<PageEvidence>, String> 
     let body = response_text(response, PAGE_BYTES).await?;
     let text = if content_type.starts_with("text/plain") { body } else { readable_html(&body) };
     if text.trim().len() < 80 { return Ok(None); }
-    Ok(Some(PageEvidence { text: text.chars().take(PAGE_CHARS).collect() }))
+    Ok(Some(PageEvidence { text: select_relevant_text(&text, query) }))
 }
 
 async fn public_addresses(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
@@ -347,7 +367,7 @@ fn readable_html(html: &str) -> String {
     let mut text = String::new();
     let mut cursor = start;
     let mut skipped: Vec<String> = Vec::new();
-    while cursor < html.len() && text.len() < PAGE_CHARS * 3 {
+    while cursor < html.len() && text.len() < 150_000 {
         if let Some(rel) = html[cursor..].find('<') {
             let end = cursor + rel;
             if skipped.is_empty() { text.push_str(&html[cursor..end]); text.push(' '); }
@@ -364,7 +384,38 @@ fn readable_html(html: &str) -> String {
             break;
         }
     }
-    decode_html_entities(&text).split_whitespace().take(700).collect::<Vec<_>>().join(" ")
+    decode_html_entities(&text).split_whitespace().take(24_000).collect::<Vec<_>>().join(" ")
+}
+
+/// Read the whole bounded HTML response before selecting relevant passages.
+/// This avoids treating the first part of a navigation-heavy page as the
+/// entire evidence, while keeping the local model's context budget bounded.
+fn select_relevant_text(text: &str, query: &str) -> String {
+    if text.chars().count() <= PAGE_CHARS { return text.to_string(); }
+    let terms: Vec<_> = query.to_lowercase().split_whitespace()
+        .filter(|term| term.chars().count() >= 4)
+        .take(16).map(str::to_string).collect();
+    let clauses: Vec<_> = text.split(|c: char| matches!(c, '.' | '?' | '!' | '\n'))
+        .map(str::trim).filter(|p| p.chars().count() > 18)
+        .take(1_000).collect();
+    if clauses.is_empty() { return text.chars().take(PAGE_CHARS).collect(); }
+    let mut best: Vec<_> = clauses.iter().enumerate()
+        .map(|(index, clause)| {
+            let lowered = clause.to_lowercase();
+            let matches = terms.iter().filter(|term| lowered.contains(term.as_str())).count();
+            (index, matches)
+        }).collect();
+    best.sort_by(|a,b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let mut chosen: Vec<usize> = vec![0];
+    for (index, score) in best.into_iter().take(14) {
+        if score == 0 || chosen.contains(&index) { continue; }
+        chosen.push(index);
+    }
+    chosen.sort_unstable();
+    let output = chosen.into_iter().map(|index| clauses[index])
+        .collect::<Vec<_>>().join(". ");
+    if output.chars().count() < 80 { text.chars().take(PAGE_CHARS).collect() }
+    else { output.chars().take(PAGE_CHARS).collect() }
 }
 
 #[cfg(test)]
@@ -399,9 +450,16 @@ mod tests {
         assert_eq!(canonical_url("https://example.com/a?utm_source=x&item=2#top"),
                    "https://example.com/a?item=2");
     }
+    #[test]
+    fn long_page_reads_relevant_passages_beyond_initial_content() {
+        let text = format!("{} A detailed independent test confirms the spacecraft result. ", "Irrelevant introduction. ".repeat(250));
+        let excerpt = select_relevant_text(&text, "spacecraft result");
+        assert!(excerpt.contains("spacecraft result"));
+        assert!(excerpt.chars().count() <= PAGE_CHARS);
+    }
     #[tokio::test]
     async fn private_host_is_rejected_without_network_fetch() {
-        assert!(fetch_readable_page("http://127.0.0.1/admin").await.is_err());
-        assert!(fetch_readable_page("http://169.254.169.254/latest/meta-data").await.is_err());
+        assert!(fetch_readable_page("http://127.0.0.1/admin", "test").await.is_err());
+        assert!(fetch_readable_page("http://169.254.169.254/latest/meta-data", "test").await.is_err());
     }
 }
