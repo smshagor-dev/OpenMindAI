@@ -391,8 +391,10 @@ pub(crate) async fn probe(
             elapsed_ms: Some(started.elapsed().as_millis()),
         });
     }
+    let checked = checks.iter().filter(|p| p.status != "unconfigured").collect::<Vec<_>>();
+    let offline = !checked.is_empty() && checked.iter().all(|p| p.status == "unreachable");
     ProviderHealthReport {
-        status: if !first.is_empty() { "online" } else { "restricted" },
+        status: if !first.is_empty() { "online" } else if offline { "offline" } else { "restricted" },
         provider: first,
         providers: checks,
     }
