@@ -1000,7 +1000,7 @@ mod tests {
 
     #[test]
     fn search_mode_query_removes_internal_instructions() {
-        let input = "[Mode: Web Search]\\nAnswer like a search assistant\\nlatest lunar mission update";
+        let input = "[Mode: Web Search]\nAnswer like a search assistant\nlatest lunar mission update";
         assert_eq!(clean_search_query(input), "latest lunar mission update");
     }
 
