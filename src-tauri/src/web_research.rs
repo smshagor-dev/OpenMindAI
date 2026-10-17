@@ -48,10 +48,13 @@ struct PageEvidence {
 pub(super) struct ResearchEvidence {
     pub(super) context: String,
     pub(super) sources: Vec<WebSearchResult>,
+    /// 1-based source numbers with successfully retrieved public page text.
+    /// These numbers match the trusted source footer ordering.
+    pub(super) read_sources: HashSet<usize>,
 }
 
 fn unavailable(message: &str) -> ResearchEvidence {
-    ResearchEvidence { context: message.to_string(), sources: Vec::new() }
+    ResearchEvidence { context: message.to_string(), sources: Vec::new(), read_sources: HashSet::new() }
 }
 
 /// Advanced research is multi-query, multi-provider, multi-document. Never
@@ -229,7 +232,11 @@ async fn research_inner(
             evidence.push_str(&format!("\n[{}] Full page was NOT retrieved; only the search snippet is available.\n", idx + 1));
         }
     }
-    ResearchEvidence { context: evidence, sources: results }
+    let read_sources = results.iter().enumerate()
+        .filter(|(_, source)| pages.contains_key(&source.url))
+        .map(|(index, _)| index + 1)
+        .collect();
+    ResearchEvidence { context: evidence, sources: results, read_sources }
 }
 
 /// Deterministic source ordering: prioritize query overlap and independent
