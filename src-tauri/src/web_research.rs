@@ -703,6 +703,16 @@ fn select_relevant_text(text: &str, query: &str) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn research_ranking_prioritizes_query_matches_and_preserves_ties() {
+        let mut hits = vec![
+            WebSearchResult { title: "Unrelated story".into(), url: "https://example.org/a".into(), snippet: "Other topics".into() },
+            WebSearchResult { title: "Drone localization".into(), url: "https://example.org/b".into(), snippet: "GPS denied flight".into() },
+        ];
+        rank_research_results(&mut hits, "drone localization GPS");
+        assert_eq!(hits[0].url, "https://example.org/b");
+    }
+
+    #[test]
     fn prefers_requested_available_provider_but_keeps_fallbacks() {
         let empty = SearchCredentials::default();
         let providers = configured_providers("bing", &empty);
