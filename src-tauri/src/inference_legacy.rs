@@ -547,8 +547,8 @@ async fn search_web(client: &Client, query: &str) -> Result<Vec<WebSearchResult>
     // No subscription/API key: DuckDuckGo HTML with independent Bing RSS
     // fallback when DDG is blocked, empty, or changes its markup.
     let first = search_duckduckgo(client, query).await;
-    if let Ok(ref results) = first {
-        if !results.is_empty() { return Ok(results.clone()); }
+    if first.as_ref().is_ok_and(|results| !results.is_empty()) {
+        return first;
     }
     let second = search_bing_rss(client, query).await;
     match (first, second) {
@@ -676,7 +676,7 @@ fn extract_page_text(html: &str) -> String {
         let tag = lower[start + 1..end - 1].trim();
         let skipped = ["script", "style", "head", "noscript", "svg", "nav", "footer"];
         if let Some(name) = skipped.iter().find(|name| {
-            tag == **name || tag.starts_with(&format!("{name} "))
+            tag == *name || tag.starts_with(&format!("{name} "))
         }) {
             let close_tag = format!("</{name}>");
             if let Some(pos) = lower[end..].find(&close_tag) {
