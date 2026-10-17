@@ -82,14 +82,6 @@ export function SettingsDialog(props: {
     brave: "", googleKey: "", googleEngine: "",
   });
   const [webCredentialMessage, setWebCredentialMessage] = useState("");
-  const refreshWebCredentials = async () => {
-    try {
-      const value = await invoke<typeof webCredentialPresence>("web_provider_credential_status");
-      setWebCredentialPresence(value);
-    } catch {
-      setWebCredentialMessage("Could not read the local credential store.");
-    }
-  };
   const saveWebCredential = async (field: "brave" | "googleKey" | "googleEngine", value: string) => {
     setWebCredentialMessage("");
     try {
@@ -124,7 +116,9 @@ export function SettingsDialog(props: {
   };
   useEffect(() => {
     if (activeSection !== "capabilities") return;
-    void refreshWebCredentials();
+    void invoke<typeof webCredentialPresence>("web_provider_credential_status")
+      .then(setWebCredentialPresence)
+      .catch(() => setWebCredentialMessage("Could not read the local credential store."));
     void checkWebConnectivity();
     const timer = window.setInterval(() => { void checkWebConnectivity(); }, 60_000);
     return () => window.clearInterval(timer);
@@ -455,7 +449,7 @@ export function SettingsDialog(props: {
             </div>
             {providerHealth.length ? (
               <p className="muted">
-                Providers: {providerHealth.map((item) => `${item.name}: ${item.status.replaceAll("_", " ")}`).join(" • ")}
+                Providers: {providerHealth.map((item) => `${item.name}: ${item.status.replace(/_/g, " ")}`).join(" • ")}
               </p>
             ) : null}
             <p className="muted">
