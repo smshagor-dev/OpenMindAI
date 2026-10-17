@@ -778,21 +778,60 @@ fn readable_html(html: &str) -> String {
 /// Read the whole bounded HTML response before selecting relevant passages.
 /// This avoids treating the first part of a navigation-heavy page as the
 /// entire evidence, while keeping the local model's context budget bounded.
+/// Keep decimal numbers in a single passage. Splitting on every full stop
+/// previously broke 87.5% into separate evidence fragments on long pages.
+fn research_page_clauses(text: &str) -> Vec<&str> {
+    let mut clauses = Vec::new();
+    let mut start = 0;
+    let bytes = text.as_bytes();
+    for (index, character) in text.char_indices() {
+        let decimal_point = character == '.'
+            && index > 0
+            && bytes[index - 1].is_ascii_digit()
+            && bytes.get(index + 1).is_some_and(u8::is_ascii_digit);
+        if !matches!(character, '.' | '?' | '!' | '\n') || decimal_point {
+            continue;
+        }
+        let clause = text[start..index].trim();
+        if clause.chars().count() > 18 {
+            clauses.push(clause);
+            if clauses.len() >= 1_000 {
+                return clauses;
+            }
+        }
+        start = index + character.len_utf8();
+    }
+    let tail = text[start..].trim();
+    if tail.chars().count() > 18 && clauses.len() < 1_000 {
+        clauses.push(tail);
+    }
+    clauses
+}
+
+/// Token boundaries matter: "GPS-denied" matches "GPS denied", but "art"
+/// should not match "partial". Matching case is normalized for both sides.
+fn research_term_overlap(clause: &str, query_terms: &HashSet<String>) -> usize {
+    clause.split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .filter(|word| query_terms.contains(word))
+        .collect::<HashSet<_>>()
+        .len()
+}
+
 fn select_relevant_text(text: &str, query: &str) -> String {
     if text.chars().count() <= PAGE_CHARS { return text.to_string(); }
-    let terms: Vec<_> = query.to_lowercase().split_whitespace()
-        .filter(|term| term.chars().count() >= 4)
-        .take(16).map(str::to_string).collect();
-    let clauses: Vec<_> = text.split(['.', '?', '!', '\n'])
-        .map(str::trim).filter(|p| p.chars().count() > 18)
-        .take(1_000).collect();
+    let terms: HashSet<String> = query
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| word.chars().count() >= 3)
+        .take(16)
+        .map(str::to_lowercase)
+        .collect();
+    let clauses = research_page_clauses(text);
     if clauses.is_empty() { return text.chars().take(PAGE_CHARS).collect(); }
     let mut best: Vec<_> = clauses.iter().enumerate()
-        .map(|(index, clause)| {
-            let lowered = clause.to_lowercase();
-            let matches = terms.iter().filter(|term| lowered.contains(term.as_str())).count();
-            (index, matches)
-        }).collect();
+        .map(|(index, clause)| (index, research_term_overlap(clause, &terms)))
+        .collect();
     best.sort_by(|a,b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     let mut chosen: Vec<usize> = vec![0];
     for (index, score) in best.into_iter().take(14) {
@@ -809,6 +848,42 @@ fn select_relevant_text(text: &str, query: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn page_clauses_keep_decimal_and_sentence_boundaries() {
+        let page = "The 2026 drone trial measured 87.5% localization accuracy. Later trials measured 92.0% accuracy!";
+        let clauses = research_page_clauses(page);
+        assert_eq!(clauses.len(), 2);
+        assert!(clauses[0].contains("87.5%"));
+        assert!(clauses[1].contains("92.0%"));
+        assert!(!clauses[0].contains("Later trials"));
+    }
+
+    #[test]
+    fn research_terms_split_hyphenated_queries_and_do_not_match_substrings() {
+        let terms = ["gps", "denied", "drone", "art"]
+            .into_iter().map(str::to_string).collect();
+        assert_eq!(research_term_overlap("GPS-denied drone localization results", &terms), 3);
+        assert_eq!(research_term_overlap("The partial article describes a painting", &terms), 0);
+    }
+
+    #[test]
+    fn long_page_selection_preserves_quantitative_evidence_in_relevant_clause() {
+        let mut page = "An unrelated notice describes a general catalog entry. ".repeat(80);
+        page.push_str("The GPS denied drone localization trial achieved 87.5% accuracy in 2026. ");
+        assert!(page.chars().count() > PAGE_CHARS);
+        let passage = select_relevant_text(&page, "GPS-denied drone localization accuracy");
+        assert!(passage.contains("87.5% accuracy in 2026"), "{passage}");
+        assert!(passage.chars().count() <= PAGE_CHARS);
+    }
+
+    #[test]
+    fn long_page_selection_handles_unicode_boundaries() {
+        let mut page = "Обзор научного исследования с дополнительными сведениями. ".repeat(60);
+        page.push_str("Drone localization accuracy reached 91.5% during the experiment.");
+        let excerpt = select_relevant_text(&page, "drone localization accuracy");
+        assert!(excerpt.contains("91.5%"), "{excerpt}");
+    }
+
     #[test]
     fn research_citation_guidance_requires_claim_specific_support() {
         let guidance = "CITATION GROUNDING: attach source numbers to individual factual claims, not only a references section. Before citing a source, identify the specific supporting statement in its retrieved page text.";
