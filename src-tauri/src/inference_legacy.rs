@@ -14,6 +14,15 @@ use tokio_util::sync::CancellationToken;
 
 #[path = "web_research.rs"]
 mod web_research;
+pub(crate) use web_research::ProviderHealthReport;
+
+pub(crate) async fn probe_web_providers(
+    client: &Client,
+    preferred: &str,
+    credentials: &crate::web_provider_config::SearchCredentials,
+) -> ProviderHealthReport {
+    web_research::probe(client, preferred, credentials).await
+}
 
 use crate::{
     app_error::AppError,
@@ -396,7 +405,13 @@ async fn append_live_web_context(
         return Ok(Vec::new());
     }
 
-    let evidence = web_research::gather(client, &query, mode, cancellation).await;
+    // OS credential-store failures degrade safely to keyless providers without
+    // preventing an otherwise offline-capable local model from answering.
+    let credentials = crate::web_provider_config::load_credentials().unwrap_or_default();
+    let evidence = web_research::gather(
+        client, &query, mode, cancellation,
+        &preferences.web_search_preferred_provider, &credentials,
+    ).await;
     messages.push(json!({ "role": "system", "content": evidence.context }));
     Ok(evidence.sources)
 }
