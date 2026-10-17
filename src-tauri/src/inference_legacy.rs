@@ -1145,13 +1145,16 @@ mod tests {
 
     #[test]
     fn citation_reference_audit_flags_missing_and_zero_sources() {
+        let read = HashSet::from([1, 2, 3]);
         let warning = citation_reference_warning(
-            "Evidence [1, 3] supports this, but [9] and [0] are unavailable. [9]", 3,
+            "Evidence [1, 3] supports this, but [9] and [0] are unavailable. [9]",
+            3,
+            &read,
         ).expect("invalid references should be reported");
         assert!(warning.contains("[0]"));
         assert!(warning.contains("[9]"));
-        assert!(!warning.contains("[3],"));
-        assert!(citation_reference_warning("Sources [1], [2] and [3]", 3).is_none());
+        assert!(!warning.contains("search snippets only"));
+        assert!(citation_reference_warning("Sources [1], [2] and [3]", 3, &read).is_none());
     }
 
     #[test]
@@ -1160,14 +1163,38 @@ mod tests {
         let answer = format!(
             "{answer}`[99]`\n```\nlet citations = \"[99]\";\n```\n[99](https://example.org) and [2026]"
         );
-        assert!(citation_reference_warning(&answer, 1).is_none());
+        assert!(citation_reference_warning(&answer, 1, &HashSet::from([1])).is_none());
     }
 
     #[test]
     fn citation_reference_audit_accepts_multiple_reference_groups() {
-        assert!(citation_reference_warning("Report [1, 2] and [2][3]", 3).is_none());
-        assert!(citation_reference_warning("No web citations here.", 3).is_none());
-        assert!(citation_reference_warning("Unexpected [5].", 0).is_none());
+        let read = HashSet::from([1, 2, 3]);
+        assert!(citation_reference_warning("Report [1, 2] and [2][3]", 3, &read).is_none());
+        assert!(citation_reference_warning("No web citations here.", 3, &read).is_none());
+        assert!(citation_reference_warning("Unexpected [5].", 0, &read).is_none());
+    }
+
+    #[test]
+    fn citation_reference_audit_flags_snippet_only_citations() {
+        let read = HashSet::from([1, 3]);
+        let warning = citation_reference_warning(
+            "The report says [1, 2]. Another claim [2][3].", 3, &read
+        ).expect("citation of snippet-only source should warn");
+        assert!(warning.contains("[2]"));
+        assert!(warning.contains("full pages were not retrieved"));
+        assert!(!warning.contains("do not match"));
+        assert!(citation_reference_warning("Only read sources [1][3]", 3, &read).is_none());
+    }
+
+    #[test]
+    fn citation_reference_audit_combines_invalid_and_snippet_warnings() {
+        let warning = citation_reference_warning(
+            "Unverified sources [0, 2, 8].", 3, &HashSet::from([1, 3])
+        ).unwrap();
+        assert!(warning.contains("[0]"));
+        assert!(warning.contains("[2]"));
+        assert!(warning.contains("[8]"));
+        assert!(warning.contains("search snippets only"));
     }
 
     #[test]
@@ -1189,13 +1216,15 @@ mod tests {
                 snippet: String::new(),
             },
         ];
-        let footer = format_retrieved_source_footer(&sources);
+        let footer = format_retrieved_source_footer(&sources, &HashSet::from([1]));
         assert!(footer.contains("https://example.org/study?q=a%20b"));
         assert!(footer.contains("First \\[Research\\]"));
         assert!(footer.contains("page%28with%29"));
+        assert!(footer.contains("page text retrieved"));
+        assert!(footer.contains("search snippet only"));
         assert!(!footer.contains("127.0.0.1"));
         assert!(!footer.contains("Unsafe"));
-        assert!(!footer.contains("snip"));
+        assert!(!footer.contains("snip\n"));
     }
 
     #[test]
