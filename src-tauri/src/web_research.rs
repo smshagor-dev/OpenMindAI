@@ -395,7 +395,7 @@ fn select_relevant_text(text: &str, query: &str) -> String {
     let terms: Vec<_> = query.to_lowercase().split_whitespace()
         .filter(|term| term.chars().count() >= 4)
         .take(16).map(str::to_string).collect();
-    let clauses: Vec<_> = text.split(|c: char| matches!(c, '.' | '?' | '!' | '\n'))
+    let clauses: Vec<_> = text.split(['.', '?', '!', '\n'])
         .map(str::trim).filter(|p| p.chars().count() > 18)
         .take(1_000).collect();
     if clauses.is_empty() { return text.chars().take(PAGE_CHARS).collect(); }
