@@ -486,7 +486,10 @@ fn detect_web_intent(input: &str) -> Option<&'static str> {
         "найди в интернете", "поиск в интернете", "проверь онлайн",
         "проверь источники",
     ];
-    search.iter().any(|s| text.contains(s)).then_some("search")
+    let english_word = text
+        .split(|ch: char| !ch.is_ascii_alphabetic())
+        .any(|word| matches!(word, "search" | "news" | "weather" | "forecast" | "current" | "prices" | "deadline"));
+    (english_word || search.iter().any(|s| text.contains(s))).then_some("search")
 }
 
 /// Deterministic source links are appended to the stored assistant response.
@@ -1298,6 +1301,8 @@ mod tests {
     #[test]
     fn multilingual_web_routing_is_explicit_and_bounded() {
         assert_eq!(detect_web_intent("Find latest scholarship deadline"), Some("search"));
+        assert_eq!(detect_web_intent("Search scholarships in Italy"), Some("search"));
+        assert_eq!(detect_web_intent("Weather in Moscow"), Some("search"));
         assert_eq!(detect_web_intent("আজকে বিশ্ববিদ্যালয়ের আবেদন খোলা আছে?"), Some("search"));
         assert_eq!(detect_web_intent("Проверь источники сегодня"), Some("search"));
         assert_eq!(detect_web_intent("গভীর গবেষণা কর"), Some("research"));
