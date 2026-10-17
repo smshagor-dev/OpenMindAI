@@ -478,9 +478,10 @@ fn detect_web_intent(input: &str) -> Option<&'static str> {
 fn format_source_footer(results: &[WebSearchResult]) -> String {
     let mut text = String::from("\n\n---\nSources (live search results):\n");
     for (i, item) in results.iter().enumerate() {
+        let url = item.url.replace('(', "%28").replace(')', "%29");
         let title = item.title.replace('\\', "\\\\")
             .replace('[', "\\[").replace(']', "\\]").replace('\n', " ");
-        text.push_str(&format!("- [{}] [{}]({})\n", i + 1, title, item.url));
+        text.push_str(&format!("- [{}] [{}]({})\n", i + 1, title, url));
     }
     text
 }
@@ -1262,6 +1263,51 @@ mod tests {
         assert_eq!(results[0].title, "Example & Result");
         assert_eq!(results[0].url, "https://example.com");
         assert_eq!(results[0].snippet, "Useful live snippet.");
+    }
+
+    #[test]
+    fn multilingual_web_routing_is_explicit_and_bounded() {
+        assert_eq!(detect_web_intent("Find latest scholarship deadline"), Some("search"));
+        assert_eq!(detect_web_intent("আজকে বিশ্ববিদ্যালয়ের আবেদন খোলা আছে?"), Some("search"));
+        assert_eq!(detect_web_intent("Проверь источники сегодня"), Some("search"));
+        assert_eq!(detect_web_intent("গভীর গবেষণা কর"), Some("research"));
+        assert_eq!(detect_web_intent("Write a Rust function"), None);
+        assert_eq!(detect_web_intent("Make an image of a sunset"), None);
+    }
+
+    #[test]
+    fn parses_bing_rss_with_safe_public_links() {
+        let rss = r#"<rss><channel>
+          <item><title>Example &amp; Docs</title><link>https://example.org/a</link><description>Release &amp; news</description></item>
+          <item><title>Private</title><link>http://127.0.0.1/private</link><description>no</description></item>
+          </channel></rss>"#;
+        let results = parse_bing_rss(rss);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title, "Example & Docs");
+        assert_eq!(results[0].snippet, "Release & news");
+    }
+
+    #[test]
+    fn page_reader_ignores_scripts_and_metadata() {
+        let text = extract_page_text(
+            "<html><head><title>Hidden</title></head><body><script>alert(1)</script><main><h2>Official result</h2><p>Verified &amp; relevant evidence.</p></main></body></html>"
+        );
+        assert!(text.contains("Official result"));
+        assert!(text.contains("Verified & relevant evidence."));
+        assert!(!text.contains("alert(1)"));
+        assert!(!text.contains("Hidden"));
+    }
+
+    #[test]
+    fn source_footer_uses_real_urls_not_model_generated_urls() {
+        let sources = vec![WebSearchResult {
+            title: "Example [report]".to_string(),
+            url: "https://example.org/report".to_string(),
+            snippet: "verified".to_string(),
+        }];
+        let footer = format_source_footer(&sources);
+        assert!(footer.contains("https://example.org/report"));
+        assert!(footer.contains("Example \\[report\\]"));
     }
 
     #[test]
