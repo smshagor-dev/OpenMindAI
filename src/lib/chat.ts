@@ -330,39 +330,43 @@ export function userMessageDisplay(content: string): UserMessageDisplay {
   };
 }
 
+/**
+ * Local intent classifier. Only fresh/explicit online questions trigger search;
+ * ordinary chat and coding remain offline. This is advisory: the Rust backend
+ * independently checks persisted permission before any network traffic.
+ */
 export function inferChatMode(prompt: string, attachments: AttachmentDraft[]): ChatMode {
   const text = prompt.toLowerCase();
   if (attachments.some((attachment) => attachment.mediaItems.length > 0)) return "vision";
   if (attachments.some((attachment) => attachment.kind === "pdf")) return "pdf";
-  if (/\b(web|search|google|latest|today|current|news|source|sources|verify)\b/.test(text))
-    return "search";
+
   if (
-    /\b(research|deep research|analyze deeply|investigate|market study|literature review)\b/.test(
-      text,
+    /\b(deep research|literature review|research gap|research papers)\b/.test(text) ||
+    ["গভীর গবেষণা", "গবেষণাপত্র খুঁজ", "обзор литературы", "научные статьи"].some(
+      (phrase) => text.includes(phrase),
     )
   )
     return "research";
+
+  if (
+    /\b(latest|today|currently|recent news|breaking news|up.to.date|web search|search the web|look online|look up|check online|google it|find sources|verify online|this week|this month|application open|scholarship deadline)\b/.test(text) ||
+    ["সর্বশেষ", "আজকে", "আজ ", "এখনকার", "বর্তমানে", "ইন্টারনেটে", "অনলাইনে", "ওয়েবে", "ওয়েবে", "খুঁজে দেখ", "খুঁজে দাও", "যাচাই কর", "ভেরিফাই কর", "আবেদন খোলা", "আবেদন চলছে", "сегодня", "последние новости", "актуальн", "сейчас", "найди в интернете", "поиск в интернете", "проверь онлайн", "проверь источники"].some(
+      (phrase) => text.includes(phrase),
+    )
+  )
+    return "search";
+
   if (/\b(pdf|export pdf|make a pdf|pdf ready)\b/.test(text)) return "pdf";
   if (/\b(document|write a doc|report|proposal|resume|cv|letter|contract|outline)\b/.test(text))
     return "document";
   if (isImageGenerationIntent(text)) return "image";
   if (/\b(create video|make video|generate video|video clip|animation|animate)\b/.test(text))
     return "video";
-  if (
-    /\b(create voice|make voice|generate voice|voiceover|voice over|narration|text to speech|tts)\b/.test(
-      text,
-    )
-  )
+  if (/\b(create voice|make voice|generate voice|voiceover|voice over|narration|text to speech|tts)\b/.test(text))
     return "voice";
-  if (
-    /\b(generate music|create music|make music|sound effect|sound effects|sfx|soundscape|ambience|ambient sound|background music|notification sound)\b/.test(
-      text,
-    )
-  )
+  if (/\b(generate music|create music|make music|sound effect|sound effects|sfx|soundscape|ambience|ambient sound|background music|notification sound)\b/.test(text))
     return "sound";
-  if (
-    /\b(think deeply|reason deeply|reason carefully|step by step|show your reasoning)\b/.test(text)
-  )
+  if (/\b(think deeply|reason deeply|reason carefully|step by step|show your reasoning)\b/.test(text))
     return "thinking";
   return "chat";
 }
