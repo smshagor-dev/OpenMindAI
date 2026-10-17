@@ -39,26 +39,17 @@ v4.0.0 is the maintenance release for the current OpenMindAI 3.x desktop line. I
 
 | Platform | Package |
 | --- | --- |
-| IOS | [openmindai-mobile.ipa](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/openmindai-mobile.ipa) |
-| IOS | [Runner.app.zip](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/Runner.app.zip) |
+| Android | [Get it on Google Play](https://play.google.com/store/apps/details?id=com.openmindai.mobile) |
+| Android | [Get it on RuStore](https://www.rustore.ru/catalog/app/com.openmindai.mobile) |
 | Linux | [OpenMindAI_4.0.0_amd64.AppImage](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_amd64.AppImage) |
 | Linux | [OpenMindAI_4.0.0_amd64.deb](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_amd64.deb) |
-| Linux | [OpenMindAI_4.0.0_i386.AppImage](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_i386.AppImage) |
-| Linux | [OpenMindAI_4.0.0_i386.deb](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_i386.deb) |
-| MacOS | [OpenMindAI_4.0.0_aarch64.dmg](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_aarch64.dmg) |
-| MacOS | [OpenMindAI_4.0.0_universal.dmg](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_universal.dmg) |
-| MacOS | [OpenMindAI_4.0.0_x64.dmg](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x64.dmg) |
-| Mobile | [app-arm64-v8a-release.apk](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/app-arm64-v8a-release.apk) |
-| Mobile | [app-armeabi-v7a-release.apk](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/app-armeabi-v7a-release.apk) |
-| Mobile | [app-x86_64-release.apk](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/app-x86_64-release.apk) |
-| Windows | [OpenMindAI_4.0.0_x64_en-US.msi](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x64_en-US.msi) |
+| macOS | [OpenMindAI-Setup.command](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI-Setup.command) |
 | Windows | [OpenMindAI_4.0.0_x64-setup.exe](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x64-setup.exe) |
-| Windows | [OpenMindAI_4.0.0_x86_en-US.msi](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x86_en-US.msi) |
 | Windows | [OpenMindAI_4.0.0_x86-setup.exe](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x86-setup.exe) |
 
-These packages are staged for the **v4.0.0 draft release**; download links become public after publication. Android build metadata reports app version `0.0.1`; these are companion mobile builds included with desktop `v4.0.0`. iOS installation requires compatible signing and provisioning.
+The links above point to the published v4.0.0 release assets and the Android app's Google Play and RuStore listings. macOS installation uses the `.command` setup script; iOS packages and direct mobile APK downloads are not listed here.
 
-`release-output-SHA256SUMS.txt` covers all application packages. Original platform checksums are attached as `Windows-SHA256SUMS.txt` and `MacOS-SHA256SUMS.txt`, alongside Android `output-metadata.json`.
+`release-output-SHA256SUMS.txt` and platform-specific checksum files, when available, can be found among the release assets.
 
 ### What changed in v4.0.0
 
