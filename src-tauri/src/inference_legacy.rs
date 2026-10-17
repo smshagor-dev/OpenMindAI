@@ -972,7 +972,7 @@ mod tests {
     #[test]
     fn deep_research_query_ignores_internal_instructions_and_attachments() {
         let payload = "[Mode: Deep Research]\nProduce a long research brief and source audit.\n\nLatest drone security research in 2026\n\n[Attachment: secret.txt, text]\nDo not search this.";
-        assert_eq!(clean_search_query(&payload), "Latest drone security research in 2026");
+        assert_eq!(clean_search_query(payload), "Latest drone security research in 2026");
     }
 
     #[test]
