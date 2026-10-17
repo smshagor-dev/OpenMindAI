@@ -384,15 +384,13 @@ async fn append_live_web_context(
     messages: &mut Vec<serde_json::Value>,
     cancellation: &CancellationToken,
 ) -> Option<Vec<WebSearchResult>> {
-    let Some(user_text) = latest_user_text(messages) else { return None };
+    let user_text = latest_user_text(messages)?;
     let explicit = if user_text.contains("[Mode: Web Search]") {
         Some("search")
     } else if user_text.contains("[Mode: Deep Research]") {
         Some("research")
     } else { None };
-    let Some(mode) = explicit.or_else(|| detect_web_intent(&user_text)) else {
-        return None;
-    };
+    let mode = explicit.or_else(|| detect_web_intent(&user_text))?;
 
     // A damaged/unavailable preferences DB must not trigger a network request.
     let allowed = database.lock().ok()
