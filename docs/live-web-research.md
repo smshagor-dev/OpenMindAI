@@ -32,6 +32,53 @@ web search pages otherwise; no paid external AI model is required.
   with a manual Check connection button. Disable both modes to turn off
   this probe.
 
+## Production search configuration and diagnostics
+
+Open **Settings → Capabilities** to select a preferred provider, save optional
+Brave/Google credentials, and inspect the health of each search backend. Keys
+are stored through the existing Windows Credential Manager / platform secret
+storage implementation and are never returned to JavaScript after saving.
+Credential status reports only configured/unconfigured flags. Runtime
+environment variables remain supported as a fallback. The selected provider
+runs first when configured; others remain available for failover.
+
+Search requests retry only transport failures and HTTP 5xx responses, up to
+three total attempts with 250/500 ms backoff delays. HTTP 429 honors a bounded
+`Retry-After` delay (5–180 seconds, default 45 seconds) and skips that provider
+temporarily. HTTP 401/403 marks it blocked (90 seconds). Other providers
+continue without requiring a paid search account. Cancellation interrupts
+retries and sleeps.
+
+Health checks send a small **real search query** to each configured backend,
+test whether usable results can be parsed, and return independent status
+labels: healthy, rate limited, blocked, empty results, invalid response,
+unreachable or unconfigured. Status does not guarantee that an arbitrary
+future query will succeed. Opening the Capabilities panel runs a probe and
+repeats it once a minute while the panel is open. Disable both web capabilities
+to suppress these probes.
+
+Full-page enrichment uses direct connections and publicly resolved pinned
+addresses; proxy-only networks may retrieve search snippets but will not read
+remote pages through an untrusted proxy. This preserves the public-only
+destination constraint.
+
+### Local smoke test
+
+1. Enable Web Search and confirm provider health with direct internet access.
+2. Search a recent public fact; inspect generated host-side source links.
+3. Disable Web Search and Deep Research and confirm the app makes no probe.
+4. Remove internet access and confirm local chat still responds without
+   claiming live source verification.
+5. Configure a valid Brave key, then deliberately invalid credentials; confirm
+   fallback to keyless providers and no secrets in logs or chat history.
+6. Test a network requiring a manual/system proxy and a blocked provider.
+7. Check Stop while retrieval is running, and confirm no citations append to a
+   cancelled reply.
+
+CI covers parsing, retry classification, provider ordering and a local HTTP
+429 response fixture. These tests do not prove live vendor availability,
+which varies with geography, bot challenges and account eligibility.
+
 ## Provider credentials and availability
 
 The following **optional** environment variables are read by the Rust app
