@@ -431,7 +431,12 @@ export function App() {
     const draftPrompt = prompt;
     const draftAttachments = attachments.slice();
     const editTargetId = editingMessageId;
-    const inferredMode = inferChatMode(content, attachments);
+    const detectedMode = inferChatMode(content, attachments);
+    const inferredMode = detectedMode === "search" && preferences?.webSearchEnabled === false
+      ? "chat"
+      : detectedMode === "research" && (preferences?.deepResearchEnabled === false || preferences?.webSearchEnabled === false)
+        ? "chat"
+        : detectedMode;
     const messageContent = buildMessageContent(content, attachments, inferredMode);
     const inferenceMedia = attachmentMedia(attachments);
     let conversationId = activeId;
@@ -589,7 +594,12 @@ export function App() {
       const task = content.trim();
       if (!task || streamingId || submitting) return;
 
-      const inferredMode = inferChatMode(task, []);
+      const detectedMode = inferChatMode(task, []);
+    const inferredMode = detectedMode === "search" && preferences?.webSearchEnabled === false
+      ? "chat"
+      : detectedMode === "research" && (preferences?.deepResearchEnabled === false || preferences?.webSearchEnabled === false)
+        ? "chat"
+        : detectedMode;
       const messageContent = buildMessageContent(task, [], inferredMode);
       setSubmitting(true);
       setPrompt("");
