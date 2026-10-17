@@ -296,6 +296,14 @@ pub async fn stream_chat_completion(
             ui_buffer.push_str(&warning);
             flush_buffer.push_str(&warning);
         }
+        if let Some(warning) = citation_numeric_evidence_warning(
+            &generated_answer,
+            &retrieved_web.page_texts,
+        ) {
+            generated_chars += warning.chars().count();
+            ui_buffer.push_str(&warning);
+            flush_buffer.push_str(&warning);
+        }
         let footer = format_retrieved_source_footer(
             &retrieved_web.sources,
             &retrieved_web.read_sources,
@@ -839,6 +847,23 @@ fn significant_evidence_terms(value: &str) -> HashSet<String> {
         .collect()
 }
 
+/// Find the current sentence without treating a decimal point as a sentence
+/// boundary. This prevents "87.5% [1]" from becoming just "5% [1]".
+fn claim_clause_before_citation(prefix: &str) -> &str {
+    let bytes = prefix.as_bytes();
+    let mut start = 0;
+    for (index, character) in prefix.char_indices() {
+        let decimal = character == '.'
+            && index > 0
+            && bytes[index - 1].is_ascii_digit()
+            && bytes.get(index + 1).is_some_and(u8::is_ascii_digit);
+        if matches!(character, '.' | '!' | '?' | ';') && !decimal {
+            start = index + character.len_utf8();
+        }
+    }
+    prefix[start..].trim()
+}
+
 /// Extract source IDs and the preceding clause from the model's prose,
 /// ignoring fenced/inline code and Markdown links.
 fn cited_claim_clauses(answer: &str) -> Vec<(usize, String)> {
@@ -877,8 +902,7 @@ fn cited_claim_clauses(answer: &str) -> Vec<(usize, String)> {
                 let references = cited_source_numbers(marker);
                 if !references.is_empty() {
                     let prefix = &line[..index];
-                    let preceding = prefix.rsplit(['.', '!', '?', ';']).next()
-                        .unwrap_or(prefix).trim();
+                    let preceding = claim_clause_before_citation(prefix);
                     // Keep only the final clause when a formatted paragraph is long.
                     let clause = preceding.chars().rev().take(280)
                         .collect::<String>().chars().rev().collect::<String>();
@@ -929,6 +953,110 @@ fn citation_passage_overlap_warning(
     let remainder = if weak.len() > 8 { " (and others)" } else { "" };
     Some(format!(
         "\n\n> **Evidence overlap warning:** Cited source(s) {labels}{remainder} have retrieved page text, but at least one adjacent claim has little distinctive keyword overlap with that text. Review the claim and source passage manually. Keyword matching neither verifies nor disproves factual support.\n"
+    ))
+}
+
+/// Normalize clear ASCII numerical claims for conservative source comparison.
+/// Avoid versions, short standalone integers and alphabetic IDs. Values such
+/// as "1,200", "1200" and "1,200.0" share an identity; "%" is not proof
+/// of the correct unit, so matches are never described as verified.
+fn numeric_evidence_values(text: &str) -> BTreeSet<String> {
+    let bytes = text.as_bytes();
+    let mut values = BTreeSet::new();
+    let mut index = 0;
+    while index < bytes.len() && values.len() < 80 {
+        if !bytes[index].is_ascii_digit()
+            || (index > 0 && (bytes[index - 1].is_ascii_alphabetic() || bytes[index - 1] == b'_'))
+        {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < bytes.len() {
+            if bytes[index].is_ascii_digit() {
+                index += 1;
+            } else if matches!(bytes[index], b'.' | b',')
+                && bytes.get(index + 1).is_some_and(u8::is_ascii_digit)
+            {
+                index += 1;
+            } else {
+                break;
+            }
+        }
+        let raw = &text[start..index];
+        let percent = bytes.get(index) == Some(&b'%');
+        if raw.bytes().filter(u8::is_ascii_digit).count() < 2 && !percent {
+            continue;
+        }
+        // A multi-dot token is likely a version number, not a quantity.
+        if raw.bytes().filter(|value| *value == b'.').count() > 1 {
+            continue;
+        }
+        let cleaned = if raw.contains('.') && raw.contains(',') {
+            raw.replace(',', "")
+        } else if raw.contains(',') {
+            let groups = raw.split(',').collect::<Vec<_>>();
+            let thousands = groups[0].len() <= 3
+                && groups.iter().skip(1).all(|group| group.len() == 3);
+            if thousands { raw.replace(',', "") } else { raw.replace(',', ".") }
+        } else {
+            raw.to_string()
+        };
+        let mut parts = cleaned.split('.');
+        let integer = parts.next().unwrap_or_default().trim_start_matches('0');
+        let integer = if integer.is_empty() { "0" } else { integer };
+        let fraction = parts.next().map(|part| part.trim_end_matches('0'))
+            .filter(|part| !part.is_empty());
+        if parts.next().is_some() {
+            continue;
+        }
+        let normalized = match fraction {
+            Some(part) => format!("{integer}.{part}"),
+            None => integer.to_string(),
+        };
+        if normalized.len() <= 24 {
+            values.insert(normalized);
+        }
+    }
+    values
+}
+
+/// Compare numerical values in the cited clause to the actually retrieved
+/// source passage. Missing numbers are a manual review signal only: pages are
+/// bounded extracts and matching numbers cannot establish factual truth.
+fn citation_numeric_evidence_warning(
+    answer: &str,
+    page_texts: &HashMap<usize, String>,
+) -> Option<String> {
+    if page_texts.is_empty() {
+        return None;
+    }
+    let reference_values = page_texts.iter()
+        .map(|(number, page)| (*number, numeric_evidence_values(page)))
+        .collect::<HashMap<_, _>>();
+    let mut mismatches = std::collections::BTreeMap::<usize, BTreeSet<String>>::new();
+    for (number, claim) in cited_claim_clauses(answer) {
+        let Some(numbers_in_source) = reference_values.get(&number) else {
+            // Missing and snippet-only pages already get a separate warning.
+            continue;
+        };
+        let numbers_in_claim = numeric_evidence_values(&claim);
+        for value in numbers_in_claim.difference(numbers_in_source) {
+            mismatches.entry(number).or_default().insert(value.clone());
+        }
+    }
+    if mismatches.is_empty() {
+        return None;
+    }
+    let details = mismatches.iter().take(8)
+        .map(|(source, values)| format!(
+            "[{source}]: {}",
+            values.iter().take(4).cloned().collect::<Vec<_>>().join(", ")
+        ))
+        .collect::<Vec<_>>().join("; ");
+    let more = if mismatches.len() > 8 { " (and others)" } else { "" };
+    Some(format!(
+        "\n\n> **Numerical evidence warning:** Claimed numerical value(s) were not found in the corresponding retrieved page extracts ({details}{more}). Review cited figures, dates and percentages against the full originals. The extracts may be incomplete; matching figures alone do not prove factual support.\n"
     ))
 }
 
