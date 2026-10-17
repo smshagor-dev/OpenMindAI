@@ -232,11 +232,19 @@ async fn research_inner(
             evidence.push_str(&format!("\n[{}] Full page was NOT retrieved; only the search snippet is available.\n", idx + 1));
         }
     }
-    let read_sources = results.iter().enumerate()
+    let read_sources = read_source_numbers(&results, &pages);
+    ResearchEvidence { context: evidence, sources: results, read_sources }
+}
+
+/// Preserve source numbering after relevance sorting and page retrieval.
+fn read_source_numbers(
+    results: &[WebSearchResult],
+    pages: &HashMap<String, String>,
+) -> HashSet<usize> {
+    results.iter().enumerate()
         .filter(|(_, source)| pages.contains_key(&source.url))
         .map(|(index, _)| index + 1)
-        .collect();
-    ResearchEvidence { context: evidence, sources: results, read_sources }
+        .collect()
 }
 
 /// Deterministic source ordering: prioritize query overlap and independent
@@ -764,6 +772,20 @@ mod tests {
                 .and_then(|url| url.host_str().map(str::to_string)))
             .collect();
         assert_eq!(hosts.len(), 1);
+    }
+
+    #[test]
+    fn read_source_numbers_preserve_ranked_source_indices() {
+        let results = [
+            WebSearchResult { title: "First".into(), url: "https://example.com/first".into(), snippet: "A".into() },
+            WebSearchResult { title: "Second".into(), url: "https://example.net/second".into(), snippet: "B".into() },
+            WebSearchResult { title: "Third".into(), url: "https://example.org/third".into(), snippet: "C".into() },
+        ];
+        let mut pages = HashMap::new();
+        pages.insert(results[1].url.clone(), "retrieved body".to_string());
+        pages.insert(results[2].url.clone(), "retrieved body".to_string());
+        assert_eq!(read_source_numbers(&results, &pages), HashSet::from([2, 3]));
+        assert!(read_source_numbers(&results, &HashMap::new()).is_empty());
     }
 
     #[test]
