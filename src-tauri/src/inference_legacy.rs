@@ -538,6 +538,8 @@ fn clean_search_query(content: &str) -> String {
             !trimmed.starts_with("[Mode:")
                 && !trimmed.starts_with("Answer like a search assistant")
                 && !trimmed.starts_with("Create a structured research brief")
+                && !trimmed.starts_with("Use live web evidence supplied")
+                && !trimmed.starts_with("Use the live evidence supplied")
                 && !trimmed.starts_with("[Attachment:")
         })
         .take(12)
@@ -1283,6 +1285,14 @@ mod tests {
         assert_eq!(results[0].title, "Example & Result");
         assert_eq!(results[0].url, "https://example.com");
         assert_eq!(results[0].snippet, "Useful live snippet.");
+    }
+
+    #[test]
+    fn retrieval_query_never_includes_internal_mode_instructions() {
+        let web = "[Mode: Web Search]\nUse live web evidence supplied by the local retrieval backend when available. Cite current factual claims.\n\nLatest NASA launch";
+        assert_eq!(clean_search_query(web), "Latest NASA launch");
+        let research = "[Mode: Deep Research]\nUse the live evidence supplied by the local research retrieval backend, cross-check claims across sources.\n\nFind research on federated learning";
+        assert_eq!(clean_search_query(research), "Find research on federated learning");
     }
 
     #[test]
