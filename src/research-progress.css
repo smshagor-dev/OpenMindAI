@@ -1,0 +1,88 @@
+.research-progress {
+  display: grid;
+  gap: 10px;
+  width: min(100%, 620px);
+  margin: 14px auto 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.research-progress-heading,
+.research-progress-operations,
+.research-progress-counts {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.research-progress-heading strong {
+  font-size: 13px;
+}
+
+.research-progress-heading > span,
+.research-progress-description,
+.research-progress-counts {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.research-progress-operations {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.research-progress-operation {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.research-progress-operation.is-current {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.research-progress-operation.is-finished {
+  color: var(--success);
+}
+
+.research-progress-description {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.research-progress-counts {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.research-progress-counts strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 540px) {
+  .research-progress {
+    padding: 12px;
+  }
+
+  .research-progress-operations {
+    gap: 5px;
+  }
+
+  .research-progress-operation {
+    font-size: 11px;
+    padding: 5px 7px;
+  }
+}
