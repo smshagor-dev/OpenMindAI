@@ -53,9 +53,9 @@ jobs:
         # Keep this scoped, expiring exception guarded by the Node check above.
         # Other advisories must still fail CI.
         run: |
-          cargo audit --file src-tauri/Cargo.lock \\
-            --ignore RUSTSEC-2026-0367 \\
-            --ignore RUSTSEC-2026-0368 \\
+          cargo audit --file src-tauri/Cargo.lock \
+            --ignore RUSTSEC-2026-0367 \
+            --ignore RUSTSEC-2026-0368 \
             --ignore RUSTSEC-2026-0369
 
   codeql:
