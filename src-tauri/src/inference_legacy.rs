@@ -1699,6 +1699,12 @@ mod tests {
                 url: "https://example.org/page(with)".into(),
                 snippet: String::new(),
             },
+            // A real public URL whose page text was NOT retrieved.
+            WebSearchResult {
+                title: "Unread source".into(),
+                url: "https://example.net/unread".into(),
+                snippet: "Provider snippet only".into(),
+            },
         ];
         let footer = format_retrieved_source_footer(
             &sources, &HashSet::from([1, 3]), &HashMap::from([(3, 1)]),
@@ -1707,7 +1713,8 @@ mod tests {
         assert!(footer.contains("First \\[Research\\]"));
         assert!(footer.contains("page%28with%29"));
         assert!(footer.contains("page text retrieved"));
-        assert!(footer.contains("search snippet only"));
+        assert!(footer.contains("[4] [Unread source](https://example.net/unread) — search snippet only"));
+        assert!(footer.contains("[3] [Example (2)](https://example.org/page%28with%29) — page text retrieved; near-duplicate excerpt of [1]"));
         assert!(footer.contains("near-duplicate excerpt of [1]"));
         assert!(!footer.contains("127.0.0.1"));
         assert!(!footer.contains("Unsafe"));
