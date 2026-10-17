@@ -223,8 +223,12 @@ fn rank_research_results(results: &mut [WebSearchResult], query: &str) {
         .filter(|s| s.chars().count() >= 3).collect();
     results.sort_by(|a, b| {
         let score = |hit: &WebSearchResult| {
-            let haystack = format!("{} {}", hit.title, hit.snippet).to_lowercase();
-            terms.iter().filter(|term| haystack.contains(term.as_str())).count()
+            let haystack: HashSet<String> = format!("{} {}", hit.title, hit.snippet)
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|word| !word.is_empty())
+                .map(str::to_lowercase)
+                .collect();
+            terms.intersection(&haystack).count()
         };
         score(b).cmp(&score(a))
     });
