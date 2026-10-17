@@ -153,7 +153,7 @@ async fn research_inner(
     // target and pin approved IPs; redirects are not followed. This prevents
     // ordinary local-network/loopback and DNS rebinding SSRF.
     let limit = if mode == "research" { RESEARCH_PAGES } else { SEARCH_PAGES };
-    let work = results.iter().take(limit).cloned();
+    let work = results.iter().take(limit).cloned().collect::<Vec<_>>();
     let research_query = query.to_string();
     let mut pages = HashMap::<String, String>::new();
     let mut fetched = stream::iter(work)
