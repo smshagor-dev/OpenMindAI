@@ -108,7 +108,8 @@ async fn research_inner(
                         seen.insert(key);
                         results.push(hit);
                         added += 1;
-                        if results.len() >= MAX_SOURCES || added >= 5 { break; }
+                        let provider_limit = if mode == "research" { 5 } else { WEB_SEARCH_RESULTS };
+                        if results.len() >= MAX_SOURCES || added >= provider_limit { break; }
                     }
                     if added > 0 {
                         *provider_counts.entry(provider.name()).or_insert(0) += added;
@@ -119,8 +120,10 @@ async fn research_inner(
                     }
                 }
                 Ok(_) => errors.push(format!("{} returned no usable results", provider.name())),
-                Err(e) => {
-                    tracing::warn!(provider = provider.name(), error = %e, "web provider unavailable");
+                Err(_error) => {
+                    // Never log errors with formatted request URLs: legacy Google
+                    // API credentials can occur in request query parameters.
+                    tracing::warn!(provider = provider.name(), "web provider unavailable");
                     errors.push(format!("{} unavailable", provider.name()));
                 }
             }
@@ -155,7 +158,7 @@ async fn research_inner(
             _ = cancellation.cancelled() => return "Web retrieval was stopped. Source verification was incomplete; do not invent citations.".to_string(),
             page = fetched.next() => match page {
                 Some((url, Ok(Some(body)))) => { pages.insert(url, body.text); },
-                Some((url, Err(reason))) => { tracing::debug!(url = %url, reason = %reason, "source page skipped"); },
+                Some((_url, Err(_reason))) => { tracing::debug!("source page skipped"); },
                 Some((_, Ok(None))) => {},
                 None => break,
             }
