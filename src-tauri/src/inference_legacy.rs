@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::Mutex,
     time::Instant,
@@ -158,6 +158,13 @@ struct WebSearchResult {
     snippet: String,
 }
 
+/// The host retains which result numbers were actually read as page text.
+#[derive(Default)]
+struct RetrievedWebContext {
+    sources: Vec<WebSearchResult>,
+    read_sources: HashSet<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InlineDataImage {
     data_url: String,
@@ -172,7 +179,7 @@ pub async fn stream_chat_completion(
     if let Some(dataset_context) = request.dataset_context.filter(|value| !value.trim().is_empty()) {
         messages.push(json!({ "role": "system", "content": dataset_context }));
     }
-    let retrieved_sources =
+    let retrieved_web =
         append_live_web_context(request.client, request.database, &mut messages, &cancellation).await?;
     attach_media_to_latest_user_message(&mut messages, request.media)?;
     let mut body = json!({
@@ -228,7 +235,7 @@ pub async fn stream_chat_completion(
                     }
                     first_token_at.get_or_insert_with(|| started.elapsed().as_millis());
                     generated_chars += token.chars().count();
-                    if !retrieved_sources.is_empty() {
+                    if !retrieved_web.sources.is_empty() {
                         generated_answer.push_str(&token);
                     }
                     flush_buffer.push_str(&token);
@@ -248,13 +255,20 @@ pub async fn stream_chat_completion(
     // Citations in the model's prose can be incorrect. Append an independent,
     // host-generated list of actual retrieved links to the same saved reply.
     // Never append sources on a cancelled or incomplete generation.
-    if status == "completed" && !cancellation.is_cancelled() && !retrieved_sources.is_empty() {
-        if let Some(warning) = citation_reference_warning(&generated_answer, retrieved_sources.len()) {
+    if status == "completed" && !cancellation.is_cancelled() && !retrieved_web.sources.is_empty() {
+        if let Some(warning) = citation_reference_warning(
+            &generated_answer,
+            retrieved_web.sources.len(),
+            &retrieved_web.read_sources,
+        ) {
             generated_chars += warning.chars().count();
             ui_buffer.push_str(&warning);
             flush_buffer.push_str(&warning);
         }
-        let footer = format_retrieved_source_footer(&retrieved_sources);
+        let footer = format_retrieved_source_footer(
+            &retrieved_web.sources,
+            &retrieved_web.read_sources,
+        );
         generated_chars += footer.chars().count();
         ui_buffer.push_str(&footer);
         flush_buffer.push_str(&footer);
@@ -381,9 +395,9 @@ async fn append_live_web_context(
     database: &Mutex<Database>,
     messages: &mut Vec<serde_json::Value>,
     cancellation: &CancellationToken,
-) -> Result<Vec<WebSearchResult>, AppError> {
+) -> Result<RetrievedWebContext, AppError> {
     let Some(user_text) = latest_user_text(messages) else {
-        return Ok(Vec::new());
+        return Ok(RetrievedWebContext::default());
     };
     let mode = if user_text.contains("[Mode: Web Search]") {
         Some("search")
@@ -393,7 +407,7 @@ async fn append_live_web_context(
         None
     };
     let Some(mode) = mode else {
-        return Ok(Vec::new());
+        return Ok(RetrievedWebContext::default());
     };
 
     // Enforce the user toggle in the backend, not only in the mode selector UI.
@@ -405,12 +419,12 @@ async fn append_live_web_context(
         || (mode == "research" && !preferences.deep_research_enabled)
     {
         messages.push(json!({ "role": "system", "content": "Live web retrieval is disabled in your privacy preferences. Do not claim current web verification or invent citations." }));
-        return Ok(Vec::new());
+        return Ok(RetrievedWebContext::default());
     }
 
     let query = clean_search_query(&user_text);
     if query.is_empty() || cancellation.is_cancelled() {
-        return Ok(Vec::new());
+        return Ok(RetrievedWebContext::default());
     }
 
     // OS credential-store failures degrade safely to keyless providers without
@@ -421,7 +435,10 @@ async fn append_live_web_context(
         &preferences.web_search_preferred_provider, &credentials,
     ).await;
     messages.push(json!({ "role": "system", "content": evidence.context }));
-    Ok(evidence.sources)
+    Ok(RetrievedWebContext {
+        sources: evidence.sources,
+        read_sources: evidence.read_sources,
+    })
 }
 
 fn latest_user_text(messages: &[serde_json::Value]) -> Option<String> {
@@ -647,13 +664,9 @@ fn is_public_ipv6(address: Ipv6Addr) -> bool {
     true
 }
 
-/// Check numbered citation markers against actual search results.
-/// This does not determine whether the cited page supports a factual claim.
-fn citation_reference_warning(answer: &str, source_count: usize) -> Option<String> {
-    if source_count == 0 {
-        return None;
-    }
-    let mut invalid = BTreeSet::new();
+/// Parse model-generated numbered citations, excluding Markdown links and code.
+fn cited_source_numbers(answer: &str) -> BTreeSet<usize> {
+    let mut citations = BTreeSet::new();
     let mut fenced_code = false;
     for line in answer.lines() {
         let trimmed = line.trim_start();
@@ -697,9 +710,7 @@ fn citation_reference_warning(answer: &str, source_count: usize) -> Option<Strin
                     {
                         for reference in references {
                             if let Ok(number) = reference.parse::<usize>() {
-                                if number == 0 || number > source_count {
-                                    invalid.insert(number);
-                                }
+                                citations.insert(number);
                             }
                         }
                     }
@@ -708,19 +719,58 @@ fn citation_reference_warning(answer: &str, source_count: usize) -> Option<Strin
             index = end + 1;
         }
     }
-    if invalid.is_empty() {
+    citations
+}
+
+/// Validate source IDs and identify citations that rely only on search snippets.
+/// Retrieved text indicates inspection, not semantic truth or corroboration.
+fn citation_reference_warning(
+    answer: &str,
+    source_count: usize,
+    read_sources: &HashSet<usize>,
+) -> Option<String> {
+    if source_count == 0 {
         return None;
     }
-    let labels = invalid.iter().take(8).map(|number| format!("[{number}]"))
-        .collect::<Vec<_>>().join(", ");
-    let remainder = if invalid.len() > 8 { " (and others)" } else { "" };
+    let cited = cited_source_numbers(answer);
+    let invalid: BTreeSet<usize> = cited.iter().copied()
+        .filter(|number| *number == 0 || *number > source_count)
+        .collect();
+    let snippets: BTreeSet<usize> = cited.iter().copied()
+        .filter(|number| *number >= 1 && *number <= source_count && !read_sources.contains(number))
+        .collect();
+    if invalid.is_empty() && snippets.is_empty() {
+        return None;
+    }
+    let format_numbers = |numbers: &BTreeSet<usize>| {
+        let labels = numbers.iter().take(8).map(|number| format!("[{number}]"))
+            .collect::<Vec<_>>().join(", ");
+        if numbers.len() > 8 { format!("{labels} (and others)") } else { labels }
+    };
+    let mut warnings = Vec::new();
+    if !invalid.is_empty() {
+        warnings.push(format!(
+            "{} do not match the {} retrieved search results.",
+            format_numbers(&invalid), source_count
+        ));
+    }
+    if !snippets.is_empty() {
+        warnings.push(format!(
+            "{} have search snippets only; the full pages were not retrieved.",
+            format_numbers(&snippets)
+        ));
+    }
     Some(format!(
-        "\n\n> **Citation reference warning:** {labels}{remainder} do not match the {source_count} retrieved source entries. Those inline references are unverified. Source-number checks cannot establish whether any retrieved page supports a factual claim.\n"
+        "\n\n> **Citation evidence warning:** {} A valid source number or retrieved webpage does not prove that the cited source supports its factual claim.\n",
+        warnings.join(" ")
     ))
 }
 
 /// Host-generated citations must not trust model output or source titles.
-fn format_retrieved_source_footer(results: &[WebSearchResult]) -> String {
+fn format_retrieved_source_footer(
+    results: &[WebSearchResult],
+    read_sources: &HashSet<usize>,
+) -> String {
     let mut footer = String::from("\n\n---\nRetrieved web sources (links returned by search providers; not independently fact-checked):\n");
     for (i, result) in results.iter().enumerate() {
         if !is_public_web_url(&result.url) { continue; }
@@ -732,7 +782,12 @@ fn format_retrieved_source_footer(results: &[WebSearchResult]) -> String {
             .take(140).collect::<String>()
             .replace('\\', "\\\\").replace('[', "\\[")
             .replace(']', "\\]").replace('<', "&lt;").replace('>', "&gt;");
-        footer.push_str(&format!("- [{}] [{}]({})\n", i + 1, title, url));
+        let status = if read_sources.contains(&(i + 1)) {
+            "page text retrieved"
+        } else {
+            "search snippet only"
+        };
+        footer.push_str(&format!("- [{}] [{}]({}) — {}\n", i + 1, title, url, status));
     }
     footer
 }
@@ -1090,13 +1145,16 @@ mod tests {
 
     #[test]
     fn citation_reference_audit_flags_missing_and_zero_sources() {
+        let read = HashSet::from([1, 2, 3]);
         let warning = citation_reference_warning(
-            "Evidence [1, 3] supports this, but [9] and [0] are unavailable. [9]", 3,
+            "Evidence [1, 3] supports this, but [9] and [0] are unavailable. [9]",
+            3,
+            &read,
         ).expect("invalid references should be reported");
         assert!(warning.contains("[0]"));
         assert!(warning.contains("[9]"));
-        assert!(!warning.contains("[3],"));
-        assert!(citation_reference_warning("Sources [1], [2] and [3]", 3).is_none());
+        assert!(!warning.contains("search snippets only"));
+        assert!(citation_reference_warning("Sources [1], [2] and [3]", 3, &read).is_none());
     }
 
     #[test]
@@ -1105,14 +1163,38 @@ mod tests {
         let answer = format!(
             "{answer}`[99]`\n```\nlet citations = \"[99]\";\n```\n[99](https://example.org) and [2026]"
         );
-        assert!(citation_reference_warning(&answer, 1).is_none());
+        assert!(citation_reference_warning(&answer, 1, &HashSet::from([1])).is_none());
     }
 
     #[test]
     fn citation_reference_audit_accepts_multiple_reference_groups() {
-        assert!(citation_reference_warning("Report [1, 2] and [2][3]", 3).is_none());
-        assert!(citation_reference_warning("No web citations here.", 3).is_none());
-        assert!(citation_reference_warning("Unexpected [5].", 0).is_none());
+        let read = HashSet::from([1, 2, 3]);
+        assert!(citation_reference_warning("Report [1, 2] and [2][3]", 3, &read).is_none());
+        assert!(citation_reference_warning("No web citations here.", 3, &read).is_none());
+        assert!(citation_reference_warning("Unexpected [5].", 0, &read).is_none());
+    }
+
+    #[test]
+    fn citation_reference_audit_flags_snippet_only_citations() {
+        let read = HashSet::from([1, 3]);
+        let warning = citation_reference_warning(
+            "The report says [1, 2]. Another claim [2][3].", 3, &read
+        ).expect("citation of snippet-only source should warn");
+        assert!(warning.contains("[2]"));
+        assert!(warning.contains("full pages were not retrieved"));
+        assert!(!warning.contains("do not match"));
+        assert!(citation_reference_warning("Only read sources [1][3]", 3, &read).is_none());
+    }
+
+    #[test]
+    fn citation_reference_audit_combines_invalid_and_snippet_warnings() {
+        let warning = citation_reference_warning(
+            "Unverified sources [0, 2, 8].", 3, &HashSet::from([1, 3])
+        ).unwrap();
+        assert!(warning.contains("[0]"));
+        assert!(warning.contains("[2]"));
+        assert!(warning.contains("[8]"));
+        assert!(warning.contains("search snippets only"));
     }
 
     #[test]
@@ -1134,13 +1216,15 @@ mod tests {
                 snippet: String::new(),
             },
         ];
-        let footer = format_retrieved_source_footer(&sources);
+        let footer = format_retrieved_source_footer(&sources, &HashSet::from([1]));
         assert!(footer.contains("https://example.org/study?q=a%20b"));
         assert!(footer.contains("First \\[Research\\]"));
         assert!(footer.contains("page%28with%29"));
+        assert!(footer.contains("page text retrieved"));
+        assert!(footer.contains("search snippet only"));
         assert!(!footer.contains("127.0.0.1"));
         assert!(!footer.contains("Unsafe"));
-        assert!(!footer.contains("snip"));
+        assert!(!footer.contains("snip\n"));
     }
 
     #[test]
