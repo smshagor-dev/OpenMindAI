@@ -1865,6 +1865,48 @@ fn network_proxy_for_url(url: String) -> Option<String> {
     net::proxy_for_url(&url)
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebConnectivityStatus {
+    status: &'static str,
+    provider: &'static str,
+}
+
+/// Online status is detected on demand and while the capability settings panel
+/// is open. Any HTTP response proves transport reachability, not search success.
+#[tauri::command]
+async fn check_web_connectivity(state: State<'_, AppState>) -> Result<WebConnectivityStatus, app_error::AppError> {
+    let enabled = {
+        let db = state.database.lock()
+            .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+        let settings = SettingsRepository::new(&db).get_preferences()?;
+        settings.web_search_enabled || settings.deep_research_enabled
+    };
+    if !enabled {
+        return Ok(WebConnectivityStatus { status: "disabled", provider: "" });
+    }
+    let client = state.http.clone();
+    let mut restricted = false;
+    for (name, url) in [
+        ("DuckDuckGo", "https://html.duckduckgo.com/html/"),
+        ("Bing", "https://www.bing.com/search"),
+    ] {
+        let result = client.head(url)
+            .timeout(std::time::Duration::from_secs(4))
+            .send().await;
+        if let Ok(response) = result {
+            if response.status().is_success() || response.status().is_redirection() {
+                return Ok(WebConnectivityStatus { status: "online", provider: name });
+            }
+            restricted = true;
+        }
+    }
+    Ok(WebConnectivityStatus {
+        status: if restricted { "restricted" } else { "offline" },
+        provider: "",
+    })
+}
+
 #[tauri::command]
 fn get_user_profile(state: State<AppState>) -> Result<UserProfile, app_error::AppError> {
     let db = state
@@ -2086,6 +2128,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_portable_root,
             network_proxy_for_url,
+            check_web_connectivity,
             installation_status,
             complete_setup,
             save_setup_progress,

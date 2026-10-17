@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   Brain,
   Cpu,
@@ -69,6 +70,26 @@ export function SettingsDialog(props: {
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [networkError, setNetworkError] = useState<string | null>(null);
+  const [webConnectivity, setWebConnectivity] = useState("Not checked");
+  const checkWebConnectivity = async () => {
+    setWebConnectivity("Checking internet and search providers...");
+    try {
+      const result = await invoke<{ status: string; provider: string }>("check_web_connectivity");
+      if (result.status === "online") setWebConnectivity(`Online — ${result.provider} reachable`);
+      else if (result.status === "restricted") setWebConnectivity("Internet reachable, but search access is restricted");
+      else if (result.status === "disabled") setWebConnectivity("Live web features disabled");
+      else setWebConnectivity("Offline — local chat is still available");
+    } catch {
+      setWebConnectivity("Connectivity check failed — search may be unavailable");
+    }
+  };
+  useEffect(() => {
+    if (activeSection !== "capabilities") return;
+    void checkWebConnectivity();
+    const timer = window.setInterval(() => { void checkWebConnectivity(); }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [activeSection]);
+
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -341,6 +362,17 @@ export function SettingsDialog(props: {
               checked={preferenceDraft.deepResearchEnabled}
               onChange={(value) => setPreference("deepResearchEnabled", value)}
             />
+            <div className="settings-control-row">
+              <p className="muted" role="status">Web connectivity: {webConnectivity}</p>
+              <button type="button" onClick={() => void checkWebConnectivity()}>
+                <RefreshCw size={14} aria-hidden="true" /> Check connection
+              </button>
+            </div>
+            <p className="muted">
+              Web Search tries configured Brave / legacy Google APIs, then DuckDuckGo and
+              Bing public search. Deep Research reads multiple public pages and checks
+              independent sources. External web requests only run when those modes are enabled.
+            </p>
             <ToggleRow
               label="Typing indicators"
               checked={preferenceDraft.typingIndicatorEnabled}
@@ -357,9 +389,9 @@ export function SettingsDialog(props: {
               onChange={(value) => setPreference("socketUrl", value)}
             />
             <p className="muted">
-              Search, research, document, PDF, image prompt, and vision review modes are available
-              in Chat. Local-only modes disclose when a dedicated live web, PDF, image, or vision
-              runtime is not connected.
+              Without internet, local chat stays available but current facts cannot be verified.
+              Optional Brave and legacy Google Search keys are configured as runtime environment
+              variables; Bing web search and DuckDuckGo require no key.
             </p>
             <SaveBar state={saveState} onSave={savePreferences} />
           </SettingsGroup>

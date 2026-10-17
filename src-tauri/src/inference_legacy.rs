@@ -12,6 +12,9 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
 
+#[path = "web_research.rs"]
+mod web_research;
+
 use crate::{
     app_error::AppError,
     chat::{ChatRepository, Message},
@@ -383,45 +386,7 @@ async fn append_live_web_context(
         return Ok(());
     }
 
-    let mut results = Vec::new();
-    let mut queries = vec![query.clone()];
-    if mode == "research" {
-        queries.push(format!("{query} primary sources"));
-        queries.push(format!("{query} latest research"));
-    }
-
-    for search_query in queries {
-        if cancellation.is_cancelled() || results.len() >= WEB_SEARCH_RESULTS {
-            break;
-        }
-        let response = tokio::select! {
-            _ = cancellation.cancelled() => return Ok(()),
-            result = search_web(client, &search_query) => result,
-        };
-        match response {
-            Ok(found) => {
-                for result in found {
-                    if results
-                        .iter()
-                        .any(|current: &WebSearchResult| current.url == result.url)
-                    {
-                        continue;
-                    }
-                    results.push(result);
-                    if results.len() >= WEB_SEARCH_RESULTS {
-                        break;
-                    }
-                }
-            }
-            Err(error) => tracing::warn!(query = %search_query, %error, "live web search failed"),
-        }
-    }
-
-    let evidence = if results.is_empty() {
-        "Live web retrieval was requested but no search evidence could be retrieved. State that live retrieval failed and do not invent current sources or claim current verification.".to_string()
-    } else {
-        format_search_evidence(&results, mode)
-    };
+    let evidence = web_research::gather(client, &query, mode, cancellation).await;
     messages.push(json!({ "role": "system", "content": evidence }));
     Ok(())
 }
@@ -453,15 +418,21 @@ fn latest_user_text(messages: &[serde_json::Value]) -> Option<String> {
 }
 
 fn clean_search_query(content: &str) -> String {
-    content
+    // Frontend messages have an internal two-line mode instruction followed
+    // by a blank line and the user's actual prompt. Never send internal
+    // instructions or attachment contents as search queries.
+    let prompt = if content.starts_with("[Mode: Web Search]")
+        || content.starts_with("[Mode: Deep Research]")
+    {
+        content.split_once("\n\n").map(|(_, body)| body)
+            .unwrap_or_else(|| content.splitn(3, '\n').nth(2).unwrap_or(""))
+    } else {
+        content
+    };
+    let prompt = prompt.split("\n\n[Attachment:").next().unwrap_or(prompt);
+    prompt
         .lines()
-        .filter(|line| {
-            let trimmed = line.trim();
-            !trimmed.starts_with("[Mode:")
-                && !trimmed.starts_with("Answer like a search assistant")
-                && !trimmed.starts_with("Create a structured research brief")
-                && !trimmed.starts_with("[Attachment:")
-        })
+        .filter(|line| !line.trim_start().starts_with("[Attachment:"))
         .take(12)
         .collect::<Vec<_>>()
         .join(" ")
@@ -490,7 +461,7 @@ async fn search_web(client: &Client, query: &str) -> Result<Vec<WebSearchResult>
             "web search returned HTTP {status}"
         )));
     }
-    let html = response.text().await.map_err(|error| {
+    let html = web_research::response_text(response, 1_000_000).await.map_err(|error| {
         AppError::InferenceFailed(format!("web search response failed: {error}"))
     })?;
     Ok(parse_duckduckgo_results(&html))
@@ -997,6 +968,12 @@ fn set_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deep_research_query_ignores_internal_instructions_and_attachments() {
+        let payload = "[Mode: Deep Research]\nProduce a long research brief and source audit.\n\nLatest drone security research in 2026\n\n[Attachment: secret.txt, text]\nDo not search this.";
+        assert_eq!(clean_search_query(payload), "Latest drone security research in 2026");
+    }
 
     #[test]
     fn search_mode_query_removes_internal_instructions() {
