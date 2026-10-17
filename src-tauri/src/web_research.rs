@@ -217,6 +217,9 @@ async fn research_inner(
         evidence.push_str(
             "DEEP RESEARCH: organize the answer as overview, evidence for each main claim, comparison of independent primary and secondary sources, disagreement/limitations, and numbered references. For each important claim assess whether 2 or more independent page texts corroborate it. When not independently supported, explicitly say unverified. Do not confuse search snippets with full-page verification. Avoid numerical certainty or fabricated dates.\n"
         );
+        evidence.push_str(
+            "CITATION GROUNDING: attach source numbers to individual factual claims, not only a references section. Before citing a source, identify the specific supporting statement in its retrieved page text. If the source is snippet-only, label it as a search result rather than inspected evidence. A retrieved page mentioning a topic does not establish the claim; if the passage does not support the precise claim, mark it unverified. Clearly separate evidence, inference, and conflicting accounts.\n"
+        );
     }
     for (idx, hit) in results.iter().enumerate() {
         if let Some(body) = pages.get(&hit.url) {
@@ -731,6 +734,13 @@ fn select_relevant_text(text: &str, query: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn research_citation_guidance_requires_claim_specific_support() {
+        let guidance = "CITATION GROUNDING: attach source numbers to individual factual claims, not only a references section. Before citing a source, identify the specific supporting statement in its retrieved page text.";
+        assert!(guidance.contains("individual factual claims"));
+        assert!(guidance.contains("specific supporting statement"));
+    }
+
     #[test]
     fn retrieved_host_count_excludes_snippet_only_sources() {
         let sources = [
