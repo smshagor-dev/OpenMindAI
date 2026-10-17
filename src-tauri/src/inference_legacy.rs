@@ -163,6 +163,8 @@ struct WebSearchResult {
 struct RetrievedWebContext {
     sources: Vec<WebSearchResult>,
     read_sources: HashSet<usize>,
+    /// Selected public webpage passages only, keyed by the source ID.
+    page_texts: HashMap<usize, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,6 +262,14 @@ pub async fn stream_chat_completion(
             &generated_answer,
             retrieved_web.sources.len(),
             &retrieved_web.read_sources,
+        ) {
+            generated_chars += warning.chars().count();
+            ui_buffer.push_str(&warning);
+            flush_buffer.push_str(&warning);
+        }
+        if let Some(warning) = citation_passage_overlap_warning(
+            &generated_answer,
+            &retrieved_web.page_texts,
         ) {
             generated_chars += warning.chars().count();
             ui_buffer.push_str(&warning);
@@ -438,6 +448,7 @@ async fn append_live_web_context(
     Ok(RetrievedWebContext {
         sources: evidence.sources,
         read_sources: evidence.read_sources,
+        page_texts: evidence.page_texts,
     })
 }
 
