@@ -16,6 +16,11 @@ web search pages otherwise; no paid external AI model is required.
 - Each full page receives a maximum of 1.5 MB of transfer and 2,200
   characters of cleaned text in the prompt. This is an *extract*, not a
   complete unlimited article transcript. Search responses are capped at 1 MB.
+  When choosing relevant passages from longer pages, the extractor preserves
+  decimals such as `87.5%` across sentence boundaries and matches query
+  terms at word boundaries (including hyphenated terms such as
+  `GPS-denied`) instead of treating substrings as independent matches.
+  Selection remains heuristic and may omit supporting passages.
 - The engine marks a result as snippet-only when its page cannot be fetched.
   Sources are numbered consistently; the model must cite their real links,
   assess independent corroboration and disclose uncertainty.
