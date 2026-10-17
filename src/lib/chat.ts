@@ -413,12 +413,12 @@ export function modeInstruction(mode: ChatMode) {
     case "search":
       return [
         "[Mode: Web Search]",
-        "Use live web evidence supplied by the local retrieval backend when available. Cite current factual claims with the numbered sources provided by that backend. If retrieval fails, state that clearly and do not fabricate current sources.",
+        "Use the local live web retrieval evidence when available. Cite each current factual claim with the exact numbered source [n], and end with a References section containing clickable Markdown links to the matching URLs. Distinguish full-page evidence from snippets. If retrieval fails, say so clearly and do not fabricate sources or verification.",
       ].join("\n");
     case "research":
       return [
         "[Mode: Deep Research]",
-        "Use the live evidence supplied by the local research retrieval backend, cross-check claims across sources, distinguish evidence from inference, surface uncertainty, and cite numbered sources. If live retrieval fails, say so rather than inventing evidence.",
+        "Produce an evidence-driven research brief from retrieved full webpages and search snippets. Evaluate each key claim against independent domains, explicitly identify contradictions and limitations, label snippet-only evidence, cite the exact [n] markers, and include clickable Markdown links to every cited URL in a References section. Do not claim independent verification where it was unavailable, and never invent citations.",
       ].join("\n");
     case "thinking":
       return "[Mode: Think carefully before answering. Give the final answer clearly, with concise reasoning.]";
