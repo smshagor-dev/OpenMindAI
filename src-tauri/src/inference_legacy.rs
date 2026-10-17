@@ -164,7 +164,8 @@ pub async fn stream_chat_completion(
     if let Some(dataset_context) = request.dataset_context.filter(|value| !value.trim().is_empty()) {
         messages.push(json!({ "role": "system", "content": dataset_context }));
     }
-    append_live_web_context(request.client, request.database, &mut messages, &cancellation).await?;
+    let retrieved_sources =
+        append_live_web_context(request.client, request.database, &mut messages, &cancellation).await?;
     attach_media_to_latest_user_message(&mut messages, request.media)?;
     let mut body = json!({
         "model": request.model,
@@ -232,6 +233,15 @@ pub async fn stream_chat_completion(
         }
     }
 
+    // Citations in the model's prose can be incorrect. Append an independent,
+    // host-generated list of actual retrieved links to the same saved reply.
+    // Never append sources on a cancelled or incomplete generation.
+    if status == "completed" && !cancellation.is_cancelled() && !retrieved_sources.is_empty() {
+        let footer = format_retrieved_source_footer(&retrieved_sources);
+        generated_chars += footer.chars().count();
+        ui_buffer.push_str(&footer);
+        flush_buffer.push_str(&footer);
+    }
     if !ui_buffer.is_empty() {
         emit_stream_chunk(&request, &mut ui_buffer)?;
     }
@@ -354,9 +364,9 @@ async fn append_live_web_context(
     database: &Mutex<Database>,
     messages: &mut Vec<serde_json::Value>,
     cancellation: &CancellationToken,
-) -> Result<(), AppError> {
+) -> Result<Vec<WebSearchResult>, AppError> {
     let Some(user_text) = latest_user_text(messages) else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     let mode = if user_text.contains("[Mode: Web Search]") {
         Some("search")
@@ -366,7 +376,7 @@ async fn append_live_web_context(
         None
     };
     let Some(mode) = mode else {
-        return Ok(());
+        return Ok(Vec::new());
     };
 
     // Enforce the user toggle in the backend, not only in the mode selector UI.
@@ -378,17 +388,17 @@ async fn append_live_web_context(
         || (mode == "research" && !preferences.deep_research_enabled)
     {
         messages.push(json!({ "role": "system", "content": "Live web retrieval is disabled in your privacy preferences. Do not claim current web verification or invent citations." }));
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let query = clean_search_query(&user_text);
     if query.is_empty() || cancellation.is_cancelled() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let evidence = web_research::gather(client, &query, mode, cancellation).await;
-    messages.push(json!({ "role": "system", "content": evidence }));
-    Ok(())
+    messages.push(json!({ "role": "system", "content": evidence.context }));
+    Ok(evidence.sources)
 }
 
 fn latest_user_text(messages: &[serde_json::Value]) -> Option<String> {
@@ -637,6 +647,24 @@ fn is_public_ipv6(address: Ipv6Addr) -> bool {
         return is_public_ipv4(embedded);
     }
     true
+}
+
+/// Host-generated citations must not trust model output or source titles.
+fn format_retrieved_source_footer(results: &[WebSearchResult]) -> String {
+    let mut footer = String::from("\n\n---\nRetrieved web sources (links returned by search providers; not independently fact-checked):\n");
+    for (i, result) in results.iter().enumerate() {
+        if !is_public_web_url(&result.url) { continue; }
+        // Markdown link destinations must not be split by whitespace or
+        // parentheses. Titles are displayed as text, never as raw markup.
+        let url = result.url.replace('(', "%28").replace(')', "%29")
+            .replace(' ', "%20").replace(['\n', '\r'], "");
+        let title: String = result.title.chars().filter(|c| !c.is_control())
+            .take(140).collect::<String>()
+            .replace('\\', "\\\\").replace('[', "\\[")
+            .replace(']', "\\]").replace('<', "&lt;").replace('>', "&gt;");
+        footer.push_str(&format!("- [{}] [{}]({})\n", i + 1, title, url));
+    }
+    footer
 }
 
 fn format_search_evidence(results: &[WebSearchResult], mode: &str) -> String {
@@ -988,6 +1016,34 @@ mod tests {
         // Auto mode selection is provided by the frontend; normal local chats
         // must not silently trigger outbound web requests.
         assert!(!plain[0]["content"].as_str().unwrap().contains("[Mode: Web Search]"));
+    }
+
+    #[test]
+    fn retrieved_source_footer_contains_only_real_public_links() {
+        let sources = vec![
+            WebSearchResult {
+                title: "First [Research]".into(),
+                url: "https://example.org/study?q=a%20b".into(),
+                snippet: "snip".into(),
+            },
+            WebSearchResult {
+                title: "Unsafe".into(),
+                url: "http://127.0.0.1/admin".into(),
+                snippet: "snip".into(),
+            },
+            WebSearchResult {
+                title: "Example (2)".into(),
+                url: "https://example.org/page(with)".into(),
+                snippet: String::new(),
+            },
+        ];
+        let footer = format_retrieved_source_footer(&sources);
+        assert!(footer.contains("https://example.org/study?q=a%20b"));
+        assert!(footer.contains("First \\[Research\\]"));
+        assert!(footer.contains("page%28with%29"));
+        assert!(!footer.contains("127.0.0.1"));
+        assert!(!footer.contains("Unsafe"));
+        assert!(!footer.contains("snip"));
     }
 
     #[test]
