@@ -36,6 +36,18 @@ struct PageEvidence {
     text: String,
 }
 
+/// Search evidence and the exact URLs returned by providers. Keeping source
+/// metadata separate from the LLM context allows the host to append genuine,
+/// clickable sources without trusting model-generated hyperlinks.
+pub(super) struct ResearchEvidence {
+    pub(super) context: String,
+    pub(super) sources: Vec<WebSearchResult>,
+}
+
+fn unavailable(message: &str) -> ResearchEvidence {
+    ResearchEvidence { context: message.to_string(), sources: Vec::new() }
+}
+
 /// Advanced research is multi-query, multi-provider, multi-document. Never
 /// promise live verification if searches fail or pages cannot be fetched.
 pub(super) async fn gather(
@@ -43,16 +55,16 @@ pub(super) async fn gather(
     query: &str,
     mode: &str,
     cancellation: &CancellationToken,
-) -> String {
+) -> ResearchEvidence {
     let max_duration = if mode == "research" { 85 } else { 35 };
     tokio::select! {
-        _ = cancellation.cancelled() => "Web retrieval was stopped. No live verification was completed. Do not invent sources.".to_string(),
+        _ = cancellation.cancelled() => unavailable("Web retrieval was stopped. No live verification was completed. Do not invent sources."),
         result = tokio::time::timeout(
             Duration::from_secs(max_duration),
             research_inner(client, query, mode, cancellation)
         ) => match result {
             Ok(evidence) => evidence,
-            Err(_) => "Web retrieval timed out. State that live verification was incomplete; never invent sources or citations.".to_string(),
+            Err(_) => unavailable("Web retrieval timed out. State that live verification was incomplete; never invent sources or citations."),
         },
     }
 }
@@ -62,7 +74,7 @@ async fn research_inner(
     query: &str,
     mode: &str,
     cancellation: &CancellationToken,
-) -> String {
+) -> ResearchEvidence {
     let mut queries = vec![query.to_string()];
     if mode == "research" {
         queries.push(format!("{query} official primary source"));
@@ -131,10 +143,10 @@ async fn research_inner(
         if found_in_query { successful_queries += 1; }
     }
     if results.is_empty() {
-        return format!(
+        return unavailable(&format!(
             "LIVE RETRIEVAL FAILED: no reliable search results could be obtained ({}). Internet, proxy, provider blocks, or DNS may be responsible. Do not claim web verification, fabricate citations or quote a source.",
             errors.into_iter().take(4).collect::<Vec<_>>().join("; ")
-        );
+        ));
     }
 
     // Preserve search result order and citations. Verify public DNS for each
@@ -155,7 +167,7 @@ async fn research_inner(
         .buffer_unordered(3);
     loop {
         tokio::select! {
-            _ = cancellation.cancelled() => return "Web retrieval was stopped. Source verification was incomplete; do not invent citations.".to_string(),
+            _ = cancellation.cancelled() => return unavailable("Web retrieval was stopped. Source verification was incomplete; do not invent citations."),
             page = fetched.next() => match page {
                 Some((url, Ok(Some(body)))) => { pages.insert(url, body.text); },
                 Some((_url, Err(_reason))) => { tracing::debug!("source page skipped"); },
@@ -188,7 +200,7 @@ async fn research_inner(
             evidence.push_str(&format!("\n[{}] Full page was NOT retrieved; only the search snippet is available.\n", idx + 1));
         }
     }
-    evidence
+    ResearchEvidence { context: evidence, sources: results }
 }
 
 fn configured_providers() -> Vec<Provider> {
