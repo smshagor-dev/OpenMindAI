@@ -249,7 +249,7 @@ async fn research_inner(
         results.len().saturating_sub(pages.len())
     ));
     evidence.push_str(&format!(
-        "Retrieval report: {} search queries returned results; {} independent source hosts; {} full public webpages read; provider contributions: {}. A source count alone does not prove corroboration.\n",
+        "Retrieval report: {} search queries returned results; {} distinct source hosts; {} full public webpages read; provider contributions: {}. A source count alone does not prove corroboration.\n",
         successful_queries,
         results.iter().filter_map(|r| Url::parse(&r.url).ok().and_then(|u| u.host_str().map(str::to_string))).collect::<HashSet<_>>().len(),
         pages.len(),
