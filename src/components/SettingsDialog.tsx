@@ -357,9 +357,10 @@ export function SettingsDialog(props: {
               onChange={(value) => setPreference("socketUrl", value)}
             />
             <p className="muted">
-              Search, research, document, PDF, image prompt, and vision review modes are available
-              in Chat. Local-only modes disclose when a dedicated live web, PDF, image, or vision
-              runtime is not connected.
+              Automatic live search works for current-information requests in English, Bangla,
+              and Russian. Queries can be sent to DuckDuckGo or Bing when enabled. Turning off
+              Web Search blocks external search requests; Deep Research also requires Web Search.
+              When offline, OpenMindAI continues using local knowledge and labels unverified answers.
             </p>
             <SaveBar state={saveState} onSave={savePreferences} />
           </SettingsGroup>
