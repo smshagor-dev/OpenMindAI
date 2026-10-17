@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::Mutex,
     time::Instant,
@@ -158,6 +158,13 @@ struct WebSearchResult {
     snippet: String,
 }
 
+/// The host retains which result numbers were actually read as page text.
+#[derive(Default)]
+struct RetrievedWebContext {
+    sources: Vec<WebSearchResult>,
+    read_sources: HashSet<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InlineDataImage {
     data_url: String,
@@ -172,7 +179,7 @@ pub async fn stream_chat_completion(
     if let Some(dataset_context) = request.dataset_context.filter(|value| !value.trim().is_empty()) {
         messages.push(json!({ "role": "system", "content": dataset_context }));
     }
-    let retrieved_sources =
+    let retrieved_web =
         append_live_web_context(request.client, request.database, &mut messages, &cancellation).await?;
     attach_media_to_latest_user_message(&mut messages, request.media)?;
     let mut body = json!({
@@ -228,7 +235,7 @@ pub async fn stream_chat_completion(
                     }
                     first_token_at.get_or_insert_with(|| started.elapsed().as_millis());
                     generated_chars += token.chars().count();
-                    if !retrieved_sources.is_empty() {
+                    if !retrieved_web.sources.is_empty() {
                         generated_answer.push_str(&token);
                     }
                     flush_buffer.push_str(&token);
@@ -248,13 +255,20 @@ pub async fn stream_chat_completion(
     // Citations in the model's prose can be incorrect. Append an independent,
     // host-generated list of actual retrieved links to the same saved reply.
     // Never append sources on a cancelled or incomplete generation.
-    if status == "completed" && !cancellation.is_cancelled() && !retrieved_sources.is_empty() {
-        if let Some(warning) = citation_reference_warning(&generated_answer, retrieved_sources.len()) {
+    if status == "completed" && !cancellation.is_cancelled() && !retrieved_web.sources.is_empty() {
+        if let Some(warning) = citation_reference_warning(
+            &generated_answer,
+            retrieved_web.sources.len(),
+            &retrieved_web.read_sources,
+        ) {
             generated_chars += warning.chars().count();
             ui_buffer.push_str(&warning);
             flush_buffer.push_str(&warning);
         }
-        let footer = format_retrieved_source_footer(&retrieved_sources);
+        let footer = format_retrieved_source_footer(
+            &retrieved_web.sources,
+            &retrieved_web.read_sources,
+        );
         generated_chars += footer.chars().count();
         ui_buffer.push_str(&footer);
         flush_buffer.push_str(&footer);
@@ -381,9 +395,9 @@ async fn append_live_web_context(
     database: &Mutex<Database>,
     messages: &mut Vec<serde_json::Value>,
     cancellation: &CancellationToken,
-) -> Result<Vec<WebSearchResult>, AppError> {
+) -> Result<RetrievedWebContext, AppError> {
     let Some(user_text) = latest_user_text(messages) else {
-        return Ok(Vec::new());
+        return Ok(RetrievedWebContext::default());
     };
     let mode = if user_text.contains("[Mode: Web Search]") {
         Some("search")
@@ -393,7 +407,7 @@ async fn append_live_web_context(
         None
     };
     let Some(mode) = mode else {
-        return Ok(Vec::new());
+        return Ok(RetrievedWebContext::default());
     };
 
     // Enforce the user toggle in the backend, not only in the mode selector UI.
@@ -405,12 +419,12 @@ async fn append_live_web_context(
         || (mode == "research" && !preferences.deep_research_enabled)
     {
         messages.push(json!({ "role": "system", "content": "Live web retrieval is disabled in your privacy preferences. Do not claim current web verification or invent citations." }));
-        return Ok(Vec::new());
+        return Ok(RetrievedWebContext::default());
     }
 
     let query = clean_search_query(&user_text);
     if query.is_empty() || cancellation.is_cancelled() {
-        return Ok(Vec::new());
+        return Ok(RetrievedWebContext::default());
     }
 
     // OS credential-store failures degrade safely to keyless providers without
@@ -421,7 +435,10 @@ async fn append_live_web_context(
         &preferences.web_search_preferred_provider, &credentials,
     ).await;
     messages.push(json!({ "role": "system", "content": evidence.context }));
-    Ok(evidence.sources)
+    Ok(RetrievedWebContext {
+        sources: evidence.sources,
+        read_sources: evidence.read_sources,
+    })
 }
 
 fn latest_user_text(messages: &[serde_json::Value]) -> Option<String> {
