@@ -36,7 +36,6 @@ const WEB_SEARCH_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
 const WEB_SEARCH_USER_AGENT: &str =
     "OpenMindAI-Desktop/2.0 (+https://github.com/smshagor-dev/OpenMindAI)";
 const WEB_SEARCH_RESULTS: usize = 8;
-const WEB_SEARCH_TIMEOUT_SECS: u64 = 12;
 const MAX_VISION_DATA_URL_CHARS: usize = 6_000_000;
 const MAX_INFERENCE_MEDIA_ITEMS: usize = 4;
 const UI_STREAM_CHUNK_BYTES: usize = 32;
@@ -465,31 +464,6 @@ fn clean_search_query(content: &str) -> String {
         .take(40)
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-async fn search_web(client: &Client, query: &str) -> Result<Vec<WebSearchResult>, AppError> {
-    let response = client
-        .get(WEB_SEARCH_ENDPOINT)
-        .query(&[("q", query)])
-        .header(header::USER_AGENT, WEB_SEARCH_USER_AGENT)
-        .header(header::ACCEPT, "text/html,application/xhtml+xml")
-        .timeout(std::time::Duration::from_secs(WEB_SEARCH_TIMEOUT_SECS))
-        .send()
-        .await
-        .map_err(|error| {
-            AppError::InferenceFailed(format!("web search request failed: {error}"))
-        })?;
-
-    let status = response.status();
-    if !status.is_success() {
-        return Err(AppError::InferenceFailed(format!(
-            "web search returned HTTP {status}"
-        )));
-    }
-    let html = web_research::response_text(response, 1_000_000).await.map_err(|error| {
-        AppError::InferenceFailed(format!("web search response failed: {error}"))
-    })?;
-    Ok(parse_duckduckgo_results(&html))
 }
 
 fn parse_duckduckgo_results(html: &str) -> Vec<WebSearchResult> {
