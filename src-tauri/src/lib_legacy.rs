@@ -24,6 +24,7 @@ mod sampling;
 mod settings;
 mod storage;
 mod voice_runtime;
+mod web_provider_config;
 
 use std::{path::PathBuf, sync::Mutex};
 
@@ -1854,6 +1855,9 @@ fn save_app_preferences(
         &preferences.network_proxy_mode,
         &preferences.network_proxy_url,
     )?;
+    if !web_provider_config::valid_preference(&preferences.web_search_preferred_provider) {
+        return Err(app_error::AppError::internal("invalid preferred web search provider"));
+    }
     let saved = SettingsRepository::new(&db).save_preferences(&preferences)?;
     net::apply_proxy_settings(&saved.network_proxy_mode, &saved.network_proxy_url);
     Ok(saved)
@@ -1865,46 +1869,37 @@ fn network_proxy_for_url(url: String) -> Option<String> {
     net::proxy_for_url(&url)
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WebConnectivityStatus {
-    status: &'static str,
-    provider: &'static str,
+/// Credential values never appear in preferences, logs or frontend responses.
+#[tauri::command]
+fn web_provider_credential_status() -> Result<web_provider_config::ProviderConfiguration, app_error::AppError> {
+    web_provider_config::credential_status()
 }
 
-/// Online status is detected on demand and while the capability settings panel
-/// is open. Any HTTP response proves transport reachability, not search success.
 #[tauri::command]
-async fn check_web_connectivity(state: State<'_, AppState>) -> Result<WebConnectivityStatus, app_error::AppError> {
-    let enabled = {
+fn save_web_provider_credential(
+    field: String,
+    value: String,
+) -> Result<web_provider_config::ProviderConfiguration, app_error::AppError> {
+    web_provider_config::update_credential(&field, &value)?;
+    web_provider_config::credential_status()
+}
+
+/// Checks real search responses and parsing, not merely HEAD reachability.
+/// The probe is allowed only when web retrieval is enabled in persisted prefs.
+#[tauri::command]
+async fn check_web_connectivity(state: State<'_, AppState>) -> Result<inference::ProviderHealthReport, app_error::AppError> {
+    let preferences = {
         let db = state.database.lock()
             .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-        let settings = SettingsRepository::new(&db).get_preferences()?;
-        settings.web_search_enabled || settings.deep_research_enabled
+        SettingsRepository::new(&db).get_preferences()?
     };
-    if !enabled {
-        return Ok(WebConnectivityStatus { status: "disabled", provider: "" });
+    if !preferences.web_search_enabled && !preferences.deep_research_enabled {
+        return Ok(inference::ProviderHealthReport::disabled());
     }
-    let client = state.http.clone();
-    let mut restricted = false;
-    for (name, url) in [
-        ("DuckDuckGo", "https://html.duckduckgo.com/html/"),
-        ("Bing", "https://www.bing.com/search"),
-    ] {
-        let result = client.head(url)
-            .timeout(std::time::Duration::from_secs(4))
-            .send().await;
-        if let Ok(response) = result {
-            if response.status().is_success() || response.status().is_redirection() {
-                return Ok(WebConnectivityStatus { status: "online", provider: name });
-            }
-            restricted = true;
-        }
-    }
-    Ok(WebConnectivityStatus {
-        status: if restricted { "restricted" } else { "offline" },
-        provider: "",
-    })
+    let credentials = web_provider_config::load_credentials()?;
+    Ok(inference::probe_web_providers(
+        &state.http, &preferences.web_search_preferred_provider, &credentials,
+    ).await)
 }
 
 #[tauri::command]
@@ -2129,6 +2124,8 @@ pub fn run() {
             get_portable_root,
             network_proxy_for_url,
             check_web_connectivity,
+            web_provider_credential_status,
+            save_web_provider_credential,
             installation_status,
             complete_setup,
             save_setup_progress,
