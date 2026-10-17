@@ -531,7 +531,10 @@ fn latest_user_text(messages: &[serde_json::Value]) -> Option<String> {
 }
 
 fn clean_search_query(content: &str) -> String {
-    content
+    // Never transmit locally extracted attachment content to search providers.
+    // The composer serializes every attachment after this exact boundary.
+    let prompt_only = content.split("\n\n[Attachment:").next().unwrap_or(content);
+    prompt_only
         .lines()
         .filter(|line| {
             let trimmed = line.trim();
@@ -1285,6 +1288,14 @@ mod tests {
         assert_eq!(results[0].title, "Example & Result");
         assert_eq!(results[0].url, "https://example.com");
         assert_eq!(results[0].snippet, "Useful live snippet.");
+    }
+
+    #[test]
+    fn search_never_exposes_local_attachment_text() {
+        let prompt = "[Mode: Web Search]\nUse live web evidence supplied by the local retrieval backend when available.\n\nFind the latest news\n\n[Attachment: private.txt, text, 1 KB, text/plain]\nTOP_SECRET_DO_NOT_SEND";
+        let query = clean_search_query(prompt);
+        assert_eq!(query, "Find the latest news");
+        assert!(!query.contains("TOP_SECRET"));
     }
 
     #[test]
