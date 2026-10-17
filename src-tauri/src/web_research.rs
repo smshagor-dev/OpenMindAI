@@ -33,7 +33,6 @@ impl Provider {
 
 #[derive(Debug)]
 struct PageEvidence {
-    url: String,
     text: String,
 }
 
@@ -319,7 +318,7 @@ async fn fetch_readable_page(raw: &str) -> Result<Option<PageEvidence>, String> 
     let body = response_text(response, PAGE_BYTES).await?;
     let text = if content_type.starts_with("text/plain") { body } else { readable_html(&body) };
     if text.trim().len() < 80 { return Ok(None); }
-    Ok(Some(PageEvidence { url: raw.to_string(), text: text.chars().take(PAGE_CHARS).collect() }))
+    Ok(Some(PageEvidence { text: text.chars().take(PAGE_CHARS).collect() }))
 }
 
 async fn public_addresses(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
@@ -328,7 +327,6 @@ async fn public_addresses(host: &str, port: u16) -> Result<Vec<SocketAddr>, Stri
         .await.map_err(|_| "DNS timeout".to_string())?
         .map_err(|e| format!("DNS failed: {e}"))?;
     for address in resolved {
-        let literal = format!("http://{}", address.ip());
         // IPv6 literals require brackets for URL syntax.
         let literal = match address.ip() {
             IpAddr::V4(ip) => format!("http://{ip}/"),
