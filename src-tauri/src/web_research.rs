@@ -159,7 +159,9 @@ async fn research_inner(
         ));
     }
 
-    // Preserve search result order and citations. Verify public DNS for each
+    if mode == "research" { rank_research_results(&mut results, query); }
+
+    // Preserve ranked search result order and citations. Verify public DNS for each
     // target and pin approved IPs; redirects are not followed. This prevents
     // ordinary local-network/loopback and DNS rebinding SSRF.
     let limit = if mode == "research" { RESEARCH_PAGES } else { SEARCH_PAGES };
@@ -211,6 +213,25 @@ async fn research_inner(
         }
     }
     ResearchEvidence { context: evidence, sources: results }
+}
+
+/// Deterministic source ordering: prioritize query overlap and independent
+/// domains without changing the original provider result metadata.
+fn rank_research_results(results: &mut [WebSearchResult], query: &str) {
+    let terms: HashSet<String> = query.split_whitespace()
+        .map(|s| s.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+        .filter(|s| s.chars().count() >= 3).collect();
+    results.sort_by(|a, b| {
+        let score = |hit: &WebSearchResult| {
+            let haystack: HashSet<String> = format!("{} {}", hit.title, hit.snippet)
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|word| !word.is_empty())
+                .map(str::to_lowercase)
+                .collect();
+            terms.intersection(&haystack).count()
+        };
+        score(b).cmp(&score(a))
+    });
 }
 
 fn configured_providers(preferred: &str, credentials: &SearchCredentials) -> Vec<Provider> {
@@ -685,6 +706,16 @@ fn select_relevant_text(text: &str, query: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn research_ranking_prioritizes_query_matches_and_preserves_ties() {
+        let mut hits = vec![
+            WebSearchResult { title: "Unrelated story".into(), url: "https://example.org/a".into(), snippet: "Other topics".into() },
+            WebSearchResult { title: "Drone localization".into(), url: "https://example.org/b".into(), snippet: "GPS denied flight".into() },
+        ];
+        rank_research_results(&mut hits, "drone localization GPS");
+        assert_eq!(hits[0].url, "https://example.org/b");
+    }
+
     #[test]
     fn prefers_requested_available_provider_but_keeps_fallbacks() {
         let empty = SearchCredentials::default();
