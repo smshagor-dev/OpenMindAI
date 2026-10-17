@@ -71,10 +71,49 @@ export function SettingsDialog(props: {
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [networkError, setNetworkError] = useState<string | null>(null);
   const [webConnectivity, setWebConnectivity] = useState("Not checked");
+  const [providerHealth, setProviderHealth] = useState<{ name: string; status: string }[]>([]);
+  const [webCredentialPresence, setWebCredentialPresence] = useState({
+    braveConfigured: false,
+    googleConfigured: false,
+    googleKeyConfigured: false,
+    googleEngineConfigured: false,
+  });
+  const [webCredentialDraft, setWebCredentialDraft] = useState({
+    brave: "", googleKey: "", googleEngine: "",
+  });
+  const [webCredentialMessage, setWebCredentialMessage] = useState("");
+  const refreshWebCredentials = async () => {
+    try {
+      const value = await invoke<typeof webCredentialPresence>("web_provider_credential_status");
+      setWebCredentialPresence(value);
+    } catch {
+      setWebCredentialMessage("Could not read the local credential store.");
+    }
+  };
+  const saveWebCredential = async (field: "brave" | "googleKey" | "googleEngine", value: string) => {
+    setWebCredentialMessage("");
+    try {
+      const result = await invoke<typeof webCredentialPresence>("save_web_provider_credential", {
+        field,
+        value,
+      });
+      setWebCredentialPresence(result);
+      setWebCredentialDraft((current) => ({ ...current, [field]: "" }));
+      setWebCredentialMessage(value ? "Credential saved in the platform secret store." : "Local credential cleared. An environment variable may still supply one.");
+      void checkWebConnectivity();
+    } catch {
+      setWebCredentialMessage("Credential update failed. Nothing was saved.");
+    }
+  };
   const checkWebConnectivity = async () => {
     setWebConnectivity("Checking internet and search providers...");
     try {
-      const result = await invoke<{ status: string; provider: string }>("check_web_connectivity");
+      const result = await invoke<{
+        status: string;
+        provider: string;
+        providers: { name: string; status: string; elapsedMs: number | null }[];
+      }>("check_web_connectivity");
+      setProviderHealth(result.providers);
       if (result.status === "online") setWebConnectivity(`Online — ${result.provider} reachable`);
       else if (result.status === "restricted") setWebConnectivity("Internet reachable, but search access is restricted");
       else if (result.status === "disabled") setWebConnectivity("Live web features disabled");
@@ -85,6 +124,7 @@ export function SettingsDialog(props: {
   };
   useEffect(() => {
     if (activeSection !== "capabilities") return;
+    void refreshWebCredentials();
     void checkWebConnectivity();
     const timer = window.setInterval(() => { void checkWebConnectivity(); }, 60_000);
     return () => window.clearInterval(timer);
@@ -362,12 +402,62 @@ export function SettingsDialog(props: {
               checked={preferenceDraft.deepResearchEnabled}
               onChange={(value) => setPreference("deepResearchEnabled", value)}
             />
+            <label className="setting-row">
+              <span>Preferred search provider</span>
+              <select
+                value={preferenceDraft.webSearchPreferredProvider ?? "auto"}
+                onChange={(event) => setPreference(
+                  "webSearchPreferredProvider",
+                  event.target.value as AppPreferences["webSearchPreferredProvider"],
+                )}
+              >
+                <option value="auto">Automatic fallback</option>
+                <option value="brave">Brave Search (requires API key)</option>
+                <option value="google">Google Custom Search (existing accounts only)</option>
+                <option value="duckduckgo">DuckDuckGo</option>
+                <option value="bing">Bing</option>
+              </select>
+            </label>
+            <p className="muted">
+              Unavailable and rate-limited providers fall back automatically.
+              Keys are saved in your operating system&apos;s credential store,
+              never in chat history or ordinary app preferences.
+            </p>
+            {(["brave", "googleKey", "googleEngine"] as const).map((field) => (
+              <label className="setting-row" key={field}>
+                <span>{field === "brave" ? "Brave API key" : field === "googleKey" ? "Google API key" : "Google Search engine ID"}</span>
+                <span>
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    value={webCredentialDraft[field]}
+                    placeholder={field === "brave"
+                      ? (webCredentialPresence.braveConfigured ? "Configured" : "Not configured")
+                      : field === "googleKey"
+                        ? (webCredentialPresence.googleKeyConfigured ? "Configured" : "Not configured")
+                        : (webCredentialPresence.googleEngineConfigured ? "Configured" : "Not configured")}
+                    onChange={(event) => setWebCredentialDraft((current) => ({
+                      ...current,
+                      [field]: event.target.value,
+                    }))}
+                  />
+                  <button type="button" disabled={!webCredentialDraft[field].trim()} onClick={() => void saveWebCredential(field, webCredentialDraft[field])}>Save</button>
+                  <button type="button" onClick={() => void saveWebCredential(field, "")}>Clear</button>
+                </span>
+              </label>
+            ))}
+            {webCredentialMessage ? <p className="muted" role="status">{webCredentialMessage}</p> : null}
             <div className="settings-control-row">
               <p className="muted" role="status">Web connectivity: {webConnectivity}</p>
               <button type="button" onClick={() => void checkWebConnectivity()}>
                 <RefreshCw size={14} aria-hidden="true" /> Check connection
               </button>
             </div>
+            {providerHealth.length ? (
+              <p className="muted">
+                Providers: {providerHealth.map((item) => `${item.name}: ${item.status.replaceAll("_", " ")}`).join(" • ")}
+              </p>
+            ) : null}
             <p className="muted">
               Web Search tries configured Brave / legacy Google APIs, then DuckDuckGo and
               Bing public search. Deep Research reads multiple public pages and checks
@@ -390,8 +480,9 @@ export function SettingsDialog(props: {
             />
             <p className="muted">
               Without internet, local chat stays available but current facts cannot be verified.
-              Optional Brave and legacy Google Search keys are configured as runtime environment
-              variables; Bing web search and DuckDuckGo require no key.
+              Brave and existing Google Custom Search credentials can be saved above
+              or inherited from runtime environment variables. Bing and DuckDuckGo
+              require no key. Health checks make real search requests when enabled.
             </p>
             <SaveBar state={saveState} onSave={savePreferences} />
           </SettingsGroup>
