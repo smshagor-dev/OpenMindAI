@@ -1,5 +1,5 @@
 name: Refresh vulnerable Rust dependencies (one-time)
-# Re-run on updater pin correction, then remove this temporary workflow.
+# Re-run after removing unsupported updater feature, then remove this temporary workflow.
 
 on:
   push:
