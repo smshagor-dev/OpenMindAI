@@ -51,10 +51,17 @@ pub(super) struct ResearchEvidence {
     /// 1-based source numbers with successfully retrieved public page text.
     /// These numbers match the trusted source footer ordering.
     pub(super) read_sources: HashSet<usize>,
+    /// Bounded page passages by their 1-based source number. Never persisted.
+    pub(super) page_texts: HashMap<usize, String>,
 }
 
 fn unavailable(message: &str) -> ResearchEvidence {
-    ResearchEvidence { context: message.to_string(), sources: Vec::new(), read_sources: HashSet::new() }
+    ResearchEvidence {
+        context: message.to_string(),
+        sources: Vec::new(),
+        read_sources: HashSet::new(),
+        page_texts: HashMap::new(),
+    }
 }
 
 /// Advanced research is multi-query, multi-provider, multi-document. Never
@@ -233,7 +240,19 @@ async fn research_inner(
         }
     }
     let read_sources = read_source_numbers(&results, &pages);
-    ResearchEvidence { context: evidence, sources: results, read_sources }
+    let page_texts = source_page_texts(&results, &pages);
+    ResearchEvidence { context: evidence, sources: results, read_sources, page_texts }
+}
+
+fn source_page_texts(
+    results: &[WebSearchResult],
+    pages: &HashMap<String, String>,
+) -> HashMap<usize, String> {
+    results.iter().enumerate()
+        .filter_map(|(index, source)| {
+            pages.get(&source.url).map(|text| (index + 1, text.clone()))
+        })
+        .collect()
 }
 
 /// Preserve source numbering after relevance sorting and page retrieval.
@@ -772,6 +791,21 @@ mod tests {
                 .and_then(|url| url.host_str().map(str::to_string)))
             .collect();
         assert_eq!(hosts.len(), 1);
+    }
+
+    #[test]
+    fn source_page_texts_keep_ranked_citation_ids_and_only_retrieved_pages() {
+        let sources = [
+            WebSearchResult { title: "A".into(), url: "https://example.com/a".into(), snippet: "A".into() },
+            WebSearchResult { title: "B".into(), url: "https://example.com/b".into(), snippet: "B".into() },
+        ];
+        let mut pages = HashMap::new();
+        pages.insert(sources[1].url.clone(), "GPS denied localization evidence".to_string());
+        let texts = source_page_texts(&sources, &pages);
+        assert_eq!(texts.len(), 1);
+        assert_eq!(texts.get(&2).map(String::as_str), Some("GPS denied localization evidence"));
+        assert!(!texts.contains_key(&1));
+        assert_eq!(texts.keys().copied().collect::<HashSet<_>>(), read_source_numbers(&sources, &pages));
     }
 
     #[test]
