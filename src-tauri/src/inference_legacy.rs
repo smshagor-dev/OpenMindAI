@@ -514,28 +514,99 @@ fn clean_search_query(content: &str) -> String {
 }
 
 async fn search_web(client: &Client, query: &str) -> Result<Vec<WebSearchResult>, AppError> {
+    // No subscription/API key: DuckDuckGo HTML with independent Bing RSS
+    // fallback when DDG is blocked, empty, or changes its markup.
+    let first = search_duckduckgo(client, query).await;
+    if let Ok(ref results) = first {
+        if !results.is_empty() { return Ok(results.clone()); }
+    }
+    let second = search_bing_rss(client, query).await;
+    match (first, second) {
+        (_, Ok(results)) if !results.is_empty() => Ok(results),
+        (Ok(results), _) => Ok(results),
+        (Err(_), Ok(results)) => Ok(results),
+        (Err(a), Err(b)) => Err(AppError::InferenceFailed(
+            format!("web search providers unavailable: {a}; {b}")
+        )),
+    }
+}
+
+async fn bounded_web_text(response: reqwest::Response, limit: usize) -> Result<String, AppError> {
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error|
+            AppError::InferenceFailed(format!("web response read failed: {error}")))?;
+        if bytes.len().saturating_add(chunk.len()) > limit {
+            return Err(AppError::InferenceFailed("web response size limit exceeded".to_string()));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+async fn search_duckduckgo(client: &Client, query: &str) -> Result<Vec<WebSearchResult>, AppError> {
     let response = client
         .get(WEB_SEARCH_ENDPOINT)
         .query(&[("q", query)])
         .header(header::USER_AGENT, WEB_SEARCH_USER_AGENT)
         .header(header::ACCEPT, "text/html,application/xhtml+xml")
         .timeout(std::time::Duration::from_secs(WEB_SEARCH_TIMEOUT_SECS))
-        .send()
-        .await
-        .map_err(|error| {
-            AppError::InferenceFailed(format!("web search request failed: {error}"))
-        })?;
+        .send().await
+        .map_err(|error| AppError::InferenceFailed(format!("DuckDuckGo request: {error}")))?
+        .error_for_status()
+        .map_err(|error| AppError::InferenceFailed(format!("DuckDuckGo status: {error}")))?;
+    Ok(parse_duckduckgo_results(
+        &bounded_web_text(response, WEB_SEARCH_MAX_RESPONSE_BYTES).await?
+    ))
+}
 
-    let status = response.status();
-    if !status.is_success() {
-        return Err(AppError::InferenceFailed(format!(
-            "web search returned HTTP {status}"
-        )));
+async fn search_bing_rss(client: &Client, query: &str) -> Result<Vec<WebSearchResult>, AppError> {
+    let response = client
+        .get("https://www.bing.com/search")
+        .query(&[("format", "rss"), ("q", query)])
+        .header(header::USER_AGENT, WEB_SEARCH_USER_AGENT)
+        .header(header::ACCEPT, "application/rss+xml,application/xml,text/xml")
+        .timeout(std::time::Duration::from_secs(WEB_SEARCH_TIMEOUT_SECS))
+        .send().await
+        .map_err(|error| AppError::InferenceFailed(format!("Bing RSS request: {error}")))?
+        .error_for_status()
+        .map_err(|error| AppError::InferenceFailed(format!("Bing RSS status: {error}")))?;
+    Ok(parse_bing_rss(
+        &bounded_web_text(response, WEB_SEARCH_MAX_RESPONSE_BYTES).await?
+    ))
+}
+
+fn parse_bing_rss(xml: &str) -> Vec<WebSearchResult> {
+    let mut results = Vec::new();
+    for item in xml.split("<item>").skip(1).take(WEB_SEARCH_RESULTS * 3) {
+        let item = item.split("</item>").next().unwrap_or_default();
+        let title = extract_xml_text(item, "title");
+        let url = extract_xml_text(item, "link");
+        let snippet = extract_xml_text(item, "description");
+        if !title.is_empty() && is_public_web_url(&url)
+            && results.iter().all(|other: &WebSearchResult| other.url != url) {
+            results.push(WebSearchResult { title, url, snippet });
+        }
+        if results.len() >= WEB_SEARCH_RESULTS { break; }
     }
-    let html = response.text().await.map_err(|error| {
-        AppError::InferenceFailed(format!("web search response failed: {error}"))
-    })?;
-    Ok(parse_duckduckgo_results(&html))
+    results
+}
+
+fn extract_xml_text(xml: &str, tag: &str) -> String {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let Some(start) = xml.find(&open).map(|offset| offset + open.len()) else {
+        return String::new();
+    };
+    let Some(end) = xml[start..].find(&close).map(|offset| start + offset) else {
+        return String::new();
+    };
+    let value = xml[start..end].trim();
+    let value = value.strip_prefix("<![CDATA[")
+        .and_then(|s| s.strip_suffix("]]>"))
+        .unwrap_or(value);
+    clean_html_text(value).chars().take(600).collect()
 }
 
 fn parse_duckduckgo_results(html: &str) -> Vec<WebSearchResult> {
