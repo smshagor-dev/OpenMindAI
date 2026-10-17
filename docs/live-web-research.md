@@ -23,6 +23,14 @@ web search pages otherwise; no paid external AI model is required.
   appended to completed replies and persisted in chat history. These are
   actual search-provider results, **not a guarantee that model statements
   are supported by the linked content**. Cancelled replies get no footer.
+- After a completed web-backed reply, the Rust host checks citation numbers,
+  distinguishes pages that were actually retrieved from snippet-only results,
+  and compares adjacent cited clauses with the bounded text of each retrieved
+  page. If a citation has weak distinctive keyword overlap, it adds a warning
+  to review the claim. This is a conservative **lexical review signal**,
+  **not semantic entailment, factual verification, or proof of corroboration**.
+  The selected page passages stay in the request's memory for this check and
+  are not separately persisted to chat history.
 - Max elapsed retrieval: 35 seconds (search) and 85 seconds (research),
   per-request deadline 9 seconds, concurrent page fetches at most three.
   The user can cancel search while it is running.
