@@ -26,6 +26,9 @@ const WEB_SEARCH_USER_AGENT: &str =
 const WEB_SEARCH_RESULTS: usize = 8;
 const WEB_SEARCH_TIMEOUT_SECS: u64 = 12;
 const WEB_SEARCH_MAX_RESPONSE_BYTES: usize = 1_000_000;
+const WEB_PAGE_MAX_RESPONSE_BYTES: usize = 320_000;
+const WEB_PAGE_MAX_CHARS: usize = 1_400;
+const WEB_PAGE_READ_COUNT: usize = 2;
 const MAX_VISION_DATA_URL_CHARS: usize = 6_000_000;
 const MAX_INFERENCE_MEDIA_ITEMS: usize = 4;
 const UI_STREAM_CHUNK_BYTES: usize = 32;
@@ -427,6 +430,20 @@ async fn append_live_web_context(
         }));
         return None;
     }
+    if mode == "research" {
+        // Search snippets are not full-page evidence: read a couple of
+        // bounded public HTML pages with redirects disabled and DNS pinned.
+        for result in results.iter_mut().take(WEB_PAGE_READ_COUNT) {
+            let excerpt = tokio::select! {
+                excerpt = fetch_public_page_excerpt(&result.url) => excerpt,
+                _ = cancellation.cancelled() => return None,
+            };
+            if let Ok(Some(excerpt)) = excerpt {
+                result.snippet = format!("Search snippet: {}. Verified page excerpt: {}",
+                    result.snippet, excerpt);
+            }
+        }
+    }
     messages.push(json!({"role":"system","content":format_search_evidence(&results, mode)}));
     Some(results)
 }
@@ -575,6 +592,102 @@ async fn search_bing_rss(client: &Client, query: &str) -> Result<Vec<WebSearchRe
     Ok(parse_bing_rss(
         &bounded_web_text(response, WEB_SEARCH_MAX_RESPONSE_BYTES).await?
     ))
+}
+
+/// Page reading is intentionally HTTPS-only. Resolve and validate all DNS
+/// addresses, pin the chosen public address, reject redirects, and limit bytes.
+async fn fetch_public_page_excerpt(url: &str) -> Result<Option<String>, AppError> {
+    if !url.starts_with("https://") || !is_public_web_url(url) {
+        return Ok(None);
+    }
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|error| AppError::InferenceFailed(format!("invalid page URL: {error}")))?;
+    let Some(host) = parsed.host_str() else { return Ok(None) };
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    let resolved = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio::net::lookup_host((host, port))
+    ).await
+        .map_err(|_| AppError::InferenceFailed("webpage DNS timed out".to_string()))?
+        .map_err(|error| AppError::InferenceFailed(format!("webpage DNS failed: {error}")))?;
+
+    let mut addresses = Vec::new();
+    for address in resolved {
+        let public = match address.ip() {
+            IpAddr::V4(v4) => is_public_ipv4(v4),
+            IpAddr::V6(v6) => is_public_ipv6(v6),
+        };
+        if !public { return Ok(None); }
+        addresses.push(address);
+    }
+    let Some(pinned) = addresses.first().copied() else { return Ok(None) };
+    let page_client = crate::net::with_proxy(
+        Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve(host, pinned)
+    )
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|error| AppError::InferenceFailed(format!("page client: {error}")))?;
+    let response = page_client.get(url)
+        .header(header::USER_AGENT, WEB_SEARCH_USER_AGENT)
+        .header(header::ACCEPT, "text/html")
+        .send().await
+        .map_err(|error| AppError::InferenceFailed(format!("webpage request: {error}")))?;
+    if !response.status().is_success() { return Ok(None); }
+    let html = response.headers().get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value|
+            value.starts_with("text/html") || value.starts_with("application/xhtml+xml"));
+    if !html { return Ok(None); }
+    let body = bounded_web_text(response, WEB_PAGE_MAX_RESPONSE_BYTES).await?;
+    let excerpt = extract_page_text(&body);
+    Ok((excerpt.len() > 80).then_some(excerpt))
+}
+
+/// Conservative HTML-to-text extraction for untrusted webpages, with a
+/// strict character cap so small local model contexts are never flooded.
+fn extract_page_text(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let mut result = String::new();
+    let mut cursor = 0;
+    while cursor < html.len() && result.len() < WEB_PAGE_MAX_CHARS * 5 {
+        let Some(relative) = lower[cursor..].find('<') else {
+            result.push_str(&html[cursor..]);
+            break;
+        };
+        let start = cursor + relative;
+        result.push_str(&html[cursor..start]);
+        let Some(end_offset) = lower[start..].find('>') else { break; };
+        let end = start + end_offset + 1;
+        let tag = lower[start + 1..end - 1].trim();
+        let skipped = ["script", "style", "head", "noscript", "svg", "nav", "footer"];
+        if let Some(name) = skipped.iter().find(|name| {
+            tag == **name || tag.starts_with(&format!("{name} "))
+        }) {
+            let close_tag = format!("</{name}>");
+            if let Some(pos) = lower[end..].find(&close_tag) {
+                cursor = end + pos + close_tag.len();
+                result.push(' ');
+                continue;
+            }
+        }
+        if tag.starts_with("p") || tag.starts_with("/p")
+            || tag.starts_with("li") || tag.starts_with("/li")
+            || tag.starts_with("h") || tag.starts_with("/h")
+            || tag.starts_with("br") {
+            result.push(' ');
+        }
+        cursor = end;
+    }
+    decode_html_entities(&result)
+        .split_whitespace()
+        .take(280)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(WEB_PAGE_MAX_CHARS)
+        .collect()
 }
 
 fn parse_bing_rss(xml: &str) -> Vec<WebSearchResult> {
