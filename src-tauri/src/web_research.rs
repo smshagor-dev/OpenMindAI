@@ -205,6 +205,15 @@ async fn research_inner(
         provider_counts.iter().map(|(p,n)| format!("{p}={n}")).collect::<Vec<_>>().join(", ")
     ));
     if mode == "research" {
+        let retrieved_hosts: HashSet<String> = results.iter()
+            .filter(|hit| pages.contains_key(&hit.url))
+            .filter_map(|hit| Url::parse(&hit.url).ok()
+                .and_then(|url| url.host_str().map(str::to_string)))
+            .collect();
+        evidence.push_str(&format!(
+            "Independent evidence coverage: {} distinct hosts had retrievable page text. Different hosts do not automatically mean independent reporting or corroboration.\n",
+            retrieved_hosts.len()
+        ));
         evidence.push_str(
             "DEEP RESEARCH: organize the answer as overview, evidence for each main claim, comparison of independent primary and secondary sources, disagreement/limitations, and numbered references. For each important claim assess whether 2 or more independent page texts corroborate it. When not independently supported, explicitly say unverified. Do not confuse search snippets with full-page verification. Avoid numerical certainty or fabricated dates.\n"
         );
@@ -722,6 +731,24 @@ fn select_relevant_text(text: &str, query: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retrieved_host_count_excludes_snippet_only_sources() {
+        let sources = [
+            WebSearchResult { title: "One".into(), url: "https://one.example/a".into(), snippet: "A".into() },
+            WebSearchResult { title: "Two".into(), url: "https://one.example/b".into(), snippet: "B".into() },
+            WebSearchResult { title: "Three".into(), url: "https://two.example/c".into(), snippet: "C".into() },
+        ];
+        let mut pages = HashMap::new();
+        pages.insert(sources[0].url.clone(), "Full page".to_string());
+        pages.insert(sources[1].url.clone(), "Full page".to_string());
+        let hosts: HashSet<String> = sources.iter()
+            .filter(|hit| pages.contains_key(&hit.url))
+            .filter_map(|hit| Url::parse(&hit.url).ok()
+                .and_then(|url| url.host_str().map(str::to_string)))
+            .collect();
+        assert_eq!(hosts.len(), 1);
+    }
+
     #[test]
     fn source_evidence_counts_distinguish_retrieved_pages_from_snippets() {
         let sources = [
