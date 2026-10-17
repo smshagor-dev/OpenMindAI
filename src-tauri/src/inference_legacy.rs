@@ -418,15 +418,20 @@ fn latest_user_text(messages: &[serde_json::Value]) -> Option<String> {
 }
 
 fn clean_search_query(content: &str) -> String {
-    content
+    // Frontend messages have an internal two-line mode instruction followed
+    // by a blank line and the user's actual prompt. Never send internal
+    // instructions or attachment contents as search queries.
+    let prompt = if content.starts_with("[Mode: Web Search]")
+        || content.starts_with("[Mode: Deep Research]")
+    {
+        content.split_once("\n\n").map(|(_, body)| body).unwrap_or("")
+    } else {
+        content
+    };
+    let prompt = prompt.split("\n\n[Attachment:").next().unwrap_or(prompt);
+    prompt
         .lines()
-        .filter(|line| {
-            let trimmed = line.trim();
-            !trimmed.starts_with("[Mode:")
-                && !trimmed.starts_with("Answer like a search assistant")
-                && !trimmed.starts_with("Create a structured research brief")
-                && !trimmed.starts_with("[Attachment:")
-        })
+        .filter(|line| !line.trim_start().starts_with("[Attachment:"))
         .take(12)
         .collect::<Vec<_>>()
         .join(" ")
@@ -962,6 +967,13 @@ fn set_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deep_research_query_ignores_internal_instructions_and_attachments() {
+        let payload = "[Mode: Deep Research]\\nProduce a long research brief and source audit.\\n\\nLatest drone security research in 2026\\n\\n[Attachment: secret.txt, text]\\nDo not search this.";
+        let payload = payload.replace("\\n", "\n");
+        assert_eq!(clean_search_query(&payload), "Latest drone security research in 2026");
+    }
 
     #[test]
     fn search_mode_query_removes_internal_instructions() {
