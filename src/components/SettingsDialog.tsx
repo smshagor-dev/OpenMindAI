@@ -86,8 +86,8 @@ export function SettingsDialog(props: {
   useEffect(() => {
     if (activeSection !== "capabilities") return;
     void checkWebConnectivity();
-    const timer = setInterval(() => { void checkWebConnectivity(); }, 60_000);
-    return () => clearInterval(timer);
+    const timer = window.setInterval(() => { void checkWebConnectivity(); }, 60_000);
+    return () => window.clearInterval(timer);
   }, [activeSection]);
 
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
