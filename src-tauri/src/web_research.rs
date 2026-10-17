@@ -45,6 +45,17 @@ struct PageEvidence {
 /// Search evidence and the exact URLs returned by providers. Keeping source
 /// metadata separate from the LLM context allows the host to append genuine,
 /// clickable sources without trusting model-generated hyperlinks.
+/// Milestone-free, measured progress for user-visible research activity.
+/// Counts track completed network work, never estimated elapsed percentages.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ResearchProgress {
+    pub(super) stage: &'static str,
+    pub(super) completed: usize,
+    pub(super) total: usize,
+    pub(super) sources: usize,
+    pub(super) pages_read: usize,
+}
+
 pub(super) struct ResearchEvidence {
     pub(super) context: String,
     pub(super) sources: Vec<WebSearchResult>,
@@ -73,16 +84,23 @@ pub(super) async fn gather(
     cancellation: &CancellationToken,
     preferred: &str,
     credentials: &SearchCredentials,
+    on_progress: &(dyn Fn(ResearchProgress) + Send + Sync),
 ) -> ResearchEvidence {
     let max_duration = if mode == "research" { 85 } else { 35 };
     tokio::select! {
-        _ = cancellation.cancelled() => unavailable("Web retrieval was stopped. No live verification was completed. Do not invent sources."),
+        _ = cancellation.cancelled() => {
+            on_progress(ResearchProgress { stage: "stopped", completed: 0, total: 0, sources: 0, pages_read: 0 });
+            unavailable("Web retrieval was stopped. No live verification was completed. Do not invent sources.")
+        },
         result = tokio::time::timeout(
             Duration::from_secs(max_duration),
-            research_inner(client, query, mode, cancellation, preferred, credentials)
+            research_inner(client, query, mode, cancellation, preferred, credentials, on_progress)
         ) => match result {
             Ok(evidence) => evidence,
-            Err(_) => unavailable("Web retrieval timed out. State that live verification was incomplete; never invent sources or citations."),
+            Err(_) => {
+                on_progress(ResearchProgress { stage: "unavailable", completed: 0, total: 0, sources: 0, pages_read: 0 });
+                unavailable("Web retrieval timed out. State that live verification was incomplete; never invent sources or citations.")
+            }
         },
     }
 }
@@ -94,6 +112,7 @@ async fn research_inner(
     cancellation: &CancellationToken,
     preferred: &str,
     credentials: &SearchCredentials,
+    on_progress: &(dyn Fn(ResearchProgress) + Send + Sync),
 ) -> ResearchEvidence {
     let mut queries = vec![query.to_string()];
     if mode == "research" {
@@ -101,6 +120,7 @@ async fn research_inner(
         queries.push(format!("{query} independent evidence analysis"));
         queries.push(format!("{query} recent updates criticism"));
     }
+    on_progress(ResearchProgress { stage: "searching", completed: 0, total: queries.len(), sources: 0, pages_read: 0 });
     let providers = configured_providers(preferred, credentials);
     let mut results: Vec<WebSearchResult> = Vec::new();
     let mut seen = HashSet::new();
@@ -161,8 +181,10 @@ async fn research_inner(
             }
         }
         if found_in_query { successful_queries += 1; }
+        on_progress(ResearchProgress { stage: "searching", completed: index + 1, total: queries.len(), sources: results.len(), pages_read: 0 });
     }
     if results.is_empty() {
+        on_progress(ResearchProgress { stage: "unavailable", completed: 0, total: 0, sources: 0, pages_read: 0 });
         return unavailable(&format!(
             "LIVE RETRIEVAL FAILED: no reliable search results could be obtained ({}). Internet, proxy, provider blocks, or DNS may be responsible. Do not claim web verification, fabricate citations or quote a source.",
             errors.into_iter().take(4).collect::<Vec<_>>().join("; ")
@@ -176,6 +198,9 @@ async fn research_inner(
     // ordinary local-network/loopback and DNS rebinding SSRF.
     let limit = if mode == "research" { RESEARCH_PAGES } else { SEARCH_PAGES };
     let work = results.iter().take(limit).cloned().collect::<Vec<_>>();
+    let page_total = work.len();
+    let mut pages_checked = 0;
+    on_progress(ResearchProgress { stage: "reading", completed: 0, total: page_total, sources: results.len(), pages_read: 0 });
     let research_query = query.to_string();
     let mut pages = HashMap::<String, String>::new();
     let mut fetched = stream::iter(work)
@@ -189,11 +214,20 @@ async fn research_inner(
         .buffer_unordered(3);
     loop {
         tokio::select! {
-            _ = cancellation.cancelled() => return unavailable("Web retrieval was stopped. Source verification was incomplete; do not invent citations."),
+            _ = cancellation.cancelled() => {
+                on_progress(ResearchProgress { stage: "stopped", completed: pages_checked, total: page_total, sources: results.len(), pages_read: pages.len() });
+                return unavailable("Web retrieval was stopped. Source verification was incomplete; do not invent citations.");
+            },
             page = fetched.next() => match page {
-                Some((url, Ok(Some(body)))) => { pages.insert(url, body.text); },
-                Some((_url, Err(_reason))) => { tracing::debug!("source page skipped"); },
-                Some((_, Ok(None))) => {},
+                Some((url, outcome)) => {
+                    pages_checked += 1;
+                    match outcome {
+                        Ok(Some(body)) => { pages.insert(url, body.text); },
+                        Err(_reason) => { tracing::debug!("source page skipped"); },
+                        Ok(None) => {},
+                    }
+                    on_progress(ResearchProgress { stage: "reading", completed: pages_checked, total: page_total, sources: results.len(), pages_read: pages.len() });
+                },
                 None => break,
             }
         }
@@ -241,6 +275,13 @@ async fn research_inner(
     }
     let read_sources = read_source_numbers(&results, &pages);
     let page_texts = source_page_texts(&results, &pages);
+    on_progress(ResearchProgress {
+        stage: "generating",
+        completed: page_total,
+        total: page_total,
+        sources: results.len(),
+        pages_read: pages.len(),
+    });
     ResearchEvidence { context: evidence, sources: results, read_sources, page_texts }
 }
 

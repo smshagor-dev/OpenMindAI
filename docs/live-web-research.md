@@ -34,6 +34,12 @@ web search pages otherwise; no paid external AI model is required.
 - Max elapsed retrieval: 35 seconds (search) and 85 seconds (research),
   per-request deadline 9 seconds, concurrent page fetches at most three.
   The user can cancel search while it is running.
+- The chat now receives local `web-research:progress` events from the Rust
+  retrieval engine: completed search questions, completed public-page checks,
+  successful page reads, discovered sources and the transition to answer
+  generation. The UI displays actual counts, not an estimated percentage.
+  Progress is attached to its conversation and assistant message and clears
+  when generation finishes. This is transient activity, not persisted history.
 - Backend privacy preferences are checked before network retrieval. Web
   Search and Deep Research settings are independent. The Capabilities settings
   panel checks connectivity automatically when opened and every 60 seconds,

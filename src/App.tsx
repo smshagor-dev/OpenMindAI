@@ -20,6 +20,7 @@ import type {
   StreamChunkEvent,
   StreamDoneEvent,
   StreamStartedEvent,
+  WebResearchProgressEvent,
   StorageSummary,
   UserProfile,
 } from "./types";
@@ -110,6 +111,7 @@ export function App() {
     researching: false,
     detail: null,
   });
+  const [webProgress, setWebProgress] = useState<WebResearchProgressEvent | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [streamingId, setStreamingId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -351,6 +353,12 @@ export function App() {
           event.payload.assistant,
         ]);
         setStreamingId(event.payload.assistant.id);
+        setWebProgress((current) =>
+          current?.conversationId === event.payload.conversationId &&
+          current.messageId !== event.payload.assistant.id
+            ? null
+            : current,
+        );
         setSubmitting(false);
         setActivity((current) => ({
           ...current,
@@ -377,6 +385,9 @@ export function App() {
           }));
         },
       ),
+      listen<WebResearchProgressEvent>("web-research:progress", (event) => {
+        setWebProgress(event.payload);
+      }),
       listen<StreamChunkEvent>("inference:chunk", (event) => {
         setMessages((items) =>
           items.map((message) =>
@@ -395,6 +406,12 @@ export function App() {
           ),
         );
         setStreamingId((current) => (current === event.payload.messageId ? null : current));
+        setWebProgress((current) =>
+          current?.messageId === event.payload.messageId &&
+          current.conversationId === event.payload.conversationId
+            ? null
+            : current,
+        );
         setSubmitting(false);
         setActivity((current) => ({ ...current, typing: false, detail: null }));
       }),
@@ -412,6 +429,7 @@ export function App() {
 
   const newConversation = useCallback(() => {
     setActiveId(null);
+    setWebProgress(null);
     setMessages([]);
     setPrompt("");
     setAttachments([]);
@@ -441,6 +459,7 @@ export function App() {
     let editedBranchChanged = false;
 
     setSubmitting(true);
+    setWebProgress(null);
     try {
       if (!conversationId) {
         const conversation = await api.createConversation();
@@ -560,6 +579,7 @@ export function App() {
       }
       setStreamingId(null);
       setPrompt(draftPrompt);
+      setWebProgress(null);
       setAttachments(draftAttachments);
       setEditingMessageId(editedBranchChanged ? null : editTargetId);
       showError(caught);
@@ -592,6 +612,7 @@ export function App() {
       const inferredMode = inferChatMode(task, []);
       const messageContent = buildMessageContent(task, [], inferredMode);
       setSubmitting(true);
+      setWebProgress(null);
       setPrompt("");
       setAttachments([]);
       setEditingMessageId(null);
@@ -672,6 +693,7 @@ export function App() {
           : null;
       const mode = user ? persistedChatMode(user.content) : "chat";
       setSubmitting(true);
+      setWebProgress(null);
       setMessages((items) => items.filter((message) => message.id !== assistantMessageId));
       try {
         await api.regenerateMessage(activeId, assistantMessageId, mode);
@@ -1185,6 +1207,7 @@ export function App() {
             attachments={attachments}
             preferences={preferences}
             activity={activity}
+            webProgress={webProgress?.conversationId === activeId ? webProgress : null}
             enterToSend={preferences?.enterToSend ?? true}
             addFiles={addFiles}
             removeAttachment={(id) =>
@@ -1238,6 +1261,7 @@ export function App() {
               attachments={attachments}
               preferences={preferences}
               activity={activity}
+              webProgress={webProgress?.conversationId === activeId ? webProgress : null}
               enterToSend={preferences?.enterToSend ?? true}
               addFiles={addFiles}
               removeAttachment={(id) =>
