@@ -12,10 +12,17 @@ web search pages otherwise; no paid external AI model is required.
   Search JSON API (optional), DuckDuckGo HTML and Bing public search HTML,
   with Bing RSS as a fallback when HTML results cannot be parsed.
 - Deep Research: four distinct search questions, up to 12 unique sources,
-  and up to eight HTML/text pages. Ordinary Web Search fetches three pages.
-- Each full page receives a maximum of 1.5 MB of transfer and 2,200
+  and up to eight HTML/text/PDF sources. Ordinary Web Search fetches three sources.
+- Each full source receives a maximum of 1.5 MB of transfer and 2,200
   characters of cleaned text in the prompt. This is an *extract*, not a
   complete unlimited article transcript. Search responses are capped at 1 MB.
+  Public, **text-based PDFs** can now contribute cited text evidence using
+  the already-pinned Rust PDF parser. Parsing occurs on a blocking worker with
+  a six-second wait limit, at most eight pages inspected per PDF, and a
+  512 KB decompression limit per page. PDF text is reduced to at most
+  32,000 characters before passage selection. Encrypted, scanned/image-only,
+  malformed, oversized and unextractable PDFs remain snippet-only sources.
+  No PDF scripts are run and no external PDF viewer or OCR is invoked.
   When choosing relevant passages from longer pages, the extractor preserves
   decimals such as `87.5%` across sentence boundaries and matches query
   terms at word boundaries (including hyphenated terms such as
@@ -102,6 +109,9 @@ destination constraint.
 6. Test a network requiring a manual/system proxy and a blocked provider.
 7. Check Stop while retrieval is running, and confirm no citations append to a
    cancelled reply.
+8. Fetch a public text-based PDF, a scanned PDF, an encrypted PDF, and a PDF
+   served as octet-stream. Confirm only successfully extracted text is marked
+   as retrieved evidence and malformed documents never crash the app.
 
 CI covers parsing, retry classification, provider ordering and a local HTTP
 429 response fixture. These tests do not prove live vendor availability,
@@ -154,9 +164,11 @@ or future secret-store UI, not placed in a source-controlled configuration.
 - Tests do **not** prove live provider success on every user's network:
   complete a live Windows smoke test including offline, proxy, Brave/Google
   credentials, search engine rate limits, and malformed HTML.
-- PDF files and JS-only websites are not full-page extracted. Full factual
-  cross-verification cannot be guaranteed by an offline 4B model; where claims
-  conflict, the assistant must describe both with citations.
+- PDF reading supports selected text-based pages only (not complete arbitrary
+  research articles, scans, images, tables or math layout); JavaScript-only
+  websites are not rendered. Full factual cross-verification cannot be
+  guaranteed by an offline 4B model; where claims conflict, the assistant must
+  describe both with citations.
 - Source snippets might be inaccurate even when returned by a search engine.
   Answer quality should not be overstated as equivalent to ChatGPT's cloud web
   search or the work of professional research fact-checkers.
