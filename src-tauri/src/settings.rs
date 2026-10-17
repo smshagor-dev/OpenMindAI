@@ -34,6 +34,8 @@ pub struct AppPreferences {
     pub confirm_before_delete: bool,
     pub web_search_enabled: bool,
     pub deep_research_enabled: bool,
+    /// "auto", "brave", "google", "duckduckgo", or "bing"; other providers remain fallbacks.
+    pub web_search_preferred_provider: String,
     pub thinking_mode_enabled: bool,
     pub typing_indicator_enabled: bool,
     pub socket_realtime_enabled: bool,
@@ -138,6 +140,7 @@ impl Default for AppPreferences {
             confirm_before_delete: true,
             web_search_enabled: true,
             deep_research_enabled: true,
+            web_search_preferred_provider: "auto".to_string(),
             thinking_mode_enabled: true,
             typing_indicator_enabled: true,
             socket_realtime_enabled: false,
