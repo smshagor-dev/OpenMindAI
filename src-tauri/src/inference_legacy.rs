@@ -967,6 +967,9 @@ fn numeric_evidence_values(text: &str) -> BTreeSet<String> {
     while index < bytes.len() && values.len() < 80 {
         if !bytes[index].is_ascii_digit()
             || (index > 0 && (bytes[index - 1].is_ascii_alphabetic() || bytes[index - 1] == b'_'))
+            || (index >= 2
+                && matches!(bytes[index - 1], b'.' | b',')
+                && bytes[index - 2].is_ascii_digit())
         {
             index += 1;
             continue;
@@ -1457,6 +1460,88 @@ mod tests {
         assert_eq!(json["total"], 4);
         assert_eq!(json["sources"], 6);
         assert_eq!(json["pagesRead"], 1);
+    }
+
+    #[test]
+    fn numeric_evidence_normalizes_years_percentages_and_thousands() {
+        let numbers = numeric_evidence_values(
+            "In 2026, total 1,200.00 people had an 87.50% pass rate."
+        );
+        assert!(numbers.contains("2026"));
+        assert!(numbers.contains("1200"));
+        assert!(numbers.contains("87.5"));
+        assert_eq!(numeric_evidence_values("1,200"), numeric_evidence_values("1200"));
+        assert_eq!(numeric_evidence_values("12,5"), numeric_evidence_values("12.5"));
+        assert!(!numeric_evidence_values("Version v4.0.0").contains("0"));
+        assert!(!numeric_evidence_values("Only one participant").contains("1"));
+    }
+
+    #[test]
+    fn cited_claim_sentence_does_not_split_decimal_values() {
+        assert_eq!(
+            claim_clause_before_citation("Earlier sentence. The trial measured 87.5% "),
+            "The trial measured 87.5%"
+        );
+        let cited = cited_claim_clauses(
+            "Earlier sentence. The trial achieved an 87.5% success rate [1]."
+        );
+        assert_eq!(cited.len(), 1);
+        assert!(cited[0].1.contains("87.5%"));
+    }
+
+    #[test]
+    fn citation_numeric_audit_accepts_matching_numbers_in_retrieved_text() {
+        let pages = HashMap::from([(
+            1usize,
+            "The 2026 research trial achieved an 87.5 percent success rate "
+                .to_string(),
+        )]);
+        assert!(citation_numeric_evidence_warning(
+            "The research trial achieved 87.5% success in 2026 [1].", &pages
+        ).is_none());
+    }
+
+    #[test]
+    fn citation_numeric_audit_flags_missing_percentage_and_year() {
+        let pages = HashMap::from([(
+            1usize,
+            "The research trial achieved a 64 percent success rate in 2024."
+                .to_string(),
+        )]);
+        let warning = citation_numeric_evidence_warning(
+            "The research trial achieved 87.5% success in 2026 [1].",
+            &pages,
+        ).expect("unsupported numbers should trigger review");
+        assert!(warning.contains("[1]:"));
+        assert!(warning.contains("87.5"));
+        assert!(warning.contains("2026"));
+        assert!(warning.contains("may be incomplete"));
+    }
+
+    #[test]
+    fn citation_numeric_audit_checks_each_source_in_group() {
+        let pages = HashMap::from([
+            (1usize, "The drone sensor experiment achieved 95 percent accuracy.".to_string()),
+            (2usize, "A related drone sensor experiment achieved 82 percent accuracy.".to_string()),
+        ]);
+        let warning = citation_numeric_evidence_warning(
+            "The drone sensor experiment achieved 95% accuracy [1, 2].", &pages
+        ).expect("source two lacks claimed 95");
+        assert!(warning.contains("[2]: 95"));
+        assert!(!warning.contains("[1]:"));
+    }
+
+    #[test]
+    fn citation_numeric_audit_ignores_unread_sources_and_code() {
+        let pages = HashMap::from([(1usize, "The 2024 drone accuracy test used 95 samples.".into())]);
+        assert!(citation_numeric_evidence_warning(
+            "The 2026 trial achieved 87% accuracy [2].", &pages
+        ).is_none());
+        assert!(citation_numeric_evidence_warning(
+            "Background `2026 [1]` and [1](https://example.org). \n```\nTrial 2026 reached 87 percent [1]\n```",
+            &pages,
+        ).is_none());
+        assert!(citation_numeric_evidence_warning("No citation available in 2026.", &pages).is_none());
     }
 
     #[test]
