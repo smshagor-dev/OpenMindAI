@@ -1896,7 +1896,8 @@ async fn check_web_connectivity(state: State<'_, AppState>) -> Result<inference:
     if !preferences.web_search_enabled && !preferences.deep_research_enabled {
         return Ok(inference::ProviderHealthReport::disabled());
     }
-    let credentials = web_provider_config::load_credentials()?;
+    // A temporarily unavailable OS keyring must not prevent keyless provider diagnostics.
+    let credentials = web_provider_config::load_credentials().unwrap_or_default();
     Ok(inference::probe_web_providers(
         &state.http, &preferences.web_search_preferred_provider, &credentials,
     ).await)
