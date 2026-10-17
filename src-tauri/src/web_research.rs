@@ -721,8 +721,12 @@ fn extract_pdf_text(bytes: &[u8]) -> Result<String, String> {
     if bytes.len() > PAGE_BYTES || !bytes.windows(5).take(1024).any(|part| part == b"%PDF-") {
         return Err("invalid or oversized PDF document".to_string());
     }
-    let document = lopdf::Document::load_mem(bytes)
-        .map_err(|_| "PDF document could not be parsed".to_string())?;
+    // Cross-reference and object streams may decompress *during loading*;
+    // guard those as well as the subsequently extracted page streams.
+    let document = lopdf::Document::load_mem_with_options(
+        bytes,
+        lopdf::LoadOptions::with_max_decompressed_size(PDF_MAX_DECOMPRESSED_PAGE_BYTES),
+    ).map_err(|_| "PDF document could not be safely parsed".to_string())?;
     if document.is_encrypted() {
         return Err("encrypted PDFs cannot be inspected".to_string());
     }
