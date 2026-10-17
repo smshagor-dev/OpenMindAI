@@ -4279,6 +4279,7 @@ dependencies = [
  "hound",
  "libc",
  "llama-cpp-2",
+ "lopdf",
  "printpdf",
  "pulldown-cmark",
  "reqwest 0.12.28",

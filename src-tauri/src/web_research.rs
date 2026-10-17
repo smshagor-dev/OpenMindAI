@@ -16,6 +16,9 @@ const BRAVE_JSON: &str = "https://api.search.brave.com/res/v1/web/search";
 const GOOGLE_JSON: &str = "https://www.googleapis.com/customsearch/v1";
 const SEARCH_BYTES: usize = 1_000_000;
 const PAGE_BYTES: usize = 1_500_000;
+const PDF_MAX_EXTRACT_PAGES: usize = 8;
+const PDF_MAX_DECOMPRESSED_PAGE_BYTES: usize = 512_000;
+const PDF_MAX_TEXT_CHARS: usize = 32_000;
 const PAGE_CHARS: usize = 2_200;
 const MAX_SOURCES: usize = 12;
 const RESEARCH_PAGES: usize = 8;
@@ -683,17 +686,73 @@ fn canonical_url(value: &str) -> String {
     value.to_string()
 }
 
-pub(super) async fn response_text(mut response: reqwest::Response, cap: usize) -> Result<String, String> {
+pub(super) async fn response_bytes(mut response: reqwest::Response, cap: usize) -> Result<Vec<u8>, String> {
     if !response.status().is_success() { return Err(format!("HTTP {}", response.status())); }
     if response.content_length().is_some_and(|n| n > cap as u64) {
         return Err("response exceeds size limit".to_string());
     }
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
-        if bytes.len() + chunk.len() > cap { return Err("response exceeds size limit".to_string()); }
+        if chunk.len() > cap.saturating_sub(bytes.len()) {
+            return Err("response exceeds size limit".to_string());
+        }
         bytes.extend_from_slice(&chunk);
     }
+    Ok(bytes)
+}
+
+async fn response_text(response: reqwest::Response, cap: usize) -> Result<String, String> {
+    let bytes = response_bytes(response, cap).await?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Text-based public PDFs only; an octet-stream is accepted only for a PDF URL
+/// and still must pass the PDF magic header check in the extraction function.
+fn is_research_pdf_type(content_type: &str, url: &Url) -> bool {
+    content_type.starts_with("application/pdf")
+        || (content_type.starts_with("application/octet-stream")
+            && url.path().to_ascii_lowercase().ends_with(".pdf"))
+}
+
+/// Parse on a blocking thread after a strict download limit. Bound page count,
+/// decompressed page content and total text; never invoke a system PDF viewer,
+/// PDF JavaScript or OCR on untrusted web documents.
+fn extract_pdf_text(bytes: &[u8]) -> Result<String, String> {
+    if bytes.len() > PAGE_BYTES || !bytes.windows(5).take(1024).any(|part| part == b"%PDF-") {
+        return Err("invalid or oversized PDF document".to_string());
+    }
+    // Cross-reference and object streams may decompress *during loading*;
+    // guard those as well as the subsequently extracted page streams.
+    let document = lopdf::Document::load_mem_with_options(
+        bytes,
+        lopdf::LoadOptions::with_max_decompressed_size(PDF_MAX_DECOMPRESSED_PAGE_BYTES),
+    ).map_err(|_| "PDF document could not be safely parsed".to_string())?;
+    if document.is_encrypted() {
+        return Err("encrypted PDFs cannot be inspected".to_string());
+    }
+    let page_numbers: Vec<u32> = document.get_pages().keys()
+        .take(PDF_MAX_EXTRACT_PAGES).copied().collect();
+    if page_numbers.is_empty() {
+        return Err("PDF has no pages".to_string());
+    }
+    let mut combined = String::new();
+    for page_number in page_numbers {
+        let page_text = document.extract_text_with_limit(
+            &[page_number], PDF_MAX_DECOMPRESSED_PAGE_BYTES,
+        ).map_err(|_| "PDF page text could not be safely decoded".to_string())?;
+        let readable = page_text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if readable.is_empty() { continue; }
+        combined.push_str(&format!("PDF page {page_number}: "));
+        combined.extend(readable.chars().take(
+            PDF_MAX_TEXT_CHARS.saturating_sub(combined.chars().count())
+        ));
+        combined.push('\n');
+        if combined.chars().count() >= PDF_MAX_TEXT_CHARS { break; }
+    }
+    if combined.trim().chars().count() < 80 {
+        return Err("PDF has insufficient extractable text (possibly scanned)".to_string());
+    }
+    Ok(combined)
 }
 
 async fn fetch_readable_page(raw: &str, query: &str) -> Result<Option<PageEvidence>, String> {
@@ -716,16 +775,29 @@ async fn fetch_readable_page(raw: &str, query: &str) -> Result<Option<PageEviden
         .resolve_to_addrs(host, &addresses)
         .timeout(REQUEST_TIMEOUT)
         .build().map_err(|_| "page client unavailable".to_string())?;
-    let response = client.get(url).header(header::ACCEPT, "text/html,application/xhtml+xml,text/plain")
+    let response = client.get(url.clone())
+        .header(header::ACCEPT, "text/html,application/xhtml+xml,text/plain,application/pdf")
         .send().await.map_err(|e| e.to_string())?;
     if !response.status().is_success() { return Ok(None); }
     let content_type = response.headers().get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
-    if !content_type.starts_with("text/html") && !content_type.starts_with("text/plain") &&
-        !content_type.starts_with("application/xhtml+xml") { return Ok(None); }
-    let body = response_text(response, PAGE_BYTES).await?;
-    let text = if content_type.starts_with("text/plain") { body } else { readable_html(&body) };
-    if text.trim().len() < 80 { return Ok(None); }
+    let text = if is_research_pdf_type(&content_type, &url) {
+        let pdf = response_bytes(response, PAGE_BYTES).await?;
+        // PDF parsing/decompression must not block the async search runtime.
+        tokio::time::timeout(Duration::from_secs(6), tokio::task::spawn_blocking(
+            move || extract_pdf_text(&pdf)
+        )).await.map_err(|_| "PDF extraction timed out".to_string())?
+            .map_err(|_| "PDF extraction worker unavailable".to_string())??
+    } else if content_type.starts_with("text/html")
+        || content_type.starts_with("text/plain")
+        || content_type.starts_with("application/xhtml+xml")
+    {
+        let body = response_text(response, PAGE_BYTES).await?;
+        if content_type.starts_with("text/plain") { body } else { readable_html(&body) }
+    } else {
+        return Ok(None);
+    };
+    if text.trim().chars().count() < 80 { return Ok(None); }
     Ok(Some(PageEvidence { text: select_relevant_text(&text, query) }))
 }
 
@@ -848,6 +920,61 @@ fn select_relevant_text(text: &str, query: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A minimal self-contained one-page text PDF. No binary fixture files or
+    /// external PDF renderer are needed for reproducible Rust CI tests.
+    fn text_pdf_fixture() -> Vec<u8> {
+        let content = "BT /F1 12 Tf 72 700 Td (GPS denied drone localization experiment reached 87.5 percent accuracy in 2026.) Tj ET";
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".to_string(),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".to_string(),
+            format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()),
+        ];
+        let mut bytes = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(bytes.len());
+            bytes.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+        }
+        let xref_offset = bytes.len();
+        bytes.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+        for offset in offsets {
+            bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        bytes.extend_from_slice(format!(
+            "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n"
+        ).as_bytes());
+        bytes
+    }
+
+    #[test]
+    fn research_pdf_reader_extracts_text_without_executing_content() {
+        let content = extract_pdf_text(&text_pdf_fixture()).expect("text PDF should be readable");
+        assert!(content.contains("GPS denied drone localization"), "{content}");
+        assert!(content.contains("87.5 percent"), "{content}");
+        assert!(content.contains("PDF page 1:"), "{content}");
+        assert!(content.chars().count() <= PDF_MAX_TEXT_CHARS + 1);
+    }
+
+    #[test]
+    fn research_pdf_reader_rejects_invalid_and_oversized_input() {
+        assert!(extract_pdf_text(b"<html>not a PDF</html>").is_err());
+        assert!(extract_pdf_text(b"%PDF-1.4\ninvalid").is_err());
+        assert!(extract_pdf_text(&vec![b'A'; PAGE_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn research_pdf_accepts_only_explicit_mime_or_pdf_octet_stream() {
+        let pdf = Url::parse("https://example.org/papers/study.pdf").unwrap();
+        let html = Url::parse("https://example.org/news/page").unwrap();
+        assert!(is_research_pdf_type("application/pdf", &html));
+        assert!(is_research_pdf_type("application/pdf; charset=binary", &pdf));
+        assert!(is_research_pdf_type("application/octet-stream", &pdf));
+        assert!(!is_research_pdf_type("application/octet-stream", &html));
+        assert!(!is_research_pdf_type("text/html", &pdf));
+    }
+
     #[test]
     fn page_clauses_keep_decimal_and_sentence_boundaries() {
         let page = "The 2026 drone trial measured 87.5% localization accuracy. Later trials measured 92.0% accuracy!";
