@@ -543,7 +543,7 @@ fn extract_runtime_archive(
             output.flush()?;
             #[cfg(unix)]
             if let Some(mode) = entry.unix_mode() {
-                fs::set_permissions(&destination, fs::Permissions::from_mode(mode))?;
+                fs::set_permissions(&destination, fs::Permissions::from_mode(mode & 0o777))?;
             }
         }
         Ok(())
