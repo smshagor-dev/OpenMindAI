@@ -44,7 +44,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-process = "2"
-tauri-plugin-updater = "2"
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "system-proxy"] }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "sync", "time", "net", "io-util"] }
 tokio-util = "0.7"
@@ -61,7 +61,7 @@ tree-sitter-rust = "0.24.2"
 tree-sitter-typescript = "0.23.2"
 url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
-zip = "2"
+zip = "9.0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
