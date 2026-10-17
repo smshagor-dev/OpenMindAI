@@ -20,7 +20,7 @@ const PAGE_CHARS: usize = 2_200;
 const MAX_SOURCES: usize = 12;
 const RESEARCH_PAGES: usize = 8;
 const SEARCH_PAGES: usize = 3;
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(9);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PROVIDER_ATTEMPTS: usize = 3;
 const BASE_RETRY_MS: u64 = 250;
 
@@ -239,8 +239,7 @@ enum ProviderFailure {
     Denied,
     Server,
     Invalid,
-    CoolingDown,
-}
+ }
 impl ProviderFailure {
     fn retryable(self) -> bool { matches!(self, Self::Transport | Self::Server) }
     fn cooldown(self) -> Option<Duration> {
@@ -248,29 +247,31 @@ impl ProviderFailure {
             Self::RateLimited(wait) => Some(wait),
             Self::Denied => Some(Duration::from_secs(90)),
             Self::Server => Some(Duration::from_secs(12)),
+            Self::Transport => Some(Duration::from_secs(8)),
             _ => None,
         }
     }
     fn status(self) -> &'static str {
         match self {
-            Self::RateLimited(_) | Self::CoolingDown => "rate_limited",
+            Self::RateLimited(_) => "rate_limited",
             Self::Denied => "blocked",
             Self::Server | Self::Transport => "unreachable",
             Self::Invalid => "invalid_response",
         }
     }
 }
-static PROVIDER_COOLDOWNS: OnceLock<StdMutex<HashMap<Provider, Instant>>> = OnceLock::new();
-fn cooldowns() -> &'static StdMutex<HashMap<Provider, Instant>> {
+static PROVIDER_COOLDOWNS: OnceLock<StdMutex<HashMap<Provider, (Instant, ProviderFailure)>>> = OnceLock::new();
+fn cooldowns() -> &'static StdMutex<HashMap<Provider, (Instant, ProviderFailure)>> {
     PROVIDER_COOLDOWNS.get_or_init(|| StdMutex::new(HashMap::new()))
 }
-fn is_cooling_down(provider: Provider) -> bool {
-    cooldowns().lock().is_ok_and(|map| map.get(&provider).is_some_and(|until| *until > Instant::now()))
+fn cooling_reason(provider: Provider) -> Option<ProviderFailure> {
+    cooldowns().lock().ok().and_then(|map| map.get(&provider)
+        .and_then(|(until, error)| (*until > Instant::now()).then_some(*error)))
 }
 fn mark_failure(provider: Provider, error: ProviderFailure) {
     if let Some(wait) = error.cooldown() {
         if let Ok(mut map) = cooldowns().lock() {
-            map.insert(provider, Instant::now() + wait);
+            map.insert(provider, (Instant::now() + wait, error));
         }
     }
 }
@@ -284,7 +285,7 @@ async fn search_provider_with_retry(
     credentials: &SearchCredentials,
     cancellation: &CancellationToken,
 ) -> Result<Vec<WebSearchResult>, ProviderFailure> {
-    if is_cooling_down(provider) { return Err(ProviderFailure::CoolingDown); }
+    if let Some(reason) = cooling_reason(provider) { return Err(reason); }
     for attempt in 0..MAX_PROVIDER_ATTEMPTS {
         let response = tokio::select! {
             _ = cancellation.cancelled() => return Err(ProviderFailure::Transport),
@@ -361,8 +362,8 @@ pub(crate) async fn probe(
             checks.push(ProviderCheck { name: provider.name(), status: "unconfigured", elapsed_ms: None });
             continue;
         }
-        if is_cooling_down(provider) {
-            checks.push(ProviderCheck { name: provider.name(), status: "rate_limited", elapsed_ms: None });
+        if let Some(reason) = cooling_reason(provider) {
+            checks.push(ProviderCheck { name: provider.name(), status: reason.status(), elapsed_ms: None });
             continue;
         }
         let started = Instant::now();
