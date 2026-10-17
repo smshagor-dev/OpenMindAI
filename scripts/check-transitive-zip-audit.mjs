@@ -8,8 +8,8 @@ function fail(message) {
   console.error(`Dependency audit guard failed: ${message}`);
   process.exitCode = 1;
 }
-const lock = readFileSync(new URL("../src-tauri/Cargo.lock", import.meta.url), "utf8");
-const manifest = readFileSync(new URL("../src-tauri/Cargo.toml", import.meta.url), "utf8");
+const lock = readFileSync("src-tauri/Cargo.lock", "utf8");
+const manifest = readFileSync("src-tauri/Cargo.toml", "utf8");
 const entries = lock.split(/(?=^\[\[package\]\])/m).map((text) => {
   const name = text.match(/^name = "([^"]+)"$/m)?.[1];
   const version = text.match(/^version = "([^"]+)"$/m)?.[1];
