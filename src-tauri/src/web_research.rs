@@ -571,10 +571,18 @@ fn html_attribute(tag: &str, name: &str) -> Option<String> {
 fn canonical_url(value: &str) -> String {
     if let Ok(mut url) = Url::parse(value) {
         url.set_fragment(None);
+        // URL hosts are case-insensitive; normalize common tracking parameters
+        // while preserving content-defining query values.
         if url.query().is_some() {
-            let retained: Vec<(String, String)> = url.query_pairs()
-                .filter(|(k,_)| !k.starts_with("utm_") && k != "fbclid" && k != "gclid")
-                .map(|(k,v)| (k.into_owned(),v.into_owned())).collect();
+            let mut retained: Vec<(String, String)> = url.query_pairs()
+                .filter(|(key, _)| {
+                    let key = key.to_ascii_lowercase();
+                    !key.starts_with("utm_")
+                        && !matches!(key.as_str(), "fbclid" | "gclid" | "dclid" | "msclkid" | "yclid")
+                })
+                .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                .collect();
+            retained.sort();
             url.set_query(None);
             if !retained.is_empty() { url.query_pairs_mut().extend_pairs(retained); }
         }
@@ -709,6 +717,18 @@ fn select_relevant_text(text: &str, query: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn canonical_url_ignores_tracking_parameter_case_and_query_order() {
+        assert_eq!(
+            canonical_url("https://example.com/article?b=2&UTM_Source=newsletter&a=1&MSCLKID=abc#top"),
+            canonical_url("https://example.com/article?a=1&b=2")
+        );
+        assert_ne!(
+            canonical_url("https://example.com/article?id=1"),
+            canonical_url("https://example.com/article?id=2")
+        );
+    }
+
     #[test]
     fn research_ranking_splits_hyphenated_query_terms() {
         let mut hits = vec![
