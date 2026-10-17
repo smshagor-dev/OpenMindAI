@@ -17,7 +17,7 @@ use crate::{
     chat::{ChatRepository, Message},
     database::Database,
     sampling::{SamplingProfile, CORE_CHAT_MAX_TOKENS},
-    settings::SettingsRepository,
+    settings::{AppPreferences, SettingsRepository},
 };
 
 const WEB_SEARCH_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
@@ -397,7 +397,7 @@ async fn append_live_web_context(
     // A damaged/unavailable preferences DB must not trigger a network request.
     let allowed = database.lock().ok()
         .and_then(|db| SettingsRepository::new(&db).get_preferences().ok())
-        .is_some_and(|p| p.web_search_enabled && (mode != "research" || p.deep_research_enabled));
+        .is_some_and(|p| web_mode_allowed(&p, mode));
     if !allowed {
         if explicit.is_some() {
             messages.push(json!({
@@ -458,6 +458,11 @@ async fn append_live_web_context(
     }
     messages.push(json!({"role":"system","content":format_search_evidence(&results, mode)}));
     Some(results)
+}
+
+fn web_mode_allowed(preferences: &AppPreferences, mode: &str) -> bool {
+    preferences.web_search_enabled
+        && (mode != "research" || preferences.deep_research_enabled)
 }
 
 /// Explicit request phrases and clear freshness cues in English, Bangla and Russian.
@@ -634,11 +639,13 @@ async fn fetch_public_page_excerpt(url: &str) -> Result<Option<String>, AppError
         addresses.push(address);
     }
     let Some(pinned) = addresses.first().copied() else { return Ok(None) };
-    let page_client = crate::net::with_proxy(
-        Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .resolve(host, pinned)
-    )
+    // Proxy routing would defeat DNS pinning because the proxy resolves the
+    // hostname itself. Public page enrichment therefore uses direct DNS;
+    // if direct access is blocked, search snippets remain available.
+    let page_client = Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .resolve(host, pinned)
         .timeout(std::time::Duration::from_secs(8))
         .build()
         .map_err(|error| AppError::InferenceFailed(format!("page client: {error}")))?;
@@ -1275,6 +1282,19 @@ mod tests {
         assert_eq!(results[0].title, "Example & Result");
         assert_eq!(results[0].url, "https://example.com");
         assert_eq!(results[0].snippet, "Useful live snippet.");
+    }
+
+    #[test]
+    fn privacy_switches_gate_every_online_mode() {
+        let mut preferences = AppPreferences::default();
+        assert!(web_mode_allowed(&preferences, "search"));
+        assert!(web_mode_allowed(&preferences, "research"));
+        preferences.deep_research_enabled = false;
+        assert!(web_mode_allowed(&preferences, "search"));
+        assert!(!web_mode_allowed(&preferences, "research"));
+        preferences.web_search_enabled = false;
+        assert!(!web_mode_allowed(&preferences, "search"));
+        assert!(!web_mode_allowed(&preferences, "research"));
     }
 
     #[test]
