@@ -999,6 +999,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn search_mode_query_removes_internal_instructions() {
+        let input = "[Mode: Web Search]\\nAnswer like a search assistant\\nlatest lunar mission update";
+        assert_eq!(clean_search_query(input), "latest lunar mission update");
+    }
+
+    #[test]
+    fn web_search_requires_explicit_mode_marker() {
+        let plain = vec![json!({"role": "user", "content": "Latest lunar mission update"})];
+        assert_eq!(latest_user_text(&plain).as_deref(), Some("Latest lunar mission update"));
+        // Auto mode selection is provided by the frontend; normal local chats
+        // must not silently trigger outbound web requests.
+        assert!(!plain[0]["content"].as_str().unwrap().contains("[Mode: Web Search]"));
+    }
+
+    #[test]
     fn parses_streaming_delta() {
         let data = r#"{"choices":[{"delta":{"content":"hello"}}]}"#;
         assert_eq!(parse_openai_delta(data).unwrap(), Some("hello".to_string()));
