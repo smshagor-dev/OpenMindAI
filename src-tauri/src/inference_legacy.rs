@@ -657,7 +657,7 @@ fn format_retrieved_source_footer(results: &[WebSearchResult]) -> String {
         // Markdown link destinations must not be split by whitespace or
         // parentheses. Titles are displayed as text, never as raw markup.
         let url = result.url.replace('(', "%28").replace(')', "%29")
-            .replace(' ', "%20").replace('\n', "").replace('\r', "");
+            .replace(' ', "%20").replace(['\n', '\r'], "");
         let title: String = result.title.chars().filter(|c| !c.is_control())
             .take(140).collect::<String>()
             .replace('\\', "\\\\").replace('[', "\\[")
