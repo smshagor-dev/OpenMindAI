@@ -21,9 +21,11 @@ import type {
   Message,
   ModelRecord,
   RuntimeInventory,
+  WebResearchProgressEvent,
 } from "../types";
 import type { AttachmentDraft } from "../lib/chat";
 import { MessageItem } from "./MessageItem";
+import { ResearchProgress } from "./ResearchProgress";
 import { Composer } from "./Composer";
 import type { PreviewTarget } from "./PreviewPanel";
 
@@ -52,6 +54,7 @@ export function ChatView(props: {
   attachments: AttachmentDraft[];
   preferences: AppPreferences | null;
   activity: RealtimeActivity;
+  webProgress: WebResearchProgressEvent | null;
   enterToSend: boolean;
   addFiles: (files: FileList | null) => void;
   removeAttachment: (id: string) => void;
@@ -80,6 +83,10 @@ export function ChatView(props: {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(true);
   const isEmpty = props.messages.length === 0;
+  const liveResearch = props.webProgress?.conversationId === props.conversation?.id
+    && (props.submitting || props.streaming || props.activity.typing)
+    ? props.webProgress
+    : null;
 
   useEffect(() => {
     if (stickToBottom.current) {
@@ -95,6 +102,8 @@ export function ChatView(props: {
     props.activity.typing,
     props.activity.searching,
     props.activity.researching,
+    props.webProgress?.stage,
+    props.webProgress?.completed,
   ]);
 
   const composer = (
@@ -202,7 +211,8 @@ export function ChatView(props: {
             />
           ))
         )}
-        {!isEmpty &&
+        {liveResearch ? <ResearchProgress progress={liveResearch} /> : null}
+        {!isEmpty && !liveResearch &&
         (props.submitting || props.streaming || props.activity.typing || props.activity.searching || props.activity.researching) &&
         props.preferences?.typingIndicatorEnabled ? (
           <div className="activity-row">
