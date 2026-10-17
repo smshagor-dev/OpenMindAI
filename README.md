@@ -40,13 +40,14 @@ v4.0.0 is the maintenance release for the current OpenMindAI 3.x desktop line. I
 | Platform | Package |
 | --- | --- |
 | Android | [Get it on Google Play](https://play.google.com/store/apps/details?id=com.openmindai.mobile) |
+| Android | [Get it on RuStore](https://www.rustore.ru/catalog/app/com.openmindai.mobile) |
 | Linux | [OpenMindAI_4.0.0_amd64.AppImage](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_amd64.AppImage) |
 | Linux | [OpenMindAI_4.0.0_amd64.deb](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_amd64.deb) |
 | macOS | [OpenMindAI-Setup.command](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI-Setup.command) |
 | Windows | [OpenMindAI_4.0.0_x64-setup.exe](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x64-setup.exe) |
 | Windows | [OpenMindAI_4.0.0_x86-setup.exe](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x86-setup.exe) |
 
-The links above point to the published v4.0.0 release assets and the Android app's Google Play listing. macOS installation uses the `.command` setup script; iOS packages and direct mobile APK downloads are not listed here.
+The links above point to the published v4.0.0 release assets and the Android app's Google Play and RuStore listings. macOS installation uses the `.command` setup script; iOS packages and direct mobile APK downloads are not listed here.
 
 `release-output-SHA256SUMS.txt` and platform-specific checksum files, when available, can be found among the release assets.
 
