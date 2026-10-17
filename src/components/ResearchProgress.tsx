@@ -1,11 +1,11 @@
-import { BookOpenText, FilePenLine, Search, ShieldAlert } from "lucide-react";
+import { AlertTriangle, FileSearch, FileText, Search } from "lucide-react";
 import type { WebResearchProgressEvent } from "../types";
 import "../research-progress.css";
 
 const operations = [
   { id: "searching", label: "Find sources", Icon: Search },
-  { id: "reading", label: "Read pages", Icon: BookOpenText },
-  { id: "generating", label: "Write answer", Icon: FilePenLine },
+  { id: "reading", label: "Read pages", Icon: FileSearch },
+  { id: "generating", label: "Write answer", Icon: FileText },
 ] as const;
 
 export function ResearchProgress({ progress }: { progress: WebResearchProgressEvent }) {
@@ -47,7 +47,7 @@ export function ResearchProgress({ progress }: { progress: WebResearchProgressEv
         })}
       </div>
       <p className="research-progress-description">
-        {isStopped ? <ShieldAlert size={14} aria-hidden="true" /> : null}
+        {isStopped ? <AlertTriangle size={14} aria-hidden="true" /> : null}
         {description}
       </p>
       <div className="research-progress-counts">
