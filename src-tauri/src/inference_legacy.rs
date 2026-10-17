@@ -1272,6 +1272,67 @@ mod tests {
     }
 
     #[test]
+    fn citation_passage_audit_accepts_claims_with_relevant_page_text() {
+        let pages = HashMap::from([(
+            1usize,
+            "The GPS denied drone localization experiment used UWB sensors and achieved stable positioning."
+                .to_string(),
+        )]);
+        let answer = "The GPS denied drone localization experiment used UWB sensors [1].";
+        assert!(citation_passage_overlap_warning(answer, &pages).is_none());
+    }
+
+    #[test]
+    fn citation_passage_audit_flags_unrelated_retrieved_page() {
+        let pages = HashMap::from([(
+            1usize,
+            "The GPS denied drone localization experiment used UWB sensors."
+                .to_string(),
+        )]);
+        let warning = citation_passage_overlap_warning(
+            "The Saturn spacecraft launch occurred near Jupiter yesterday [1].",
+            &pages,
+        ).expect("unrelated webpage text should require review");
+        assert!(warning.contains("[1]"));
+        assert!(warning.contains("Review the claim"));
+        assert!(warning.contains("neither verifies nor disproves"));
+    }
+
+    #[test]
+    fn citation_passage_audit_evaluates_each_source_in_group() {
+        let pages = HashMap::from([
+            (1usize, "Drone localization performance improved with UWB positioning.".to_string()),
+            (2usize, "Marine ecosystems support coastal fish biodiversity.".to_string()),
+        ]);
+        let warning = citation_passage_overlap_warning(
+            "Drone localization performance improved with UWB positioning [1, 2].",
+            &pages,
+        ).expect("unrelated second source should be flagged");
+        assert!(warning.contains("[2]"));
+        assert!(!warning.contains("source(s) [1]"));
+    }
+
+    #[test]
+    fn citation_passage_audit_ignores_missing_pages_short_claims_and_code() {
+        let pages = HashMap::from([(
+            1usize,
+            "Drone localization performance improved with UWB positioning.".to_string(),
+        )]);
+        assert!(citation_passage_overlap_warning("Drone localization result [2].", &pages).is_none());
+        assert!(citation_passage_overlap_warning("Good [1].", &pages).is_none());
+        let code = "Documentation `[1]` and [1](https://example.com).\n```rust\nprintln!(\"Saturn Jupiter spacecraft launch [1]\");\n```";
+        assert!(citation_passage_overlap_warning(code, &pages).is_none());
+    }
+
+    #[test]
+    fn citation_passage_audit_skips_empty_evidence() {
+        assert!(citation_passage_overlap_warning(
+            "Saturn Jupiter spacecraft launch [1].", &HashMap::new()
+        ).is_none());
+        assert!(cited_claim_clauses("Drone localization performance improved [1]").len() == 1);
+    }
+
+    #[test]
     fn citation_reference_audit_flags_missing_and_zero_sources() {
         let read = HashSet::from([1, 2, 3]);
         let warning = citation_reference_warning(
