@@ -5,6 +5,10 @@ use super::*;
 use futures_util::{stream, StreamExt};
 use reqwest::{redirect::Policy, Url};
 use serde_json::Value;
+use serde::Serialize;
+use crate::web_provider_config::SearchCredentials;
+use std::sync::{Mutex as StdMutex, OnceLock};
+use std::time::Instant;
 use std::{collections::{HashMap, HashSet}, net::{IpAddr, SocketAddr}, time::Duration};
 
 const BING_HTML: &str = "https://www.bing.com/search";
@@ -17,8 +21,10 @@ const MAX_SOURCES: usize = 12;
 const RESEARCH_PAGES: usize = 8;
 const SEARCH_PAGES: usize = 3;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(9);
+const MAX_PROVIDER_ATTEMPTS: usize = 3;
+const BASE_RETRY_MS: u64 = 250;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Provider { Brave, Google, DuckDuckGo, Bing }
 impl Provider {
     fn name(self) -> &'static str {
@@ -55,13 +61,15 @@ pub(super) async fn gather(
     query: &str,
     mode: &str,
     cancellation: &CancellationToken,
+    preferred: &str,
+    credentials: &SearchCredentials,
 ) -> ResearchEvidence {
     let max_duration = if mode == "research" { 85 } else { 35 };
     tokio::select! {
         _ = cancellation.cancelled() => unavailable("Web retrieval was stopped. No live verification was completed. Do not invent sources."),
         result = tokio::time::timeout(
             Duration::from_secs(max_duration),
-            research_inner(client, query, mode, cancellation)
+            research_inner(client, query, mode, cancellation, preferred, credentials)
         ) => match result {
             Ok(evidence) => evidence,
             Err(_) => unavailable("Web retrieval timed out. State that live verification was incomplete; never invent sources or citations."),
@@ -74,6 +82,8 @@ async fn research_inner(
     query: &str,
     mode: &str,
     cancellation: &CancellationToken,
+    preferred: &str,
+    credentials: &SearchCredentials,
 ) -> ResearchEvidence {
     let mut queries = vec![query.to_string()];
     if mode == "research" {
@@ -81,7 +91,7 @@ async fn research_inner(
         queries.push(format!("{query} independent evidence analysis"));
         queries.push(format!("{query} recent updates criticism"));
     }
-    let providers = configured_providers();
+    let providers = configured_providers(preferred, credentials);
     let mut results: Vec<WebSearchResult> = Vec::new();
     let mut seen = HashSet::new();
     let mut provider_counts = HashMap::<&'static str, usize>::new();
@@ -95,7 +105,7 @@ async fn research_inner(
             if cancellation.is_cancelled() || results.len() >= MAX_SOURCES { break; }
             let search = tokio::select! {
                 _ = cancellation.cancelled() => break,
-                value = search_provider(client, *provider, search_query) => value,
+                value = search_provider_with_retry(client, *provider, search_query, credentials, cancellation) => value,
             };
             match search {
                 Ok(found) if !found.is_empty() => {
@@ -203,17 +213,188 @@ async fn research_inner(
     ResearchEvidence { context: evidence, sources: results }
 }
 
-fn configured_providers() -> Vec<Provider> {
+fn configured_providers(preferred: &str, credentials: &SearchCredentials) -> Vec<Provider> {
     let mut providers = Vec::new();
-    if std::env::var("OPENMINDAI_BRAVE_SEARCH_KEY").is_ok_and(|key| !key.trim().is_empty()) {
-        providers.push(Provider::Brave);
-    }
-    if std::env::var("OPENMINDAI_GOOGLE_CSE_KEY").is_ok_and(|key| !key.trim().is_empty())
-        && std::env::var("OPENMINDAI_GOOGLE_CSE_ID").is_ok_and(|id| !id.trim().is_empty()) {
-        providers.push(Provider::Google);
-    }
+    if credentials.brave_ready() { providers.push(Provider::Brave); }
+    if credentials.google_ready() { providers.push(Provider::Google); }
     providers.extend([Provider::DuckDuckGo, Provider::Bing]);
+    let requested = match preferred {
+        "brave" => Some(Provider::Brave),
+        "google" => Some(Provider::Google),
+        "duckduckgo" => Some(Provider::DuckDuckGo),
+        "bing" => Some(Provider::Bing),
+        _ => None,
+    };
+    if let Some(index) = providers.iter().position(|provider| Some(*provider) == requested) {
+        let selected = providers.remove(index);
+        providers.insert(0, selected);
+    }
     providers
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProviderFailure {
+    Transport,
+    RateLimited(Duration),
+    Denied,
+    Server,
+    Invalid,
+    CoolingDown,
+}
+impl ProviderFailure {
+    fn retryable(self) -> bool { matches!(self, Self::Transport | Self::Server) }
+    fn cooldown(self) -> Option<Duration> {
+        match self {
+            Self::RateLimited(wait) => Some(wait),
+            Self::Denied => Some(Duration::from_secs(90)),
+            Self::Server => Some(Duration::from_secs(12)),
+            _ => None,
+        }
+    }
+    fn status(self) -> &'static str {
+        match self {
+            Self::RateLimited(_) | Self::CoolingDown => "rate_limited",
+            Self::Denied => "blocked",
+            Self::Server | Self::Transport => "unreachable",
+            Self::Invalid => "invalid_response",
+        }
+    }
+}
+static PROVIDER_COOLDOWNS: OnceLock<StdMutex<HashMap<Provider, Instant>>> = OnceLock::new();
+fn cooldowns() -> &'static StdMutex<HashMap<Provider, Instant>> {
+    PROVIDER_COOLDOWNS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+fn is_cooling_down(provider: Provider) -> bool {
+    cooldowns().lock().is_ok_and(|map| map.get(&provider).is_some_and(|until| *until > Instant::now()))
+}
+fn mark_failure(provider: Provider, error: ProviderFailure) {
+    if let Some(wait) = error.cooldown() {
+        if let Ok(mut map) = cooldowns().lock() {
+            map.insert(provider, Instant::now() + wait);
+        }
+    }
+}
+fn clear_failure(provider: Provider) {
+    if let Ok(mut map) = cooldowns().lock() { map.remove(&provider); }
+}
+async fn search_provider_with_retry(
+    client: &Client,
+    provider: Provider,
+    query: &str,
+    credentials: &SearchCredentials,
+    cancellation: &CancellationToken,
+) -> Result<Vec<WebSearchResult>, ProviderFailure> {
+    if is_cooling_down(provider) { return Err(ProviderFailure::CoolingDown); }
+    for attempt in 0..MAX_PROVIDER_ATTEMPTS {
+        let response = tokio::select! {
+            _ = cancellation.cancelled() => return Err(ProviderFailure::Transport),
+            result = tokio::time::timeout(
+                REQUEST_TIMEOUT, search_provider(client, provider, query, credentials)
+            ) => result.unwrap_or(Err(ProviderFailure::Transport)),
+        };
+        match response {
+            Ok(results) => {
+                clear_failure(provider);
+                return Ok(results);
+            }
+            Err(error) => {
+                if !error.retryable() || attempt + 1 == MAX_PROVIDER_ATTEMPTS {
+                    mark_failure(provider, error);
+                    return Err(error);
+                }
+                let backoff = Duration::from_millis(BASE_RETRY_MS * (1u64 << attempt));
+                tokio::select! {
+                    _ = cancellation.cancelled() => return Err(ProviderFailure::Transport),
+                    _ = tokio::time::sleep(backoff) => {},
+                }
+            }
+        }
+    }
+    Err(ProviderFailure::Transport)
+}
+
+async fn provider_text(response: reqwest::Response) -> Result<String, ProviderFailure> {
+    let status = response.status();
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let retry_after = response.headers().get(header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(|secs| Duration::from_secs(secs.clamp(5, 180)))
+            .unwrap_or(Duration::from_secs(45));
+        return Err(ProviderFailure::RateLimited(retry_after));
+    }
+    if matches!(status.as_u16(), 401 | 403) { return Err(ProviderFailure::Denied); }
+    if status.is_server_error() { return Err(ProviderFailure::Server); }
+    if !status.is_success() { return Err(ProviderFailure::Invalid); }
+    response_text(response, SEARCH_BYTES).await.map_err(|_| ProviderFailure::Invalid)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderCheck {
+    pub name: &'static str,
+    pub status: &'static str,
+    pub elapsed_ms: Option<u128>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderHealthReport {
+    pub status: &'static str,
+    pub provider: &'static str,
+    pub providers: Vec<ProviderCheck>,
+}
+impl ProviderHealthReport {
+    pub(crate) fn disabled() -> Self {
+        Self { status: "disabled", provider: "", providers: Vec::new() }
+    }
+}
+pub(crate) async fn probe(
+    client: &Client,
+    preferred: &str,
+    credentials: &SearchCredentials,
+) -> ProviderHealthReport {
+    let enabled = configured_providers(preferred, credentials);
+    let mut checks = Vec::new();
+    let mut first = "";
+    for provider in [Provider::Brave, Provider::Google, Provider::DuckDuckGo, Provider::Bing] {
+        if !enabled.contains(&provider) {
+            checks.push(ProviderCheck { name: provider.name(), status: "unconfigured", elapsed_ms: None });
+            continue;
+        }
+        if is_cooling_down(provider) {
+            checks.push(ProviderCheck { name: provider.name(), status: "rate_limited", elapsed_ms: None });
+            continue;
+        }
+        let started = Instant::now();
+        // A parsed search result is stronger evidence of provider health than
+        // a HEAD/HTTP 200 response, which may only be a bot challenge page.
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            search_provider(client, provider, "OpenMindAI software", credentials),
+        ).await.unwrap_or(Err(ProviderFailure::Transport));
+        let status = match result {
+            Ok(items) if !items.is_empty() => {
+                clear_failure(provider);
+                if first.is_empty() { first = provider.name(); }
+                "healthy"
+            }
+            Ok(_) => "empty_results",
+            Err(error) => {
+                mark_failure(provider, error);
+                error.status()
+            }
+        };
+        checks.push(ProviderCheck {
+            name: provider.name(),
+            status,
+            elapsed_ms: Some(started.elapsed().as_millis()),
+        });
+    }
+    ProviderHealthReport {
+        status: if !first.is_empty() { "online" } else { "restricted" },
+        provider: first,
+        providers: checks,
+    }
 }
 
 async fn search_provider(client: &Client, provider: Provider, query: &str) -> Result<Vec<WebSearchResult>, String> {
