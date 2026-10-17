@@ -664,13 +664,9 @@ fn is_public_ipv6(address: Ipv6Addr) -> bool {
     true
 }
 
-/// Check numbered citation markers against actual search results.
-/// This does not determine whether the cited page supports a factual claim.
-fn citation_reference_warning(answer: &str, source_count: usize) -> Option<String> {
-    if source_count == 0 {
-        return None;
-    }
-    let mut invalid = BTreeSet::new();
+/// Parse model-generated numbered citations, excluding Markdown links and code.
+fn cited_source_numbers(answer: &str) -> BTreeSet<usize> {
+    let mut citations = BTreeSet::new();
     let mut fenced_code = false;
     for line in answer.lines() {
         let trimmed = line.trim_start();
@@ -714,9 +710,7 @@ fn citation_reference_warning(answer: &str, source_count: usize) -> Option<Strin
                     {
                         for reference in references {
                             if let Ok(number) = reference.parse::<usize>() {
-                                if number == 0 || number > source_count {
-                                    invalid.insert(number);
-                                }
+                                citations.insert(number);
                             }
                         }
                     }
@@ -725,19 +719,58 @@ fn citation_reference_warning(answer: &str, source_count: usize) -> Option<Strin
             index = end + 1;
         }
     }
-    if invalid.is_empty() {
+    citations
+}
+
+/// Validate source IDs and identify citations that rely only on search snippets.
+/// Retrieved text indicates inspection, not semantic truth or corroboration.
+fn citation_reference_warning(
+    answer: &str,
+    source_count: usize,
+    read_sources: &HashSet<usize>,
+) -> Option<String> {
+    if source_count == 0 {
         return None;
     }
-    let labels = invalid.iter().take(8).map(|number| format!("[{number}]"))
-        .collect::<Vec<_>>().join(", ");
-    let remainder = if invalid.len() > 8 { " (and others)" } else { "" };
+    let cited = cited_source_numbers(answer);
+    let invalid: BTreeSet<usize> = cited.iter().copied()
+        .filter(|number| *number == 0 || *number > source_count)
+        .collect();
+    let snippets: BTreeSet<usize> = cited.iter().copied()
+        .filter(|number| *number >= 1 && *number <= source_count && !read_sources.contains(number))
+        .collect();
+    if invalid.is_empty() && snippets.is_empty() {
+        return None;
+    }
+    let format_numbers = |numbers: &BTreeSet<usize>| {
+        let labels = numbers.iter().take(8).map(|number| format!("[{number}]"))
+            .collect::<Vec<_>>().join(", ");
+        if numbers.len() > 8 { format!("{labels} (and others)") } else { labels }
+    };
+    let mut warnings = Vec::new();
+    if !invalid.is_empty() {
+        warnings.push(format!(
+            "{} do not match the {} retrieved search results.",
+            format_numbers(&invalid), source_count
+        ));
+    }
+    if !snippets.is_empty() {
+        warnings.push(format!(
+            "{} have search snippets only; the full pages were not retrieved.",
+            format_numbers(&snippets)
+        ));
+    }
     Some(format!(
-        "\n\n> **Citation reference warning:** {labels}{remainder} do not match the {source_count} retrieved source entries. Those inline references are unverified. Source-number checks cannot establish whether any retrieved page supports a factual claim.\n"
+        "\n\n> **Citation evidence warning:** {} A valid source number or retrieved webpage does not prove that the cited source supports its factual claim.\n",
+        warnings.join(" ")
     ))
 }
 
 /// Host-generated citations must not trust model output or source titles.
-fn format_retrieved_source_footer(results: &[WebSearchResult]) -> String {
+fn format_retrieved_source_footer(
+    results: &[WebSearchResult],
+    read_sources: &HashSet<usize>,
+) -> String {
     let mut footer = String::from("\n\n---\nRetrieved web sources (links returned by search providers; not independently fact-checked):\n");
     for (i, result) in results.iter().enumerate() {
         if !is_public_web_url(&result.url) { continue; }
@@ -749,7 +782,12 @@ fn format_retrieved_source_footer(results: &[WebSearchResult]) -> String {
             .take(140).collect::<String>()
             .replace('\\', "\\\\").replace('[', "\\[")
             .replace(']', "\\]").replace('<', "&lt;").replace('>', "&gt;");
-        footer.push_str(&format!("- [{}] [{}]({})\n", i + 1, title, url));
+        let status = if read_sources.contains(&(i + 1)) {
+            "page text retrieved"
+        } else {
+            "search snippet only"
+        };
+        footer.push_str(&format!("- [{}] [{}]({}) — {}\n", i + 1, title, url, status));
     }
     footer
 }
