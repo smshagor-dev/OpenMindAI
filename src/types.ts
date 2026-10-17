@@ -302,6 +302,18 @@ export interface StreamDoneEvent {
   status: Message["status"];
 }
 
+/** Measured progress sent by the local Rust retrieval engine. */
+export interface WebResearchProgressEvent {
+  conversationId: string;
+  messageId: string;
+  mode: "search" | "research";
+  stage: "searching" | "reading" | "generating" | "unavailable" | "stopped";
+  completed: number;
+  total: number;
+  sources: number;
+  pagesRead: number;
+}
+
 export type ArtifactKind = "text" | "markdown" | "code" | "pdf" | "docx" | "image" | "audio" | "video";
 export type ArtifactStatus = "generating" | "ready" | "failed";
 
