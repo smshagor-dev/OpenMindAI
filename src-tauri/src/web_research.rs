@@ -218,9 +218,12 @@ async fn research_inner(
 /// Deterministic source ordering: prioritize query overlap and independent
 /// domains without changing the original provider result metadata.
 fn rank_research_results(results: &mut [WebSearchResult], query: &str) {
-    let terms: HashSet<String> = query.split_whitespace()
-        .map(|s| s.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
-        .filter(|s| s.chars().count() >= 3).collect();
+    let terms: HashSet<String> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .filter(|word| word.chars().count() >= 3)
+        .collect();
     results.sort_by(|a, b| {
         let score = |hit: &WebSearchResult| {
             let haystack: HashSet<String> = format!("{} {}", hit.title, hit.snippet)
@@ -706,6 +709,24 @@ fn select_relevant_text(text: &str, query: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn research_ranking_splits_hyphenated_query_terms() {
+        let mut hits = vec![
+            WebSearchResult {
+                title: "Unrelated overview".into(),
+                url: "https://example.com/a".into(),
+                snippet: "General introduction".into(),
+            },
+            WebSearchResult {
+                title: "GPS denied drone localization".into(),
+                url: "https://example.com/b".into(),
+                snippet: "Research results".into(),
+            },
+        ];
+        rank_research_results(&mut hits, "GPS-denied drone localization");
+        assert_eq!(hits[0].url, "https://example.com/b");
+    }
+
     #[test]
     fn research_ranking_prioritizes_query_matches_and_preserves_ties() {
         let mut hits = vec![
