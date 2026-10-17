@@ -1070,6 +1070,70 @@ mod tests {
         assert!(excerpt.contains("91.5%"), "{excerpt}");
     }
 
+    fn long_research_excerpt(topic: &str) -> String {
+        (0..65).map(|index| format!(
+            "The {topic} analysis recorded sample {index} with observation windows and instrument calibration. "
+        )).collect()
+    }
+
+    #[test]
+    fn research_mirror_review_flags_similar_excerpts_across_different_hosts() {
+        let original = long_research_excerpt("drone localization");
+        let mirror = original.replace("drone localization", "DRONE-localization")
+            .replace("instrument calibration", "instrument  calibration");
+        let sources = vec![
+            WebSearchResult { title: "Original".into(), url: "https://alpha.example/research".into(), snippet: "".into() },
+            WebSearchResult { title: "Independent URL".into(), url: "https://beta.example/syndicated".into(), snippet: "".into() },
+        ];
+        let pages = HashMap::from([
+            (sources[0].url.clone(), original),
+            (sources[1].url.clone(), mirror),
+        ]);
+        assert_eq!(near_duplicate_page_sources(&sources, &pages), HashMap::from([(2, 1)]));
+    }
+
+    #[test]
+    fn research_mirror_review_preserves_ranked_ids_when_a_source_is_unread() {
+        let shared = long_research_excerpt("drone localization");
+        let sources = vec![
+            WebSearchResult { title: "Unread".into(), url: "https://a.example/unread".into(), snippet: "Only snippet".into() },
+            WebSearchResult { title: "First read".into(), url: "https://b.example/one".into(), snippet: "".into() },
+            WebSearchResult { title: "Later mirror".into(), url: "https://c.example/two".into(), snippet: "".into() },
+        ];
+        let pages = HashMap::from([
+            (sources[1].url.clone(), shared.clone()),
+            (sources[2].url.clone(), shared),
+        ]);
+        assert_eq!(near_duplicate_page_sources(&sources, &pages), HashMap::from([(3, 2)]));
+    }
+
+    #[test]
+    fn research_mirror_review_does_not_conflate_different_reports() {
+        let sources = vec![
+            WebSearchResult { title: "First".into(), url: "https://a.example/first".into(), snippet: "".into() },
+            WebSearchResult { title: "Second".into(), url: "https://b.example/second".into(), snippet: "".into() },
+        ];
+        let pages = HashMap::from([
+            (sources[0].url.clone(), long_research_excerpt("aerial navigation")),
+            (sources[1].url.clone(), long_research_excerpt("marine biodiversity")),
+        ]);
+        assert!(near_duplicate_page_sources(&sources, &pages).is_empty());
+    }
+
+    #[test]
+    fn research_mirror_review_does_not_compare_short_snippets_or_boilerplate() {
+        let sources = vec![
+            WebSearchResult { title: "First".into(), url: "https://a.example/first".into(), snippet: "".into() },
+            WebSearchResult { title: "Second".into(), url: "https://b.example/second".into(), snippet: "".into() },
+        ];
+        let tiny = "A short common paragraph repeated by publishers.".to_string();
+        let pages = HashMap::from([
+            (sources[0].url.clone(), tiny.clone()),
+            (sources[1].url.clone(), tiny),
+        ]);
+        assert!(near_duplicate_page_sources(&sources, &pages).is_empty());
+    }
+
     #[test]
     fn research_citation_guidance_requires_claim_specific_support() {
         let guidance = "CITATION GROUNDING: attach source numbers to individual factual claims, not only a references section. Before citing a source, identify the specific supporting statement in its retrieved page text.";
