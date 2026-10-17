@@ -777,6 +777,123 @@ fn citation_reference_warning(
     ))
 }
 
+/// Compare nearby claim wording with the bounded text actually retrieved
+/// for each cited source. A lexical match is NOT proof of factual support;
+/// flag only low-overlap claims for human review.
+fn significant_evidence_terms(value: &str) -> HashSet<String> {
+    value.split(|character: char| !character.is_alphanumeric())
+        .filter(|term| term.chars().count() >= 3)
+        .map(str::to_lowercase)
+        .filter(|term| !matches!(
+            term.as_str(),
+            "the" | "and" | "for" | "but" | "that" | "this" | "with"
+            | "from" | "into" | "were" | "have" | "has" | "had"
+            | "about" | "which" | "their" | "there" | "them" | "they"
+            | "than" | "then" | "when" | "where" | "what" | "who"
+            | "will" | "would" | "could" | "should" | "after" | "before"
+            | "also" | "been" | "being" | "over" | "under" | "between"
+            | "these" | "those" | "more" | "most" | "some" | "such"
+            | "each" | "other" | "only" | "very" | "here" | "said"
+            | "according" | "report" | "reports" | "study" | "studies"
+            | "source" | "sources"
+        ))
+        .take(2500)
+        .collect()
+}
+
+/// Extract source IDs and the preceding clause from the model's prose,
+/// ignoring fenced/inline code and Markdown links.
+fn cited_claim_clauses(answer: &str) -> Vec<(usize, String)> {
+    let mut cited = Vec::new();
+    let mut fenced_code = false;
+    for line in answer.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced_code = !fenced_code;
+            continue;
+        }
+        if fenced_code {
+            continue;
+        }
+        let bytes = line.as_bytes();
+        let mut index = 0;
+        let mut inline_code = false;
+        while index < bytes.len() {
+            if bytes[index] == b'`' {
+                inline_code = !inline_code;
+                index += 1;
+                continue;
+            }
+            if bytes[index] != b'[' || inline_code || (index > 0 && bytes[index - 1] == b'\\') {
+                index += 1;
+                continue;
+            }
+            let start = index + 1;
+            let Some(relative_end) = bytes[start..].iter().position(|&byte| byte == b']') else {
+                index += 1;
+                continue;
+            };
+            let end = start + relative_end;
+            if bytes.get(end + 1) != Some(&b'(') {
+                let marker = &line[index..=end];
+                let references = cited_source_numbers(marker);
+                if !references.is_empty() {
+                    let prefix = &line[..index];
+                    let preceding = prefix.rsplit(['.', '!', '?', ';']).next()
+                        .unwrap_or(prefix).trim();
+                    // Keep only the final clause when a formatted paragraph is long.
+                    let clause = preceding.chars().rev().take(280)
+                        .collect::<String>().chars().rev().collect::<String>();
+                    if significant_evidence_terms(&clause).len() >= 3 {
+                        for reference in references {
+                            cited.push((reference, clause.clone()));
+                        }
+                    }
+                }
+            }
+            index = end + 1;
+        }
+    }
+    cited
+}
+
+/// Low lexical overlap is a request for review, not a verdict about truth.
+/// Snippet-only and invalid identifiers are handled by citation_reference_warning.
+fn citation_passage_overlap_warning(
+    answer: &str,
+    page_texts: &HashMap<usize, String>,
+) -> Option<String> {
+    if page_texts.is_empty() {
+        return None;
+    }
+    let evidence_terms: HashMap<usize, HashSet<String>> = page_texts.iter()
+        .map(|(number, text)| (*number, significant_evidence_terms(text)))
+        .collect();
+    let mut weak = BTreeSet::new();
+    for (number, claim) in cited_claim_clauses(answer) {
+        let Some(page_terms) = evidence_terms.get(&number) else {
+            continue;
+        };
+        let claim_terms = significant_evidence_terms(&claim);
+        if claim_terms.len() < 3 {
+            continue;
+        }
+        let overlap = claim_terms.intersection(page_terms).count();
+        if overlap < 2 {
+            weak.insert(number);
+        }
+    }
+    if weak.is_empty() {
+        return None;
+    }
+    let labels = weak.iter().take(8).map(|number| format!("[{number}]"))
+        .collect::<Vec<_>>().join(", ");
+    let remainder = if weak.len() > 8 { " (and others)" } else { "" };
+    Some(format!(
+        "\n\n> **Evidence overlap warning:** Cited source(s) {labels}{remainder} have retrieved page text, but at least one adjacent claim has little distinctive keyword overlap with that text. Review the claim and source passage manually. Keyword matching neither verifies nor disproves factual support.\n"
+    ))
+}
+
 /// Host-generated citations must not trust model output or source titles.
 fn format_retrieved_source_footer(
     results: &[WebSearchResult],
