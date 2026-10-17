@@ -31,6 +31,15 @@ web search pages otherwise; no paid external AI model is required.
   **not semantic entailment, factual verification, or proof of corroboration**.
   The selected page passages stay in the request's memory for this check and
   are not separately persisted to chat history.
+- A complementary numerical citation audit compares dates, percentages and
+  other explicit numerical values in cited claims with values occurring in
+  each corresponding retrieved page excerpt. Comma-grouped numbers and decimal
+  variants are normalized; code and citations themselves are ignored. When
+  a figure is absent, the app adds a **numerical evidence warning** for
+  manual verification against the original article. Missing excerpt values
+  may be caused by summarization, formatting or incomplete retrieval, while
+  matching values may still be misleading or have different units. This is
+  **not** proof of correctness, numerical entailment or contradiction.
 - Max elapsed retrieval: 35 seconds (search) and 85 seconds (research),
   per-request deadline 9 seconds, concurrent page fetches at most three.
   The user can cancel search while it is running.
