@@ -145,8 +145,8 @@ async fn research_inner(
                 Err(_error) => {
                     // Never log errors with formatted request URLs: legacy Google
                     // API credentials can occur in request query parameters.
-                    tracing::warn!(provider = provider.name(), "web provider unavailable");
-                    errors.push(format!("{} unavailable", provider.name()));
+                    tracing::warn!(provider = provider.name(), status = _error.status(), "web provider unavailable");
+                    errors.push(format!("{} {}", provider.name(), _error.status()));
                 }
             }
         }
@@ -397,55 +397,70 @@ pub(crate) async fn probe(
     }
 }
 
-async fn search_provider(client: &Client, provider: Provider, query: &str) -> Result<Vec<WebSearchResult>, String> {
+async fn search_provider(
+    client: &Client,
+    provider: Provider,
+    query: &str,
+    credentials: &SearchCredentials,
+) -> Result<Vec<WebSearchResult>, ProviderFailure> {
     match provider {
         Provider::DuckDuckGo => {
-            search_web(client, query).await.map_err(|e| e.to_string())
+            let response = client.get(WEB_SEARCH_ENDPOINT).query(&[("q", query)])
+                .header(header::USER_AGENT, WEB_SEARCH_USER_AGENT)
+                .header(header::ACCEPT, "text/html,application/xhtml+xml")
+                .timeout(REQUEST_TIMEOUT).send().await
+                .map_err(|_| ProviderFailure::Transport)?;
+            let html = provider_text(response).await?;
+            Ok(parse_duckduckgo_results(&html))
         }
         Provider::Bing => {
-            // Bing HTML markup and RSS availability vary independently. Try
-            // RSS if the HTML parser is blocked, empty, or changes format.
             let html = async {
                 let response = client.get(BING_HTML).query(&[("q", query)])
                     .header(header::ACCEPT, "text/html")
-                    .timeout(REQUEST_TIMEOUT).send().await.map_err(|e| e.to_string())?;
-                let html = response_text(response, SEARCH_BYTES).await?;
-                Ok::<_, String>(parse_bing(&html))
+                    .timeout(REQUEST_TIMEOUT).send().await
+                    .map_err(|_| ProviderFailure::Transport)?;
+                let html = provider_text(response).await?;
+                Ok::<_, ProviderFailure>(parse_bing(&html))
             }.await;
             match html {
                 Ok(found) if !found.is_empty() => Ok(found),
+                Err(ProviderFailure::RateLimited(delay)) => Err(ProviderFailure::RateLimited(delay)),
+                Err(ProviderFailure::Denied) => Err(ProviderFailure::Denied),
                 _ => search_bing_rss(client, query).await,
             }
         }
         Provider::Brave => {
-            let key = std::env::var("OPENMINDAI_BRAVE_SEARCH_KEY").map_err(|_| "Brave key absent".to_string())?;
+            let key = credentials.brave.as_deref().ok_or(ProviderFailure::Denied)?;
             let response = client.get(BRAVE_JSON)
                 .query(&[("q", query), ("count", "10")])
                 .header("X-Subscription-Token", key)
                 .header(header::ACCEPT, "application/json")
-                .timeout(REQUEST_TIMEOUT).send().await.map_err(|e| e.to_string())?;
-            let raw = response_text(response, SEARCH_BYTES).await?;
-            let data: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+                .timeout(REQUEST_TIMEOUT).send().await
+                .map_err(|_| ProviderFailure::Transport)?;
+            let raw = provider_text(response).await?;
+            let data: Value = serde_json::from_str(&raw).map_err(|_| ProviderFailure::Invalid)?;
             Ok(parse_json_hits(data.pointer("/web/results"), "url", "description"))
         }
         Provider::Google => {
-            let key = std::env::var("OPENMINDAI_GOOGLE_CSE_KEY").map_err(|_| "Google key absent".to_string())?;
-            let cx = std::env::var("OPENMINDAI_GOOGLE_CSE_ID").map_err(|_| "Google CSE ID absent".to_string())?;
+            let key = credentials.google_key.as_deref().ok_or(ProviderFailure::Denied)?;
+            let cx = credentials.google_engine.as_deref().ok_or(ProviderFailure::Denied)?;
             let response = client.get(GOOGLE_JSON)
-                .query(&[("key", key.as_str()), ("cx", cx.as_str()), ("q", query)])
-                .timeout(REQUEST_TIMEOUT).send().await.map_err(|e| e.to_string())?;
-            let raw = response_text(response, SEARCH_BYTES).await?;
-            let data: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+                .query(&[("key", key), ("cx", cx), ("q", query)])
+                .timeout(REQUEST_TIMEOUT).send().await
+                .map_err(|_| ProviderFailure::Transport)?;
+            let raw = provider_text(response).await?;
+            let data: Value = serde_json::from_str(&raw).map_err(|_| ProviderFailure::Invalid)?;
             Ok(parse_json_hits(data.get("items"), "link", "snippet"))
         }
     }
 }
 
-async fn search_bing_rss(client: &Client, query: &str) -> Result<Vec<WebSearchResult>, String> {
+async fn search_bing_rss(client: &Client, query: &str) -> Result<Vec<WebSearchResult>, ProviderFailure> {
     let response = client.get(BING_HTML).query(&[("q", query), ("format", "rss")])
         .header(header::ACCEPT, "application/rss+xml,application/xml,text/xml")
-        .timeout(REQUEST_TIMEOUT).send().await.map_err(|_| "Bing RSS transport unavailable".to_string())?;
-    let xml = response_text(response, SEARCH_BYTES).await?;
+        .timeout(REQUEST_TIMEOUT).send().await
+        .map_err(|_| ProviderFailure::Transport)?;
+    let xml = provider_text(response).await?;
     Ok(parse_bing_rss(&xml))
 }
 
@@ -566,12 +581,14 @@ async fn fetch_readable_page(raw: &str, query: &str) -> Result<Option<PageEviden
     // Reject DNS-resolved private/loopback/link-local addresses, not just IP
     // literals. Reject mixed public/private DNS answers, and pin approved IPs.
     let addresses = public_addresses(host, port).await?;
-    let client = crate::net::with_proxy(
-        Client::builder()
-            .redirect(Policy::none())
-            .resolve_to_addrs(host, &addresses)
-            .timeout(REQUEST_TIMEOUT)
-    ).build().map_err(|e| e.to_string())?;
+    // A proxy can resolve DNS independently and bypass our approved-IP
+    // pinning. Direct-only page enrichment preserves the private-network
+    // boundary; a proxy-only network keeps snippet results without page text.
+    let client = Client::builder().no_proxy()
+        .redirect(Policy::none())
+        .resolve_to_addrs(host, &addresses)
+        .timeout(REQUEST_TIMEOUT)
+        .build().map_err(|_| "page client unavailable".to_string())?;
     let response = client.get(url).header(header::ACCEPT, "text/html,application/xhtml+xml,text/plain")
         .send().await.map_err(|e| e.to_string())?;
     if !response.status().is_success() { return Ok(None); }
