@@ -851,13 +851,17 @@ fn significant_evidence_terms(value: &str) -> HashSet<String> {
 /// boundary. This prevents "87.5% [1]" from becoming just "5% [1]".
 fn claim_clause_before_citation(prefix: &str) -> &str {
     let bytes = prefix.as_bytes();
+    let clause_end = prefix.trim_end().len();
     let mut start = 0;
     for (index, character) in prefix.char_indices() {
         let decimal = character == '.'
             && index > 0
             && bytes[index - 1].is_ascii_digit()
             && bytes.get(index + 1).is_some_and(u8::is_ascii_digit);
-        if matches!(character, '.' | '!' | '?' | ';') && !decimal {
+        if matches!(character, '.' | '!' | '?' | ';')
+            && !decimal
+            && index + character.len_utf8() < clause_end
+        {
             start = index + character.len_utf8();
         }
     }
@@ -985,6 +989,11 @@ fn numeric_evidence_values(text: &str) -> BTreeSet<String> {
             } else {
                 break;
             }
+        }
+        // An earlier citation in a grouped run such as [12][3] is not a
+        // measured quantity in the next cited clause.
+        if start > 0 && bytes[start - 1] == b'[' && bytes.get(index) == Some(&b']') {
+            continue;
         }
         let raw = &text[start..index];
         let percent = bytes.get(index) == Some(&b'%');
@@ -1473,6 +1482,7 @@ mod tests {
         assert_eq!(numeric_evidence_values("1,200"), numeric_evidence_values("1200"));
         assert_eq!(numeric_evidence_values("12,5"), numeric_evidence_values("12.5"));
         assert!(!numeric_evidence_values("Version v4.0.0").contains("0"));
+        assert!(!numeric_evidence_values("Cited refs [12][3]").contains("12"));
         assert!(!numeric_evidence_values("Only one participant").contains("1"));
     }
 
@@ -1487,6 +1497,11 @@ mod tests {
         );
         assert_eq!(cited.len(), 1);
         assert!(cited[0].1.contains("87.5%"));
+        let after_period = cited_claim_clauses(
+            "Earlier sentence. The trial achieved an 87.5% success rate. [1]"
+        );
+        assert_eq!(after_period.len(), 1);
+        assert!(after_period[0].1.contains("87.5%"));
     }
 
     #[test]
