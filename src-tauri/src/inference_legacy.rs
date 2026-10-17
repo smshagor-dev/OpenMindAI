@@ -385,12 +385,13 @@ async fn append_live_web_context(
     cancellation: &CancellationToken,
 ) -> Option<Vec<WebSearchResult>> {
     let user_text = latest_user_text(messages)?;
-    let explicit = if user_text.contains("[Mode: Web Search]") {
+    let prompt = user_search_prompt(&user_text);
+    let explicit = if prompt.contains("[Mode: Web Search]") {
         Some("search")
-    } else if user_text.contains("[Mode: Deep Research]") {
+    } else if prompt.contains("[Mode: Deep Research]") {
         Some("research")
     } else { None };
-    let mode = explicit.or_else(|| detect_web_intent(&user_text))?;
+    let mode = explicit.or_else(|| detect_web_intent(prompt))?;
 
     // A damaged/unavailable preferences DB must not trigger a network request.
     let allowed = database.lock().ok()
@@ -530,11 +531,14 @@ fn latest_user_text(messages: &[serde_json::Value]) -> Option<String> {
     })
 }
 
+fn user_search_prompt(content: &str) -> &str {
+    content.split("\n\n[Attachment:").next().unwrap_or(content)
+}
+
 fn clean_search_query(content: &str) -> String {
     // Never transmit locally extracted attachment content to search providers.
     // The composer serializes every attachment after this exact boundary.
-    let prompt_only = content.split("\n\n[Attachment:").next().unwrap_or(content);
-    prompt_only
+    user_search_prompt(content)
         .lines()
         .filter(|line| {
             let trimmed = line.trim();
@@ -1288,6 +1292,13 @@ mod tests {
         assert_eq!(results[0].title, "Example & Result");
         assert_eq!(results[0].url, "https://example.com");
         assert_eq!(results[0].snippet, "Useful live snippet.");
+    }
+
+    #[test]
+    fn attachments_cannot_trigger_automatic_web_search() {
+        let with_attachment = "Summarize this PDF\n\n[Attachment: notes.pdf, pdf, 3 KB, application/pdf]\nLatest weather today";
+        assert_eq!(detect_web_intent(user_search_prompt(with_attachment)), None);
+        assert_eq!(clean_search_query(with_attachment), "Summarize this PDF");
     }
 
     #[test]
