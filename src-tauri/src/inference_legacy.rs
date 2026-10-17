@@ -980,10 +980,9 @@ fn numeric_evidence_values(text: &str) -> BTreeSet<String> {
         }
         let start = index;
         while index < bytes.len() {
-            if bytes[index].is_ascii_digit() {
-                index += 1;
-            } else if matches!(bytes[index], b'.' | b',')
-                && bytes.get(index + 1).is_some_and(u8::is_ascii_digit)
+            if bytes[index].is_ascii_digit()
+                || (matches!(bytes[index], b'.' | b',')
+                    && bytes.get(index + 1).is_some_and(u8::is_ascii_digit))
             {
                 index += 1;
             } else {
