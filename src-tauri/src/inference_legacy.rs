@@ -67,6 +67,20 @@ pub struct StreamDoneEvent {
     pub status: String,
 }
 
+/// Emitted from real search and webpage retrieval operations, never from timers.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebResearchProgressEvent {
+    pub conversation_id: String,
+    pub message_id: String,
+    pub mode: String,
+    pub stage: String,
+    pub completed: usize,
+    pub total: usize,
+    pub sources: usize,
+    pub pages_read: usize,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InferenceMetrics {
@@ -181,8 +195,15 @@ pub async fn stream_chat_completion(
     if let Some(dataset_context) = request.dataset_context.filter(|value| !value.trim().is_empty()) {
         messages.push(json!({ "role": "system", "content": dataset_context }));
     }
-    let retrieved_web =
-        append_live_web_context(request.client, request.database, &mut messages, &cancellation).await?;
+    let retrieved_web = append_live_web_context(
+        request.client,
+        request.database,
+        &mut messages,
+        &cancellation,
+        request.app,
+        request.conversation_id,
+        &request.assistant.id,
+    ).await?;
     attach_media_to_latest_user_message(&mut messages, request.media)?;
     let mut body = json!({
         "model": request.model,
@@ -405,6 +426,9 @@ async fn append_live_web_context(
     database: &Mutex<Database>,
     messages: &mut Vec<serde_json::Value>,
     cancellation: &CancellationToken,
+    app: &AppHandle,
+    conversation_id: &str,
+    message_id: &str,
 ) -> Result<RetrievedWebContext, AppError> {
     let Some(user_text) = latest_user_text(messages) else {
         return Ok(RetrievedWebContext::default());
@@ -440,9 +464,23 @@ async fn append_live_web_context(
     // OS credential-store failures degrade safely to keyless providers without
     // preventing an otherwise offline-capable local model from answering.
     let credentials = crate::web_provider_config::load_credentials().unwrap_or_default();
+    // UI-only event failures must not break chat completion or web privacy.
+    let on_progress = |progress: web_research::ResearchProgress| {
+        let _ = app.emit("web-research:progress", WebResearchProgressEvent {
+            conversation_id: conversation_id.to_string(),
+            message_id: message_id.to_string(),
+            mode: mode.to_string(),
+            stage: progress.stage.to_string(),
+            completed: progress.completed,
+            total: progress.total,
+            sources: progress.sources,
+            pages_read: progress.pages_read,
+        });
+    };
     let evidence = web_research::gather(
         client, &query, mode, cancellation,
         &preferences.web_search_preferred_provider, &credentials,
+        &on_progress,
     ).await;
     messages.push(json!({ "role": "system", "content": evidence.context }));
     Ok(RetrievedWebContext {
