@@ -45,8 +45,18 @@ jobs:
         with:
           tool: cargo-audit
 
-      - name: Cargo audit
-        run: cargo audit --file src-tauri/Cargo.lock
+      - name: Check temporary legacy ZIP exception scope
+        run: node scripts/check-transitive-zip-audit.mjs
+
+      - name: Cargo audit (documented transitive ZIP exceptions)
+        # ZIP 7/8 are pinned by upstream any-tts/candle-core/docx-rs.
+        # Keep this scoped, expiring exception guarded by the Node check above.
+        # Other advisories must still fail CI.
+        run: |
+          cargo audit --file src-tauri/Cargo.lock \
+            --ignore RUSTSEC-2026-0367 \
+            --ignore RUSTSEC-2026-0368 \
+            --ignore RUSTSEC-2026-0369
 
   codeql:
     name: CodeQL

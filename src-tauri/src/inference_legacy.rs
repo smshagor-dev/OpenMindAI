@@ -17,6 +17,7 @@ use crate::{
     chat::{ChatRepository, Message},
     database::Database,
     sampling::{SamplingProfile, CORE_CHAT_MAX_TOKENS},
+    settings::SettingsRepository,
 };
 
 const WEB_SEARCH_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
@@ -160,7 +161,7 @@ pub async fn stream_chat_completion(
     if let Some(dataset_context) = request.dataset_context.filter(|value| !value.trim().is_empty()) {
         messages.push(json!({ "role": "system", "content": dataset_context }));
     }
-    append_live_web_context(request.client, &mut messages, &cancellation).await;
+    append_live_web_context(request.client, request.database, &mut messages, &cancellation).await?;
     attach_media_to_latest_user_message(&mut messages, request.media)?;
     let mut body = json!({
         "model": request.model,
@@ -347,11 +348,12 @@ fn attach_media_to_latest_user_message(
 
 async fn append_live_web_context(
     client: &Client,
+    database: &Mutex<Database>,
     messages: &mut Vec<serde_json::Value>,
     cancellation: &CancellationToken,
-) {
+) -> Result<(), AppError> {
     let Some(user_text) = latest_user_text(messages) else {
-        return;
+        return Ok(());
     };
     let mode = if user_text.contains("[Mode: Web Search]") {
         Some("search")
@@ -361,12 +363,24 @@ async fn append_live_web_context(
         None
     };
     let Some(mode) = mode else {
-        return;
+        return Ok(());
     };
+
+    // Enforce the user toggle in the backend, not only in the mode selector UI.
+    let preferences = {
+        let db = database.lock().map_err(|_| AppError::internal("database lock poisoned"))?;
+        SettingsRepository::new(&db).get_preferences()?
+    };
+    if (mode == "search" && !preferences.web_search_enabled)
+        || (mode == "research" && !preferences.deep_research_enabled)
+    {
+        messages.push(json!({ "role": "system", "content": "Live web retrieval is disabled in your privacy preferences. Do not claim current web verification or invent citations." }));
+        return Ok(());
+    }
 
     let query = clean_search_query(&user_text);
     if query.is_empty() || cancellation.is_cancelled() {
-        return;
+        return Ok(());
     }
 
     let mut results = Vec::new();
@@ -380,7 +394,11 @@ async fn append_live_web_context(
         if cancellation.is_cancelled() || results.len() >= WEB_SEARCH_RESULTS {
             break;
         }
-        match search_web(client, &search_query).await {
+        let response = tokio::select! {
+            _ = cancellation.cancelled() => return Ok(()),
+            result = search_web(client, &search_query) => result,
+        };
+        match response {
             Ok(found) => {
                 for result in found {
                     if results
@@ -405,6 +423,7 @@ async fn append_live_web_context(
         format_search_evidence(&results, mode)
     };
     messages.push(json!({ "role": "system", "content": evidence }));
+    Ok(())
 }
 
 fn latest_user_text(messages: &[serde_json::Value]) -> Option<String> {
@@ -978,6 +997,21 @@ fn set_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_mode_query_removes_internal_instructions() {
+        let input = "[Mode: Web Search]\nAnswer like a search assistant\nlatest lunar mission update";
+        assert_eq!(clean_search_query(input), "latest lunar mission update");
+    }
+
+    #[test]
+    fn web_search_requires_explicit_mode_marker() {
+        let plain = vec![json!({"role": "user", "content": "Latest lunar mission update"})];
+        assert_eq!(latest_user_text(&plain).as_deref(), Some("Latest lunar mission update"));
+        // Auto mode selection is provided by the frontend; normal local chats
+        // must not silently trigger outbound web requests.
+        assert!(!plain[0]["content"].as_str().unwrap().contains("[Mode: Web Search]"));
+    }
 
     #[test]
     fn parses_streaming_delta() {

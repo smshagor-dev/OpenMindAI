@@ -331,17 +331,20 @@ export function userMessageDisplay(content: string): UserMessageDisplay {
 }
 
 export function inferChatMode(prompt: string, attachments: AttachmentDraft[]): ChatMode {
-  const text = prompt.toLowerCase();
+  const text = prompt.toLowerCase().normalize("NFKC");
   if (attachments.some((attachment) => attachment.mediaItems.length > 0)) return "vision";
   if (attachments.some((attachment) => attachment.kind === "pdf")) return "pdf";
-  if (/\b(web|search|google|latest|today|current|news|source|sources|verify)\b/.test(text))
-    return "search";
+  // Prioritize explicit research intent over generic words such as "search".
   if (
-    /\b(research|deep research|analyze deeply|investigate|market study|literature review)\b/.test(
-      text,
-    )
+    /\b(deep research|analyze deeply|investigate|market study|literature review)\b/.test(text) ||
+    /(গভীর গবেষণা|গবেষণা কর|বিস্তারিত গবেষণা|গবেষণা করে|углублённое исследование|глубокое исследование|исследуй подробно)/u.test(text)
   )
     return "research";
+  if (
+    /\b(web|search|google|latest|today|current|news|sources?|verify|recent|up.to.date|look up|browse|online)\b/.test(text) ||
+    /(খুঁজে|খোঁজ|সার্চ|সার্চ কর|ওয়েব|ওয়েব|ইন্টারনেট|আজকের|আজকে|সর্বশেষ|নতুন খবর|যাচাই কর|অনলাইনে|তথ্য বের কর|খবর|гугл|поиск|найди|поищи|интернет|сегодня|последние новости|проверь|актуальн|онлайн)/u.test(text)
+  )
+    return "search";
   if (/\b(pdf|export pdf|make a pdf|pdf ready)\b/.test(text)) return "pdf";
   if (/\b(document|write a doc|report|proposal|resume|cv|letter|contract|outline)\b/.test(text))
     return "document";
@@ -360,9 +363,7 @@ export function inferChatMode(prompt: string, attachments: AttachmentDraft[]): C
     )
   )
     return "sound";
-  if (
-    /\b(think deeply|reason deeply|reason carefully|step by step|show your reasoning)\b/.test(text)
-  )
+  if (/\b(think deeply|reason deeply|reason carefully|step by step|show your reasoning)\b/.test(text))
     return "thinking";
   return "chat";
 }
