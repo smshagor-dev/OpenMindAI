@@ -703,6 +703,7 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
       confirmBeforeDelete: true,
       webSearchEnabled: true,
       deepResearchEnabled: true,
+      webSearchPreferredProvider: "auto",
       thinkingModeEnabled: true,
       typingIndicatorEnabled: true,
       socketRealtimeEnabled: false,

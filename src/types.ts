@@ -423,6 +423,7 @@ export interface AppPreferences {
   confirmBeforeDelete: boolean;
   webSearchEnabled: boolean;
   deepResearchEnabled: boolean;
+  webSearchPreferredProvider: "auto" | "brave" | "google" | "duckduckgo" | "bing";
   thinkingModeEnabled: boolean;
   typingIndicatorEnabled: boolean;
   socketRealtimeEnabled: boolean;

@@ -5,6 +5,10 @@ use super::*;
 use futures_util::{stream, StreamExt};
 use reqwest::{redirect::Policy, Url};
 use serde_json::Value;
+use serde::Serialize;
+use crate::web_provider_config::SearchCredentials;
+use std::sync::{Mutex as StdMutex, OnceLock};
+use std::time::Instant;
 use std::{collections::{HashMap, HashSet}, net::{IpAddr, SocketAddr}, time::Duration};
 
 const BING_HTML: &str = "https://www.bing.com/search";
@@ -16,9 +20,11 @@ const PAGE_CHARS: usize = 2_200;
 const MAX_SOURCES: usize = 12;
 const RESEARCH_PAGES: usize = 8;
 const SEARCH_PAGES: usize = 3;
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(9);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_PROVIDER_ATTEMPTS: usize = 3;
+const BASE_RETRY_MS: u64 = 250;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Provider { Brave, Google, DuckDuckGo, Bing }
 impl Provider {
     fn name(self) -> &'static str {
@@ -55,13 +61,15 @@ pub(super) async fn gather(
     query: &str,
     mode: &str,
     cancellation: &CancellationToken,
+    preferred: &str,
+    credentials: &SearchCredentials,
 ) -> ResearchEvidence {
     let max_duration = if mode == "research" { 85 } else { 35 };
     tokio::select! {
         _ = cancellation.cancelled() => unavailable("Web retrieval was stopped. No live verification was completed. Do not invent sources."),
         result = tokio::time::timeout(
             Duration::from_secs(max_duration),
-            research_inner(client, query, mode, cancellation)
+            research_inner(client, query, mode, cancellation, preferred, credentials)
         ) => match result {
             Ok(evidence) => evidence,
             Err(_) => unavailable("Web retrieval timed out. State that live verification was incomplete; never invent sources or citations."),
@@ -74,6 +82,8 @@ async fn research_inner(
     query: &str,
     mode: &str,
     cancellation: &CancellationToken,
+    preferred: &str,
+    credentials: &SearchCredentials,
 ) -> ResearchEvidence {
     let mut queries = vec![query.to_string()];
     if mode == "research" {
@@ -81,7 +91,7 @@ async fn research_inner(
         queries.push(format!("{query} independent evidence analysis"));
         queries.push(format!("{query} recent updates criticism"));
     }
-    let providers = configured_providers();
+    let providers = configured_providers(preferred, credentials);
     let mut results: Vec<WebSearchResult> = Vec::new();
     let mut seen = HashSet::new();
     let mut provider_counts = HashMap::<&'static str, usize>::new();
@@ -95,7 +105,7 @@ async fn research_inner(
             if cancellation.is_cancelled() || results.len() >= MAX_SOURCES { break; }
             let search = tokio::select! {
                 _ = cancellation.cancelled() => break,
-                value = search_provider(client, *provider, search_query) => value,
+                value = search_provider_with_retry(client, *provider, search_query, credentials, cancellation) => value,
             };
             match search {
                 Ok(found) if !found.is_empty() => {
@@ -135,8 +145,8 @@ async fn research_inner(
                 Err(_error) => {
                     // Never log errors with formatted request URLs: legacy Google
                     // API credentials can occur in request query parameters.
-                    tracing::warn!(provider = provider.name(), "web provider unavailable");
-                    errors.push(format!("{} unavailable", provider.name()));
+                    tracing::warn!(provider = provider.name(), status = _error.status(), "web provider unavailable");
+                    errors.push(format!("{} {}", provider.name(), _error.status()));
                 }
             }
         }
@@ -203,68 +213,257 @@ async fn research_inner(
     ResearchEvidence { context: evidence, sources: results }
 }
 
-fn configured_providers() -> Vec<Provider> {
+fn configured_providers(preferred: &str, credentials: &SearchCredentials) -> Vec<Provider> {
     let mut providers = Vec::new();
-    if std::env::var("OPENMINDAI_BRAVE_SEARCH_KEY").is_ok_and(|key| !key.trim().is_empty()) {
-        providers.push(Provider::Brave);
-    }
-    if std::env::var("OPENMINDAI_GOOGLE_CSE_KEY").is_ok_and(|key| !key.trim().is_empty())
-        && std::env::var("OPENMINDAI_GOOGLE_CSE_ID").is_ok_and(|id| !id.trim().is_empty()) {
-        providers.push(Provider::Google);
-    }
+    if credentials.brave_ready() { providers.push(Provider::Brave); }
+    if credentials.google_ready() { providers.push(Provider::Google); }
     providers.extend([Provider::DuckDuckGo, Provider::Bing]);
+    let requested = match preferred {
+        "brave" => Some(Provider::Brave),
+        "google" => Some(Provider::Google),
+        "duckduckgo" => Some(Provider::DuckDuckGo),
+        "bing" => Some(Provider::Bing),
+        _ => None,
+    };
+    if let Some(index) = providers.iter().position(|provider| Some(*provider) == requested) {
+        let selected = providers.remove(index);
+        providers.insert(0, selected);
+    }
     providers
 }
 
-async fn search_provider(client: &Client, provider: Provider, query: &str) -> Result<Vec<WebSearchResult>, String> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProviderFailure {
+    Transport,
+    RateLimited(Duration),
+    Denied,
+    Server,
+    Invalid,
+ }
+impl ProviderFailure {
+    fn retryable(self) -> bool { matches!(self, Self::Transport | Self::Server) }
+    fn cooldown(self) -> Option<Duration> {
+        match self {
+            Self::RateLimited(wait) => Some(wait),
+            Self::Denied => Some(Duration::from_secs(90)),
+            Self::Server => Some(Duration::from_secs(12)),
+            Self::Transport => Some(Duration::from_secs(8)),
+            _ => None,
+        }
+    }
+    fn status(self) -> &'static str {
+        match self {
+            Self::RateLimited(_) => "rate_limited",
+            Self::Denied => "blocked",
+            Self::Server | Self::Transport => "unreachable",
+            Self::Invalid => "invalid_response",
+        }
+    }
+}
+static PROVIDER_COOLDOWNS: OnceLock<StdMutex<HashMap<Provider, (Instant, ProviderFailure)>>> = OnceLock::new();
+fn cooldowns() -> &'static StdMutex<HashMap<Provider, (Instant, ProviderFailure)>> {
+    PROVIDER_COOLDOWNS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+fn cooling_reason(provider: Provider) -> Option<ProviderFailure> {
+    cooldowns().lock().ok().and_then(|map| map.get(&provider)
+        .and_then(|(until, error)| (*until > Instant::now()).then_some(*error)))
+}
+fn mark_failure(provider: Provider, error: ProviderFailure) {
+    if let Some(wait) = error.cooldown() {
+        if let Ok(mut map) = cooldowns().lock() {
+            map.insert(provider, (Instant::now() + wait, error));
+        }
+    }
+}
+fn clear_failure(provider: Provider) {
+    if let Ok(mut map) = cooldowns().lock() { map.remove(&provider); }
+}
+async fn search_provider_with_retry(
+    client: &Client,
+    provider: Provider,
+    query: &str,
+    credentials: &SearchCredentials,
+    cancellation: &CancellationToken,
+) -> Result<Vec<WebSearchResult>, ProviderFailure> {
+    if let Some(reason) = cooling_reason(provider) { return Err(reason); }
+    for attempt in 0..MAX_PROVIDER_ATTEMPTS {
+        let response = tokio::select! {
+            _ = cancellation.cancelled() => return Err(ProviderFailure::Transport),
+            result = tokio::time::timeout(
+                REQUEST_TIMEOUT, search_provider(client, provider, query, credentials)
+            ) => result.unwrap_or(Err(ProviderFailure::Transport)),
+        };
+        match response {
+            Ok(results) => {
+                clear_failure(provider);
+                return Ok(results);
+            }
+            Err(error) => {
+                if !error.retryable() || attempt + 1 == MAX_PROVIDER_ATTEMPTS {
+                    mark_failure(provider, error);
+                    return Err(error);
+                }
+                let backoff = Duration::from_millis(BASE_RETRY_MS * (1u64 << attempt));
+                tokio::select! {
+                    _ = cancellation.cancelled() => return Err(ProviderFailure::Transport),
+                    _ = tokio::time::sleep(backoff) => {},
+                }
+            }
+        }
+    }
+    Err(ProviderFailure::Transport)
+}
+
+async fn provider_text(response: reqwest::Response) -> Result<String, ProviderFailure> {
+    let status = response.status();
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let retry_after = response.headers().get(header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(|secs| Duration::from_secs(secs.clamp(5, 180)))
+            .unwrap_or(Duration::from_secs(45));
+        return Err(ProviderFailure::RateLimited(retry_after));
+    }
+    if matches!(status.as_u16(), 401 | 403) { return Err(ProviderFailure::Denied); }
+    if status.is_server_error() { return Err(ProviderFailure::Server); }
+    if !status.is_success() { return Err(ProviderFailure::Invalid); }
+    response_text(response, SEARCH_BYTES).await.map_err(|_| ProviderFailure::Invalid)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderCheck {
+    pub name: &'static str,
+    pub status: &'static str,
+    pub elapsed_ms: Option<u128>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderHealthReport {
+    pub status: &'static str,
+    pub provider: &'static str,
+    pub providers: Vec<ProviderCheck>,
+}
+impl ProviderHealthReport {
+    pub(crate) fn disabled() -> Self {
+        Self { status: "disabled", provider: "", providers: Vec::new() }
+    }
+}
+pub(crate) async fn probe(
+    client: &Client,
+    preferred: &str,
+    credentials: &SearchCredentials,
+) -> ProviderHealthReport {
+    let enabled = configured_providers(preferred, credentials);
+    let mut checks = Vec::new();
+    let mut first = "";
+    for provider in [Provider::Brave, Provider::Google, Provider::DuckDuckGo, Provider::Bing] {
+        if !enabled.contains(&provider) {
+            checks.push(ProviderCheck { name: provider.name(), status: "unconfigured", elapsed_ms: None });
+            continue;
+        }
+        if let Some(reason) = cooling_reason(provider) {
+            checks.push(ProviderCheck { name: provider.name(), status: reason.status(), elapsed_ms: None });
+            continue;
+        }
+        let started = Instant::now();
+        // A parsed search result is stronger evidence of provider health than
+        // a HEAD/HTTP 200 response, which may only be a bot challenge page.
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            search_provider(client, provider, "OpenMindAI software", credentials),
+        ).await.unwrap_or(Err(ProviderFailure::Transport));
+        let status = match result {
+            Ok(items) if !items.is_empty() => {
+                clear_failure(provider);
+                if first.is_empty() { first = provider.name(); }
+                "healthy"
+            }
+            Ok(_) => "empty_results",
+            Err(error) => {
+                mark_failure(provider, error);
+                error.status()
+            }
+        };
+        checks.push(ProviderCheck {
+            name: provider.name(),
+            status,
+            elapsed_ms: Some(started.elapsed().as_millis()),
+        });
+    }
+    let checked = checks.iter().filter(|p| p.status != "unconfigured").collect::<Vec<_>>();
+    let offline = !checked.is_empty() && checked.iter().all(|p| p.status == "unreachable");
+    ProviderHealthReport {
+        status: if !first.is_empty() { "online" } else if offline { "offline" } else { "restricted" },
+        provider: first,
+        providers: checks,
+    }
+}
+
+async fn search_provider(
+    client: &Client,
+    provider: Provider,
+    query: &str,
+    credentials: &SearchCredentials,
+) -> Result<Vec<WebSearchResult>, ProviderFailure> {
     match provider {
         Provider::DuckDuckGo => {
-            search_web(client, query).await.map_err(|e| e.to_string())
+            let response = client.get(WEB_SEARCH_ENDPOINT).query(&[("q", query)])
+                .header(header::USER_AGENT, WEB_SEARCH_USER_AGENT)
+                .header(header::ACCEPT, "text/html,application/xhtml+xml")
+                .timeout(REQUEST_TIMEOUT).send().await
+                .map_err(|_| ProviderFailure::Transport)?;
+            let html = provider_text(response).await?;
+            Ok(parse_duckduckgo_results(&html))
         }
         Provider::Bing => {
-            // Bing HTML markup and RSS availability vary independently. Try
-            // RSS if the HTML parser is blocked, empty, or changes format.
             let html = async {
                 let response = client.get(BING_HTML).query(&[("q", query)])
                     .header(header::ACCEPT, "text/html")
-                    .timeout(REQUEST_TIMEOUT).send().await.map_err(|e| e.to_string())?;
-                let html = response_text(response, SEARCH_BYTES).await?;
-                Ok::<_, String>(parse_bing(&html))
+                    .timeout(REQUEST_TIMEOUT).send().await
+                    .map_err(|_| ProviderFailure::Transport)?;
+                let html = provider_text(response).await?;
+                Ok::<_, ProviderFailure>(parse_bing(&html))
             }.await;
             match html {
                 Ok(found) if !found.is_empty() => Ok(found),
+                Err(ProviderFailure::RateLimited(delay)) => Err(ProviderFailure::RateLimited(delay)),
+                Err(ProviderFailure::Denied) => Err(ProviderFailure::Denied),
                 _ => search_bing_rss(client, query).await,
             }
         }
         Provider::Brave => {
-            let key = std::env::var("OPENMINDAI_BRAVE_SEARCH_KEY").map_err(|_| "Brave key absent".to_string())?;
+            let key = credentials.brave.as_deref().ok_or(ProviderFailure::Denied)?;
             let response = client.get(BRAVE_JSON)
                 .query(&[("q", query), ("count", "10")])
                 .header("X-Subscription-Token", key)
                 .header(header::ACCEPT, "application/json")
-                .timeout(REQUEST_TIMEOUT).send().await.map_err(|e| e.to_string())?;
-            let raw = response_text(response, SEARCH_BYTES).await?;
-            let data: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+                .timeout(REQUEST_TIMEOUT).send().await
+                .map_err(|_| ProviderFailure::Transport)?;
+            let raw = provider_text(response).await?;
+            let data: Value = serde_json::from_str(&raw).map_err(|_| ProviderFailure::Invalid)?;
             Ok(parse_json_hits(data.pointer("/web/results"), "url", "description"))
         }
         Provider::Google => {
-            let key = std::env::var("OPENMINDAI_GOOGLE_CSE_KEY").map_err(|_| "Google key absent".to_string())?;
-            let cx = std::env::var("OPENMINDAI_GOOGLE_CSE_ID").map_err(|_| "Google CSE ID absent".to_string())?;
+            let key = credentials.google_key.as_deref().ok_or(ProviderFailure::Denied)?;
+            let cx = credentials.google_engine.as_deref().ok_or(ProviderFailure::Denied)?;
             let response = client.get(GOOGLE_JSON)
-                .query(&[("key", key.as_str()), ("cx", cx.as_str()), ("q", query)])
-                .timeout(REQUEST_TIMEOUT).send().await.map_err(|e| e.to_string())?;
-            let raw = response_text(response, SEARCH_BYTES).await?;
-            let data: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+                .query(&[("key", key), ("cx", cx), ("q", query)])
+                .timeout(REQUEST_TIMEOUT).send().await
+                .map_err(|_| ProviderFailure::Transport)?;
+            let raw = provider_text(response).await?;
+            let data: Value = serde_json::from_str(&raw).map_err(|_| ProviderFailure::Invalid)?;
             Ok(parse_json_hits(data.get("items"), "link", "snippet"))
         }
     }
 }
 
-async fn search_bing_rss(client: &Client, query: &str) -> Result<Vec<WebSearchResult>, String> {
+async fn search_bing_rss(client: &Client, query: &str) -> Result<Vec<WebSearchResult>, ProviderFailure> {
     let response = client.get(BING_HTML).query(&[("q", query), ("format", "rss")])
         .header(header::ACCEPT, "application/rss+xml,application/xml,text/xml")
-        .timeout(REQUEST_TIMEOUT).send().await.map_err(|_| "Bing RSS transport unavailable".to_string())?;
-    let xml = response_text(response, SEARCH_BYTES).await?;
+        .timeout(REQUEST_TIMEOUT).send().await
+        .map_err(|_| ProviderFailure::Transport)?;
+    let xml = provider_text(response).await?;
     Ok(parse_bing_rss(&xml))
 }
 
@@ -385,12 +584,14 @@ async fn fetch_readable_page(raw: &str, query: &str) -> Result<Option<PageEviden
     // Reject DNS-resolved private/loopback/link-local addresses, not just IP
     // literals. Reject mixed public/private DNS answers, and pin approved IPs.
     let addresses = public_addresses(host, port).await?;
-    let client = crate::net::with_proxy(
-        Client::builder()
-            .redirect(Policy::none())
-            .resolve_to_addrs(host, &addresses)
-            .timeout(REQUEST_TIMEOUT)
-    ).build().map_err(|e| e.to_string())?;
+    // A proxy can resolve DNS independently and bypass our approved-IP
+    // pinning. Direct-only page enrichment preserves the private-network
+    // boundary; a proxy-only network keeps snippet results without page text.
+    let client = Client::builder().no_proxy()
+        .redirect(Policy::none())
+        .resolve_to_addrs(host, &addresses)
+        .timeout(REQUEST_TIMEOUT)
+        .build().map_err(|_| "page client unavailable".to_string())?;
     let response = client.get(url).header(header::ACCEPT, "text/html,application/xhtml+xml,text/plain")
         .send().await.map_err(|e| e.to_string())?;
     if !response.status().is_success() { return Ok(None); }
@@ -484,6 +685,43 @@ fn select_relevant_text(text: &str, query: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn prefers_requested_available_provider_but_keeps_fallbacks() {
+        let empty = SearchCredentials::default();
+        let providers = configured_providers("bing", &empty);
+        assert_eq!(providers, vec![Provider::Bing, Provider::DuckDuckGo]);
+        let providers = configured_providers("brave", &empty);
+        assert_eq!(providers, vec![Provider::DuckDuckGo, Provider::Bing]);
+        let with_key = SearchCredentials { brave: Some("test-only".into()), ..Default::default() };
+        assert_eq!(configured_providers("brave", &with_key)[0], Provider::Brave);
+    }
+
+    #[test]
+    fn distinguishes_retryable_failure_and_rate_limit_cooldown() {
+        assert!(ProviderFailure::Transport.retryable());
+        assert!(ProviderFailure::Server.retryable());
+        assert!(!ProviderFailure::Denied.retryable());
+        assert!(!ProviderFailure::RateLimited(Duration::from_secs(60)).retryable());
+        assert_eq!(ProviderFailure::RateLimited(Duration::from_secs(60)).cooldown(), Some(Duration::from_secs(60)));
+    }
+
+    #[tokio::test]
+    async fn provider_response_honors_retry_after_without_exposing_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 2048];
+            let _ = socket.read(&mut request).await;
+            socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 66\r\nContent-Length: 13\r\nConnection: close\r\n\r\nsecret-info!!").await.unwrap();
+        });
+        let client = Client::builder().no_proxy().build().unwrap();
+        let response = client.get(format!("http://{addr}/test")).send().await.unwrap();
+        assert_eq!(provider_text(response).await.unwrap_err(), ProviderFailure::RateLimited(Duration::from_secs(66)));
+        server.await.unwrap();
+    }
+
     #[test]
     fn brave_and_google_json_keep_only_public_urls() {
         let json = json!([{"title":"Safe", "url":"https://example.com/article", "description":"Evidence"},
