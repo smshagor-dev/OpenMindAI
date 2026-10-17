@@ -222,11 +222,19 @@ async fn search_provider(client: &Client, provider: Provider, query: &str) -> Re
             search_web(client, query).await.map_err(|e| e.to_string())
         }
         Provider::Bing => {
-            let response = client.get(BING_HTML).query(&[("q", query)])
-                .header(header::ACCEPT, "text/html")
-                .timeout(REQUEST_TIMEOUT).send().await.map_err(|e| e.to_string())?;
-            let html = response_text(response, SEARCH_BYTES).await?;
-            Ok(parse_bing(&html))
+            // Bing HTML markup and RSS availability vary independently. Try
+            // RSS if the HTML parser is blocked, empty, or changes format.
+            let html = async {
+                let response = client.get(BING_HTML).query(&[("q", query)])
+                    .header(header::ACCEPT, "text/html")
+                    .timeout(REQUEST_TIMEOUT).send().await.map_err(|e| e.to_string())?;
+                let html = response_text(response, SEARCH_BYTES).await?;
+                Ok::<_, String>(parse_bing(&html))
+            }.await;
+            match html {
+                Ok(found) if !found.is_empty() => Ok(found),
+                _ => search_bing_rss(client, query).await,
+            }
         }
         Provider::Brave => {
             let key = std::env::var("OPENMINDAI_BRAVE_SEARCH_KEY").map_err(|_| "Brave key absent".to_string())?;
@@ -250,6 +258,46 @@ async fn search_provider(client: &Client, provider: Provider, query: &str) -> Re
             Ok(parse_json_hits(data.get("items"), "link", "snippet"))
         }
     }
+}
+
+async fn search_bing_rss(client: &Client, query: &str) -> Result<Vec<WebSearchResult>, String> {
+    let response = client.get(BING_HTML).query(&[("q", query), ("format", "rss")])
+        .header(header::ACCEPT, "application/rss+xml,application/xml,text/xml")
+        .timeout(REQUEST_TIMEOUT).send().await.map_err(|_| "Bing RSS transport unavailable".to_string())?;
+    let xml = response_text(response, SEARCH_BYTES).await?;
+    Ok(parse_bing_rss(&xml))
+}
+
+fn parse_bing_rss(xml: &str) -> Vec<WebSearchResult> {
+    let mut results = Vec::new();
+    let mut seen = HashSet::new();
+    for block in xml.split("<item>").skip(1).take(WEB_SEARCH_RESULTS * 3) {
+        let entry = block.split("</item>").next().unwrap_or("");
+        let title = extract_rss_text(entry, "title");
+        let url = extract_rss_text(entry, "link");
+        let snippet = extract_rss_text(entry, "description");
+        if !title.is_empty() && is_public_web_url(&url) && seen.insert(canonical_url(&url)) {
+            results.push(WebSearchResult { title, url, snippet });
+        }
+        if results.len() >= WEB_SEARCH_RESULTS { break; }
+    }
+    results
+}
+
+fn extract_rss_text(xml: &str, name: &str) -> String {
+    let open = format!("<{name}>");
+    let close = format!("</{name}>");
+    let Some(from) = xml.find(&open).map(|index| index + open.len()) else {
+        return String::new();
+    };
+    let Some(to) = xml[from..].find(&close).map(|index| from + index) else {
+        return String::new();
+    };
+    let raw = xml[from..to].trim();
+    let value = raw.strip_prefix("<![CDATA[")
+        .and_then(|inner| inner.strip_suffix("]]>"))
+        .unwrap_or(raw);
+    clean_html_text(value).chars().take(600).collect()
 }
 
 fn parse_json_hits(items: Option<&Value>, link: &str, summary: &str) -> Vec<WebSearchResult> {
@@ -444,6 +492,16 @@ mod tests {
         assert_eq!(r.len(),1);
         assert_eq!(r[0].title,"Safe");
     }
+    #[test]
+    fn bing_rss_fallback_yields_public_links_only() {
+        let feed = r#"<rss><channel><item><title><![CDATA[Valid &amp; Verified]]></title><link>https://example.org/study</link><description>Research &amp; data</description></item><item><title>Invalid</title><link>http://127.0.0.1/secret</link><description>private</description></item></channel></rss>"#;
+        let items = parse_bing_rss(feed);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title, "Valid & Verified");
+        assert_eq!(items[0].url, "https://example.org/study");
+        assert_eq!(items[0].snippet, "Research & data");
+    }
+
     #[test]
     fn bing_html_extracts_only_result_links() {
         let html = r#"<li class="b_algo"><h2><a href="https://example.org/a">Example</a></h2><p>Useful report</p></li>"#;
