@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::Mutex,
     time::Instant,
@@ -197,6 +197,7 @@ pub async fn stream_chat_completion(
     let mut sse_buffer = String::new();
     let mut flush_buffer = String::new();
     let mut ui_buffer = String::new();
+    let mut generated_answer = String::new();
     let mut generated_chars = 0;
     let mut first_token_at = None;
     let mut status = "completed";
@@ -227,6 +228,9 @@ pub async fn stream_chat_completion(
                     }
                     first_token_at.get_or_insert_with(|| started.elapsed().as_millis());
                     generated_chars += token.chars().count();
+                    if !retrieved_sources.is_empty() {
+                        generated_answer.push_str(&token);
+                    }
                     flush_buffer.push_str(&token);
                     ui_buffer.push_str(&token);
 
@@ -245,6 +249,11 @@ pub async fn stream_chat_completion(
     // host-generated list of actual retrieved links to the same saved reply.
     // Never append sources on a cancelled or incomplete generation.
     if status == "completed" && !cancellation.is_cancelled() && !retrieved_sources.is_empty() {
+        if let Some(warning) = citation_reference_warning(&generated_answer, retrieved_sources.len()) {
+            generated_chars += warning.chars().count();
+            ui_buffer.push_str(&warning);
+            flush_buffer.push_str(&warning);
+        }
         let footer = format_retrieved_source_footer(&retrieved_sources);
         generated_chars += footer.chars().count();
         ui_buffer.push_str(&footer);
@@ -638,6 +647,78 @@ fn is_public_ipv6(address: Ipv6Addr) -> bool {
     true
 }
 
+/// Check numbered citation markers against actual search results.
+/// This does not determine whether the cited page supports a factual claim.
+fn citation_reference_warning(answer: &str, source_count: usize) -> Option<String> {
+    if source_count == 0 {
+        return None;
+    }
+    let mut invalid = BTreeSet::new();
+    let mut fenced_code = false;
+    for line in answer.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced_code = !fenced_code;
+            continue;
+        }
+        if fenced_code {
+            continue;
+        }
+        let bytes = line.as_bytes();
+        let mut index = 0;
+        let mut inline_code = false;
+        while index < bytes.len() {
+            if bytes[index] == b'`' {
+                inline_code = !inline_code;
+                index += 1;
+                continue;
+            }
+            if bytes[index] != b'[' || inline_code || (index > 0 && bytes[index - 1] == b'\\') {
+                index += 1;
+                continue;
+            }
+            let start = index + 1;
+            let Some(relative_end) = bytes[start..].iter().position(|&byte| byte == b']') else {
+                index += 1;
+                continue;
+            };
+            let end = start + relative_end;
+            // Avoid confusing Markdown links and lengthy labels with citations.
+            if end - start <= 24 && bytes.get(end + 1) != Some(&b'(') {
+                if let Ok(value) = std::str::from_utf8(&bytes[start..end]) {
+                    let references: Vec<&str> = value.split(',').map(str::trim).collect();
+                    if !references.is_empty()
+                        && references.len() <= 5
+                        && references.iter().all(|part| {
+                            !part.is_empty()
+                                && part.len() <= 3
+                                && part.bytes().all(|byte| byte.is_ascii_digit())
+                        })
+                    {
+                        for reference in references {
+                            if let Ok(number) = reference.parse::<usize>() {
+                                if number == 0 || number > source_count {
+                                    invalid.insert(number);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            index = end + 1;
+        }
+    }
+    if invalid.is_empty() {
+        return None;
+    }
+    let labels = invalid.iter().take(8).map(|number| format!("[{number}]"))
+        .collect::<Vec<_>>().join(", ");
+    let remainder = if invalid.len() > 8 { " (and others)" } else { "" };
+    Some(format!(
+        "\n\n> **Citation reference warning:** {labels}{remainder} do not match the {source_count} retrieved source entries. Those inline references are unverified. Source-number checks cannot establish whether any retrieved page supports a factual claim.\n"
+    ))
+}
+
 /// Host-generated citations must not trust model output or source titles.
 fn format_retrieved_source_footer(results: &[WebSearchResult]) -> String {
     let mut footer = String::from("\n\n---\nRetrieved web sources (links returned by search providers; not independently fact-checked):\n");
@@ -1005,6 +1086,33 @@ mod tests {
         // Auto mode selection is provided by the frontend; normal local chats
         // must not silently trigger outbound web requests.
         assert!(!plain[0]["content"].as_str().unwrap().contains("[Mode: Web Search]"));
+    }
+
+    #[test]
+    fn citation_reference_audit_flags_missing_and_zero_sources() {
+        let warning = citation_reference_warning(
+            "Evidence [1, 3] supports this, but [9] and [0] are unavailable. [9]", 3,
+        ).expect("invalid references should be reported");
+        assert!(warning.contains("[0]"));
+        assert!(warning.contains("[9]"));
+        assert!(!warning.contains("[3],"));
+        assert!(citation_reference_warning("Sources [1], [2] and [3]", 3).is_none());
+    }
+
+    #[test]
+    fn citation_reference_audit_ignores_code_and_markdown_links() {
+        let answer = "Valid [1] and [Example](https://example.com).\n";
+        let answer = format!(
+            "{answer}`[99]`\n```\nlet citations = \"[99]\";\n```\n[99](https://example.org) and [2026]"
+        );
+        assert!(citation_reference_warning(&answer, 1).is_none());
+    }
+
+    #[test]
+    fn citation_reference_audit_accepts_multiple_reference_groups() {
+        assert!(citation_reference_warning("Report [1, 2] and [2][3]", 3).is_none());
+        assert!(citation_reference_warning("No web citations here.", 3).is_none());
+        assert!(citation_reference_warning("Unexpected [5].", 0).is_none());
     }
 
     #[test]
