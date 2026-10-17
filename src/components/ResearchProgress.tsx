@@ -1,4 +1,4 @@
-import { AlertTriangle, FileSearch, FileText, Search } from "lucide-react";
+import { FileSearch, FileText, Search } from "lucide-react";
 import type { WebResearchProgressEvent } from "../types";
 import "../research-progress.css";
 
@@ -47,7 +47,7 @@ export function ResearchProgress({ progress }: { progress: WebResearchProgressEv
         })}
       </div>
       <p className="research-progress-description">
-        {isStopped ? <AlertTriangle size={14} aria-hidden="true" /> : null}
+        {isStopped ? <FileSearch size={14} aria-hidden="true" /> : null}
         {description}
       </p>
       <div className="research-progress-counts">
