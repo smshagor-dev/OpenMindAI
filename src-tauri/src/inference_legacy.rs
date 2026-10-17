@@ -681,7 +681,7 @@ fn extract_page_text(html: &str) -> String {
         let tag = lower[start + 1..end - 1].trim();
         let skipped = ["script", "style", "head", "noscript", "svg", "nav", "footer"];
         if let Some(name) = skipped.iter().find(|name| {
-            tag == *name || tag.starts_with(&format!("{name} "))
+            tag == **name || tag.starts_with(&format!("{name} "))
         }) {
             let close_tag = format!("</{name}>");
             if let Some(pos) = lower[end..].find(&close_tag) {
