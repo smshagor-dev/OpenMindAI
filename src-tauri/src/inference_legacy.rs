@@ -17,6 +17,7 @@ use crate::{
     chat::{ChatRepository, Message},
     database::Database,
     sampling::{SamplingProfile, CORE_CHAT_MAX_TOKENS},
+    settings::SettingsRepository,
 };
 
 const WEB_SEARCH_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
@@ -24,6 +25,7 @@ const WEB_SEARCH_USER_AGENT: &str =
     "OpenMindAI-Desktop/2.0 (+https://github.com/smshagor-dev/OpenMindAI)";
 const WEB_SEARCH_RESULTS: usize = 8;
 const WEB_SEARCH_TIMEOUT_SECS: u64 = 12;
+const WEB_SEARCH_MAX_RESPONSE_BYTES: usize = 1_000_000;
 const MAX_VISION_DATA_URL_CHARS: usize = 6_000_000;
 const MAX_INFERENCE_MEDIA_ITEMS: usize = 4;
 const UI_STREAM_CHUNK_BYTES: usize = 32;
@@ -160,7 +162,12 @@ pub async fn stream_chat_completion(
     if let Some(dataset_context) = request.dataset_context.filter(|value| !value.trim().is_empty()) {
         messages.push(json!({ "role": "system", "content": dataset_context }));
     }
-    append_live_web_context(request.client, &mut messages, &cancellation).await;
+    let sources = append_live_web_context(
+        request.client,
+        request.database,
+        &mut messages,
+        &cancellation,
+    ).await;
     attach_media_to_latest_user_message(&mut messages, request.media)?;
     let mut body = json!({
         "model": request.model,
@@ -228,6 +235,15 @@ pub async fn stream_chat_completion(
         }
     }
 
+    // Sources are appended by the host, not invented or formatted by the model.
+    if status == "completed" {
+        if let Some(sources) = sources.as_ref().filter(|items| !items.is_empty()) {
+            let footer = format_source_footer(sources);
+            generated_chars += footer.chars().count();
+            ui_buffer.push_str(&footer);
+            flush_buffer.push_str(&footer);
+        }
+    }
     if !ui_buffer.is_empty() {
         emit_stream_chunk(&request, &mut ui_buffer)?;
     }
@@ -345,66 +361,111 @@ fn attach_media_to_latest_user_message(
     Ok(())
 }
 
+/// Live retrieval is opt-in via persisted preferences; even implicit intent
+/// cannot bypass Web Search/Deep Research switches.
 async fn append_live_web_context(
     client: &Client,
+    database: &Mutex<Database>,
     messages: &mut Vec<serde_json::Value>,
     cancellation: &CancellationToken,
-) {
-    let Some(user_text) = latest_user_text(messages) else {
-        return;
-    };
-    let mode = if user_text.contains("[Mode: Web Search]") {
+) -> Option<Vec<WebSearchResult>> {
+    let Some(user_text) = latest_user_text(messages) else { return None };
+    let explicit = if user_text.contains("[Mode: Web Search]") {
         Some("search")
     } else if user_text.contains("[Mode: Deep Research]") {
         Some("research")
-    } else {
-        None
-    };
-    let Some(mode) = mode else {
-        return;
+    } else { None };
+    let Some(mode) = explicit.or_else(|| detect_web_intent(&user_text)) else {
+        return None;
     };
 
-    let query = clean_search_query(&user_text);
-    if query.is_empty() || cancellation.is_cancelled() {
-        return;
+    // A damaged/unavailable preferences DB must not trigger a network request.
+    let allowed = database.lock().ok()
+        .and_then(|db| SettingsRepository::new(&db).get_preferences().ok())
+        .is_some_and(|p| p.web_search_enabled && (mode != "research" || p.deep_research_enabled));
+    if !allowed {
+        if explicit.is_some() {
+            messages.push(json!({
+                "role": "system",
+                "content": "Web Search is disabled in Settings or preferences could not be read. Answer from local knowledge without claiming live verification or inventing sources."
+            }));
+        }
+        return None;
     }
 
-    let mut results = Vec::new();
+    let query = clean_search_query(&user_text);
+    if query.is_empty() || cancellation.is_cancelled() { return None; }
+    let mut results: Vec<WebSearchResult> = Vec::new();
     let mut queries = vec![query.clone()];
     if mode == "research" {
         queries.push(format!("{query} primary sources"));
         queries.push(format!("{query} latest research"));
     }
-
-    for search_query in queries {
-        if cancellation.is_cancelled() || results.len() >= WEB_SEARCH_RESULTS {
-            break;
-        }
-        match search_web(client, &search_query).await {
+    for q in queries {
+        if cancellation.is_cancelled() || results.len() >= WEB_SEARCH_RESULTS { break; }
+        let found = tokio::select! {
+            found = search_web(client, &q) => found,
+            _ = cancellation.cancelled() => return None
+        };
+        match found {
             Ok(found) => {
-                for result in found {
-                    if results
-                        .iter()
-                        .any(|current: &WebSearchResult| current.url == result.url)
-                    {
-                        continue;
+                for item in found {
+                    if results.iter().all(|existing| existing.url != item.url) {
+                        results.push(item);
                     }
-                    results.push(result);
-                    if results.len() >= WEB_SEARCH_RESULTS {
-                        break;
-                    }
+                    if results.len() >= WEB_SEARCH_RESULTS { break; }
                 }
             }
-            Err(error) => tracing::warn!(query = %search_query, %error, "live web search failed"),
+            Err(error) => tracing::warn!(%error, "web search provider failed"),
         }
     }
+    if cancellation.is_cancelled() { return None; }
+    if results.is_empty() {
+        messages.push(json!({
+            "role": "system",
+            "content": "Live web retrieval was requested but no search evidence could be retrieved (offline, blocked or provider unavailable). State that live verification failed and do not invent current sources."
+        }));
+        return None;
+    }
+    messages.push(json!({"role":"system","content":format_search_evidence(&results, mode)}));
+    Some(results)
+}
 
-    let evidence = if results.is_empty() {
-        "Live web retrieval was requested but no search evidence could be retrieved. State that live retrieval failed and do not invent current sources or claim current verification.".to_string()
-    } else {
-        format_search_evidence(&results, mode)
-    };
-    messages.push(json!({ "role": "system", "content": evidence }));
+/// Explicit request phrases and clear freshness cues in English, Bangla and Russian.
+/// Offline-first conversations without a time-sensitive cue remain local.
+fn detect_web_intent(input: &str) -> Option<&'static str> {
+    let text = input.to_lowercase();
+    let research = [
+        "deep research", "literature review", "research gap",
+        "গভীর গবেষণা", "গবেষণাপত্র খুঁজ", "обзор литературы", "научные статьи",
+    ];
+    if research.iter().any(|s| text.contains(s)) { return Some("research"); }
+    let search = [
+        "latest", "today", "currently", "up to date", "recent news",
+        "breaking news", "search the web", "web search", "look online",
+        "look up", "google it", "check online", "find sources",
+        "verify online", "application open", "scholarship deadline",
+        "this week", "this month", "what's new",
+        "সর্বশেষ", "আজকে", "আজ ", "এখনকার", "বর্তমানে",
+        "ইন্টারনেটে", "অনলাইনে", "ওয়েবে", "ওয়েবে",
+        "খুঁজে দেখ", "খুঁজে দাও", "যাচাই কর", "ভেরিফাই কর",
+        "আবেদন খোলা", "আবেদন চলছে",
+        "сегодня", "последние новости", "актуальн", "сейчас",
+        "найди в интернете", "поиск в интернете", "проверь онлайн",
+        "проверь источники",
+    ];
+    search.iter().any(|s| text.contains(s)).then_some("search")
+}
+
+/// Deterministic source links are appended to the stored assistant response.
+fn format_source_footer(results: &[WebSearchResult]) -> String {
+    let mut text = String::from("\n\n---\nSources (live search results):\n");
+    for (i, item) in results.iter().enumerate() {
+        let title = item.title.replace('\\', "\\\\")
+            .replace('[', "\\[").replace(']', "\\]").replace('\n', " ");
+        text.push_str(&format!("- [{}] [{}]({})\n", i + 1, title, item.url));
+    }
+    text
 }
 
 fn latest_user_text(messages: &[serde_json::Value]) -> Option<String> {
