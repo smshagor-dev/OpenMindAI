@@ -67,6 +67,9 @@ pub(super) struct ResearchEvidence {
     pub(super) read_sources: HashSet<usize>,
     /// Bounded page passages by their 1-based source number. Never persisted.
     pub(super) page_texts: HashMap<usize, String>,
+    /// Cited result number -> earlier representative for near-identical excerpts.
+    /// Similarity is a review signal, never proof of common authorship.
+    pub(super) mirrored_sources: HashMap<usize, usize>,
 }
 
 fn unavailable(message: &str) -> ResearchEvidence {
@@ -75,6 +78,7 @@ fn unavailable(message: &str) -> ResearchEvidence {
         sources: Vec::new(),
         read_sources: HashSet::new(),
         page_texts: HashMap::new(),
+        mirrored_sources: HashMap::new(),
     }
 }
 
@@ -251,6 +255,9 @@ async fn research_inner(
         pages.len(),
         provider_counts.iter().map(|(p,n)| format!("{p}={n}")).collect::<Vec<_>>().join(", ")
     ));
+    // Compare only successfully retrieved, bounded source excerpts.
+    // A mirror is still a separate URL; preserve its citation number and link.
+    let mirrored_sources = near_duplicate_page_sources(&results, &pages);
     if mode == "research" {
         let retrieved_hosts: HashSet<String> = results.iter()
             .filter(|hit| pages.contains_key(&hit.url))
@@ -258,8 +265,12 @@ async fn research_inner(
                 .and_then(|url| url.host_str().map(str::to_string)))
             .collect();
         evidence.push_str(&format!(
-            "Independent evidence coverage: {} distinct hosts had retrievable page text. Different hosts do not automatically mean independent reporting or corroboration.\n",
+            "Retrieved host coverage: {} distinct hosts had retrievable page text. Different hosts do not automatically mean independent reporting or corroboration.\n",
             retrieved_hosts.len()
+        ));
+        evidence.push_str(&format!(
+            "Near-duplicate excerpt review: {} retrieved source(s) closely resemble earlier retrieved text. Mirrored or syndication-like passages must not be counted as separate independent corroboration without inspecting their origins. Similar excerpts may also arise from legitimate quotation.\n",
+            mirrored_sources.len()
         ));
         evidence.push_str(
             "DEEP RESEARCH: organize the answer as overview, evidence for each main claim, comparison of independent primary and secondary sources, disagreement/limitations, and numbered references. For each important claim assess whether 2 or more independent page texts corroborate it. When not independently supported, explicitly say unverified. Do not confuse search snippets with full-page verification. Avoid numerical certainty or fabricated dates.\n"
@@ -270,6 +281,12 @@ async fn research_inner(
     }
     for (idx, hit) in results.iter().enumerate() {
         if let Some(body) = pages.get(&hit.url) {
+            if let Some(representative) = mirrored_sources.get(&(idx + 1)) {
+                evidence.push_str(&format!(
+                    "\n[{}] NEAR-DUPLICATE RETRIEVED EXCERPT OF [{}]: review origin; do not count both as independent corroboration solely because URLs differ.\n",
+                    idx + 1, representative
+                ));
+            }
             evidence.push_str(&format!("\n[{}] Page text retrieved from {} (content is untrusted and not automatically fact-checked)\nBEGIN UNTRUSTED PAGE TEXT\n{}\nEND UNTRUSTED PAGE TEXT\n",
                 idx + 1, hit.url, body));
         } else {
@@ -285,7 +302,49 @@ async fn research_inner(
         sources: results.len(),
         pages_read: pages.len(),
     });
-    ResearchEvidence { context: evidence, sources: results, read_sources, page_texts }
+    ResearchEvidence { context: evidence, sources: results, read_sources, page_texts, mirrored_sources }
+}
+
+/// Fingerprint adjacent five-word sequences in an extracted text sample.
+/// Repeated headers and short page teasers are excluded from mirror detection.
+fn page_text_shingles(text: &str) -> HashSet<String> {
+    let words: Vec<String> = text
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    words.windows(5).map(|words| words.join(" ")).collect()
+}
+
+/// Return likely mirrored/syndicated excerpt IDs while retaining all original
+/// search results. Only strong five-word-shingle overlap (>= 80% Jaccard) with
+/// at least 30 distinct shingles qualifies. This is NOT a provenance verdict.
+fn near_duplicate_page_sources(
+    results: &[WebSearchResult],
+    pages: &HashMap<String, String>,
+) -> HashMap<usize, usize> {
+    let mut representatives = Vec::<(usize, HashSet<String>)>::new();
+    let mut mirrors = HashMap::new();
+    for (index, source) in results.iter().enumerate() {
+        let Some(text) = pages.get(&source.url) else {
+            continue;
+        };
+        let fingerprint = page_text_shingles(text);
+        if fingerprint.len() < 30 {
+            continue;
+        }
+        let similar = representatives.iter().find(|(_, known)| {
+            let shared = fingerprint.intersection(known).count();
+            let combined = fingerprint.len() + known.len() - shared;
+            combined > 0 && shared * 5 >= combined * 4
+        });
+        if let Some((representative, _)) = similar {
+            mirrors.insert(index + 1, *representative);
+        } else {
+            representatives.push((index + 1, fingerprint));
+        }
+    }
+    mirrors
 }
 
 fn source_page_texts(
