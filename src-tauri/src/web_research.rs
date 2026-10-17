@@ -916,6 +916,61 @@ fn select_relevant_text(text: &str, query: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A minimal self-contained one-page text PDF. No binary fixture files or
+    /// external PDF renderer are needed for reproducible Rust CI tests.
+    fn text_pdf_fixture() -> Vec<u8> {
+        let content = "BT /F1 12 Tf 72 700 Td (GPS denied drone localization experiment reached 87.5 percent accuracy in 2026.) Tj ET";
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>".to_string(),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".to_string(),
+            format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()),
+        ];
+        let mut bytes = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(bytes.len());
+            bytes.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+        }
+        let xref_offset = bytes.len();
+        bytes.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+        for offset in offsets {
+            bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        bytes.extend_from_slice(format!(
+            "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n"
+        ).as_bytes());
+        bytes
+    }
+
+    #[test]
+    fn research_pdf_reader_extracts_text_without_executing_content() {
+        let content = extract_pdf_text(&text_pdf_fixture()).expect("text PDF should be readable");
+        assert!(content.contains("GPS denied drone localization"), "{content}");
+        assert!(content.contains("87.5 percent"), "{content}");
+        assert!(content.contains("PDF page 1:"), "{content}");
+        assert!(content.chars().count() <= PDF_MAX_TEXT_CHARS + 1);
+    }
+
+    #[test]
+    fn research_pdf_reader_rejects_invalid_and_oversized_input() {
+        assert!(extract_pdf_text(b"<html>not a PDF</html>").is_err());
+        assert!(extract_pdf_text(b"%PDF-1.4\ninvalid").is_err());
+        assert!(extract_pdf_text(&vec![b'A'; PAGE_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn research_pdf_accepts_only_explicit_mime_or_pdf_octet_stream() {
+        let pdf = Url::parse("https://example.org/papers/study.pdf").unwrap();
+        let html = Url::parse("https://example.org/news/page").unwrap();
+        assert!(is_research_pdf_type("application/pdf", &html));
+        assert!(is_research_pdf_type("application/pdf; charset=binary", &pdf));
+        assert!(is_research_pdf_type("application/octet-stream", &pdf));
+        assert!(!is_research_pdf_type("application/octet-stream", &html));
+        assert!(!is_research_pdf_type("text/html", &pdf));
+    }
+
     #[test]
     fn page_clauses_keep_decimal_and_sentence_boundaries() {
         let page = "The 2026 drone trial measured 87.5% localization accuracy. Later trials measured 92.0% accuracy!";
