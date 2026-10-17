@@ -165,12 +165,24 @@ pub async fn stream_chat_completion(
     if let Some(dataset_context) = request.dataset_context.filter(|value| !value.trim().is_empty()) {
         messages.push(json!({ "role": "system", "content": dataset_context }));
     }
-    let sources = append_live_web_context(
-        request.client,
-        request.database,
-        &mut messages,
-        &cancellation,
-    ).await;
+    // A blocked provider must never indefinitely prevent local inference.
+    let sources = match tokio::time::timeout(
+        std::time::Duration::from_secs(28),
+        append_live_web_context(request.client, request.database, &mut messages, &cancellation),
+    ).await {
+        Ok(sources) => sources,
+        Err(_) => {
+            messages.push(json!({
+                "role": "system",
+                "content": "Live web search timed out. Answer without claiming live verification or inventing sources."
+            }));
+            None
+        }
+    };
+    if cancellation.is_cancelled() {
+        request.active.finish(request.conversation_id);
+        return Err(AppError::InferenceCancelled("generation cancelled during web retrieval".to_string()));
+    }
     attach_media_to_latest_user_message(&mut messages, request.media)?;
     let mut body = json!({
         "model": request.model,
