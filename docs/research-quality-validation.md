@@ -2,7 +2,7 @@
 
 This document defines acceptance criteria; it is **not** evidence that the gates have passed.
 
-## P0 — Live end-to-end verification
+## Live end-to-end verification
 
 Run on supported Windows/Linux/macOS targets where available, with an explicitly permitted external network.
 
@@ -20,17 +20,17 @@ Run on supported Windows/Linux/macOS targets where available, with an explicitly
 
 Record OS, app commit, timestamp, provider, credential-presence (never secrets), status, latency, result count and sanitized failure reason.
 
-## P0 — Citation quality
+## Citation quality
 
 For each answer, label atomic factual claims as supported, contradicted, unsupported or unverifiable against the exact fetched passage. Host-generated URLs alone are not claim-level verification. Fail evaluation if a fabricated URL is shown or an unsupported claim is described as verified.
 
-## P1 — Retrieval and evidence quality
+## Retrieval and evidence quality
 
 Evaluate relevance ranking, duplicate URL and near-duplicate text detection, cross-domain corroboration, contradiction handling, freshness and source diversity. Preserve provenance for snippet-only evidence; display progress and provider errors without exposing secrets.
 
 For larger research, enforce configurable limits for query count, page count, concurrency, total bytes, elapsed time and cancellation. Never make page-count expansion unbounded.
 
-## P2 — Benchmark methodology
+## Benchmark methodology
 
 Use a versioned dataset of factual queries, multi-hop research tasks, conflicting-source tasks, stale-information traps and adversarial HTML. Include English, Bangla and Russian.
 
