@@ -1310,6 +1310,28 @@ mod tests {
     }
 
     #[test]
+    fn web_research_progress_event_uses_frontend_camel_case_fields() {
+        let event = WebResearchProgressEvent {
+            conversation_id: "conversation".into(),
+            message_id: "assistant".into(),
+            mode: "research".into(),
+            stage: "reading".into(),
+            completed: 2,
+            total: 4,
+            sources: 6,
+            pages_read: 1,
+        };
+        let json = serde_json::to_value(event).expect("event must serialize");
+        assert_eq!(json["conversationId"], "conversation");
+        assert_eq!(json["messageId"], "assistant");
+        assert_eq!(json["stage"], "reading");
+        assert_eq!(json["completed"], 2);
+        assert_eq!(json["total"], 4);
+        assert_eq!(json["sources"], 6);
+        assert_eq!(json["pagesRead"], 1);
+    }
+
+    #[test]
     fn citation_passage_audit_accepts_claims_with_relevant_page_text() {
         let pages = HashMap::from([(
             1usize,
