@@ -118,6 +118,28 @@ and cannot stop an attacker who controls both files and their hashes, or a
 time-of-check/time-of-use replacement after preflight. This does not patch
 transitive ZIP 7.
 
+## Primary model filename and resume-path validation
+
+Primary LLM/vision/image checkpoint downloads now reuse the same pathname
+validation and package-local containment helper as model dependencies.
+Hugging Face sibling filenames with absolute or traversal paths, malformed
+segments, reserved URL characters or control characters are excluded before
+selection. Optional upstream SHA-256 values must be valid hex digests.
+Existing symlinked destinations and intermediate symlink directories are
+rejected before a primary model download is started.
+
+Primary checkpoint partial downloads now also use the SHA-256 namespaced key
+based on portable-root-relative package directory, source URL and nested
+filename. This prevents accidental collision with other primary checkpoint
+and model dependency partials, while allowing safe resumability after
+moving a portable installation. Legacy flattened `.part` names are not
+silently trusted or reused. Tests exercise malicious remote sibling entries,
+cross-package/source/path separation, and portable root relocation.
+
+As with dependency downloads, these checks are defense in depth, not a
+signed authenticity guarantee or protection from all local filesystem races.
+They do not remove the transitive ZIP 7 RustSec vulnerability.
+
 ## Resumable model dependency download isolation
 
 Resumable model dependencies previously stored partials in the common
