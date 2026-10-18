@@ -26,8 +26,12 @@ web search pages otherwise; no paid external AI model is required.
   important pages. The 32,000-character PDF text budget is divided across
   the selected pages (including page-number headings), so an oversized
   introduction cannot consume the allowance reserved for later sampled
-  results. This is still a bounded sample, not a complete transcript; the
-  per-page share may omit evidence within a very long individual page.
+  results. Within each selected page, matching query terms now guide
+  which text is retained before that page's character allowance is applied;
+  this can preserve results appearing after a long unrelated opening. If no
+  query terms match, a bounded leading-page excerpt is used. This is still
+  a bounded, lexical sample, not a complete transcript or factual verification;
+  relevant evidence may still be missed within long individual pages.
   Encrypted, scanned/image-only,
   malformed, oversized and unextractable PDFs remain snippet-only sources.
   No PDF scripts are run and no external PDF viewer or OCR is invoked.
@@ -143,7 +147,9 @@ destination constraint.
    appear in evidence, that original page numbers are retained, and the
    eight-page processing limit is respected. Include a paper with unusually
    long early sections and verify a sampled conclusion page retains its own
-   extract budget instead of being displaced by the introduction.
+   extract budget instead of being displaced by the introduction. Also verify
+   query-matching results near the end of a single long sampled page survive
+   that page's budget, without losing its actual PDF page-number label.
 
 CI covers parsing, retry classification, provider ordering and a local HTTP
 429 response fixture. These tests do not prove live vendor availability,
