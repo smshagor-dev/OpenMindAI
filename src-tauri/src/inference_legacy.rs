@@ -1086,9 +1086,9 @@ fn percentage_evidence_values(text: &str) -> BTreeSet<String> {
 }
 
 /// Read explicit latency/time units separately from bare numerical values.
-/// We normalize common spellings but deliberately do not infer conversions:
-/// a value expressed in seconds must not be supported by milliseconds with
-/// the same numeral. This is only a conservative citation-review signal.
+/// Keep milliseconds and seconds distinct when extracting evidence; the
+/// subsequent comparison checks exact physical equivalence. A matching bare
+/// numeral alone is never sufficient evidence for a timing claim.
 fn duration_evidence_values(text: &str) -> BTreeSet<(String, &'static str)> {
     let bytes = text.as_bytes();
     let mut values = BTreeSet::new();
@@ -1150,6 +1150,44 @@ fn duration_evidence_values(text: &str) -> BTreeSet<(String, &'static str)> {
     values
 }
 
+/// Convert duration values to a canonical exact decimal millisecond amount.
+/// Retain the decimal scale instead of using floating point: 0.095 s and
+/// 95 ms can corroborate each other without rounding false positives.
+/// None means the value cannot be compared safely.
+fn canonical_duration_milliseconds(value: &str, unit: &str) -> Option<(u128, usize)> {
+    let (digits, mut fractional_digits) = match value.split_once('.') {
+        Some((whole, fraction)) => (format!("{whole}{fraction}"), fraction.len()),
+        None => (value.to_string(), 0),
+    };
+    let mut amount = digits.parse::<u128>().ok()?;
+    amount = match unit {
+        "ms" => amount,
+        "s" => amount.checked_mul(1000)?,
+        _ => return None,
+    };
+    while fractional_digits > 0 && amount % 10 == 0 {
+        amount /= 10;
+        fractional_digits -= 1;
+    }
+    Some((amount, fractional_digits))
+}
+
+/// An explicitly unit-marked value can be supported by exact, physically
+/// equivalent spelling/units; bare counts are never duration evidence.
+fn duration_source_supports(
+    value: &str,
+    unit: &str,
+    source: &BTreeSet<(String, &'static str)>,
+) -> bool {
+    let canonical = canonical_duration_milliseconds(value, unit);
+    source.iter().any(|(source_value, source_unit)| {
+        (source_value == value && *source_unit == unit)
+            || canonical.is_some_and(|wanted| {
+                canonical_duration_milliseconds(source_value, source_unit) == Some(wanted)
+            })
+    })
+}
+
 /// PDF page numbers are generated provenance, not measured facts. Exclude
 /// them only for MIME-validated parsed PDF sources, so unrelated HTML strings
 /// that resemble a PDF page label retain their ordinary numerical content.
@@ -1198,6 +1236,16 @@ fn citation_numeric_evidence_warning(
         let percentages_in_claim = percentage_evidence_values(&claim);
         let durations_in_claim = duration_evidence_values(&claim);
         for value in numbers_in_claim.difference(numbers_in_source) {
+            // 1000 ms can be the same measurement as 1 s. Do not report
+            // a bare-number mismatch if the typed duration is corroborated.
+            // Unrelated counts and unmatched duration units still warn.
+            if reference_durations.get(&number).is_some_and(|source| {
+                durations_in_claim.iter().any(|(amount, unit)| {
+                    amount == value && duration_source_supports(amount, unit, source)
+                })
+            }) {
+                continue;
+            }
             let label = if percentages_in_claim.contains(value) {
                 format!("{value}%")
             } else if let Some((_, unit)) = durations_in_claim.iter().find(|(amount, _)| amount == value) {
@@ -1219,8 +1267,10 @@ fn citation_numeric_evidence_warning(
         // "95 participants" cannot corroborate one another solely by sharing
         // 95. Also cover one-digit durations ignored by the bare-number parser.
         if let Some(durations_in_source) = reference_durations.get(&number) {
-            for (value, unit) in durations_in_claim.difference(durations_in_source) {
-                mismatches.entry(number).or_default().insert(format!("{value} {unit}"));
+            for (value, unit) in &durations_in_claim {
+                if !duration_source_supports(value, unit, durations_in_source) {
+                    mismatches.entry(number).or_default().insert(format!("{value} {unit}"));
+                }
             }
         }
     }
@@ -1640,6 +1690,72 @@ mod tests {
         assert_eq!(json["total"], 4);
         assert_eq!(json["sources"], 6);
         assert_eq!(json["pagesRead"], 1);
+    }
+
+    #[test]
+    fn duration_conversion_uses_exact_decimal_milliseconds() {
+        assert_eq!(
+            canonical_duration_milliseconds("1000", "ms"),
+            canonical_duration_milliseconds("1", "s")
+        );
+        assert_eq!(
+            canonical_duration_milliseconds("95", "ms"),
+            canonical_duration_milliseconds("0.095", "s")
+        );
+        assert_eq!(
+            canonical_duration_milliseconds("0.0001", "ms"),
+            canonical_duration_milliseconds("0.0000001", "s")
+        );
+        assert_ne!(
+            canonical_duration_milliseconds("1001", "ms"),
+            canonical_duration_milliseconds("1", "s")
+        );
+        assert_ne!(
+            canonical_duration_milliseconds("1.0000001", "s"),
+            canonical_duration_milliseconds("1000", "ms")
+        );
+    }
+
+    #[test]
+    fn numeric_audit_accepts_exactly_equivalent_duration_units() {
+        let seconds_source = HashMap::from([(
+            1usize, "Median response latency was measured at 1 second.".to_string(),
+        )]);
+        assert!(citation_numeric_evidence_warning(
+            "Median response latency was measured at 1000 ms [1].",
+            &seconds_source, &HashSet::new(),
+        ).is_none());
+        let milliseconds_source = HashMap::from([(
+            1usize, "Median response latency was measured at 95 milliseconds.".to_string(),
+        )]);
+        assert!(citation_numeric_evidence_warning(
+            "Median response latency was measured at 0.095 seconds [1].",
+            &milliseconds_source, &HashSet::new(),
+        ).is_none());
+    }
+
+    #[test]
+    fn numeric_audit_rejects_near_but_unequal_duration_units() {
+        let pages = HashMap::from([(
+            1usize, "The request took 1 second.".to_string(),
+        )]);
+        let warning = citation_numeric_evidence_warning(
+            "The request took 1001 milliseconds [1].", &pages, &HashSet::new(),
+        ).expect("an unequal millisecond value must not be accepted");
+        assert!(warning.contains("[1]: 1001 ms"), "{warning}");
+    }
+
+    #[test]
+    fn numeric_audit_checks_converted_units_per_citation() {
+        let pages = HashMap::from([
+            (1usize, "The controller took 1 second.".to_string()),
+            (2usize, "A different controller took 5 seconds.".to_string()),
+        ]);
+        let warning = citation_numeric_evidence_warning(
+            "The controller took 1000 ms [1, 2].", &pages, &HashSet::new(),
+        ).expect("only one cited source supports the duration");
+        assert!(warning.contains("[2]: 1000 ms"), "{warning}");
+        assert!(!warning.contains("[1]:"), "{warning}");
     }
 
     #[test]
