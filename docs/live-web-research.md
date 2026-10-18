@@ -82,9 +82,13 @@ web search pages otherwise; no paid external AI model is required.
 - A complementary numerical citation audit compares dates, percentages and
   other explicit numerical values in cited claims with values occurring in
   each corresponding retrieved page excerpt. Comma-grouped numbers and decimal
-  variants are normalized; code and citations themselves are ignored. When
-  a figure is absent, the app adds a **numerical evidence warning** for
-  manual verification against the original article. Missing excerpt values
+  variants are normalized; code and citations themselves are ignored.
+  A percentage claim such as `95% accuracy` must match percentage-marked
+  evidence (`95%`, `95 percent`, or `95 pct`), not merely a bare numeric
+  count such as `95 participants`. Each citation is checked separately.
+  When a figure or its percentage unit is absent, the app adds a
+  **numerical evidence warning** for manual verification against the
+  original article. Missing excerpt values
   may be caused by summarization, formatting or incomplete retrieval, while
   matching values may still be misleading or have different units. For
   MIME-verified PDF sources, parser-created labels such as `PDF page 16:`
