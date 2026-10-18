@@ -259,10 +259,8 @@ fn kokoro_manifest_digest<'a>(
 
 /// Recheck the primary checkpoint against its upstream expected SHA-256 or
 /// the installer-recorded actualSha256 when the upstream value was absent.
- This detects changes made
-/// *after* installation, unlike comparing saved verification fields to each
-/// other. A local manifest is not a signed trust anchor, and legacy installs
-/// without an expected digest remain supported.
+/// This detects changes made after installation. A local manifest is not a
+/// signed trust anchor, and legacy installs without any digest remain supported.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn verify_kokoro_checkpoint_digest(package_dir: &Path, model_path: &Path) -> Result<(), AppError> {
     let manifest_path = package_dir.join("model-manifest.json");
