@@ -1564,6 +1564,81 @@ mod tests {
     }
 
     #[test]
+    fn percentage_source_values_recognize_symbols_and_spelled_out_units() {
+        let values = percentage_evidence_values(
+            "Accuracy was 87.50%, another trial reached 95 percent and 8 PCT; sample count was 95."
+        );
+        assert!(values.contains("87.5"));
+        assert!(values.contains("95"));
+        assert!(values.contains("8"));
+        assert!(!values.contains("50"));
+        assert!(percentage_evidence_values("The study included 95 participants.").is_empty());
+        assert!(percentage_evidence_values("This is the 99th percentile.").is_empty());
+    }
+
+    #[test]
+    fn numeric_audit_flags_percentage_claim_supported_only_by_sample_count() {
+        let pages = HashMap::from([(
+            1usize, "The localization study evaluated 95 participants and reported no accuracy rate."
+                .to_string(),
+        )]);
+        let warning = citation_numeric_evidence_warning(
+            "The localization study achieved 95% accuracy in experiments [1].",
+            &pages, &HashSet::new(),
+        ).expect("95 participants cannot support a 95% accuracy result");
+        assert!(warning.contains("[1]: 95%"), "{warning}");
+    }
+
+    #[test]
+    fn numeric_audit_accepts_equivalent_written_and_symbol_percentages() {
+        let pages = HashMap::from([(
+            1usize, "The localization experiment reached 87.50 percent accuracy.".to_string(),
+        )]);
+        assert!(citation_numeric_evidence_warning(
+            "The localization experiment reached 87.5% accuracy [1].",
+            &pages, &HashSet::new(),
+        ).is_none());
+        let pages = HashMap::from([(
+            1usize, "The localization experiment reached 87.5% accuracy.".to_string(),
+        )]);
+        assert!(citation_numeric_evidence_warning(
+            "The localization experiment reached 87.5 percent accuracy [1].",
+            &pages, &HashSet::new(),
+        ).is_none());
+    }
+
+    #[test]
+    fn numeric_audit_checks_percentage_units_for_each_grouped_citation() {
+        let pages = HashMap::from([
+            (1usize, "The drone localization test reached 95 percent accuracy.".to_string()),
+            (2usize, "The drone localization test used 95 participants.".to_string()),
+        ]);
+        let warning = citation_numeric_evidence_warning(
+            "The drone localization test achieved 95% accuracy [1, 2].",
+            &pages, &HashSet::new(),
+        ).expect("second source only documents a participant count");
+        assert!(warning.contains("[2]: 95%"), "{warning}");
+        assert!(!warning.contains("[1]:"), "{warning}");
+    }
+
+    #[test]
+    fn pdf_page_numbers_cannot_satisfy_percentage_claims() {
+        let pages = HashMap::from([(
+            1usize, "PDF page 95: The drone localization trial measured 87.5 percent accuracy."
+                .to_string(),
+        )]);
+        let warning = citation_numeric_evidence_warning(
+            "The drone localization trial measured 95% accuracy [1].",
+            &pages, &HashSet::from([1usize]),
+        ).expect("a PDF page label is not an accuracy percentage");
+        assert!(warning.contains("[1]: 95%"), "{warning}");
+        assert!(citation_numeric_evidence_warning(
+            "The drone localization trial measured 87.5% accuracy [1].",
+            &pages, &HashSet::from([1usize]),
+        ).is_none());
+    }
+
+    #[test]
     fn numeric_evidence_normalizes_years_percentages_and_thousands() {
         let numbers = numeric_evidence_values(
             "In 2026, total 1,200.00 people had an 87.50% pass rate."
