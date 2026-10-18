@@ -158,6 +158,13 @@ def main() -> None:
             cargo_toml = dst / "Cargo.toml"
             cargo_toml.write_text(replace_zip_requirement(cargo_toml.read_text(encoding="utf-8")), encoding="utf-8")
             adapt_upstream_zip9_api(crate, dst)
+            if crate == "candle-core":
+                tests = dst / "tests"
+                tests.mkdir(exist_ok=True)
+                regression = tests / "zip9_reader_regressions.rs"
+                if regression.exists():
+                    raise RuntimeError("Unexpected existing ZIP9 regression test target")
+                shutil.copy2(ROOT / "scripts" / "zip9-reader-regressions.rs", regression)
             patches.extend(["--config", f'patch.crates-io.{crate}.path="{dst}"'])
             print(f"Locally substituted {crate}@{version} zip requirement with {ZIP_TARGET}")
         # Copy only the relevant Cargo project into a writable sandbox. Patches
@@ -179,7 +186,13 @@ def main() -> None:
                 if any(v.startswith(("7.", "8.")) for v in versions):
                     raise RuntimeError(f"Legacy zip versions still resolved: {versions}")
                 run(["cargo", *patches, "check", "--manifest-path", str(MANIFEST), "--lib"])
-                print("ZIP 9 compatibility probe PASSED. Vendor and review the exact patched crates before production use.")
+                run([
+                    "cargo", *patches, "test", "--manifest-path", str(MANIFEST),
+                    "-p", "candle-core", "--test", "zip9_reader_regressions",
+                    "--", "--nocapture",
+                ])
+                print("ZIP 9 compilation and synthetic NPZ/PTH regression probe PASSED.")
+                print("Real pretrained model and platform-specific TTS validation are still required.")
             finally:
                 scratch_lock.write_bytes(original_lock)
         finally:
