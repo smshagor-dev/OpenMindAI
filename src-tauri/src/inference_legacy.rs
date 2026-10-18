@@ -1587,10 +1587,14 @@ mod tests {
             "The article mentions page 16 [1].",
             &pages, &HashSet::new(),
         ).is_none());
-        assert!(citation_numeric_evidence_warning(
-            "The article reports 16 subjects [1].",
+        // Cited-claim analysis requires >= 3 distinctive words; "reports"
+        // is deliberately a stopword, so the shorter original test sentence
+        // was ignored before numeric auditing could inspect the PDF label.
+        let warning = citation_numeric_evidence_warning(
+            "The online technical article reports 16 research subjects [1].",
             &pages, &HashSet::from([1usize]),
-        ).is_some());
+        ).expect("PDF page metadata must not support 16 reported subjects");
+        assert!(warning.contains("[1]: 16"), "{warning}");
     }
 
     #[test]
