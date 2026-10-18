@@ -994,7 +994,7 @@ fn select_relevant_text(text: &str, query: &str) -> String {
     best.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     let mut chosen = Vec::new();
     let mut chars_used = 0usize;
-    for (index, score) in best.into_iter().filter(|(_, score)| *score > 0).take(14) {
+    for (index, _) in best.into_iter().filter(|(_, score)| *score > 0).take(14) {
         let length = clauses[index].chars().count();
         let separator = if chosen.is_empty() { 0 } else { 2 };
         if length + separator <= PAGE_CHARS - chars_used {
