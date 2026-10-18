@@ -1086,9 +1086,9 @@ fn percentage_evidence_values(text: &str) -> BTreeSet<String> {
 }
 
 /// Read explicit latency/time units separately from bare numerical values.
-/// We normalize common spellings but deliberately do not infer conversions:
-/// a value expressed in seconds must not be supported by milliseconds with
-/// the same numeral. This is only a conservative citation-review signal.
+/// Keep milliseconds and seconds distinct when extracting evidence; the
+/// subsequent comparison checks exact physical equivalence. A matching bare
+/// numeral alone is never sufficient evidence for a timing claim.
 fn duration_evidence_values(text: &str) -> BTreeSet<(String, &'static str)> {
     let bytes = text.as_bytes();
     let mut values = BTreeSet::new();
@@ -1691,7 +1691,6 @@ mod tests {
         assert_eq!(json["sources"], 6);
         assert_eq!(json["pagesRead"], 1);
     }
-
 
     #[test]
     fn duration_conversion_uses_exact_decimal_milliseconds() {
