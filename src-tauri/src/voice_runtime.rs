@@ -170,6 +170,8 @@ const MAX_KOKORO_ARCHIVE_ENTRIES: usize = 4096;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 const MAX_KOKORO_ARCHIVE_BYTES: u64 = 1024 * 1024 * 1024;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+const MAX_KOKORO_ZIP_EXPANSION_RATIO: u64 = 10_000;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const MAX_KOKORO_CONFIG_BYTES: u64 = 1024 * 1024;
 
 /// Verify both the OpenMindAI root and the expected model subdirectory after
@@ -223,6 +225,39 @@ fn validate_kokoro_config(path: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Bound claimed expansion and compressed sizes before model loaders encounter
+/// a checkpoint. These are metadata limits only, not proof of content integrity.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn checked_kokoro_zip_sizes(
+    declared_uncompressed: u64,
+    compressed: u64,
+    expanded_so_far: u64,
+    compressed_so_far: u64,
+) -> Result<(u64, u64), AppError> {
+    if declared_uncompressed > 0
+        && (compressed == 0
+            || declared_uncompressed / compressed > MAX_KOKORO_ZIP_EXPANSION_RATIO)
+    {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro PyTorch ZIP has an implausible expansion ratio".to_string(),
+        ));
+    }
+    let expanded = expanded_so_far
+        .checked_add(declared_uncompressed)
+        .ok_or_else(|| {
+            AppError::ArtifactGenerationFailed("Kokoro PyTorch ZIP size overflow".to_string())
+        })?;
+    let stored = compressed_so_far.checked_add(compressed).ok_or_else(|| {
+        AppError::ArtifactGenerationFailed("Kokoro PyTorch ZIP size overflow".to_string())
+    })?;
+    if expanded > MAX_KOKORO_ARCHIVE_BYTES || stored > MAX_KOKORO_ARCHIVE_BYTES {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro PyTorch ZIP exceeds its size limit".to_string(),
+        ));
+    }
+    Ok((expanded, stored))
+}
+
 /// PyTorch .pt and .pth files can be ZIP containers. Use the already-patched ZIP 9
 /// reader to screen suspicious archive metadata before passing the file to
 /// upstream Candle code still linked to ZIP 7. This does not replace or patch
@@ -245,7 +280,8 @@ fn validate_kokoro_pytorch_archive(path: &Path) -> Result<(), AppError> {
             "Kokoro PyTorch ZIP contains too many entries".to_string(),
         ));
     }
-    let mut total = 0_u64;
+    let mut expanded = 0_u64;
+    let mut compressed = 0_u64;
     let mut names = std::collections::HashSet::new();
     for index in 0..archive.len() {
         let entry = archive.by_index(index).map_err(|error| {
@@ -263,6 +299,11 @@ fn validate_kokoro_pytorch_archive(path: &Path) -> Result<(), AppError> {
                 "Kokoro PyTorch ZIP contains empty or duplicate paths".to_string(),
             ));
         }
+        if entry.encrypted() {
+            return Err(AppError::ArtifactGenerationFailed(
+                "Kokoro PyTorch ZIP must not contain encrypted entries".to_string(),
+            ));
+        }
         if let Some(mode) = entry.unix_mode() {
             if mode & 0o7000 != 0
                 || !matches!(
@@ -276,14 +317,8 @@ fn validate_kokoro_pytorch_archive(path: &Path) -> Result<(), AppError> {
                 ));
             }
         }
-        total = total.checked_add(entry.size()).ok_or_else(|| {
-            AppError::ArtifactGenerationFailed("Kokoro PyTorch ZIP size overflow".to_string())
-        })?;
-        if total > MAX_KOKORO_ARCHIVE_BYTES {
-            return Err(AppError::ArtifactGenerationFailed(
-                "Kokoro PyTorch ZIP exceeds the uncompressed size limit".to_string(),
-            ));
-        }
+        (expanded, compressed) =
+            checked_kokoro_zip_sizes(entry.size(), entry.compressed_size(), expanded, compressed)?;
     }
     Ok(())
 }
@@ -373,6 +408,18 @@ mod tests {
         let mut archive = zip::ZipArchive::new(&mut file).unwrap();
         assert_eq!(archive.len(), 1);
         assert!(archive.by_name("voices/data.pkl").is_ok());
+    }
+
+    #[test]
+    fn kokoro_zip_size_checks_reject_bombs_and_overflow() {
+        assert!(checked_kokoro_zip_sizes(128, 128, 0, 0).is_ok());
+        assert!(checked_kokoro_zip_sizes(0, 0, 0, 0).is_ok());
+        assert!(checked_kokoro_zip_sizes(4, 0, 0, 0).is_err());
+        assert!(checked_kokoro_zip_sizes(10_001, 1, 0, 0).is_err());
+        assert!(checked_kokoro_zip_sizes(MAX_KOKORO_ARCHIVE_BYTES + 1, 1, 0, 0).is_err());
+        assert!(checked_kokoro_zip_sizes(10, 10, u64::MAX, 0).is_err());
+        assert!(checked_kokoro_zip_sizes(10, 10, 0, u64::MAX).is_err());
+        assert!(checked_kokoro_zip_sizes(1, 1, 0, MAX_KOKORO_ARCHIVE_BYTES).is_err());
     }
 
     #[test]
