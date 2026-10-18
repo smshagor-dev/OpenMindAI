@@ -382,10 +382,7 @@ mod tests {
         let file = fs::File::create(&model_path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
         writer
-            .start_file(
-                "kokoro/data.pkl",
-                zip::write::SimpleFileOptions::default(),
-            )
+            .start_file("kokoro/data.pkl", zip::write::SimpleFileOptions::default())
             .unwrap();
         writer.write_all(b"pickle-placeholder").unwrap();
         writer.finish().unwrap();
