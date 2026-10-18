@@ -911,6 +911,10 @@ fn readable_html(html: &str) -> String {
 /// entire evidence, while keeping the local model's context budget bounded.
 /// Keep decimal numbers in a single passage. Splitting on every full stop
 /// previously broke 87.5% into separate evidence fragments on long pages.
+/// Examine the entire already size-limited page/PDF excerpt. An older
+/// first-1,000-clause cutoff could discard a source's conclusion or results.
+/// The input is capped by the fetcher (at most PAGE_BYTES transferred), while
+/// the answer context still receives at most PAGE_CHARS selected characters.
 fn research_page_clauses(text: &str) -> Vec<&str> {
     let mut clauses = Vec::new();
     let mut start = 0;
@@ -926,14 +930,11 @@ fn research_page_clauses(text: &str) -> Vec<&str> {
         let clause = text[start..index].trim();
         if clause.chars().count() > 18 {
             clauses.push(clause);
-            if clauses.len() >= 1_000 {
-                return clauses;
-            }
         }
         start = index + character.len_utf8();
     }
     let tail = text[start..].trim();
-    if tail.chars().count() > 18 && clauses.len() < 1_000 {
+    if tail.chars().count() > 18 {
         clauses.push(tail);
     }
     clauses
@@ -1077,6 +1078,46 @@ mod tests {
         assert!(clauses[0].contains("87.5%"));
         assert!(clauses[1].contains("92.0%"));
         assert!(!clauses[0].contains("Later trials"));
+    }
+
+    #[test]
+    fn long_research_page_scans_clauses_beyond_first_thousand() {
+        let mut page = (0..1_080)
+            .map(|i| format!(
+                "Archival catalog entry {i} reports unrelated shipping and inventory records. "
+            ))
+            .collect::<String>();
+        page.push_str(
+            "The GPS denied drone localization experiment achieved 87.5% accuracy with UWB anchors in 2026."
+        );
+        let clauses = research_page_clauses(&page);
+        assert!(clauses.len() > 1_000);
+        assert!(clauses.last().is_some_and(|clause| clause.contains("87.5%")));
+        let excerpt = select_relevant_text(&page, "GPS denied drone localization UWB accuracy");
+        assert!(excerpt.contains("87.5% accuracy with UWB anchors in 2026"), "{excerpt}");
+        assert!(excerpt.chars().count() <= PAGE_CHARS);
+    }
+
+    #[test]
+    fn long_multilingual_research_page_preserves_late_evidence() {
+        let mut page = "Обзор архивных материалов содержит общую информацию о городах и музеях. "
+            .repeat(1_060);
+        page.push_str(
+            "Эксперимент GPS-denied drone localization достиг точности 92.5% в 2026 году."
+        );
+        let excerpt = select_relevant_text(
+            &page, "GPS-denied drone localization эксперимент точности"
+        );
+        assert!(excerpt.contains("92.5%"), "{excerpt}");
+        assert!(excerpt.chars().count() <= PAGE_CHARS);
+    }
+
+    #[test]
+    fn long_research_page_without_matching_terms_still_bounds_fallback() {
+        let page = "Archives describe regional inventories and municipal registration documents. "
+            .repeat(1_080);
+        let excerpt = select_relevant_text(&page, "federated learning differential privacy");
+        assert_eq!(excerpt, page.chars().take(PAGE_CHARS).collect::<String>());
     }
 
     #[test]

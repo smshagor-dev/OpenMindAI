@@ -31,6 +31,11 @@ web search pages otherwise; no paid external AI model is required.
   query-overlap passages first, so unrelated introductions cannot crowd out
   late source evidence. Selected complete clauses are restored to document
   order; oversized individual clauses are excerpted near matching words.
+  The extractor considers sentence-length candidates across the **whole
+  already size-limited source text**, rather than silently stopping after
+  the first 1,000 clauses. This improves retrieval of late results and
+  conclusions in long text-based PDFs or webpages without increasing the
+  1.5 MB transfer or 2,200-character model-context limits.
   When no significant query terms match, the original leading excerpt is
   retained. Selection is still heuristic and may omit supporting passages.
 - The engine marks a result as snippet-only when its page cannot be fetched.
