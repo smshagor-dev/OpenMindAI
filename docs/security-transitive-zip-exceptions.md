@@ -68,6 +68,12 @@ size limit. Existing non-ZIP PyTorch assets remain supported.
 The same ZIP 9 metadata preflight now also covers the primary
 `kokoro-v1_0.pth` model package before Candle opens it. Configuration input
 (`config.json`) must be a valid JSON object no larger than 1 MiB.
+For both ZIP-backed assets, the preflight also rejects encrypted entries,
+zero-length compressed payloads claiming nonempty output, declared aggregate
+compressed payloads above 1 GiB, and declared expansion ratios over 10,000:1.
+These are conservative **metadata** checks; they do not decompress or validate
+the actual output of upstream ZIP 7 consumers, and they do not eliminate the
+remaining RustSec findings.
 
 This reduces the input surface of the **Kokoro model and voice loader**; it does
 not patch `zip 7.2.0`, prove that all upstream code paths avoid extraction,
