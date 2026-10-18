@@ -1062,6 +1062,92 @@ mod tests {
         bytes
     }
 
+    /// Generate a valid text-only PDF with independently readable page streams.
+    /// The late result is intentionally after the old first-eight-pages limit.
+    fn multipage_research_pdf_fixture(count: usize) -> Vec<u8> {
+        assert!(count > PDF_MAX_EXTRACT_PAGES);
+        let children = (0..count)
+            .map(|i| format!("{} 0 R", 4 + 2 * i))
+            .collect::<Vec<_>>().join(" ");
+        let mut objects = vec![
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            format!("<< /Type /Pages /Kids [{children}] /Count {count} >>"),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".to_string(),
+        ];
+        for i in 0..count {
+            let content_id = 5 + 2 * i;
+            objects.push(format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents {content_id} 0 R >>"
+            ));
+            let body = if i + 1 == count {
+                format!(
+                    "Page {} reports GPS denied drone localization reached 97.5 percent accuracy with UWB anchors and comparison baselines in 2026.",
+                    i + 1
+                )
+            } else {
+                format!(
+                    "Page {} discusses archives, inventory records, publishing history and generic introductory contextual material.",
+                    i + 1
+                )
+            };
+            let stream = format!("BT /F1 12 Tf 72 700 Td ({body}) Tj ET");
+            objects.push(format!(
+                "<< /Length {} >>\nstream\n{stream}\nendstream", stream.len()
+            ));
+        }
+        let mut bytes = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, object) in objects.iter().enumerate() {
+            offsets.push(bytes.len());
+            bytes.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+        }
+        let xref_offset = bytes.len();
+        bytes.extend_from_slice(format!(
+            "xref\n0 {}\n0000000000 65535 f \n", offsets.len() + 1
+        ).as_bytes());
+        for offset in offsets {
+            bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        bytes.extend_from_slice(format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n",
+            objects.len() + 1
+        ).as_bytes());
+        bytes
+    }
+
+    #[test]
+    fn pdf_page_sampling_spans_long_documents_without_exceeding_limit() {
+        let pages: Vec<u32> = (1..=40).collect();
+        let picked = sample_pdf_page_numbers(&pages, PDF_MAX_EXTRACT_PAGES);
+        assert_eq!(picked.len(), PDF_MAX_EXTRACT_PAGES);
+        assert_eq!(picked.first(), Some(&1));
+        assert_eq!(picked.last(), Some(&40));
+        assert!(picked.windows(2).all(|w| w[0] < w[1]));
+        assert!(picked.iter().any(|n| (17..=24).contains(n)));
+    }
+
+    #[test]
+    fn pdf_page_sampling_preserves_small_documents_and_zero_cap() {
+        assert_eq!(sample_pdf_page_numbers(&[2, 7, 10], 8), vec![2, 7, 10]);
+        assert_eq!(sample_pdf_page_numbers(&[2, 7, 10], 1), vec![2]);
+        assert!(sample_pdf_page_numbers(&[1, 2], 0).is_empty());
+        assert!(sample_pdf_page_numbers(&[], 8).is_empty());
+        assert_eq!(sample_pdf_page_numbers(&(1..=8).collect::<Vec<_>>(), 8).len(), 8);
+    }
+
+    #[test]
+    fn research_pdf_reader_extracts_late_text_from_sampled_final_page() {
+        let pdf = multipage_research_pdf_fixture(16);
+        let evidence = extract_pdf_text(&pdf).expect("PDF text from distributed pages");
+        assert!(evidence.contains("PDF page 1:"), "{evidence}");
+        assert!(evidence.contains("PDF page 16:"), "{evidence}");
+        assert!(evidence.contains("97.5 percent accuracy"), "{evidence}");
+        assert!(!evidence.contains("PDF page 2:"), "{evidence}");
+        assert_eq!(evidence.matches("PDF page ").count(), PDF_MAX_EXTRACT_PAGES);
+        let relevant = select_relevant_text(&evidence, "GPS denied drone localization accuracy");
+        assert!(relevant.contains("97.5 percent accuracy"), "{relevant}");
+    }
+
     #[test]
     fn research_pdf_reader_extracts_text_without_executing_content() {
         let content = extract_pdf_text(&text_pdf_fixture()).expect("text PDF should be readable");
