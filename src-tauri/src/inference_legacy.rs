@@ -1639,6 +1639,92 @@ mod tests {
     }
 
     #[test]
+    fn duration_values_recognize_latency_spellings_and_normalize_decimals() {
+        let values = duration_evidence_values(
+            "Decision latency 95ms, network delay 87.50 milliseconds, response 2.00 s, and timeout 5 secs."
+        );
+        assert!(values.contains(&("95".into(), "ms")));
+        assert!(values.contains(&("87.5".into(), "ms")));
+        assert!(values.contains(&("2".into(), "s")));
+        assert!(values.contains(&("5".into(), "s")));
+        assert!(!values.contains(&("95".into(), "s")));
+        assert!(duration_evidence_values("There were 95 samples and 12 sessions.").is_empty());
+        assert!(duration_evidence_values("References [95] cite the benchmark.").is_empty());
+    }
+
+    #[test]
+    fn numeric_audit_flags_seconds_when_source_only_supports_milliseconds() {
+        let pages = HashMap::from([(
+            1usize, "The command controller had 95 milliseconds of measured response latency."
+                .to_string(),
+        )]);
+        let warning = citation_numeric_evidence_warning(
+            "The command controller had 95 seconds of measured response latency [1].",
+            &pages, &HashSet::new(),
+        ).expect("95 milliseconds cannot support a claim of 95 seconds");
+        assert!(warning.contains("[1]: 95 s"), "{warning}");
+    }
+
+    #[test]
+    fn numeric_audit_accepts_matching_duration_spellings() {
+        let pages = HashMap::from([(
+            1usize, "The controller required 87.50 milliseconds to authorize the command."
+                .to_string(),
+        )]);
+        assert!(citation_numeric_evidence_warning(
+            "The controller required 87.5 ms to authorize the command [1].",
+            &pages, &HashSet::new(),
+        ).is_none());
+        let pages = HashMap::from([(
+            1usize, "The controller completed network recovery after 3 sec."
+                .to_string(),
+        )]);
+        assert!(citation_numeric_evidence_warning(
+            "The controller completed network recovery after 3 seconds [1].",
+            &pages, &HashSet::new(),
+        ).is_none());
+    }
+
+    #[test]
+    fn numeric_audit_checks_duration_units_for_grouped_sources() {
+        let pages = HashMap::from([
+            (1usize, "The command controller had 95ms authentication latency.".into()),
+            (2usize, "The command controller used 95 requests for the benchmark.".into()),
+        ]);
+        let warning = citation_numeric_evidence_warning(
+            "The command controller measured 95 milliseconds of authentication latency [1, 2].",
+            &pages, &HashSet::new(),
+        ).expect("counts cannot corroborate measured milliseconds");
+        assert!(warning.contains("[2]: 95 ms"), "{warning}");
+        assert!(!warning.contains("[1]:"), "{warning}");
+    }
+
+    #[test]
+    fn numeric_audit_flags_single_digit_duration_unit_mismatch() {
+        let pages = HashMap::from([(
+            1usize, "The drone controller recorded 3 milliseconds of latency in testing.".into(),
+        )]);
+        let warning = citation_numeric_evidence_warning(
+            "The drone controller recorded 3 seconds of latency in testing [1].",
+            &pages, &HashSet::new(),
+        ).expect("single-digit seconds and milliseconds must differ");
+        assert!(warning.contains("[1]: 3 s"), "{warning}");
+    }
+
+    #[test]
+    fn numeric_audit_preserves_pdf_page_numbers_as_metadata_for_latency() {
+        let pages = HashMap::from([(
+            1usize, "PDF page 95: The command controller measured 87.5 milliseconds of latency."
+                .to_string(),
+        )]);
+        let warning = citation_numeric_evidence_warning(
+            "The command controller measured 95 milliseconds of latency [1].",
+            &pages, &HashSet::from([1usize]),
+        ).expect("a page number is not a latency measurement");
+        assert!(warning.contains("[1]: 95 ms"), "{warning}");
+    }
+
+    #[test]
     fn percentage_source_values_recognize_symbols_and_spelled_out_units() {
         let values = percentage_evidence_values(
             "Accuracy was 87.50%, another trial reached 95 percent and 8 PCT; sample count was 95."
