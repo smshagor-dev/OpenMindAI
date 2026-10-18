@@ -19,8 +19,12 @@ web search pages otherwise; no paid external AI model is required.
   Public, **text-based PDFs** can now contribute cited text evidence using
   the already-pinned Rust PDF parser. Parsing occurs on a blocking worker with
   a six-second wait limit, at most eight pages inspected per PDF, and a
-  512 KB decompression limit per page. PDF text is reduced to at most
-  32,000 characters before passage selection. Encrypted, scanned/image-only,
+  512 KB decompression limit per page. When a PDF has more than eight pages,
+  the extractor samples page numbers deterministically from the beginning
+  through the end, instead of inspecting only the first eight pages. This
+  improves coverage of later results and conclusions, but can still skip
+  important pages. PDF text is reduced to at most 32,000 characters before
+  passage selection. Encrypted, scanned/image-only,
   malformed, oversized and unextractable PDFs remain snippet-only sources.
   No PDF scripts are run and no external PDF viewer or OCR is invoked.
   When choosing relevant passages from longer pages, the extractor preserves
@@ -130,6 +134,10 @@ destination constraint.
 8. Fetch a public text-based PDF, a scanned PDF, an encrypted PDF, and a PDF
    served as octet-stream. Confirm only successfully extracted text is marked
    as retrieved evidence and malformed documents never crash the app.
+9. Fetch a publicly accessible text-based PDF longer than eight pages with
+   query-relevant results near the end. Confirm sampled late-page content can
+   appear in evidence, that original page numbers are retained, and the
+   eight-page processing limit is respected.
 
 CI covers parsing, retry classification, provider ordering and a local HTTP
 429 response fixture. These tests do not prove live vendor availability,
