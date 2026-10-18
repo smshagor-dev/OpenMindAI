@@ -48,10 +48,15 @@ jobs:
       - name: Check temporary legacy ZIP exception scope
         run: node scripts/check-transitive-zip-audit.mjs
 
+      - name: Inspect pinned ZIP consumer sources
+        run: |
+          cargo metadata --locked --manifest-path src-tauri/Cargo.toml --format-version 1 > "$RUNNER_TEMP/openmind-cargo-metadata.json"
+          node scripts/check-upstream-zip-source.mjs "$RUNNER_TEMP/openmind-cargo-metadata.json"
+
       - name: Cargo audit (documented transitive ZIP exceptions)
-        # ZIP 7/8 are pinned by upstream any-tts/candle-core/docx-rs.
-        # Keep this scoped, expiring exception guarded by the Node check above.
-        # Other advisories must still fail CI.
+        # ZIP 7 remains pinned by upstream any-tts/candle-core.
+        # Keep this scoped, expiring exception guarded by source and lockfile
+        # checks above. Other advisories must still fail CI.
         run: |
           cargo audit --file src-tauri/Cargo.lock \
             --ignore RUSTSEC-2026-0367 \
