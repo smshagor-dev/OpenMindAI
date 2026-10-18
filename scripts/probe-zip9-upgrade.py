@@ -45,6 +45,43 @@ def replace_zip_requirement(contents: str) -> str:
     return "".join(lines)
 
 
+def replace_once(source: Path, old: str, new: str) -> None:
+    original = source.read_text(encoding="utf-8")
+    if original.count(old) != 1:
+        raise RuntimeError(f"Expected exactly one reviewed ZIP 9 API call in {source}: {old[:75]}")
+    source.write_text(original.replace(old, new), encoding="utf-8")
+
+
+def adapt_upstream_zip9_api(crate: str, directory: Path) -> None:
+    """Apply small, exact upstream ZIP 9 filename API changes; fail on drift."""
+    if crate == "candle-core":
+        npy = directory / "src" / "npy.rs"
+        replace_once(
+            npy,
+            "let name = reader.name();\\n                name.strip_suffix(NPY_SUFFIX).unwrap_or(name).to_owned()",
+            "let name = reader.name()?;\\n                name.strip_suffix(NPY_SUFFIX).unwrap_or(&name).to_owned()",
+        )
+        replace_once(
+            npy,
+            "let name = file.name();\\n                name.strip_suffix(NPY_SUFFIX).unwrap_or(name).to_owned()",
+            "let name = file.name()?;\\n                name.strip_suffix(NPY_SUFFIX).unwrap_or(&name).to_owned()",
+        )
+        replace_once(
+            directory / "src" / "pickle.rs",
+            ".map(|f| f.to_string())\\n        .collect::<Vec<String>>()",
+            ".map(|f| f.map(|f| f.to_string()))\\n        .collect::<std::result::Result<Vec<String>, _>>()?",
+        )
+    elif crate == "any-tts":
+        replace_once(
+            directory / "src" / "models" / "kokoro" / "model.rs",
+            "let names: Vec<String> = zip.file_names().map(|s| s.to_string()).collect();",
+            "let names: Vec<String> = zip.file_names()\\n"
+            "                .map(|name| name.map(|name| name.to_string()))\\n"
+            "                .collect::<Result<Vec<_>, _>>()\\n"
+            "                .map_err(|error| TtsError::WeightLoadError(format!(\\\"Invalid .pt ZIP name: {error}\\\")))?;",
+        )
+
+
 def registry_source(crate: str, version: str, cargo_home: Path) -> Path:
     paths = sorted((cargo_home / "registry" / "src").glob(f"*/{crate}-{version}/Cargo.toml"))
     verified = []
@@ -110,6 +147,7 @@ def main() -> None:
             shutil.copytree(src, dst)
             cargo_toml = dst / "Cargo.toml"
             cargo_toml.write_text(replace_zip_requirement(cargo_toml.read_text(encoding="utf-8")), encoding="utf-8")
+            adapt_upstream_zip9_api(crate, dst)
             patches.extend(["--config", f'patch.crates-io.{crate}.path="{dst}"'])
             print(f"Locally substituted {crate}@{version} zip requirement with {ZIP_TARGET}")
         # Copy only the relevant Cargo project into a writable sandbox. Patches
@@ -126,7 +164,7 @@ def main() -> None:
             # temporarily updated lockfile is restored in finally even on fail.
             original_lock = scratch_lock.read_bytes()
             try:
-                run(["cargo", *patches, "update", "--manifest-path", str(MANIFEST)])
+                run(["cargo", *patches, "update", "--manifest-path", str(MANIFEST), "-p", "any-tts", "-p", "candle-core"])
                 versions = lock_versions(LOCK, "zip")
                 if any(v.startswith(("7.", "8.")) for v in versions):
                     raise RuntimeError(f"Legacy zip versions still resolved: {versions}")
