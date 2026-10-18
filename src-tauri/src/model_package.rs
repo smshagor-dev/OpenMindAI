@@ -13,8 +13,8 @@ use crate::{
     app_error::AppError,
     model_catalog::{ModelCatalogDependency, ModelCatalogEntry},
     model_download::{
-        ensure_contained, prepare_partial_download, sha256_file,
-        validate_free_space, PartialDownloadState, VerificationState,
+        ensure_contained, prepare_partial_download, sha256_file, validate_free_space,
+        PartialDownloadState, VerificationState,
     },
     portable_root::PortableRootManager,
 };
@@ -601,8 +601,14 @@ mod tests {
             source_url: "https://example.invalid/voices/af_heart.pt".to_string(),
         };
         let first = dependency_partial_path(&root, &a, &template).unwrap();
-        assert_eq!(first, dependency_partial_path(&root, &a, &template).unwrap());
-        assert_ne!(first, dependency_partial_path(&root, &b, &template).unwrap());
+        assert_eq!(
+            first,
+            dependency_partial_path(&root, &a, &template).unwrap()
+        );
+        assert_ne!(
+            first,
+            dependency_partial_path(&root, &b, &template).unwrap()
+        );
 
         let different_source = ResolvedDependency {
             source_url: "https://other.invalid/voices/af_heart.pt".to_string(),
