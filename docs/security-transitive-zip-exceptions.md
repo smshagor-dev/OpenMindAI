@@ -19,8 +19,9 @@ extracting with the patched ZIP 9.0.4 library. It rejects path escapes, duplicat
 or empty paths, symbolic links and special-file types, SUID/SGID/sticky permission
 bits, and archives advertising more than 20,000 entries or 4 GiB uncompressed.
 Rejected archives are discarded from staging without replacing a working
-installed runtime. Regression tests cover permission modes, resource bounds,
-and a duplicate-entry archive through the installation path.
+installed runtime. Regression tests cover permission modes and resource bounds;
+existing installer tests cover failed-extraction cleanup and preserving a
+working runtime.
 
 This reduces exposure in the **direct runtime installer**. It is **not** a
 replacement for upstream ZIP 7/8 remediation and does not establish that every
