@@ -1535,6 +1535,79 @@ mod tests {
     }
 
     #[test]
+    fn pdf_numeric_source_data_excludes_generated_page_numbers() {
+        let evidence = concat!(
+            "PDF page 16: The localization study measured 87.5% accuracy in 2026.\n",
+            "PDF page 32: A separate trial measured 92.0% accuracy.\n"
+        );
+        let numeric = numeric_source_values(evidence, true);
+        assert!(numeric.contains("87.5"));
+        assert!(numeric.contains("2026"));
+        assert!(numeric.contains("92"));
+        assert!(!numeric.contains("16"));
+        assert!(!numeric.contains("32"));
+    }
+
+    #[test]
+    fn pdf_numeric_citation_flags_claim_matching_only_page_metadata() {
+        let pages = HashMap::from([(
+            1usize, "PDF page 16: The drone localization trial reached 87.5 percent accuracy."
+                .to_string(),
+        )]);
+        let warning = citation_numeric_evidence_warning(
+            "The drone localization trial had 16 test aircraft [1].",
+            &pages, &HashSet::from([1usize]),
+        ).expect("page 16 must not count as a measured 16 aircraft");
+        assert!(warning.contains("[1]: 16"), "{warning}");
+        assert!(citation_numeric_evidence_warning(
+            "The drone localization trial reached 87.5% accuracy [1].",
+            &pages, &HashSet::from([1usize]),
+        ).is_none());
+    }
+
+    #[test]
+    fn pdf_numeric_citation_accepts_actual_value_equal_to_page_number() {
+        let pages = HashMap::from([(
+            1usize, "PDF page 16: The localization study evaluated 16 aircraft at 87.5% accuracy."
+                .to_string(),
+        )]);
+        assert!(citation_numeric_evidence_warning(
+            "The localization study evaluated 16 aircraft [1].",
+            &pages, &HashSet::from([1usize]),
+        ).is_none());
+    }
+
+    #[test]
+    fn html_numeric_citation_does_not_strip_pdf_like_source_text() {
+        let pages = HashMap::from([(
+            1usize, "PDF page 16: The online article refers to a book published in 2026."
+                .to_string(),
+        )]);
+        assert!(citation_numeric_evidence_warning(
+            "The article mentions page 16 [1].",
+            &pages, &HashSet::new(),
+        ).is_none());
+        assert!(citation_numeric_evidence_warning(
+            "The article reports 16 subjects [1].",
+            &pages, &HashSet::from([1usize]),
+        ).is_some());
+    }
+
+    #[test]
+    fn mixed_pdf_and_html_numeric_citations_are_checked_independently() {
+        let pages = HashMap::from([
+            (1usize, "PDF page 16: The test measured 87.5 percent accuracy.".to_string()),
+            (2usize, "A technical report measured 16 vehicles and 87.5 percent accuracy.".to_string()),
+        ]);
+        let warning = citation_numeric_evidence_warning(
+            "The study measured 16 vehicles at 87.5% accuracy [1, 2].",
+            &pages, &HashSet::from([1usize]),
+        ).expect("PDF metadata must not support claim 16");
+        assert!(warning.contains("[1]: 16"), "{warning}");
+        assert!(!warning.contains("[2]:"), "{warning}");
+    }
+
+    #[test]
     fn citation_numeric_audit_accepts_matching_numbers_in_retrieved_text() {
         let pages = HashMap::from([(
             1usize,
