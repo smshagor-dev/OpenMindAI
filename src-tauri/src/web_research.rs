@@ -955,7 +955,9 @@ fn research_term_overlap(clause: &str, query_terms: &HashSet<String>) -> usize {
 /// truncating away the matching information at the end of that clause.
 fn relevant_clause_window(clause: &str, query_terms: &HashSet<String>) -> String {
     let mut word_start = None;
-    for (index, character) in clause.char_indices() {
+    for (index, character) in clause.char_indices()
+        .chain(std::iter::once((clause.len(), ' ')))
+    {
         if character.is_alphanumeric() {
             word_start.get_or_insert(index);
         } else if let Some(start) = word_start.take() {
@@ -1114,6 +1116,17 @@ mod tests {
         page.push_str("GPS denied drone localization achieved 93.5% accuracy in the test flight");
         let excerpt = select_relevant_text(&page, "GPS drone localization accuracy");
         assert!(excerpt.contains("GPS denied drone localization"), "{excerpt}");
+        assert!(excerpt.chars().count() <= PAGE_CHARS);
+    }
+
+    #[test]
+    fn research_excerpt_handles_a_final_matching_word_without_trailing_punctuation() {
+        let mut clause = "A very long extended unrelated archive heading ".repeat(75);
+        clause.push_str(" GPS");
+        let excerpt = relevant_clause_window(
+            &clause, &HashSet::from(["gps".to_string()])
+        );
+        assert!(excerpt.contains("GPS"), "{excerpt}");
         assert!(excerpt.chars().count() <= PAGE_CHARS);
     }
 
