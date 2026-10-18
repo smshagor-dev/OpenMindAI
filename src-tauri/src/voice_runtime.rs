@@ -220,8 +220,9 @@ fn verify_kokoro_checkpoint_digest(package_dir: &Path, model_path: &Path) -> Res
     if !manifest_path.exists() {
         return Ok(());
     }
+    let canonical_package = fs::canonicalize(package_dir)?;
     let canonical = fs::canonicalize(&manifest_path)?;
-    if !canonical.is_file() || !canonical.starts_with(package_dir) {
+    if !canonical.is_file() || !canonical.starts_with(&canonical_package) {
         return Err(AppError::ArtifactGenerationFailed(
             "Kokoro model manifest resolves outside its package".to_string(),
         ));
