@@ -1040,6 +1040,51 @@ fn numeric_evidence_values(text: &str) -> BTreeSet<String> {
     values
 }
 
+/// A matching bare number (for example 95 participants) is not evidence
+/// for a percentage claim (95% accuracy). Recognize % and the spelled-out
+/// "percent" suffix, while reusing existing decimal/comma normalization.
+fn percentage_evidence_values(text: &str) -> BTreeSet<String> {
+    let bytes = text.as_bytes();
+    let mut percentages = BTreeSet::new();
+    let mut index = 0;
+    while index < bytes.len() && percentages.len() < 80 {
+        if !bytes[index].is_ascii_digit()
+            || (index > 0 && (bytes[index - 1].is_ascii_alphabetic() || bytes[index - 1] == b'_'))
+            || (index >= 2
+                && matches!(bytes[index - 1], b'.' | b',')
+                && bytes[index - 2].is_ascii_digit())
+        {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < bytes.len()
+            && (bytes[index].is_ascii_digit()
+                || (matches!(bytes[index], b'.' | b',')
+                    && bytes.get(index + 1).is_some_and(u8::is_ascii_digit)))
+        {
+            index += 1;
+        }
+        let mut suffix = index;
+        while bytes.get(suffix).is_some_and(u8::is_ascii_whitespace) {
+            suffix += 1;
+        }
+        let tail = &bytes[suffix..];
+        let percent_word = tail.get(..7).is_some_and(|part|
+            part.eq_ignore_ascii_case(b"percent")
+                && !tail.get(7).is_some_and(u8::is_ascii_alphabetic)
+        );
+        let pct_word = tail.get(..3).is_some_and(|part|
+            part.eq_ignore_ascii_case(b"pct")
+                && !tail.get(3).is_some_and(u8::is_ascii_alphabetic)
+        );
+        if tail.starts_with(b"%") || percent_word || pct_word {
+            percentages.extend(numeric_evidence_values(&format!("{}%", &text[start..index])));
+        }
+    }
+    percentages
+}
+
 /// PDF page numbers are generated provenance, not measured facts. Exclude
 /// them only for MIME-validated parsed PDF sources, so unrelated HTML strings
 /// that resemble a PDF page label retain their ordinary numerical content.
@@ -1072,6 +1117,9 @@ fn citation_numeric_evidence_warning(
     let reference_values = page_texts.iter()
         .map(|(number, page)| (*number, numeric_source_values(page, pdf_sources.contains(number))))
         .collect::<HashMap<_, _>>();
+    let reference_percentages = page_texts.iter()
+        .map(|(number, page)| (*number, percentage_evidence_values(page)))
+        .collect::<HashMap<_, _>>();
     let mut mismatches = std::collections::BTreeMap::<usize, BTreeSet<String>>::new();
     for (number, claim) in cited_claim_clauses(answer) {
         let Some(numbers_in_source) = reference_values.get(&number) else {
@@ -1079,8 +1127,22 @@ fn citation_numeric_evidence_warning(
             continue;
         };
         let numbers_in_claim = numeric_evidence_values(&claim);
+        let percentages_in_claim = percentage_evidence_values(&claim);
         for value in numbers_in_claim.difference(numbers_in_source) {
-            mismatches.entry(number).or_default().insert(value.clone());
+            let label = if percentages_in_claim.contains(value) {
+                format!("{value}%")
+            } else {
+                value.clone()
+            };
+            mismatches.entry(number).or_default().insert(label);
+        }
+        // Identical digits with different units are NOT percentage support.
+        if let Some(percentages_in_source) = reference_percentages.get(&number) {
+            for value in percentages_in_claim.difference(percentages_in_source) {
+                if numbers_in_source.contains(value) {
+                    mismatches.entry(number).or_default().insert(format!("{value}%"));
+                }
+            }
         }
     }
     if mismatches.is_empty() {
@@ -1094,7 +1156,7 @@ fn citation_numeric_evidence_warning(
         .collect::<Vec<_>>().join("; ");
     let more = if mismatches.len() > 8 { " (and others)" } else { "" };
     Some(format!(
-        "\n\n> **Numerical evidence warning:** Claimed numerical value(s) were not found in the corresponding retrieved page extracts ({details}{more}). Review cited figures, dates and percentages against the full originals. The extracts may be incomplete; matching figures alone do not prove factual support.\n"
+        "\n\n> **Numerical evidence warning:** Claimed numerical value(s) or percentage units were not supported by the corresponding retrieved page extracts ({details}{more}). Review cited figures, dates and percentages against the full originals. The extracts may be incomplete; matching figures alone do not prove factual support.\n"
     ))
 }
 
