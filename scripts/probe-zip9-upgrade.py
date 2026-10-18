@@ -33,10 +33,10 @@ def replace_zip_requirement(contents: str) -> str:
         if line.lstrip().startswith("["):
             section = line.strip()
         if section == "[dependencies.zip]" and re.match(r"^version\s*=\s*\"7(?:\.\d+)*\"", line):
-            lines[index] = re.sub(r'^(version\s*=\s*)\"[^\"]+\"', r'\1\"' + ZIP_TARGET + '\"', line)
+            lines[index] = re.sub(r'^(version\s*=\s*)\"[^\"]+\"', r'\g<1>"' + ZIP_TARGET + '"', line)
             edits += 1
         elif section == "[dependencies]" and re.match(r"^zip\s*=", line):
-            new = re.sub(r'(\bversion\s*=\s*)\"7(?:\.\d+)*\"', r'\1\"' + ZIP_TARGET + '\"', line)
+            new = re.sub(r'(\bversion\s*=\s*)\"7(?:\.\d+)*\"', r'\g<1>"' + ZIP_TARGET + '"', line)
             if new != line:
                 lines[index] = new
                 edits += 1
