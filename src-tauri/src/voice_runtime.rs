@@ -175,7 +175,8 @@ fn validate_kokoro_assets(
     package_dir: &Path,
     voices_dir: &Path,
 ) -> Result<(), AppError> {
-    let config = canonical_file_under_root(root, &package_dir.join("config.json"), "Kokoro config.json")?;
+    let config =
+        canonical_file_under_root(root, &package_dir.join("config.json"), "Kokoro config.json")?;
     if !config.starts_with(package_dir) {
         return Err(AppError::ArtifactGenerationFailed(
             "Kokoro config.json resolves outside its model package".to_string(),
@@ -220,10 +221,14 @@ fn validate_kokoro_voice_archive(path: &Path) -> Result<(), AppError> {
     let mut names = std::collections::HashSet::new();
     for index in 0..archive.len() {
         let entry = archive.by_index(index).map_err(|error| {
-            AppError::ArtifactGenerationFailed(format!("Kokoro voice ZIP entry is invalid: {error}"))
+            AppError::ArtifactGenerationFailed(format!(
+                "Kokoro voice ZIP entry is invalid: {error}"
+            ))
         })?;
         let enclosed = entry.enclosed_name().ok_or_else(|| {
-            AppError::ArtifactGenerationFailed("Kokoro voice ZIP contains an unsafe path".to_string())
+            AppError::ArtifactGenerationFailed(
+                "Kokoro voice ZIP contains an unsafe path".to_string(),
+            )
         })?;
         if enclosed.as_os_str().is_empty() || !names.insert(enclosed.to_path_buf()) {
             return Err(AppError::ArtifactGenerationFailed(
@@ -238,7 +243,8 @@ fn validate_kokoro_voice_archive(path: &Path) -> Result<(), AppError> {
                 )
             {
                 return Err(AppError::ArtifactGenerationFailed(
-                    "Kokoro voice ZIP contains a link, special entry or privileged mode".to_string(),
+                    "Kokoro voice ZIP contains a link, special entry or privileged mode"
+                        .to_string(),
                 ));
             }
         }
