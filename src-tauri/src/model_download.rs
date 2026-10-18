@@ -854,7 +854,7 @@ mod tests {
     #[test]
     fn primary_sibling_selection_rejects_unsafe_remote_paths() {
         let download = ModelCatalogDownload {
-            strategy: ModelDownloadStrategy::SingleFile,
+            strategy: crate::model_catalog::ModelDownloadStrategy::SingleFile,
             filename_pattern: "*.gguf".to_string(),
             destination_dir: "models/llm/test".to_string(),
             format: "gguf".to_string(),
