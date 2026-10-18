@@ -58,27 +58,27 @@ def adapt_upstream_zip9_api(crate: str, directory: Path) -> None:
         npy = directory / "src" / "npy.rs"
         replace_once(
             npy,
-            "let name = reader.name();\\n                name.strip_suffix(NPY_SUFFIX).unwrap_or(name).to_owned()",
-            "let name = reader.name()?;\\n                name.strip_suffix(NPY_SUFFIX).unwrap_or(&name).to_owned()",
+            "let name = reader.name();\n                name.strip_suffix(NPY_SUFFIX).unwrap_or(name).to_owned()",
+            "let name = reader.name()?;\n                name.strip_suffix(NPY_SUFFIX).unwrap_or(&name).to_owned()",
         )
         replace_once(
             npy,
-            "let name = file.name();\\n                name.strip_suffix(NPY_SUFFIX).unwrap_or(name).to_owned()",
-            "let name = file.name()?;\\n                name.strip_suffix(NPY_SUFFIX).unwrap_or(&name).to_owned()",
+            "let name = file.name();\n                name.strip_suffix(NPY_SUFFIX).unwrap_or(name).to_owned()",
+            "let name = file.name()?;\n                name.strip_suffix(NPY_SUFFIX).unwrap_or(&name).to_owned()",
         )
         replace_once(
             directory / "src" / "pickle.rs",
-            ".map(|f| f.to_string())\\n        .collect::<Vec<String>>()",
-            ".map(|f| f.map(|f| f.to_string()))\\n        .collect::<std::result::Result<Vec<String>, _>>()?",
+            ".map(|f| f.to_string())\n        .collect::<Vec<String>>()",
+            ".map(|f| f.map(|f| f.to_string()))\n        .collect::<std::result::Result<Vec<String>, _>>()?",
         )
     elif crate == "any-tts":
         replace_once(
             directory / "src" / "models" / "kokoro" / "model.rs",
             "let names: Vec<String> = zip.file_names().map(|s| s.to_string()).collect();",
-            "let names: Vec<String> = zip.file_names()\\n"
-            "                .map(|name| name.map(|name| name.to_string()))\\n"
-            "                .collect::<Result<Vec<_>, _>>()\\n"
-            "                .map_err(|error| TtsError::WeightLoadError(format!(\\\"Invalid .pt ZIP name: {error}\\\")))?;",
+            "let names: Vec<String> = zip.file_names()\n"
+            "                .map(|name| name.map(|name| name.to_string()))\n"
+            "                .collect::<Result<Vec<_>, _>>()\n"
+            "                .map_err(|error| TtsError::WeightLoadError(format!(\\"Invalid .pt ZIP name: {error}\\")))?;",
         )
 
 
