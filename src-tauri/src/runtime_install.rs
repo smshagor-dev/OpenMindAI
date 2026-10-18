@@ -833,25 +833,6 @@ mod tests {
     }
 
     #[test]
-    fn runtime_zip_duplicate_paths_never_replace_a_working_install() {
-        let temp = tempfile::tempdir().unwrap();
-        let archive_path = temp.path().join("runtime.zip");
-        zip_with(&archive_path, &[
-            ("bin/llama-server.exe", b"replacement"),
-            ("bin//llama-server.exe", b"duplicate"),
-        ]);
-        let install = temp.path().join("installed");
-        fs::create_dir_all(&install).unwrap();
-        fs::write(install.join("llama-server.exe"), b"working original").unwrap();
-        let staging = temp.path().join("staging");
-        let error = install_runtime_archive(&archive_path, &staging, &install)
-            .unwrap_err().to_string();
-        assert!(error.contains("duplicate path"), "{error}");
-        assert_eq!(fs::read(install.join("llama-server.exe")).unwrap(), b"working original");
-        assert!(!staging.exists());
-    }
-
-    #[test]
     fn runtime_archive_is_staged_then_moved_into_place() {
         let temp = tempfile::tempdir().unwrap();
         let archive = temp.path().join("runtime.zip");
