@@ -289,14 +289,21 @@ fn verify_kokoro_checkpoint_digest(package_dir: &Path, model_path: &Path) -> Res
             "Kokoro model manifest filename does not match the selected checkpoint".to_string(),
         ));
     }
-    if manifest.get("verification").and_then(|value| value.as_str()) == Some("failed") {
+    if manifest
+        .get("verification")
+        .and_then(|value| value.as_str())
+        == Some("failed")
+    {
         return Err(AppError::ArtifactGenerationFailed(
             "Kokoro model manifest records failed verification".to_string(),
         ));
     }
     let upstream = kokoro_manifest_digest(&manifest, "sha256")?;
     let installed = kokoro_manifest_digest(&manifest, "actualSha256")?;
-    if upstream.zip(installed).is_some_and(|(a, b)| !a.eq_ignore_ascii_case(b)) {
+    if upstream
+        .zip(installed)
+        .is_some_and(|(a, b)| !a.eq_ignore_ascii_case(b))
+    {
         return Err(AppError::ArtifactGenerationFailed(
             "Kokoro model manifest has conflicting SHA-256 records".to_string(),
         ));
