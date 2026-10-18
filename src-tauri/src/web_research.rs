@@ -802,6 +802,7 @@ fn append_pdf_page_excerpt(
     combined: &mut String,
     page_number: u32,
     readable: &str,
+    query: &str,
     char_budget: usize,
 ) {
     let heading = format!("PDF page {page_number}: ");
@@ -809,12 +810,18 @@ fn append_pdf_page_excerpt(
     if remaining == 0 || readable.is_empty() {
         return;
     }
+    // Apply query relevance *within* a page before allocating its reserved
+    // text budget. Otherwise late results on a long sampled page disappear.
+    let selected = select_relevant_text_bounded(readable, query, remaining);
+    if selected.trim().is_empty() {
+        return;
+    }
     combined.push_str(&heading);
-    combined.extend(readable.chars().take(remaining));
+    combined.push_str(&selected);
     combined.push('\n');
 }
 
-fn extract_pdf_text(bytes: &[u8]) -> Result<String, String> {
+fn extract_pdf_text(bytes: &[u8], query: &str) -> Result<String, String> {
     if bytes.len() > PAGE_BYTES || !bytes.windows(5).take(1024).any(|part| part == b"%PDF-") {
         return Err("invalid or oversized PDF document".to_string());
     }
@@ -842,7 +849,7 @@ fn extract_pdf_text(bytes: &[u8]) -> Result<String, String> {
             &[page_number], PDF_MAX_DECOMPRESSED_PAGE_BYTES,
         ).map_err(|_| "PDF page text could not be safely decoded".to_string())?;
         let readable = page_text.split_whitespace().collect::<Vec<_>>().join(" ");
-        append_pdf_page_excerpt(&mut combined, page_number, &readable, per_page_budget);
+        append_pdf_page_excerpt(&mut combined, page_number, &readable, query, per_page_budget);
     }
     if combined.trim().chars().count() < 80 {
         return Err("PDF has insufficient extractable text (possibly scanned)".to_string());
@@ -879,8 +886,9 @@ async fn fetch_readable_page(raw: &str, query: &str) -> Result<Option<PageEviden
     let text = if is_research_pdf_type(&content_type, &url) {
         let pdf = response_bytes(response, PAGE_BYTES).await?;
         // PDF parsing/decompression must not block the async search runtime.
+        let pdf_query = query.to_owned();
         tokio::time::timeout(Duration::from_secs(6), tokio::task::spawn_blocking(
-            move || extract_pdf_text(&pdf)
+            move || extract_pdf_text(&pdf, &pdf_query)
         )).await.map_err(|_| "PDF extraction timed out".to_string())?
             .map_err(|_| "PDF extraction worker unavailable".to_string())??
     } else if content_type.starts_with("text/html")
@@ -990,7 +998,11 @@ fn research_term_overlap(clause: &str, query_terms: &HashSet<String>) -> usize {
 /// When one relevant clause is longer than the whole evidence budget, center
 /// its excerpt near a complete matching query word instead of silently
 /// truncating away the matching information at the end of that clause.
-fn relevant_clause_window(clause: &str, query_terms: &HashSet<String>) -> String {
+fn relevant_clause_window(
+    clause: &str,
+    query_terms: &HashSet<String>,
+    char_limit: usize,
+) -> String {
     let mut word_start = None;
     for (index, character) in clause.char_indices()
         .chain(std::iter::once((clause.len(), ' ')))
@@ -1001,20 +1013,25 @@ fn relevant_clause_window(clause: &str, query_terms: &HashSet<String>) -> String
             if query_terms.contains(&clause[start..index].to_lowercase()) {
                 let prefix_chars = clause[..start].chars().count();
                 return clause.chars()
-                    .skip(prefix_chars.saturating_sub(PAGE_CHARS / 5))
-                    .take(PAGE_CHARS)
+                    .skip(prefix_chars.saturating_sub(char_limit / 5))
+                    .take(char_limit)
                     .collect();
             }
         }
     }
-    clause.chars().take(PAGE_CHARS).collect()
+    clause.chars().take(char_limit).collect()
 }
 
 /// Rank passages before applying the page character budget. Previously an
 /// unrelated first paragraph and 14 selected paragraphs were restored to page
 /// order before truncation, hiding strong evidence near the end of long pages.
 fn select_relevant_text(text: &str, query: &str) -> String {
-    if text.chars().count() <= PAGE_CHARS { return text.to_string(); }
+    select_relevant_text_bounded(text, query, PAGE_CHARS)
+}
+
+fn select_relevant_text_bounded(text: &str, query: &str, char_limit: usize) -> String {
+    if char_limit == 0 { return String::new(); }
+    if text.chars().count() <= char_limit { return text.to_string(); }
     let terms: HashSet<String> = query
         .split(|character: char| !character.is_alphanumeric())
         .filter(|word| word.chars().count() >= 3)
@@ -1022,7 +1039,7 @@ fn select_relevant_text(text: &str, query: &str) -> String {
         .map(str::to_lowercase)
         .collect();
     let clauses = research_page_clauses(text);
-    let fallback = || text.chars().take(PAGE_CHARS).collect::<String>();
+    let fallback = || text.chars().take(char_limit).collect::<String>();
     if clauses.is_empty() || terms.is_empty() { return fallback(); }
     let mut best: Vec<_> = clauses.iter().enumerate()
         .map(|(index, clause)| (index, research_term_overlap(clause, &terms)))
@@ -1034,11 +1051,11 @@ fn select_relevant_text(text: &str, query: &str) -> String {
     for (index, _) in best.into_iter().filter(|(_, score)| *score > 0).take(14) {
         let length = clauses[index].chars().count();
         let separator = if chosen.is_empty() { 0 } else { 2 };
-        if length + separator <= PAGE_CHARS - chars_used {
+        if length + separator <= char_limit.saturating_sub(chars_used) {
             chosen.push(index);
             chars_used += length + separator;
         } else if chosen.is_empty() {
-            return relevant_clause_window(clauses[index], &terms);
+            return relevant_clause_window(clauses[index], &terms, char_limit);
         }
     }
     if chosen.is_empty() { return fallback(); }
