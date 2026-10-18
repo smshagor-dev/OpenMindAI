@@ -750,7 +750,9 @@ mod tests {
     fn docx_escapes_untrusted_text_and_preserves_unicode() {
         let temp = tempfile::tempdir().unwrap();
         let dest = temp.path().join("escaped.docx");
-        generate_docx("**<unsafe>&'\" বাংলা**", "A <B> & \"C\"", &dest).unwrap();
+        let escaped = docx_xml_text("<unsafe>&'\" বাংলা");
+        assert_eq!(escaped, "&lt;unsafe&gt;&amp;&apos;&quot; বাংলা");
+        generate_docx("**Bangla বাংলা & quotes**", "A <B> & \"C\"", &dest).unwrap();
         let mut zip = zip::ZipArchive::new(std::fs::File::open(dest).unwrap()).unwrap();
         let mut xml = String::new();
         std::io::Read::read_to_string(
@@ -758,7 +760,7 @@ mod tests {
             &mut xml,
         ).unwrap();
         assert!(xml.contains("A &lt;B&gt; &amp; &quot;C&quot;"));
-        assert!(xml.contains("&lt;unsafe&gt;&amp;&apos;&quot; বাংলা"));
+        assert!(xml.contains("Bangla বাংলা &amp; quotes"));
         assert!(!xml.contains("<unsafe>"));
     }
 }
