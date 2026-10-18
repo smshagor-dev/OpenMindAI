@@ -238,11 +238,29 @@ fn verify_kokoro_dependency_digests(
     Ok(())
 }
 
-/// Recheck the actual primary checkpoint against its previously recorded
-/// expected hash when the package supplies one. This detects changes made
-/// *after* installation, unlike comparing saved verification fields to each
-/// other. A local manifest is not a signed trust anchor, and legacy installs
-/// without an expected digest remain supported.
+/// Accept only correctly formatted installer or upstream SHA-256 records.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn kokoro_manifest_digest<'a>(
+    manifest: &'a serde_json::Value,
+    key: &str,
+) -> Result<Option<&'a str>, AppError> {
+    match manifest.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(value))
+            if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
+        {
+            Ok(Some(value))
+        }
+        _ => Err(AppError::ArtifactGenerationFailed(format!(
+            "Kokoro model manifest has an invalid {key} SHA-256"
+        ))),
+    }
+}
+
+/// Recheck the primary checkpoint against its upstream expected SHA-256 or
+/// the installer-recorded actualSha256 when the upstream value was absent.
+/// This detects changes made after installation. A local manifest is not a
+/// signed trust anchor, and legacy installs without any digest remain supported.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn verify_kokoro_checkpoint_digest(package_dir: &Path, model_path: &Path) -> Result<(), AppError> {
     let manifest_path = package_dir.join("model-manifest.json");
@@ -265,21 +283,49 @@ fn verify_kokoro_checkpoint_digest(package_dir: &Path, model_path: &Path) -> Res
         serde_json::from_slice(&fs::read(canonical)?).map_err(|error| {
             AppError::ArtifactGenerationFailed(format!("Kokoro model manifest is invalid: {error}"))
         })?;
-    let Some(expected) = manifest.get("sha256").and_then(|value| value.as_str()) else {
-        return Ok(());
-    };
-    if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(AppError::ArtifactGenerationFailed(
-            "Kokoro model manifest has an invalid expected SHA-256".to_string(),
-        ));
-    }
     let filename = model_path.file_name().and_then(|name| name.to_str());
     if manifest.get("filename").and_then(|value| value.as_str()) != filename {
         return Err(AppError::ArtifactGenerationFailed(
             "Kokoro model manifest filename does not match the selected checkpoint".to_string(),
         ));
     }
+    if manifest
+        .get("verification")
+        .and_then(|value| value.as_str())
+        == Some("failed")
+    {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro model manifest records failed verification".to_string(),
+        ));
+    }
+    let upstream = kokoro_manifest_digest(&manifest, "sha256")?;
+    let installed = kokoro_manifest_digest(&manifest, "actualSha256")?;
+    if upstream
+        .zip(installed)
+        .is_some_and(|(a, b)| !a.eq_ignore_ascii_case(b))
+    {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro model manifest has conflicting SHA-256 records".to_string(),
+        ));
+    }
+    let Some(expected) = upstream.or(installed) else {
+        // Legacy installs with no recorded digest are not silently reported
+        // as verified; other asset/path preflight still applies.
+        return Ok(());
+    };
     let mut file = fs::File::open(model_path)?;
+    if let Some(size) = manifest.get("sizeBytes") {
+        let declared = size.as_u64().ok_or_else(|| {
+            AppError::ArtifactGenerationFailed(
+                "Kokoro model manifest has an invalid size".to_string(),
+            )
+        })?;
+        if file.metadata()?.len() != declared {
+            return Err(AppError::ArtifactGenerationFailed(
+                "Kokoro checkpoint size differs from its install manifest".to_string(),
+            ));
+        }
+    }
     let mut digest = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
@@ -292,7 +338,7 @@ fn verify_kokoro_checkpoint_digest(package_dir: &Path, model_path: &Path) -> Res
     let actual = format!("{:x}", digest.finalize());
     if !actual.eq_ignore_ascii_case(expected) {
         return Err(AppError::ArtifactGenerationFailed(
-            "Kokoro checkpoint changed since its expected SHA-256 was recorded; validate or re-download the model".to_string(),
+            "Kokoro checkpoint differs from its recorded SHA-256; validate or re-download the model".to_string(),
         ));
     }
     Ok(())
@@ -599,6 +645,53 @@ mod tests {
         assert!(verify_kokoro_checkpoint_digest(&package, &model).is_ok());
         fs::write(&model, b"tampered-checkpoint").unwrap();
         assert!(verify_kokoro_checkpoint_digest(&package, &model).is_err());
+    }
+
+    #[test]
+    fn kokoro_checkpoint_digest_uses_install_record_when_upstream_hash_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("kokoro");
+        fs::create_dir_all(&package).unwrap();
+        let model = package.join("kokoro-v1_0.pth");
+        let original = b"original-checkpoint";
+        fs::write(&model, original).unwrap();
+        let digest = format!("{:x}", Sha256::digest(original));
+        let manifest_path = package.join("model-manifest.json");
+        let manifest = serde_json::json!({
+            "filename": "kokoro-v1_0.pth",
+            "sha256": null,
+            "actualSha256": digest,
+            "sizeBytes": original.len(),
+            "verification": "unverified",
+        });
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(verify_kokoro_checkpoint_digest(&package, &model).is_ok());
+
+        // A same-size replacement must not pass a metadata-only check.
+        fs::write(&model, b"tampered-checkpoint").unwrap();
+        assert!(verify_kokoro_checkpoint_digest(&package, &model).is_err());
+    }
+
+    #[test]
+    fn kokoro_checkpoint_digest_rejects_conflicting_records_and_invalid_size() {
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("kokoro");
+        fs::create_dir_all(&package).unwrap();
+        let model = package.join("kokoro-v1_0.pth");
+        fs::write(&model, b"checkpoint").unwrap();
+        let valid = format!("{:x}", Sha256::digest(b"checkpoint"));
+        let other = format!("{:x}", Sha256::digest(b"another"));
+        let manifest_path = package.join("model-manifest.json");
+        for manifest in [
+            serde_json::json!({"filename":"kokoro-v1_0.pth","sha256":valid,"actualSha256":other}),
+            serde_json::json!({"filename":"kokoro-v1_0.pth","actualSha256":"bad"}),
+            serde_json::json!({"filename":"kokoro-v1_0.pth","actualSha256":valid,"sizeBytes":42}),
+            serde_json::json!({"filename":"kokoro-v1_0.pth","actualSha256":valid,"verification":"failed"}),
+            serde_json::json!({"filename":"another.pth","actualSha256":valid}),
+        ] {
+            fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+            assert!(verify_kokoro_checkpoint_digest(&package, &model).is_err());
+        }
     }
 
     #[test]
