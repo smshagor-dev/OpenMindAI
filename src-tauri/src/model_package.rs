@@ -480,7 +480,11 @@ fn valid_package_digest(digest: &str) -> bool {
 fn valid_package_filename(filename: &str) -> bool {
     !filename.is_empty()
         && !filename.chars().any(|c| {
-            c.is_control() || matches!(c, '\\' | ':' | '?' | '*' | '"' | '<' | '>' | '|' | '#' | '%')
+            c.is_control()
+                || matches!(
+                    c,
+                    '\\' | ':' | '?' | '*' | '"' | '<' | '>' | '|' | '#' | '%'
+                )
         })
         && filename
             .split('/')
@@ -593,8 +597,8 @@ mod tests {
             assert!(prepare_dependency_destination(&root, &model_dir, filename).is_err());
         }
         assert!(!model_dir.join("voices").exists());
-        let normal = prepare_dependency_destination(&root, &model_dir, "voices/af_heart.pt")
-            .unwrap();
+        let normal =
+            prepare_dependency_destination(&root, &model_dir, "voices/af_heart.pt").unwrap();
         assert_eq!(normal, model_dir.join("voices/af_heart.pt"));
         assert!(model_dir.join("voices").is_dir());
     }
