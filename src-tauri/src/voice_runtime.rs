@@ -235,8 +235,7 @@ fn checked_kokoro_zip_sizes(
     compressed_so_far: u64,
 ) -> Result<(u64, u64), AppError> {
     if declared_uncompressed > 0
-        && (compressed == 0
-            || declared_uncompressed / compressed > MAX_KOKORO_ZIP_EXPANSION_RATIO)
+        && (compressed == 0 || declared_uncompressed / compressed > MAX_KOKORO_ZIP_EXPANSION_RATIO)
     {
         return Err(AppError::ArtifactGenerationFailed(
             "Kokoro PyTorch ZIP has an implausible expansion ratio".to_string(),
