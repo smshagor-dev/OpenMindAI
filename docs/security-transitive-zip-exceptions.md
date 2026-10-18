@@ -65,7 +65,11 @@ loading: path enclosure, duplicate members, symlink/special member types,
 privileged Unix mode bits, 4,096 entry limit, and 1 GiB declared uncompressed
 size limit. Existing non-ZIP PyTorch assets remain supported.
 
-This reduces the input surface of the **Kokoro voice loader only**; it does
+The same ZIP 9 metadata preflight now also covers the primary
+`kokoro-v1_0.pth` model package before Candle opens it. Configuration input
+(`config.json`) must be a valid JSON object no larger than 1 MiB.
+
+This reduces the input surface of the **Kokoro model and voice loader**; it does
 not patch `zip 7.2.0`, prove that all upstream code paths avoid extraction,
 or provide a sandbox. The remaining three RustSec advisories must not be
 marked resolved based on these controls.
