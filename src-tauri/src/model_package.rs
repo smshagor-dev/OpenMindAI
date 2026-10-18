@@ -209,7 +209,7 @@ fn resolve_dependency(
 /// Validate server-provided filenames before touching the filesystem.
 /// Inspect each existing ancestor using symlink_metadata so a package-local
 /// symlink cannot redirect the creation or replacement of dependency files.
-fn prepare_dependency_destination(
+pub(super) fn prepare_dependency_destination(
     root: &PortableRootManager,
     model_dir: &Path,
     filename: &str,
@@ -260,22 +260,23 @@ fn prepare_dependency_destination(
 /// source and nested filename. The old flattened basename was shared by
 /// unrelated model packages and could also collide on slash/underscore paths.
 /// Use length-delimited data so distinct field boundaries cannot collide.
-fn dependency_partial_path(
+pub(super) fn namespaced_model_partial_path(
     root: &PortableRootManager,
     model_dir: &Path,
-    dependency: &ResolvedDependency,
+    source_url: &str,
+    filename: &str,
 ) -> Result<PathBuf, AppError> {
     let relative_dir = model_dir.strip_prefix(root.root()).map_err(|_| {
         AppError::ModelDownloadFailed(
-            "model dependency package is outside the portable root".to_string(),
+            "model package is outside the portable root".to_string(),
         )
     })?;
     let relative_package = relative_dir.to_string_lossy();
     let mut digest = Sha256::new();
     for field in [
         relative_package.as_bytes(),
-        dependency.source_url.as_bytes(),
-        dependency.filename.as_bytes(),
+        source_url.as_bytes(),
+        filename.as_bytes(),
     ] {
         digest.update((field.len() as u64).to_be_bytes());
         digest.update(field);
@@ -297,6 +298,19 @@ fn dependency_partial_path(
     }
     ensure_contained(&temp_dir, &part_path)?;
     Ok(part_path)
+}
+
+fn dependency_partial_path(
+    root: &PortableRootManager,
+    model_dir: &Path,
+    dependency: &ResolvedDependency,
+) -> Result<PathBuf, AppError> {
+    namespaced_model_partial_path(
+        root,
+        model_dir,
+        &dependency.source_url,
+        &dependency.filename,
+    )
 }
 
 async fn download_dependency(
@@ -514,11 +528,11 @@ pub(crate) fn validate_installed_dependencies(
     Ok(true)
 }
 
-fn valid_package_digest(digest: &str) -> bool {
+pub(super) fn valid_package_digest(digest: &str) -> bool {
     digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn valid_package_filename(filename: &str) -> bool {
+pub(super) fn valid_package_filename(filename: &str) -> bool {
     !filename.is_empty()
         && !filename.chars().any(|c| {
             c.is_control()
