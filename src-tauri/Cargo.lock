@@ -3540,7 +3540,7 @@ dependencies = [
  "sha2 0.11.0",
  "stringprep",
  "thiserror 2.0.20",
- "weezl 0.2.1",
+ "weezl",
 ]
 
 [[package]]
@@ -4682,7 +4682,7 @@ dependencies = [
  "time",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "weezl 0.2.1",
+ "weezl",
  "xmlparser",
 ]
 
@@ -4835,7 +4835,6 @@ version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
 dependencies = [
- "encoding_rs",
  "memchr",
 ]
 
