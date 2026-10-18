@@ -46,6 +46,22 @@ jobs:
       - name: TypeScript and Vite build
         run: npm run build
 
+  lockfile:
+    name: Cargo lockfile consistency
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve manifest and verify committed Cargo.lock
+        run: |
+          cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1 > /dev/null
+          git diff -- src-tauri/Cargo.lock
+          git diff --exit-code -- src-tauri/Cargo.lock
+
   rust:
     name: Rust validation (${{ matrix.os }})
     strategy:
