@@ -179,6 +179,8 @@ struct RetrievedWebContext {
     read_sources: HashSet<usize>,
     /// Selected public webpage passages only, keyed by the source ID.
     page_texts: HashMap<usize, String>,
+    /// Actual MIME-validated public PDF source numbers.
+    pdf_sources: HashSet<usize>,
     /// Potentially syndicated excerpts, mapped to the first source number.
     mirrored_sources: HashMap<usize, usize>,
 }
@@ -301,6 +303,7 @@ pub async fn stream_chat_completion(
         if let Some(warning) = citation_numeric_evidence_warning(
             &generated_answer,
             &retrieved_web.page_texts,
+            &retrieved_web.pdf_sources,
         ) {
             generated_chars += warning.chars().count();
             ui_buffer.push_str(&warning);
@@ -498,6 +501,7 @@ async fn append_live_web_context(
         sources: evidence.sources,
         read_sources: evidence.read_sources,
         page_texts: evidence.page_texts,
+        pdf_sources: evidence.pdf_sources,
         mirrored_sources: evidence.mirrored_sources,
     })
 }
@@ -1036,18 +1040,37 @@ fn numeric_evidence_values(text: &str) -> BTreeSet<String> {
     values
 }
 
+/// PDF page numbers are generated provenance, not measured facts. Exclude
+/// them only for MIME-validated parsed PDF sources, so unrelated HTML strings
+/// that resemble a PDF page label retain their ordinary numerical content.
+fn numeric_source_values(text: &str, is_pdf: bool) -> BTreeSet<String> {
+    if !is_pdf {
+        return numeric_evidence_values(text);
+    }
+    let mut values = BTreeSet::new();
+    for line in text.lines() {
+        let content = line.strip_prefix("PDF page ")
+            .and_then(|rest| rest.split_once(": "))
+            .and_then(|(number, content)| number.parse::<u32>().ok().map(|_| content))
+            .unwrap_or(line);
+        values.extend(numeric_evidence_values(content));
+    }
+    values
+}
+
 /// Compare numerical values in the cited clause to the actually retrieved
 /// source passage. Missing numbers are a manual review signal only: pages are
 /// bounded extracts and matching numbers cannot establish factual truth.
 fn citation_numeric_evidence_warning(
     answer: &str,
     page_texts: &HashMap<usize, String>,
+    pdf_sources: &HashSet<usize>,
 ) -> Option<String> {
     if page_texts.is_empty() {
         return None;
     }
     let reference_values = page_texts.iter()
-        .map(|(number, page)| (*number, numeric_evidence_values(page)))
+        .map(|(number, page)| (*number, numeric_source_values(page, pdf_sources.contains(number))))
         .collect::<HashMap<_, _>>();
     let mut mismatches = std::collections::BTreeMap::<usize, BTreeSet<String>>::new();
     for (number, claim) in cited_claim_clauses(answer) {
@@ -1519,7 +1542,7 @@ mod tests {
                 .to_string(),
         )]);
         assert!(citation_numeric_evidence_warning(
-            "The research trial achieved 87.5% success in 2026 [1].", &pages
+            "The research trial achieved 87.5% success in 2026 [1].", &pages, &HashSet::new()
         ).is_none());
     }
 
@@ -1532,7 +1555,7 @@ mod tests {
         )]);
         let warning = citation_numeric_evidence_warning(
             "The research trial achieved 87.5% success in 2026 [1].",
-            &pages,
+            &pages, &HashSet::new(),
         ).expect("unsupported numbers should trigger review");
         assert!(warning.contains("[1]:"));
         assert!(warning.contains("87.5"));
@@ -1547,7 +1570,7 @@ mod tests {
             (2usize, "A related drone sensor experiment achieved 82 percent accuracy.".to_string()),
         ]);
         let warning = citation_numeric_evidence_warning(
-            "The drone sensor experiment achieved 95% accuracy [1, 2].", &pages
+            "The drone sensor experiment achieved 95% accuracy [1, 2].", &pages, &HashSet::new()
         ).expect("source two lacks claimed 95");
         assert!(warning.contains("[2]: 95"));
         assert!(!warning.contains("[1]:"));
@@ -1557,13 +1580,13 @@ mod tests {
     fn citation_numeric_audit_ignores_unread_sources_and_code() {
         let pages = HashMap::from([(1usize, "The 2024 drone accuracy test used 95 samples.".into())]);
         assert!(citation_numeric_evidence_warning(
-            "The 2026 trial achieved 87% accuracy [2].", &pages
+            "The 2026 trial achieved 87% accuracy [2].", &pages, &HashSet::new()
         ).is_none());
         assert!(citation_numeric_evidence_warning(
             "Background `2026 [1]` and [1](https://example.org). \n```\nTrial 2026 reached 87 percent [1]\n```",
-            &pages,
+            &pages, &HashSet::new(),
         ).is_none());
-        assert!(citation_numeric_evidence_warning("No citation available in 2026.", &pages).is_none());
+        assert!(citation_numeric_evidence_warning("No citation available in 2026.", &pages, &HashSet::new()).is_none());
     }
 
     #[test]
