@@ -80,6 +80,16 @@ def adapt_upstream_zip9_api(crate: str, directory: Path) -> None:
             "                .collect::<Result<Vec<_>, _>>()\n"
             "                .map_err(|error| TtsError::WeightLoadError(format!(\"Invalid .pt ZIP name: {error}\")))?;",
         )
+        replace_once(
+            directory / "src" / "models" / "kokoro" / "model.rs",
+            ".file_names()\\n"
+            "            .map(|name| name.to_string())\\n"
+            "            .collect::<Vec<_>>();",
+            ".file_names()\\n"
+            "            .map(|name| name.map(|name| name.to_string()))\\n"
+            "            .collect::<std::result::Result<Vec<_>, _>>()\\n"
+            "            .map_err(|error| TtsError::WeightLoadError(format!(\\\"Invalid .pth ZIP name: {error}\\\")))?;",
+        )
 
 
 def registry_source(crate: str, version: str, cargo_home: Path) -> Path:
