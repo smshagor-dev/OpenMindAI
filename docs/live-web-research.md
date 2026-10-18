@@ -23,8 +23,12 @@ web search pages otherwise; no paid external AI model is required.
   the extractor samples page numbers deterministically from the beginning
   through the end, instead of inspecting only the first eight pages. This
   improves coverage of later results and conclusions, but can still skip
-  important pages. PDF text is reduced to at most 32,000 characters before
-  passage selection. Encrypted, scanned/image-only,
+  important pages. The 32,000-character PDF text budget is divided across
+  the selected pages (including page-number headings), so an oversized
+  introduction cannot consume the allowance reserved for later sampled
+  results. This is still a bounded sample, not a complete transcript; the
+  per-page share may omit evidence within a very long individual page.
+  Encrypted, scanned/image-only,
   malformed, oversized and unextractable PDFs remain snippet-only sources.
   No PDF scripts are run and no external PDF viewer or OCR is invoked.
   When choosing relevant passages from longer pages, the extractor preserves
@@ -137,7 +141,9 @@ destination constraint.
 9. Fetch a publicly accessible text-based PDF longer than eight pages with
    query-relevant results near the end. Confirm sampled late-page content can
    appear in evidence, that original page numbers are retained, and the
-   eight-page processing limit is respected.
+   eight-page processing limit is respected. Include a paper with unusually
+   long early sections and verify a sampled conclusion page retains its own
+   extract budget instead of being displaced by the introduction.
 
 CI covers parsing, retry classification, provider ordering and a local HTTP
 429 response fixture. These tests do not prove live vendor availability,

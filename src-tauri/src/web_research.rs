@@ -795,6 +795,25 @@ fn sample_pdf_page_numbers(all_pages: &[u32], max_pages: usize) -> Vec<u32> {
         .collect()
 }
 
+/// Reserve a fixed share of the bounded PDF text budget for each sampled
+/// page. Earlier long pages must not crowd later results or conclusions out
+/// of the evidence available to the query relevance selector.
+fn append_pdf_page_excerpt(
+    combined: &mut String,
+    page_number: u32,
+    readable: &str,
+    char_budget: usize,
+) {
+    let heading = format!("PDF page {page_number}: ");
+    let remaining = char_budget.saturating_sub(heading.chars().count() + 1);
+    if remaining == 0 || readable.is_empty() {
+        return;
+    }
+    combined.push_str(&heading);
+    combined.extend(readable.chars().take(remaining));
+    combined.push('\n');
+}
+
 fn extract_pdf_text(bytes: &[u8]) -> Result<String, String> {
     if bytes.len() > PAGE_BYTES || !bytes.windows(5).take(1024).any(|part| part == b"%PDF-") {
         return Err("invalid or oversized PDF document".to_string());
@@ -813,19 +832,17 @@ fn extract_pdf_text(bytes: &[u8]) -> Result<String, String> {
     if page_numbers.is_empty() {
         return Err("PDF has no pages".to_string());
     }
+    // Cap each selected page to a fair share of the source-level text budget.
+    // The number of selected pages is already limited to eight; the sum of
+    // page allocations never exceeds PDF_MAX_TEXT_CHARS, including headings.
+    let per_page_budget = PDF_MAX_TEXT_CHARS / page_numbers.len();
     let mut combined = String::new();
     for page_number in page_numbers {
         let page_text = document.extract_text_with_limit(
             &[page_number], PDF_MAX_DECOMPRESSED_PAGE_BYTES,
         ).map_err(|_| "PDF page text could not be safely decoded".to_string())?;
         let readable = page_text.split_whitespace().collect::<Vec<_>>().join(" ");
-        if readable.is_empty() { continue; }
-        combined.push_str(&format!("PDF page {page_number}: "));
-        combined.extend(readable.chars().take(
-            PDF_MAX_TEXT_CHARS.saturating_sub(combined.chars().count())
-        ));
-        combined.push('\n');
-        if combined.chars().count() >= PDF_MAX_TEXT_CHARS { break; }
+        append_pdf_page_excerpt(&mut combined, page_number, &readable, per_page_budget);
     }
     if combined.trim().chars().count() < 80 {
         return Err("PDF has insufficient extractable text (possibly scanned)".to_string());
@@ -1133,6 +1150,47 @@ mod tests {
         assert!(sample_pdf_page_numbers(&[1, 2], 0).is_empty());
         assert!(sample_pdf_page_numbers(&[], 8).is_empty());
         assert_eq!(sample_pdf_page_numbers(&(1..=8).collect::<Vec<_>>(), 8).len(), 8);
+    }
+
+    #[test]
+    fn pdf_page_text_budget_preserves_late_results_after_long_introduction() {
+        let mut combined = String::new();
+        let huge_intro = "Long irrelevant historical introduction and administrative material. "
+            .repeat(900);
+        let page_budget = PDF_MAX_TEXT_CHARS / PDF_MAX_EXTRACT_PAGES;
+        for number in 1..=PDF_MAX_EXTRACT_PAGES {
+            if number == PDF_MAX_EXTRACT_PAGES {
+                append_pdf_page_excerpt(
+                    &mut combined,
+                    number as u32,
+                    "GPS denied drone localization reached 97.5 percent accuracy in 2026.",
+                    page_budget,
+                );
+            } else {
+                append_pdf_page_excerpt(&mut combined, number as u32, &huge_intro, page_budget);
+            }
+        }
+        assert!(combined.chars().count() <= PDF_MAX_TEXT_CHARS);
+        assert!(combined.contains("PDF page 8: GPS denied drone localization reached 97.5 percent"));
+        let excerpt = select_relevant_text(&combined, "GPS denied drone localization accuracy");
+        assert!(excerpt.contains("97.5 percent accuracy in 2026"), "{excerpt}");
+    }
+
+    #[test]
+    fn pdf_page_text_budget_is_unicode_safe_and_includes_headings() {
+        let mut combined = String::new();
+        append_pdf_page_excerpt(&mut combined, 12, &"Исследование".repeat(200), 45);
+        assert!(combined.starts_with("PDF page 12: "));
+        assert!(combined.chars().count() <= 45);
+        assert!(combined.ends_with('\n'));
+    }
+
+    #[test]
+    fn pdf_page_text_budget_rejects_empty_and_too_small_allocations() {
+        let mut combined = String::new();
+        append_pdf_page_excerpt(&mut combined, 1, "", 4000);
+        append_pdf_page_excerpt(&mut combined, 2, "Scientific results", 5);
+        assert!(combined.is_empty());
     }
 
     #[test]
