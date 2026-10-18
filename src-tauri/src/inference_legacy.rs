@@ -1085,6 +1085,71 @@ fn percentage_evidence_values(text: &str) -> BTreeSet<String> {
     percentages
 }
 
+/// Read explicit latency/time units separately from bare numerical values.
+/// We normalize common spellings but deliberately do not infer conversions:
+/// a value expressed in seconds must not be supported by milliseconds with
+/// the same numeral. This is only a conservative citation-review signal.
+fn duration_evidence_values(text: &str) -> BTreeSet<(String, &'static str)> {
+    let bytes = text.as_bytes();
+    let mut values = BTreeSet::new();
+    let mut index = 0;
+    while index < bytes.len() && values.len() < 80 {
+        if !bytes[index].is_ascii_digit()
+            || (index > 0 && (bytes[index - 1].is_ascii_alphabetic() || bytes[index - 1] == b'_'))
+            || (index >= 2
+                && matches!(bytes[index - 1], b'.' | b',')
+                && bytes[index - 2].is_ascii_digit())
+        {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < bytes.len()
+            && (bytes[index].is_ascii_digit()
+                || (matches!(bytes[index], b'.' | b',')
+                    && bytes.get(index + 1).is_some_and(u8::is_ascii_digit)))
+        {
+            index += 1;
+        }
+        // Citation numbers and references are never timing observations.
+        if start > 0 && bytes[start - 1] == b'[' && bytes.get(index) == Some(&b']') {
+            continue;
+        }
+        let mut suffix = index;
+        while bytes.get(suffix).is_some_and(u8::is_ascii_whitespace) {
+            suffix += 1;
+        }
+        let tail = &bytes[suffix..];
+        let unit = [
+            (b"milliseconds".as_slice(), "ms"),
+            (b"millisecond".as_slice(), "ms"),
+            (b"msecs".as_slice(), "ms"),
+            (b"msec".as_slice(), "ms"),
+            (b"ms".as_slice(), "ms"),
+            (b"seconds".as_slice(), "s"),
+            (b"second".as_slice(), "s"),
+            (b"secs".as_slice(), "s"),
+            (b"sec".as_slice(), "s"),
+            (b"s".as_slice(), "s"),
+        ].into_iter().find_map(|(spelling, unit)| {
+            tail.get(..spelling.len())
+                .filter(|prefix| prefix.eq_ignore_ascii_case(spelling))
+                .filter(|_| !tail.get(spelling.len()).is_some_and(u8::is_ascii_alphabetic))
+                .map(|_| unit)
+        });
+        if let Some(unit) = unit {
+            // The existing bare-number parser skips single digits, but
+            // explicit units make even "3 ms" a meaningful measurement.
+            if let Some(normalized) = numeric_evidence_values(
+                &format!("{}%", &text[start..index])
+            ).into_iter().next() {
+                values.insert((normalized, unit));
+            }
+        }
+    }
+    values
+}
+
 /// PDF page numbers are generated provenance, not measured facts. Exclude
 /// them only for MIME-validated parsed PDF sources, so unrelated HTML strings
 /// that resemble a PDF page label retain their ordinary numerical content.
@@ -1120,6 +1185,9 @@ fn citation_numeric_evidence_warning(
     let reference_percentages = page_texts.iter()
         .map(|(number, page)| (*number, percentage_evidence_values(page)))
         .collect::<HashMap<_, _>>();
+    let reference_durations = page_texts.iter()
+        .map(|(number, page)| (*number, duration_evidence_values(page)))
+        .collect::<HashMap<_, _>>();
     let mut mismatches = std::collections::BTreeMap::<usize, BTreeSet<String>>::new();
     for (number, claim) in cited_claim_clauses(answer) {
         let Some(numbers_in_source) = reference_values.get(&number) else {
@@ -1128,9 +1196,12 @@ fn citation_numeric_evidence_warning(
         };
         let numbers_in_claim = numeric_evidence_values(&claim);
         let percentages_in_claim = percentage_evidence_values(&claim);
+        let durations_in_claim = duration_evidence_values(&claim);
         for value in numbers_in_claim.difference(numbers_in_source) {
             let label = if percentages_in_claim.contains(value) {
                 format!("{value}%")
+            } else if let Some((_, unit)) = durations_in_claim.iter().find(|(amount, _)| amount == value) {
+                format!("{value} {unit}")
             } else {
                 value.clone()
             };
@@ -1142,6 +1213,14 @@ fn citation_numeric_evidence_warning(
                 if numbers_in_source.contains(value) {
                     mismatches.entry(number).or_default().insert(format!("{value}%"));
                 }
+            }
+        }
+        // Compare explicit time units as well. "95 ms", "95 seconds", and
+        // "95 participants" cannot corroborate one another solely by sharing
+        // 95. Also cover one-digit durations ignored by the bare-number parser.
+        if let Some(durations_in_source) = reference_durations.get(&number) {
+            for (value, unit) in durations_in_claim.difference(durations_in_source) {
+                mismatches.entry(number).or_default().insert(format!("{value} {unit}"));
             }
         }
     }
@@ -1156,7 +1235,7 @@ fn citation_numeric_evidence_warning(
         .collect::<Vec<_>>().join("; ");
     let more = if mismatches.len() > 8 { " (and others)" } else { "" };
     Some(format!(
-        "\n\n> **Numerical evidence warning:** Claimed numerical value(s) or percentage units were not supported by the corresponding retrieved page extracts ({details}{more}). Review cited figures, dates and percentages against the full originals. The extracts may be incomplete; matching figures alone do not prove factual support.\n"
+        "\n\n> **Numerical evidence warning:** Claimed numerical value(s), percentage units or timing units were not found as stated in the corresponding retrieved page extracts ({details}{more}). Review cited figures, dates and percentages against the full originals. The extracts may be incomplete; matching figures alone do not prove factual support.\n"
     ))
 }
 
@@ -1561,6 +1640,92 @@ mod tests {
         assert_eq!(json["total"], 4);
         assert_eq!(json["sources"], 6);
         assert_eq!(json["pagesRead"], 1);
+    }
+
+    #[test]
+    fn duration_values_recognize_latency_spellings_and_normalize_decimals() {
+        let values = duration_evidence_values(
+            "Decision latency 95ms, network delay 87.50 milliseconds, response 2.00 s, and timeout 5 secs."
+        );
+        assert!(values.contains(&("95".into(), "ms")));
+        assert!(values.contains(&("87.5".into(), "ms")));
+        assert!(values.contains(&("2".into(), "s")));
+        assert!(values.contains(&("5".into(), "s")));
+        assert!(!values.contains(&("95".into(), "s")));
+        assert!(duration_evidence_values("There were 95 samples and 12 sessions.").is_empty());
+        assert!(duration_evidence_values("References [95] cite the benchmark.").is_empty());
+    }
+
+    #[test]
+    fn numeric_audit_flags_seconds_when_source_only_supports_milliseconds() {
+        let pages = HashMap::from([(
+            1usize, "The command controller had 95 milliseconds of measured response latency."
+                .to_string(),
+        )]);
+        let warning = citation_numeric_evidence_warning(
+            "The command controller had 95 seconds of measured response latency [1].",
+            &pages, &HashSet::new(),
+        ).expect("95 milliseconds cannot support a claim of 95 seconds");
+        assert!(warning.contains("[1]: 95 s"), "{warning}");
+    }
+
+    #[test]
+    fn numeric_audit_accepts_matching_duration_spellings() {
+        let pages = HashMap::from([(
+            1usize, "The controller required 87.50 milliseconds to authorize the command."
+                .to_string(),
+        )]);
+        assert!(citation_numeric_evidence_warning(
+            "The controller required 87.5 ms to authorize the command [1].",
+            &pages, &HashSet::new(),
+        ).is_none());
+        let pages = HashMap::from([(
+            1usize, "The controller completed network recovery after 3 sec."
+                .to_string(),
+        )]);
+        assert!(citation_numeric_evidence_warning(
+            "The controller completed network recovery after 3 seconds [1].",
+            &pages, &HashSet::new(),
+        ).is_none());
+    }
+
+    #[test]
+    fn numeric_audit_checks_duration_units_for_grouped_sources() {
+        let pages = HashMap::from([
+            (1usize, "The command controller had 95ms authentication latency.".into()),
+            (2usize, "The command controller used 95 requests for the benchmark.".into()),
+        ]);
+        let warning = citation_numeric_evidence_warning(
+            "The command controller measured 95 milliseconds of authentication latency [1, 2].",
+            &pages, &HashSet::new(),
+        ).expect("counts cannot corroborate measured milliseconds");
+        assert!(warning.contains("[2]: 95 ms"), "{warning}");
+        assert!(!warning.contains("[1]:"), "{warning}");
+    }
+
+    #[test]
+    fn numeric_audit_flags_single_digit_duration_unit_mismatch() {
+        let pages = HashMap::from([(
+            1usize, "The drone controller recorded 3 milliseconds of latency in testing.".into(),
+        )]);
+        let warning = citation_numeric_evidence_warning(
+            "The drone controller recorded 3 seconds of latency in testing [1].",
+            &pages, &HashSet::new(),
+        ).expect("single-digit seconds and milliseconds must differ");
+        assert!(warning.contains("[1]: 3 s"), "{warning}");
+    }
+
+    #[test]
+    fn numeric_audit_preserves_pdf_page_numbers_as_metadata_for_latency() {
+        let pages = HashMap::from([(
+            1usize, "PDF page 95: The command controller measured 87.5 milliseconds of latency."
+                .to_string(),
+        )]);
+        let warning = citation_numeric_evidence_warning(
+            "The command controller measured 95 milliseconds of latency [1].",
+            &pages, &HashSet::from([1usize]),
+        ).expect("a page number is not a latency measurement");
+        assert!(warning.contains("[1]: 95 ms"), "{warning}");
     }
 
     #[test]

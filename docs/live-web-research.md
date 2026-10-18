@@ -85,8 +85,14 @@ web search pages otherwise; no paid external AI model is required.
   variants are normalized; code and citations themselves are ignored.
   A percentage claim such as `95% accuracy` must match percentage-marked
   evidence (`95%`, `95 percent`, or `95 pct`), not merely a bare numeric
-  count such as `95 participants`. Each citation is checked separately.
-  When a figure or its percentage unit is absent, the app adds a
+  count such as `95 participants`. Similarly, a timing claim of `95 ms`
+  or `95 milliseconds` cannot be supported merely by `95 seconds`,
+  `95 sec` or an untyped count. Common spellings of milliseconds and
+  seconds are normalized, including single-digit durations. Different
+  numerical units are not automatically converted (for example, `1000 ms`
+  versus `1 s` may still prompt a manual review). Each citation is
+  checked separately.
+  When a figure or its percentage/timing unit is absent, the app adds a
   **numerical evidence warning** for manual verification against the
   original article. Missing excerpt values
   may be caused by summarization, formatting or incomplete retrieval, while
