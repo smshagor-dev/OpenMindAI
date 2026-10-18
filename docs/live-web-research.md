@@ -35,6 +35,14 @@ web search pages otherwise; no paid external AI model is required.
   appended to completed replies and persisted in chat history. These are
   actual search-provider results, **not a guarantee that model statements
   are supported by the linked content**. Cancelled replies get no footer.
+- The Rust engine compares bounded, successfully retrieved page excerpts using
+  five-word shingles. At least 30 distinct shingles and 80% Jaccard overlap
+  are required before a later source is labeled a **possible near-duplicate**
+  of an earlier numbered source. Both links remain available, but research
+  prompts and the trusted citation footer warn against counting their text
+  as independent corroboration. Search snippets alone cannot trigger the
+  label. Identical passages might also reflect legitimate quotations;
+  this is **not** an authorship, plagiarism or factual-verification verdict.
 - After a completed web-backed reply, the Rust host checks citation numbers,
   distinguishes pages that were actually retrieved from snippet-only results,
   and compares adjacent cited clauses with the bounded text of each retrieved

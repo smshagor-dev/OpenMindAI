@@ -179,6 +179,8 @@ struct RetrievedWebContext {
     read_sources: HashSet<usize>,
     /// Selected public webpage passages only, keyed by the source ID.
     page_texts: HashMap<usize, String>,
+    /// Potentially syndicated excerpts, mapped to the first source number.
+    mirrored_sources: HashMap<usize, usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,6 +309,7 @@ pub async fn stream_chat_completion(
         let footer = format_retrieved_source_footer(
             &retrieved_web.sources,
             &retrieved_web.read_sources,
+            &retrieved_web.mirrored_sources,
         );
         generated_chars += footer.chars().count();
         ui_buffer.push_str(&footer);
@@ -495,6 +498,7 @@ async fn append_live_web_context(
         sources: evidence.sources,
         read_sources: evidence.read_sources,
         page_texts: evidence.page_texts,
+        mirrored_sources: evidence.mirrored_sources,
     })
 }
 
@@ -1075,6 +1079,7 @@ fn citation_numeric_evidence_warning(
 fn format_retrieved_source_footer(
     results: &[WebSearchResult],
     read_sources: &HashSet<usize>,
+    mirrored_sources: &HashMap<usize, usize>,
 ) -> String {
     let mut footer = String::from("\n\n---\nRetrieved web sources (links returned by search providers; not independently fact-checked):\n");
     for (i, result) in results.iter().enumerate() {
@@ -1092,7 +1097,10 @@ fn format_retrieved_source_footer(
         } else {
             "search snippet only"
         };
-        footer.push_str(&format!("- [{}] [{}]({}) — {}\n", i + 1, title, url, status));
+        let mirror_label = mirrored_sources.get(&(i + 1))
+            .map(|original| format!("; near-duplicate excerpt of [{original}] — review source independence"))
+            .unwrap_or_default();
+        footer.push_str(&format!("- [{}] [{}]({}) — {}{}\n", i + 1, title, url, status, mirror_label));
     }
     footer
 }
@@ -1691,13 +1699,23 @@ mod tests {
                 url: "https://example.org/page(with)".into(),
                 snippet: String::new(),
             },
+            // A real public URL whose page text was NOT retrieved.
+            WebSearchResult {
+                title: "Unread source".into(),
+                url: "https://example.net/unread".into(),
+                snippet: "Provider snippet only".into(),
+            },
         ];
-        let footer = format_retrieved_source_footer(&sources, &HashSet::from([1]));
+        let footer = format_retrieved_source_footer(
+            &sources, &HashSet::from([1, 3]), &HashMap::from([(3, 1)]),
+        );
         assert!(footer.contains("https://example.org/study?q=a%20b"));
         assert!(footer.contains("First \\[Research\\]"));
         assert!(footer.contains("page%28with%29"));
         assert!(footer.contains("page text retrieved"));
-        assert!(footer.contains("search snippet only"));
+        assert!(footer.contains("[4] [Unread source](https://example.net/unread) — search snippet only"));
+        assert!(footer.contains("[3] [Example (2)](https://example.org/page%28with%29) — page text retrieved; near-duplicate excerpt of [1]"));
+        assert!(footer.contains("near-duplicate excerpt of [1]"));
         assert!(!footer.contains("127.0.0.1"));
         assert!(!footer.contains("Unsafe"));
         assert!(!footer.contains("snip\n"));
