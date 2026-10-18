@@ -898,9 +898,20 @@ mod tests {
         };
         let source = "https://example.invalid/model.gguf";
         let first = key(&root_a, &dir_a, source, "nested/model.gguf");
-        assert_eq!(first.file_name(), key(&root_b, &dir_b, source, "nested/model.gguf").file_name());
+        assert_eq!(
+            first.file_name(),
+            key(&root_b, &dir_b, source, "nested/model.gguf").file_name()
+        );
         assert_ne!(first, key(&root_a, &other_a, source, "nested/model.gguf"));
-        assert_ne!(first, key(&root_a, &dir_a, "https://other.invalid/model.gguf", "nested/model.gguf"));
+        assert_ne!(
+            first,
+            key(
+                &root_a,
+                &dir_a,
+                "https://other.invalid/model.gguf",
+                "nested/model.gguf"
+            )
+        );
         assert_ne!(first, key(&root_a, &dir_a, source, "nested_model.gguf"));
     }
 
