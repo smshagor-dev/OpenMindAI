@@ -1,0 +1,48 @@
+name: ZIP 9 Upstream Compatibility
+
+on:
+  pull_request:
+    paths:
+      - scripts/probe-zip9-upgrade.py
+      - .github/workflows/zip9-upstream-compatibility.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Rebuild pinned TTS crates against ZIP 9
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Cache compiled Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Verify probe source transformation
+        run: python3 scripts/probe-zip9-upgrade.py --self-test
+
+      - name: Test ephemeral upstream ZIP 9 compatibility
+        run: python3 scripts/probe-zip9-upgrade.py
+
+      - name: Verify no tracked build input changed
+        if: always()
+        run: git diff --exit-code -- src-tauri/Cargo.toml src-tauri/Cargo.lock
