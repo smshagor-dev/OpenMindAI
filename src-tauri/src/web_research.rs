@@ -802,6 +802,7 @@ fn append_pdf_page_excerpt(
     combined: &mut String,
     page_number: u32,
     readable: &str,
+    query: &str,
     char_budget: usize,
 ) {
     let heading = format!("PDF page {page_number}: ");
@@ -809,12 +810,18 @@ fn append_pdf_page_excerpt(
     if remaining == 0 || readable.is_empty() {
         return;
     }
+    // Apply query relevance *within* a page before allocating its reserved
+    // text budget. Otherwise late results on a long sampled page disappear.
+    let selected = select_relevant_text_bounded(readable, query, remaining);
+    if selected.trim().is_empty() {
+        return;
+    }
     combined.push_str(&heading);
-    combined.extend(readable.chars().take(remaining));
+    combined.push_str(&selected);
     combined.push('\n');
 }
 
-fn extract_pdf_text(bytes: &[u8]) -> Result<String, String> {
+fn extract_pdf_text(bytes: &[u8], query: &str) -> Result<String, String> {
     if bytes.len() > PAGE_BYTES || !bytes.windows(5).take(1024).any(|part| part == b"%PDF-") {
         return Err("invalid or oversized PDF document".to_string());
     }
@@ -842,7 +849,7 @@ fn extract_pdf_text(bytes: &[u8]) -> Result<String, String> {
             &[page_number], PDF_MAX_DECOMPRESSED_PAGE_BYTES,
         ).map_err(|_| "PDF page text could not be safely decoded".to_string())?;
         let readable = page_text.split_whitespace().collect::<Vec<_>>().join(" ");
-        append_pdf_page_excerpt(&mut combined, page_number, &readable, per_page_budget);
+        append_pdf_page_excerpt(&mut combined, page_number, &readable, query, per_page_budget);
     }
     if combined.trim().chars().count() < 80 {
         return Err("PDF has insufficient extractable text (possibly scanned)".to_string());
@@ -879,8 +886,9 @@ async fn fetch_readable_page(raw: &str, query: &str) -> Result<Option<PageEviden
     let text = if is_research_pdf_type(&content_type, &url) {
         let pdf = response_bytes(response, PAGE_BYTES).await?;
         // PDF parsing/decompression must not block the async search runtime.
+        let pdf_query = query.to_owned();
         tokio::time::timeout(Duration::from_secs(6), tokio::task::spawn_blocking(
-            move || extract_pdf_text(&pdf)
+            move || extract_pdf_text(&pdf, &pdf_query)
         )).await.map_err(|_| "PDF extraction timed out".to_string())?
             .map_err(|_| "PDF extraction worker unavailable".to_string())??
     } else if content_type.starts_with("text/html")
@@ -990,7 +998,11 @@ fn research_term_overlap(clause: &str, query_terms: &HashSet<String>) -> usize {
 /// When one relevant clause is longer than the whole evidence budget, center
 /// its excerpt near a complete matching query word instead of silently
 /// truncating away the matching information at the end of that clause.
-fn relevant_clause_window(clause: &str, query_terms: &HashSet<String>) -> String {
+fn relevant_clause_window(
+    clause: &str,
+    query_terms: &HashSet<String>,
+    char_limit: usize,
+) -> String {
     let mut word_start = None;
     for (index, character) in clause.char_indices()
         .chain(std::iter::once((clause.len(), ' ')))
@@ -1001,20 +1013,25 @@ fn relevant_clause_window(clause: &str, query_terms: &HashSet<String>) -> String
             if query_terms.contains(&clause[start..index].to_lowercase()) {
                 let prefix_chars = clause[..start].chars().count();
                 return clause.chars()
-                    .skip(prefix_chars.saturating_sub(PAGE_CHARS / 5))
-                    .take(PAGE_CHARS)
+                    .skip(prefix_chars.saturating_sub(char_limit / 5))
+                    .take(char_limit)
                     .collect();
             }
         }
     }
-    clause.chars().take(PAGE_CHARS).collect()
+    clause.chars().take(char_limit).collect()
 }
 
 /// Rank passages before applying the page character budget. Previously an
 /// unrelated first paragraph and 14 selected paragraphs were restored to page
 /// order before truncation, hiding strong evidence near the end of long pages.
 fn select_relevant_text(text: &str, query: &str) -> String {
-    if text.chars().count() <= PAGE_CHARS { return text.to_string(); }
+    select_relevant_text_bounded(text, query, PAGE_CHARS)
+}
+
+fn select_relevant_text_bounded(text: &str, query: &str, char_limit: usize) -> String {
+    if char_limit == 0 { return String::new(); }
+    if text.chars().count() <= char_limit { return text.to_string(); }
     let terms: HashSet<String> = query
         .split(|character: char| !character.is_alphanumeric())
         .filter(|word| word.chars().count() >= 3)
@@ -1022,7 +1039,7 @@ fn select_relevant_text(text: &str, query: &str) -> String {
         .map(str::to_lowercase)
         .collect();
     let clauses = research_page_clauses(text);
-    let fallback = || text.chars().take(PAGE_CHARS).collect::<String>();
+    let fallback = || text.chars().take(char_limit).collect::<String>();
     if clauses.is_empty() || terms.is_empty() { return fallback(); }
     let mut best: Vec<_> = clauses.iter().enumerate()
         .map(|(index, clause)| (index, research_term_overlap(clause, &terms)))
@@ -1034,11 +1051,11 @@ fn select_relevant_text(text: &str, query: &str) -> String {
     for (index, _) in best.into_iter().filter(|(_, score)| *score > 0).take(14) {
         let length = clauses[index].chars().count();
         let separator = if chosen.is_empty() { 0 } else { 2 };
-        if length + separator <= PAGE_CHARS - chars_used {
+        if length + separator <= char_limit.saturating_sub(chars_used) {
             chosen.push(index);
             chars_used += length + separator;
         } else if chosen.is_empty() {
-            return relevant_clause_window(clauses[index], &terms);
+            return relevant_clause_window(clauses[index], &terms, char_limit);
         }
     }
     if chosen.is_empty() { return fallback(); }
@@ -1164,10 +1181,10 @@ mod tests {
                     &mut combined,
                     number as u32,
                     "GPS denied drone localization reached 97.5 percent accuracy in 2026.",
-                    page_budget,
+                    "GPS denied drone localization accuracy", page_budget,
                 );
             } else {
-                append_pdf_page_excerpt(&mut combined, number as u32, &huge_intro, page_budget);
+                append_pdf_page_excerpt(&mut combined, number as u32, &huge_intro, "", page_budget);
             }
         }
         assert!(combined.chars().count() <= PDF_MAX_TEXT_CHARS);
@@ -1177,9 +1194,51 @@ mod tests {
     }
 
     #[test]
+    fn pdf_page_excerpt_finds_results_after_oversized_irrelevant_introduction() {
+        let mut page = "A lengthy municipal history and museum inventory notice. ".repeat(120);
+        page.push_str(
+            "GPS denied drone localization achieved 98.75 percent accuracy with UWB anchors during the flight trials."
+        );
+        assert!(page.chars().count() > PDF_MAX_TEXT_CHARS / PDF_MAX_EXTRACT_PAGES);
+        let mut extracted = String::new();
+        append_pdf_page_excerpt(
+            &mut extracted, 14, &page,
+            "GPS denied drone localization accuracy UWB",
+            PDF_MAX_TEXT_CHARS / PDF_MAX_EXTRACT_PAGES,
+        );
+        assert!(extracted.contains("PDF page 14:"), "{extracted}");
+        assert!(extracted.contains("98.75 percent accuracy"), "{extracted}");
+        assert!(extracted.chars().count() <= PDF_MAX_TEXT_CHARS / PDF_MAX_EXTRACT_PAGES);
+        assert!(!extracted.contains("A lengthy municipal history"), "{extracted}");
+    }
+
+    #[test]
+    fn pdf_page_excerpt_without_query_matches_preserves_bounded_leading_text() {
+        let page = "A scientific discussion about marine ecology and coastal surveys. ".repeat(115);
+        let mut extracted = String::new();
+        let page_budget = 160;
+        append_pdf_page_excerpt(&mut extracted, 7, &page, "quantum cryptography", page_budget);
+        assert!(extracted.starts_with("PDF page 7: A scientific discussion"), "{extracted}");
+        assert!(extracted.chars().count() <= page_budget);
+    }
+
+    #[test]
+    fn research_excerpt_selector_respects_custom_pdf_page_budget() {
+        let text = "The geographical and environmental survey describes ship movements. "
+            .repeat(95);
+        let relevant = select_relevant_text_bounded(
+            &(text + "Drone localization achieved 97.5 percent accuracy."),
+            "drone localization accuracy", 240,
+        );
+        assert!(relevant.contains("97.5 percent accuracy"), "{relevant}");
+        assert!(relevant.chars().count() <= 240);
+        assert!(select_relevant_text_bounded("some text", "anything", 0).is_empty());
+    }
+
+    #[test]
     fn pdf_page_text_budget_is_unicode_safe_and_includes_headings() {
         let mut combined = String::new();
-        append_pdf_page_excerpt(&mut combined, 12, &"Исследование".repeat(200), 45);
+        append_pdf_page_excerpt(&mut combined, 12, &"Исследование".repeat(200), "", 45);
         assert!(combined.starts_with("PDF page 12: "));
         assert!(combined.chars().count() <= 45);
         assert!(combined.ends_with('\n'));
@@ -1188,15 +1247,15 @@ mod tests {
     #[test]
     fn pdf_page_text_budget_rejects_empty_and_too_small_allocations() {
         let mut combined = String::new();
-        append_pdf_page_excerpt(&mut combined, 1, "", 4000);
-        append_pdf_page_excerpt(&mut combined, 2, "Scientific results", 5);
+        append_pdf_page_excerpt(&mut combined, 1, "", "", 4000);
+        append_pdf_page_excerpt(&mut combined, 2, "Scientific results", "", 5);
         assert!(combined.is_empty());
     }
 
     #[test]
     fn research_pdf_reader_extracts_late_text_from_sampled_final_page() {
         let pdf = multipage_research_pdf_fixture(16);
-        let evidence = extract_pdf_text(&pdf).expect("PDF text from distributed pages");
+        let evidence = extract_pdf_text(&pdf, "").expect("PDF text from distributed pages");
         assert!(evidence.contains("PDF page 1:"), "{evidence}");
         assert!(evidence.contains("PDF page 16:"), "{evidence}");
         assert!(evidence.contains("97.5 percent accuracy"), "{evidence}");
@@ -1208,7 +1267,7 @@ mod tests {
 
     #[test]
     fn research_pdf_reader_extracts_text_without_executing_content() {
-        let content = extract_pdf_text(&text_pdf_fixture()).expect("text PDF should be readable");
+        let content = extract_pdf_text(&text_pdf_fixture(), "").expect("text PDF should be readable");
         assert!(content.contains("GPS denied drone localization"), "{content}");
         assert!(content.contains("87.5 percent"), "{content}");
         assert!(content.contains("PDF page 1:"), "{content}");
@@ -1217,9 +1276,9 @@ mod tests {
 
     #[test]
     fn research_pdf_reader_rejects_invalid_and_oversized_input() {
-        assert!(extract_pdf_text(b"<html>not a PDF</html>").is_err());
-        assert!(extract_pdf_text(b"%PDF-1.4\ninvalid").is_err());
-        assert!(extract_pdf_text(&vec![b'A'; PAGE_BYTES + 1]).is_err());
+        assert!(extract_pdf_text(b"<html>not a PDF</html>", "").is_err());
+        assert!(extract_pdf_text(b"%PDF-1.4\ninvalid", "").is_err());
+        assert!(extract_pdf_text(&vec![b'A'; PAGE_BYTES + 1], "").is_err());
     }
 
     #[test]
@@ -1328,7 +1387,7 @@ mod tests {
         let mut clause = "A very long extended unrelated archive heading ".repeat(75);
         clause.push_str(" GPS");
         let excerpt = relevant_clause_window(
-            &clause, &HashSet::from(["gps".to_string()])
+            &clause, &HashSet::from(["gps".to_string()]), PAGE_CHARS
         );
         assert!(excerpt.contains("GPS"), "{excerpt}");
         assert!(excerpt.chars().count() <= PAGE_CHARS);
