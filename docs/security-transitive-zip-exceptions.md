@@ -118,6 +118,27 @@ and cannot stop an attacker who controls both files and their hashes, or a
 time-of-check/time-of-use replacement after preflight. This does not patch
 transitive ZIP 7.
 
+## Resumable model dependency download isolation
+
+Resumable model dependencies previously stored partials in the common
+`temp/downloads` directory under a basename made by replacing path
+separators with underscores. That was not unique across installed model
+packages or remote sources, and different nested paths could flatten into
+the same filename. A stale or incomplete download could consequently be
+resumed for a different model dependency.
+
+The new temporary basename is an SHA-256 fingerprint of the **portable-root
+relative package path**, dependency source URL, and original nested filename,
+using length-delimited fields. This prevents accidental cross-package
+partial reuse while keeping deterministic resumable paths after relocating
+a portable OpenMindAI install. Existing legacy partials are left untouched,
+and only new namespaced partials are resumed. Pre-existing symlinked or
+non-regular temporary targets are rejected before use.
+
+This addresses filename collisions and some local tampering risks; it is
+not a file-locking mechanism, a signed authenticity guarantee, or a fix for
+the transitive ZIP 7.2.0 vulnerabilities.
+
 ## Model dependency download path validation
 
 Hugging Face model metadata supplies dependency filenames. The resolver now
