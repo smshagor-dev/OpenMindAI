@@ -97,6 +97,24 @@ The hash is checked before the third-party loader opens the path, so this
 also does not eliminate possible concurrent file replacement or patch the
 upstream ZIP 7.2.0 crate.
 
+## Pinned upstream ZIP API source inspection
+
+In addition to the lockfile ownership check, Security CI resolves the exact
+Cargo registry sources for `any-tts 0.1.3` and `candle-core 0.10.2` with
+`cargo metadata --locked`, then inspects every Rust source file in those
+packages for `ZipArchive` references and direct archive extraction API
+calls. A new matched `.extract(...)`, `.extract_unchecked(...)`, or
+`ZipArchive::extract(...)` call fails the build for explicit review.
+`scripts/check-upstream-zip-source.mjs` also runs self-tests of its
+extraction-call detection.
+
+This provides a **narrow regression alarm**, not comprehensive static
+analysis, proof of safe archive input, or a fix for the vulnerable ZIP crate.
+It cannot rule out extraction through indirection, differently named methods,
+generated code, or additional packages. The RustSec ignore rules remain
+explicitly temporary, and the root requirement is to migrate the upstream
+dependencies away from ZIP 7.
+
 ## Temporary audit policy
 
 The Security workflow ignores **only** the three ZIP advisory IDs above.
