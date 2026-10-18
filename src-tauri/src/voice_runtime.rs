@@ -71,6 +71,9 @@ pub async fn generate_voice(
     // model and voices directories: a symlinked config/voice file can escape
     // the intended package without changing either parent directory.
     validate_kokoro_assets(root, package_dir, &voices_dir)?;
+    // Rehash the installed config and voice against their recorded download
+    // digests; a same-size replacement must not reach the Kokoro loader.
+    verify_kokoro_dependency_digests(root, package_dir)?;
     // Candle reads PyTorch ZIP metadata from the primary .pth model as well
     // as from voice weights. Preflight both before entering upstream code.
     validate_kokoro_pytorch_archive(&model_path)?;
@@ -207,6 +210,32 @@ fn validate_kokoro_assets(
         ));
     }
     validate_kokoro_pytorch_archive(&voice)
+}
+
+/// The install package manifest records SHA-256 for Kokoro config and
+/// voice dependencies. Preflight checks metadata and sizes only; perform a
+/// fresh hash comparison for both assets before invoking the model loader.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn verify_kokoro_dependency_digests(
+    root: &PortableRootManager,
+    package_dir: &Path,
+) -> Result<(), AppError> {
+    let entry = crate::model_catalog::entry_by_id("kokoro-82m-onnx")?;
+    let download = entry.download.as_ref().ok_or_else(|| {
+        AppError::ArtifactGenerationFailed("Kokoro catalog package is unavailable".to_string())
+    })?;
+    let expected_dir = fs::canonicalize(root.resolve_relative(&download.destination_dir)?)?;
+    if expected_dir != fs::canonicalize(package_dir)? {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro model must be loaded from its installed package directory".to_string(),
+        ));
+    }
+    if !crate::model_download::validate_installed_dependencies(root, &entry, true)? {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro config or voice failed its installed SHA-256 check; validate or re-download the model package".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Recheck the actual primary checkpoint against its previously recorded
@@ -485,6 +514,67 @@ mod tests {
         assert!(checked_kokoro_zip_sizes(10, 10, u64::MAX, 0).is_err());
         assert!(checked_kokoro_zip_sizes(10, 10, 0, u64::MAX).is_err());
         assert!(checked_kokoro_zip_sizes(1, 1, 0, MAX_KOKORO_ARCHIVE_BYTES).is_err());
+    }
+
+    #[test]
+    fn kokoro_dependency_digests_reject_same_size_voice_or_config_tampering() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let package = root.resolve_relative("models/audio/kokoro").unwrap();
+        let voices = package.join("voices");
+        fs::create_dir_all(&voices).unwrap();
+
+        let config_bytes = b"{\"version\":1}";
+        let voice_bytes = b"voice-weights";
+        fs::write(package.join("config.json"), config_bytes).unwrap();
+        fs::write(voices.join("af_heart.pt"), voice_bytes).unwrap();
+        let config_hash = format!("{:x}", Sha256::digest(config_bytes));
+        let voice_hash = format!("{:x}", Sha256::digest(voice_bytes));
+        let manifest = serde_json::json!({
+            "modelId": "kokoro-82m-onnx",
+            "repo": "hexgrad/Kokoro-82M",
+            "files": [
+                {
+                    "role": "config",
+                    "filename": "config.json",
+                    "format": "json",
+                    "sizeBytes": config_bytes.len(),
+                    "sha256": config_hash,
+                    "actualSha256": config_hash,
+                    "verification": "verified",
+                    "sourceUrl": "https://example.invalid/config.json"
+                },
+                {
+                    "role": "voice",
+                    "filename": "voices/af_heart.pt",
+                    "format": "pt",
+                    "sizeBytes": voice_bytes.len(),
+                    "sha256": voice_hash,
+                    "actualSha256": voice_hash,
+                    "verification": "verified",
+                    "sourceUrl": "https://example.invalid/af_heart.pt"
+                }
+            ]
+        });
+        fs::write(
+            package.join("package-manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(verify_kokoro_dependency_digests(&root, &package).is_ok());
+
+        fs::write(voices.join("af_heart.pt"), b"voice-weightz").unwrap();
+        assert!(verify_kokoro_dependency_digests(&root, &package).is_err());
+        fs::write(voices.join("af_heart.pt"), voice_bytes).unwrap();
+
+        fs::write(package.join("config.json"), b"{\"version\":2}").unwrap();
+        assert!(verify_kokoro_dependency_digests(&root, &package).is_err());
+        fs::write(package.join("config.json"), config_bytes).unwrap();
+        assert!(verify_kokoro_dependency_digests(&root, &package).is_ok());
+
+        fs::remove_file(package.join("package-manifest.json")).unwrap();
+        assert!(verify_kokoro_dependency_digests(&root, &package).is_err());
     }
 
     #[test]
