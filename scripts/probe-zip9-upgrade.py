@@ -171,9 +171,9 @@ def main() -> None:
             trial / "tests" / "zip9_reader_regressions.rs",
         )
         (trial / "Cargo.toml").write_text(
-            '[package]\\nname = "openmind-zip9-readers"\\nversion = "0.0.0"\\nedition = "2021"\\n'
-            '[dependencies]\\ncandle-core = { path = "../candle-core-0.10.2" }\\n'
-            'zip = "=9.0.4"\\n',
+            '[package]\nname = "openmind-zip9-readers"\nversion = "0.0.0"\nedition = "2021"\n'
+            '[dependencies]\ncandle-core = { path = "../candle-core-0.10.2" }\n'
+            'zip = "=9.0.4"\n',
             encoding="utf-8",
         )
         # The production Cargo manifests and lockfile still remain untouched
