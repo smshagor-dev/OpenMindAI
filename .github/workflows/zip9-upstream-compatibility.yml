@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - scripts/probe-zip9-upgrade.py
+      - scripts/zip9-reader-regressions.rs
       - .github/workflows/zip9-upstream-compatibility.yml
   workflow_dispatch:
 
