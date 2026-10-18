@@ -1,4 +1,7 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Component, Path},
+};
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -15,6 +18,7 @@ use crate::{
 };
 
 const PACKAGE_SPACE_MARGIN: u64 = 256 * 1024 * 1024;
+const MAX_PACKAGE_MANIFEST_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct HuggingFaceModel {
@@ -339,6 +343,13 @@ pub(crate) fn validate_installed_dependencies(
         return Ok(false);
     }
     ensure_contained(root.root(), &manifest_path)?;
+    let canonical_model_dir = fs::canonicalize(&model_dir)?;
+    let canonical_manifest = fs::canonicalize(&manifest_path)?;
+    if !canonical_manifest.starts_with(&canonical_model_dir)
+        || fs::metadata(&canonical_manifest)?.len() > MAX_PACKAGE_MANIFEST_BYTES
+    {
+        return Ok(false);
+    }
     let manifest: ModelPackageManifest = match fs::read_to_string(&manifest_path)
         .ok()
         .and_then(|content| serde_json::from_str(&content).ok())
@@ -351,24 +362,28 @@ pub(crate) fn validate_installed_dependencies(
     }
 
     for dependency in required {
-        let Some(record) = manifest.files.iter().find(|file| {
+        let mut matching = manifest.files.iter().filter(|file| {
             file.role == dependency.role
                 && file.format == dependency.format
                 && wildcard_match(&dependency.filename_pattern, &file.filename)
-        }) else {
+        });
+        let Some(record) = matching.next() else {
             return Ok(false);
         };
+        if matching.next().is_some() {
+            return Ok(false);
+        }
         if record.size_bytes == 0
-            || record.actual_sha256.trim().is_empty()
+            || !valid_package_digest(&record.actual_sha256)
+            || !valid_package_filename(&record.filename)
             || record.verification == VerificationState::Failed
         {
             return Ok(false);
         }
-        if record
-            .sha256
-            .as_deref()
-            .is_some_and(|expected| !expected.eq_ignore_ascii_case(&record.actual_sha256))
-        {
+        if record.sha256.as_deref().is_some_and(|expected| {
+            !valid_package_digest(expected)
+                || !expected.eq_ignore_ascii_case(&record.actual_sha256)
+        }) {
             return Ok(false);
         }
 
@@ -377,6 +392,9 @@ pub(crate) fn validate_installed_dependencies(
             return Ok(false);
         }
         ensure_contained(root.root(), &file_path)?;
+        if !fs::canonicalize(&file_path)?.starts_with(&canonical_model_dir) {
+            return Ok(false);
+        }
         if fs::metadata(&file_path)?.len() != record.size_bytes {
             return Ok(false);
         }
@@ -394,6 +412,22 @@ pub(crate) fn validate_installed_dependencies(
     }
 
     Ok(true)
+}
+
+fn valid_package_digest(digest: &str) -> bool {
+    digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn valid_package_filename(filename: &str) -> bool {
+    !filename.is_empty()
+        && !filename.contains('\\')
+        && !filename.contains(':')
+        && filename.split('/').all(|segment| {
+            !segment.is_empty() && segment != "." && segment != ".."
+        })
+        && Path::new(filename)
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)))
 }
 
 fn wildcard_match(pattern: &str, value: &str) -> bool {
@@ -442,6 +476,111 @@ mod tests {
             "mmproj-*Q8_0*.gguf",
             "Qwen2.5-VL-3B-Instruct-Q8_0.gguf"
         ));
+    }
+
+    #[test]
+    fn package_manifest_names_and_digests_must_be_canonical() {
+        assert!(valid_package_filename("voices/af_heart.pt"));
+        assert!(valid_package_filename("mmproj-file.gguf"));
+        for invalid in [
+            "", "../outside.gguf", "./file.gguf", "voices/../file.pt",
+            "voices//file.pt", "/absolute.gguf", "C:/windows/file.pt",
+            "voices\\af_heart.pt",
+        ] {
+            assert!(!valid_package_filename(invalid), "accepted {invalid}");
+        }
+        assert!(valid_package_digest(&"a".repeat(64)));
+        assert!(!valid_package_digest(&"g".repeat(64)));
+        assert!(!valid_package_digest("truncated"));
+    }
+
+    #[test]
+    fn package_manifest_limits_reject_oversized_or_invalid_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let entry = crate::model_catalog::entry_by_id("qwen25-vl-3b-q4km").unwrap();
+        let download = entry.download.as_ref().unwrap();
+        let model_dir = root.resolve_relative(&download.destination_dir).unwrap();
+        fs::create_dir_all(&model_dir).unwrap();
+
+        let filename = "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf";
+        let file_path = model_dir.join(filename);
+        fs::write(&file_path, b"projector").unwrap();
+        let digest = sha256_file(&file_path).unwrap();
+        let valid_record = PackageFileManifest {
+            role: "mmproj".to_string(),
+            filename: filename.to_string(),
+            format: "gguf".to_string(),
+            size_bytes: 9,
+            sha256: Some(digest.clone()),
+            actual_sha256: digest.clone(),
+            verification: VerificationState::Verified,
+            source_url: "https://example.invalid/file.gguf".to_string(),
+        };
+        let manifest_path = model_dir.join("package-manifest.json");
+        let mut manifest = ModelPackageManifest {
+            model_id: entry.id.clone(),
+            repo: entry.repo.clone(),
+            files: vec![valid_record.clone()],
+        };
+        let store = |record: &ModelPackageManifest| {
+            fs::write(&manifest_path, serde_json::to_vec(record).unwrap()).unwrap();
+        };
+        store(&manifest);
+        assert!(validate_installed_dependencies(&root, &entry, true).unwrap());
+
+        manifest.files.push(valid_record.clone());
+        store(&manifest);
+        assert!(!validate_installed_dependencies(&root, &entry, true).unwrap());
+        manifest.files.pop();
+
+        manifest.files[0].actual_sha256 = "invalid".to_string();
+        store(&manifest);
+        assert!(!validate_installed_dependencies(&root, &entry, true).unwrap());
+        manifest.files[0].actual_sha256 = digest;
+
+        manifest.files[0].source_url = "x".repeat(MAX_PACKAGE_MANIFEST_BYTES as usize);
+        store(&manifest);
+        assert!(!validate_installed_dependencies(&root, &entry, false).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn package_manifest_cannot_reference_symlink_outside_model_directory() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let entry = crate::model_catalog::entry_by_id("qwen25-vl-3b-q4km").unwrap();
+        let download = entry.download.as_ref().unwrap();
+        let model_dir = root.resolve_relative(&download.destination_dir).unwrap();
+        fs::create_dir_all(&model_dir).unwrap();
+        let external = root.resolve_relative("models/other.gguf").unwrap();
+        fs::write(&external, b"projector").unwrap();
+        let filename = "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf";
+        symlink(&external, model_dir.join(filename)).unwrap();
+        let digest = sha256_file(&external).unwrap();
+        let manifest = ModelPackageManifest {
+            model_id: entry.id.clone(),
+            repo: entry.repo.clone(),
+            files: vec![PackageFileManifest {
+                role: "mmproj".to_string(),
+                filename: filename.to_string(),
+                format: "gguf".to_string(),
+                size_bytes: 9,
+                sha256: Some(digest.clone()),
+                actual_sha256: digest,
+                verification: VerificationState::Verified,
+                source_url: "https://example.invalid/file.gguf".to_string(),
+            }],
+        };
+        fs::write(
+            model_dir.join("package-manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(!validate_installed_dependencies(&root, &entry, true).unwrap());
     }
 
     #[test]
