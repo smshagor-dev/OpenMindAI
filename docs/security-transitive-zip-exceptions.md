@@ -12,6 +12,22 @@
 - The manually extracted diffusion runtime strips Unix SUID, SGID and sticky
   permission bits instead of carrying these bits into new files.
 
+## Runtime installer ZIP preflight (defense in depth)
+
+The official llama.cpp ZIP installer now rejects unsafe archive members before
+extracting with the patched ZIP 9.0.4 library. It rejects path escapes, duplicate
+or empty paths, symbolic links and special-file types, SUID/SGID/sticky permission
+bits, and archives advertising more than 20,000 entries or 4 GiB uncompressed.
+Rejected archives are discarded from staging without replacing a working
+installed runtime. Regression tests cover permission modes and resource bounds;
+existing installer tests cover failed-extraction cleanup and preserving a
+working runtime.
+
+This reduces exposure in the **direct runtime installer**. It is **not** a
+replacement for upstream ZIP 7/8 remediation and does not establish that every
+archive-handling code path in a transitive crate is safe. The exception and its
+original expiry remain in force.
+
 ## Remaining upstream dependencies — NOT FIXED
 
 `cargo audit` still reports three real advisories against each of two legacy
