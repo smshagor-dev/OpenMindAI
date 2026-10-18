@@ -264,18 +264,19 @@ impl ModelDownloadManager {
         token: &CancellationToken,
     ) -> Result<(PathBuf, VerificationState), AppError> {
         let filename = metadata.filename.clone();
-        let temp_dir = self.root.resolve_relative("temp/downloads")?;
-        fs::create_dir_all(&temp_dir)?;
-        ensure_contained(self.root.root(), &temp_dir)?;
-
-        let final_path = model_dir.join(&filename);
-        if let Some(parent) = final_path.parent() {
-            fs::create_dir_all(parent)?;
-            ensure_contained(self.root.root(), parent)?;
-        }
-        let part_path = temp_dir.join(safe_part_filename(&filename));
-        ensure_contained(self.root.root(), &final_path)?;
-        ensure_contained(self.root.root(), &part_path)?;
+        // Apply the same safe, package-confined path handling as dependency
+        // assets before creating any server-supplied nested directories.
+        let final_path =
+            model_package::prepare_dependency_destination(&self.root, model_dir, &filename)?;
+        // The old flattened <filename>.part key could collide across models.
+        // Include package, source and nested filename in the resumable key.
+        let part_path = model_package::namespaced_model_partial_path(
+            &self.root,
+            model_dir,
+            &metadata.source_url,
+            &filename,
+        )?;
+        ensure_contained(model_dir, &final_path)?;
 
         if final_path.exists() {
             let verification =
@@ -414,6 +415,16 @@ impl ModelDownloadManager {
             ))
         })?;
         let filename = sibling.rfilename.clone();
+        if sibling
+            .lfs
+            .as_ref()
+            .and_then(|lfs| lfs.sha256.as_deref())
+            .is_some_and(|digest| !model_package::valid_package_digest(digest))
+        {
+            return Err(AppError::ModelDownloadFailed(
+                "official model metadata has an invalid SHA-256".to_string(),
+            ));
+        }
         let source_url = format!("https://huggingface.co/{repo}/resolve/main/{filename}");
         let size_bytes = sibling
             .lfs
@@ -506,20 +517,6 @@ impl DownloadStatus {
     }
 }
 
-pub(crate) fn safe_part_filename(filename: &str) -> String {
-    let flattened = filename
-        .chars()
-        .map(|character| {
-            if matches!(character, '/' | '\\') {
-                '_'
-            } else {
-                character
-            }
-        })
-        .collect::<String>();
-    format!("{flattened}.part")
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PartialDownloadState {
     Fresh,
@@ -587,7 +584,10 @@ fn select_sibling<'a>(
 ) -> Option<&'a HuggingFaceSibling> {
     siblings
         .iter()
-        .filter(|sibling| wildcard_match(&download.filename_pattern, &sibling.rfilename))
+        .filter(|sibling| {
+            model_package::valid_package_filename(&sibling.rfilename)
+                && wildcard_match(&download.filename_pattern, &sibling.rfilename)
+        })
         .max_by_key(|sibling| {
             sibling
                 .lfs
@@ -852,15 +852,67 @@ mod tests {
     }
 
     #[test]
-    fn nested_hugging_face_paths_get_safe_partial_names() {
+    fn primary_sibling_selection_rejects_unsafe_remote_paths() {
+        let download = ModelCatalogDownload {
+            strategy: crate::model_catalog::ModelDownloadStrategy::SingleFile,
+            filename_pattern: "*.gguf".to_string(),
+            destination_dir: "models/llm/test".to_string(),
+            format: "gguf".to_string(),
+            dependencies: Vec::new(),
+        };
+        let siblings = vec![
+            HuggingFaceSibling {
+                rfilename: "../oversized.gguf".to_string(),
+                size: Some(1000),
+                lfs: None,
+            },
+            HuggingFaceSibling {
+                rfilename: "nested/model.gguf".to_string(),
+                size: Some(100),
+                lfs: None,
+            },
+        ];
         assert_eq!(
-            safe_part_filename("split_files/diffusion_models/model.safetensors"),
-            "split_files_diffusion_models_model.safetensors.part"
+            select_sibling(&siblings, &download).unwrap().rfilename,
+            "nested/model.gguf"
         );
+        assert!(select_sibling(&siblings[..1], &download).is_none());
+    }
+
+    #[test]
+    fn primary_download_partials_are_namespaced_and_portable() {
+        let temp_a = tempfile::tempdir().unwrap();
+        let temp_b = tempfile::tempdir().unwrap();
+        let root_a = PortableRootManager::from_root(temp_a.path().join("OpenMindAI"));
+        let root_b = PortableRootManager::from_root(temp_b.path().join("OpenMindAI"));
+        root_a.ensure_directories().unwrap();
+        root_b.ensure_directories().unwrap();
+        let dir_a = root_a.resolve_relative("models/llm/test").unwrap();
+        let dir_b = root_b.resolve_relative("models/llm/test").unwrap();
+        let other_a = root_a.resolve_relative("models/llm/other").unwrap();
+        fs::create_dir_all(&dir_a).unwrap();
+        fs::create_dir_all(&dir_b).unwrap();
+        fs::create_dir_all(&other_a).unwrap();
+        let key = |root: &PortableRootManager, dir: &Path, url: &str, name: &str| {
+            model_package::namespaced_model_partial_path(root, dir, url, name).unwrap()
+        };
+        let source = "https://example.invalid/model.gguf";
+        let first = key(&root_a, &dir_a, source, "nested/model.gguf");
         assert_eq!(
-            safe_part_filename("onnx\\model.onnx"),
-            "onnx_model.onnx.part"
+            first.file_name(),
+            key(&root_b, &dir_b, source, "nested/model.gguf").file_name()
         );
+        assert_ne!(first, key(&root_a, &other_a, source, "nested/model.gguf"));
+        assert_ne!(
+            first,
+            key(
+                &root_a,
+                &dir_a,
+                "https://other.invalid/model.gguf",
+                "nested/model.gguf"
+            )
+        );
+        assert_ne!(first, key(&root_a, &dir_a, source, "nested_model.gguf"));
     }
 
     #[test]
