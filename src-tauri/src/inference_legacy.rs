@@ -1192,9 +1192,12 @@ fn citation_numeric_evidence_warning(
         };
         let numbers_in_claim = numeric_evidence_values(&claim);
         let percentages_in_claim = percentage_evidence_values(&claim);
+        let durations_in_claim = duration_evidence_values(&claim);
         for value in numbers_in_claim.difference(numbers_in_source) {
             let label = if percentages_in_claim.contains(value) {
                 format!("{value}%")
+            } else if let Some((_, unit)) = durations_in_claim.iter().find(|(amount, _)| amount == value) {
+                format!("{value} {unit}")
             } else {
                 value.clone()
             };
@@ -1209,13 +1212,11 @@ fn citation_numeric_evidence_warning(
             }
         }
         // Compare explicit time units as well. "95 ms", "95 seconds", and
-        // "95 participants" cannot corroborate one another solely by sharing 95.
-        let durations_in_claim = duration_evidence_values(&claim);
+        // "95 participants" cannot corroborate one another solely by sharing
+        // 95. Also cover one-digit durations ignored by the bare-number parser.
         if let Some(durations_in_source) = reference_durations.get(&number) {
             for (value, unit) in durations_in_claim.difference(durations_in_source) {
-                if numbers_in_source.contains(value) {
-                    mismatches.entry(number).or_default().insert(format!("{value} {unit}"));
-                }
+                mismatches.entry(number).or_default().insert(format!("{value} {unit}"));
             }
         }
     }
