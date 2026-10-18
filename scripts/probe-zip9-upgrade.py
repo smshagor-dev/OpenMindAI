@@ -160,12 +160,24 @@ def main() -> None:
             adapt_upstream_zip9_api(crate, dst)
             patches.extend(["--config", f'patch.crates-io.{crate}.path="{dst}"'])
             print(f"Locally substituted {crate}@{version} zip requirement with {ZIP_TARGET}")
-        # Copy only the relevant Cargo project into a writable sandbox. Patches
-        # are CLI-local and do not change any committed manifest.
+        # Cargo cannot run integration tests in a non-workspace dependency
+        # via -p. Use a disposable standalone harness that depends on the
+        # exact patched Candle source instead of editing its registry files.
         trial = overlay / "trial"
         trial.mkdir()
-        # Source locations in the original workspace are provided using a
-        # temporary manifest edit, so the existing project can still compile.
+        (trial / "tests").mkdir()
+        shutil.copy2(
+            ROOT / "scripts" / "zip9-reader-regressions.rs",
+            trial / "tests" / "zip9_reader_regressions.rs",
+        )
+        (trial / "Cargo.toml").write_text(
+            '[package]\nname = "openmind-zip9-readers"\nversion = "0.0.0"\nedition = "2021"\n'
+            '[dependencies]\ncandle-core = { path = "../candle-core-0.10.2" }\n'
+            'zip = "=9.0.4"\n',
+            encoding="utf-8",
+        )
+        # The production Cargo manifests and lockfile still remain untouched
+        # apart from the temporary Cargo resolver probe guarded by finally.
         original = MANIFEST.read_text(encoding="utf-8")
         scratch_manifest = MANIFEST
         scratch_lock = LOCK
@@ -179,7 +191,19 @@ def main() -> None:
                 if any(v.startswith(("7.", "8.")) for v in versions):
                     raise RuntimeError(f"Legacy zip versions still resolved: {versions}")
                 run(["cargo", *patches, "check", "--manifest-path", str(MANIFEST), "--lib"])
-                print("ZIP 9 compatibility probe PASSED. Vendor and review the exact patched crates before production use.")
+                testing_env = os.environ.copy()
+                testing_env["CARGO_TARGET_DIR"] = str(ROOT / "src-tauri" / "target")
+                run([
+                    "cargo", "test", "--manifest-path", str(trial / "Cargo.toml"),
+                    "--test", "zip9_reader_regressions", "--", "--nocapture",
+                ], env=testing_env)
+                test_zip_versions = lock_versions(trial / "Cargo.lock", "zip")
+                if any(v.startswith(("7.", "8.")) for v in test_zip_versions):
+                    raise RuntimeError(
+                        f"Standalone ZIP 9 reader harness unexpectedly links old ZIP: {test_zip_versions}"
+                    )
+                print("ZIP 9 compilation and synthetic NPZ/PTH regression probe PASSED.")
+                print("Real pretrained model and platform-specific TTS validation are still required.")
             finally:
                 scratch_lock.write_bytes(original_lock)
         finally:
