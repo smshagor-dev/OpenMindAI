@@ -838,7 +838,7 @@ mod tests {
         let archive_path = temp.path().join("runtime.zip");
         zip_with(&archive_path, &[
             ("bin/llama-server.exe", b"replacement"),
-            ("bin/llama-server.exe", b"duplicate"),
+            ("bin//llama-server.exe", b"duplicate"),
         ]);
         let install = temp.path().join("installed");
         fs::create_dir_all(&install).unwrap();
