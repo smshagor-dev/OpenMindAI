@@ -118,6 +118,27 @@ and cannot stop an attacker who controls both files and their hashes, or a
 time-of-check/time-of-use replacement after preflight. This does not patch
 transitive ZIP 7.
 
+## Model dependency download path validation
+
+Hugging Face model metadata supplies dependency filenames. The resolver now
+accepts only clean relative filenames **before** selecting a download, and
+rejects malformed published SHA-256 digests. Unsafe remote sibling paths are
+excluded even if a broad model-catalog filename pattern would otherwise match.
+
+Before writing anything under the selected dependency target, the downloader
+checks that the model directory stays inside the portable root, rejects
+symlinked intermediate directories and existing non-regular/symlink targets,
+and creates each missing parent directory only after checking its predecessor.
+Download destinations must stay **inside the model package**, not merely
+somewhere under the portable root. Invalid paths never trigger directory
+creation. These controls are covered by path traversal, normal nested asset
+and package-local symlink escape regression tests.
+
+This is path-validation defense in depth, not an atomic filesystem capability:
+a different local process can still race directory modifications between the
+checks and the subsequent write. It does not resolve upstream ZIP 7 RustSec
+advisories.
+
 ## Installed model package manifest boundaries
 
 Installed model dependency validation now bounds `package-manifest.json` to
