@@ -33,6 +33,21 @@ fail-closed Cargo manifest transformation. The GitHub Actions workflow
    expose any ZIP 9 API errors. It restores the original production lockfile
    even if a step fails.
 
+The isolated probe also inserts `scripts/zip9-reader-regressions.rs` into the
+patched Candle source tree, then runs its Rust tests. The tests validate:
+
+- ZIP 9 NPZ eager and lazy read/write round-trips with a concrete `f32` tensor;
+- Candle's PyTorch PTH ZIP filename handling and pickle parser on a small
+  protocol-2 empty dictionary archive (`data.pkl`);
+- rejection of non-ZIP input by eager/lazy NPZ and PTH metadata readers.
+
+These fixtures are deterministic, generated locally and require no model
+download. **The synthetic PTH fixture has no tensor storages** and therefore
+does not establish full pretrained PyTorch checkpoint fidelity, voice output
+or behavior under malicious archive entry metadata. Keep the real Kokoro
+load-and-synthesize tests and cross-platform ZIP 9 review as separate release
+gates.
+
 A red result is **evidence of a migration blocker**, not permission to
 disable the actual security gate. The probe does not test full speech output,
 ZIP member semantics, Windows/macOS runtime behavior, or package provenance.
