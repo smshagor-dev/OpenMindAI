@@ -776,6 +776,25 @@ fn is_research_pdf_type(content_type: &str, url: &Url) -> bool {
 /// Parse on a blocking thread after a strict download limit. Bound page count,
 /// decompressed page content and total text; never invoke a system PDF viewer,
 /// PDF JavaScript or OCR on untrusted web documents.
+/// Preserve page order while sampling across the whole public PDF instead
+/// of silently discarding results/conclusions after page eight. This is
+/// deterministic, bounded sampling: it does not read every PDF page.
+fn sample_pdf_page_numbers(all_pages: &[u32], max_pages: usize) -> Vec<u32> {
+    if max_pages == 0 || all_pages.is_empty() {
+        return Vec::new();
+    }
+    if all_pages.len() <= max_pages {
+        return all_pages.to_vec();
+    }
+    if max_pages == 1 {
+        return vec![all_pages[0]];
+    }
+    let last = all_pages.len() - 1;
+    (0..max_pages)
+        .map(|slot| all_pages[slot * last / (max_pages - 1)])
+        .collect()
+}
+
 fn extract_pdf_text(bytes: &[u8]) -> Result<String, String> {
     if bytes.len() > PAGE_BYTES || !bytes.windows(5).take(1024).any(|part| part == b"%PDF-") {
         return Err("invalid or oversized PDF document".to_string());
@@ -789,8 +808,8 @@ fn extract_pdf_text(bytes: &[u8]) -> Result<String, String> {
     if document.is_encrypted() {
         return Err("encrypted PDFs cannot be inspected".to_string());
     }
-    let page_numbers: Vec<u32> = document.get_pages().keys()
-        .take(PDF_MAX_EXTRACT_PAGES).copied().collect();
+    let all_pages: Vec<u32> = document.get_pages().keys().copied().collect();
+    let page_numbers = sample_pdf_page_numbers(&all_pages, PDF_MAX_EXTRACT_PAGES);
     if page_numbers.is_empty() {
         return Err("PDF has no pages".to_string());
     }
