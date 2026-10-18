@@ -215,10 +215,7 @@ fn validate_kokoro_assets(
 /// other. A local manifest is not a signed trust anchor, and legacy installs
 /// without an expected digest remain supported.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn verify_kokoro_checkpoint_digest(
-    package_dir: &Path,
-    model_path: &Path,
-) -> Result<(), AppError> {
+fn verify_kokoro_checkpoint_digest(package_dir: &Path, model_path: &Path) -> Result<(), AppError> {
     let manifest_path = package_dir.join("model-manifest.json");
     if !manifest_path.exists() {
         return Ok(());
@@ -236,9 +233,7 @@ fn verify_kokoro_checkpoint_digest(
     }
     let manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(canonical)?).map_err(|error| {
-            AppError::ArtifactGenerationFailed(format!(
-                "Kokoro model manifest is invalid: {error}"
-            ))
+            AppError::ArtifactGenerationFailed(format!("Kokoro model manifest is invalid: {error}"))
         })?;
     let Some(expected) = manifest.get("sha256").and_then(|value| value.as_str()) else {
         return Ok(());
