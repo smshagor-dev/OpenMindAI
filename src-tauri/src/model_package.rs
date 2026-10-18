@@ -480,7 +480,7 @@ fn valid_package_digest(digest: &str) -> bool {
 fn valid_package_filename(filename: &str) -> bool {
     !filename.is_empty()
         && !filename.chars().any(|c| {
-            c.is_control() || matches!(c, '\\' | ':' | '?' | '*' | '"' | '<' | '>' | '|' | '#')
+            c.is_control() || matches!(c, '\\' | ':' | '?' | '*' | '"' | '<' | '>' | '|' | '#' | '%')
         })
         && filename
             .split('/')
@@ -540,17 +540,15 @@ mod tests {
 
     #[test]
     fn dependency_resolver_skips_unsafe_remote_sibling_paths() {
-        let entry = crate::model_catalog::entry_by_id("qwen25-vl-3b-q4km").unwrap();
-        let dep = entry
-            .download
-            .as_ref()
-            .unwrap()
-            .dependencies
-            .iter()
-            .find(|dependency| dependency.role == "mmproj")
-            .unwrap();
-        let unsafe_name = "../mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf";
-        let safe_name = "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf";
+        let dep = ModelCatalogDependency {
+            role: "voice".to_string(),
+            repo: None,
+            filename_pattern: "*.pt".to_string(),
+            format: "pt".to_string(),
+            required: true,
+        };
+        let unsafe_name = "../af_heart.pt";
+        let safe_name = "voices/af_heart.pt";
         let model = HuggingFaceModel {
             siblings: vec![
                 HuggingFaceSibling {
@@ -565,7 +563,7 @@ mod tests {
                 },
             ],
         };
-        let selected = resolve_dependency(&entry.repo, &model, dep).unwrap();
+        let selected = resolve_dependency("hexgrad/Kokoro-82M", &model, &dep).unwrap();
         assert_eq!(selected.filename, safe_name);
 
         let invalid_only = HuggingFaceModel {
@@ -575,7 +573,7 @@ mod tests {
                 lfs: None,
             }],
         };
-        assert!(resolve_dependency(&entry.repo, &invalid_only, dep).is_err());
+        assert!(resolve_dependency("hexgrad/Kokoro-82M", &invalid_only, &dep).is_err());
     }
 
     #[test]
