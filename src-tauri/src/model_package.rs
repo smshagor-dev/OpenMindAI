@@ -6,13 +6,14 @@ use std::{
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     app_error::AppError,
     model_catalog::{ModelCatalogDependency, ModelCatalogEntry},
     model_download::{
-        ensure_contained, prepare_partial_download, safe_part_filename, sha256_file,
+        ensure_contained, prepare_partial_download, sha256_file,
         validate_free_space, PartialDownloadState, VerificationState,
     },
     portable_root::PortableRootManager,
@@ -255,6 +256,48 @@ fn prepare_dependency_destination(
     Ok(target)
 }
 
+/// Namespace resumable dependency downloads by installed package, remote
+/// source and nested filename. The old flattened basename was shared by
+/// unrelated model packages and could also collide on slash/underscore paths.
+/// Use length-delimited data so distinct field boundaries cannot collide.
+fn dependency_partial_path(
+    root: &PortableRootManager,
+    model_dir: &Path,
+    dependency: &ResolvedDependency,
+) -> Result<PathBuf, AppError> {
+    let relative_dir = model_dir.strip_prefix(root.root()).map_err(|_| {
+        AppError::ModelDownloadFailed(
+            "model dependency package is outside the portable root".to_string(),
+        )
+    })?;
+    let mut digest = Sha256::new();
+    for field in [
+        relative_dir.to_string_lossy().as_bytes(),
+        dependency.source_url.as_bytes(),
+        dependency.filename.as_bytes(),
+    ] {
+        digest.update((field.len() as u64).to_be_bytes());
+        digest.update(field);
+    }
+    let part_name = format!("dependency-{:x}.part", digest.finalize());
+    let temp_dir = root.resolve_relative("temp/downloads")?;
+    fs::create_dir_all(&temp_dir)?;
+    ensure_contained(root.root(), &temp_dir)?;
+    let part_path = temp_dir.join(part_name);
+    match fs::symlink_metadata(&part_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(AppError::ModelDownloadFailed(
+                "model dependency partial path is not a regular file".to_string(),
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    ensure_contained(&temp_dir, &part_path)?;
+    Ok(part_path)
+}
+
 async fn download_dependency(
     root: &PortableRootManager,
     client: &Client,
@@ -263,11 +306,8 @@ async fn download_dependency(
     cancellation: &CancellationToken,
 ) -> Result<PackageFileManifest, AppError> {
     let final_path = prepare_dependency_destination(root, model_dir, &dependency.filename)?;
-    let temp_dir = root.resolve_relative("temp/downloads")?;
-    fs::create_dir_all(&temp_dir)?;
-    let part_path = temp_dir.join(safe_part_filename(&dependency.filename));
+    let part_path = dependency_partial_path(root, model_dir, dependency)?;
     ensure_contained(model_dir, &final_path)?;
-    ensure_contained(root.root(), &part_path)?;
 
     if final_path.exists() {
         let size_matches = fs::metadata(&final_path)
@@ -540,6 +580,100 @@ mod tests {
             "mmproj-*Q8_0*.gguf",
             "Qwen2.5-VL-3B-Instruct-Q8_0.gguf"
         ));
+    }
+
+    #[test]
+    fn dependency_partials_are_distinct_across_packages_sources_and_nested_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let a = root.resolve_relative("models/vision/package-a").unwrap();
+        let b = root.resolve_relative("models/vision/package-b").unwrap();
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        let template = ResolvedDependency {
+            role: "voice".to_string(),
+            filename: "voices/af_heart.pt".to_string(),
+            format: "pt".to_string(),
+            size_bytes: 11,
+            sha256: None,
+            source_url: "https://example.invalid/voices/af_heart.pt".to_string(),
+        };
+        let first = dependency_partial_path(&root, &a, &template).unwrap();
+        assert_eq!(first, dependency_partial_path(&root, &a, &template).unwrap());
+        assert_ne!(first, dependency_partial_path(&root, &b, &template).unwrap());
+
+        let different_source = ResolvedDependency {
+            source_url: "https://other.invalid/voices/af_heart.pt".to_string(),
+            ..template.clone()
+        };
+        assert_ne!(
+            first,
+            dependency_partial_path(&root, &a, &different_source).unwrap()
+        );
+        // Flattening slashes to underscores made these two filenames collide.
+        let path_one = ResolvedDependency {
+            filename: "voices/a_b.pt".to_string(),
+            ..template.clone()
+        };
+        let path_two = ResolvedDependency {
+            filename: "voices_a/b.pt".to_string(),
+            ..template
+        };
+        assert_ne!(
+            dependency_partial_path(&root, &a, &path_one).unwrap(),
+            dependency_partial_path(&root, &a, &path_two).unwrap()
+        );
+    }
+
+    #[test]
+    fn dependency_partial_name_survives_portable_root_relocation() {
+        let first_temp = tempfile::tempdir().unwrap();
+        let second_temp = tempfile::tempdir().unwrap();
+        let a = PortableRootManager::from_root(first_temp.path().join("OpenMindAI"));
+        let b = PortableRootManager::from_root(second_temp.path().join("OpenMindAI"));
+        a.ensure_directories().unwrap();
+        b.ensure_directories().unwrap();
+        let dependency = ResolvedDependency {
+            role: "voice".to_string(),
+            filename: "voices/af_heart.pt".to_string(),
+            format: "pt".to_string(),
+            size_bytes: 11,
+            sha256: None,
+            source_url: "https://example.invalid/voices/af_heart.pt".to_string(),
+        };
+        let path_a = a.resolve_relative("models/audio/kokoro").unwrap();
+        let path_b = b.resolve_relative("models/audio/kokoro").unwrap();
+        fs::create_dir_all(&path_a).unwrap();
+        fs::create_dir_all(&path_b).unwrap();
+        let partial_a = dependency_partial_path(&a, &path_a, &dependency).unwrap();
+        let partial_b = dependency_partial_path(&b, &path_b, &dependency).unwrap();
+        assert_eq!(partial_a.file_name(), partial_b.file_name());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dependency_partial_rejects_preexisting_symlink() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let package = root.resolve_relative("models/vision/package").unwrap();
+        fs::create_dir_all(&package).unwrap();
+        let dependency = ResolvedDependency {
+            role: "voice".to_string(),
+            filename: "voices/af_heart.pt".to_string(),
+            format: "pt".to_string(),
+            size_bytes: 11,
+            sha256: None,
+            source_url: "https://example.invalid/voices/af_heart.pt".to_string(),
+        };
+        let part = dependency_partial_path(&root, &package, &dependency).unwrap();
+        let unrelated = root.resolve_relative("temp/unrelated").unwrap();
+        fs::write(&unrelated, b"untouched").unwrap();
+        symlink(&unrelated, &part).unwrap();
+        assert!(dependency_partial_path(&root, &package, &dependency).is_err());
+        assert_eq!(fs::read(&unrelated).unwrap(), b"untouched");
     }
 
     #[test]
