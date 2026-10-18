@@ -32,6 +32,11 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
       - name: Verify probe source transformation
         run: python3 scripts/probe-zip9-upgrade.py --self-test
 
