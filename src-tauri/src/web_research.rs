@@ -43,6 +43,9 @@ impl Provider {
 #[derive(Debug)]
 struct PageEvidence {
     text: String,
+    /// Preserve MIME-validated provenance; HTML content cannot impersonate
+    /// parser-created PDF page metadata during numerical evidence review.
+    is_pdf: bool,
 }
 
 /// Search evidence and the exact URLs returned by providers. Keeping source
@@ -67,6 +70,8 @@ pub(super) struct ResearchEvidence {
     pub(super) read_sources: HashSet<usize>,
     /// Bounded page passages by their 1-based source number. Never persisted.
     pub(super) page_texts: HashMap<usize, String>,
+    /// Source IDs actually parsed from public PDF bytes (not inferred by URL).
+    pub(super) pdf_sources: HashSet<usize>,
     /// Cited result number -> earlier representative for near-identical excerpts.
     /// Similarity is a review signal, never proof of common authorship.
     pub(super) mirrored_sources: HashMap<usize, usize>,
@@ -78,6 +83,7 @@ fn unavailable(message: &str) -> ResearchEvidence {
         sources: Vec::new(),
         read_sources: HashSet::new(),
         page_texts: HashMap::new(),
+        pdf_sources: HashSet::new(),
         mirrored_sources: HashMap::new(),
     }
 }
@@ -210,6 +216,7 @@ async fn research_inner(
     on_progress(ResearchProgress { stage: "reading", completed: 0, total: page_total, sources: results.len(), pages_read: 0 });
     let research_query = query.to_string();
     let mut pages = HashMap::<String, String>::new();
+    let mut pdf_urls = HashSet::<String>::new();
     let mut fetched = stream::iter(work)
         .map(|hit| {
             let query = research_query.clone();
@@ -229,7 +236,10 @@ async fn research_inner(
                 Some((url, outcome)) => {
                     pages_checked += 1;
                     match outcome {
-                        Ok(Some(body)) => { pages.insert(url, body.text); },
+                        Ok(Some(body)) => {
+                            if body.is_pdf { pdf_urls.insert(url.clone()); }
+                            pages.insert(url, body.text);
+                        },
                         Err(_reason) => { tracing::debug!("source page skipped"); },
                         Ok(None) => {},
                     }
@@ -295,6 +305,9 @@ async fn research_inner(
     }
     let read_sources = read_source_numbers(&results, &pages);
     let page_texts = source_page_texts(&results, &pages);
+    let pdf_sources = results.iter().enumerate()
+        .filter_map(|(index, source)| pdf_urls.contains(&source.url).then_some(index + 1))
+        .collect();
     on_progress(ResearchProgress {
         stage: "generating",
         completed: page_total,
@@ -302,7 +315,7 @@ async fn research_inner(
         sources: results.len(),
         pages_read: pages.len(),
     });
-    ResearchEvidence { context: evidence, sources: results, read_sources, page_texts, mirrored_sources }
+    ResearchEvidence { context: evidence, sources: results, read_sources, page_texts, pdf_sources, mirrored_sources }
 }
 
 /// Fingerprint adjacent five-word sequences in an extracted text sample.
@@ -907,7 +920,7 @@ async fn fetch_readable_page(raw: &str, query: &str) -> Result<Option<PageEviden
     } else {
         select_relevant_text(&text, query)
     };
-    Ok(Some(PageEvidence { text: excerpt }))
+    Ok(Some(PageEvidence { text: excerpt, is_pdf }))
 }
 
 async fn public_addresses(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {

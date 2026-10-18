@@ -86,8 +86,13 @@ web search pages otherwise; no paid external AI model is required.
   a figure is absent, the app adds a **numerical evidence warning** for
   manual verification against the original article. Missing excerpt values
   may be caused by summarization, formatting or incomplete retrieval, while
-  matching values may still be misleading or have different units. This is
-  **not** proof of correctness, numerical entailment or contradiction.
+  matching values may still be misleading or have different units. For
+  MIME-verified PDF sources, parser-created labels such as `PDF page 16:`
+  are explicitly excluded from candidate *measured* values: a citation
+  claiming 16 participants cannot be supported merely by the excerpt's PDF
+  page number. Numeric content **after** the label is still reviewed. HTML
+  sources are not treated as PDFs just because their text resembles a label.
+  This is **not** proof of correctness, numerical entailment or contradiction.
 - Max elapsed retrieval: 35 seconds (search) and 85 seconds (research),
   per-request deadline 9 seconds, concurrent page fetches at most three.
   The user can cancel search while it is running.
