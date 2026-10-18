@@ -267,9 +267,7 @@ pub(super) fn namespaced_model_partial_path(
     filename: &str,
 ) -> Result<PathBuf, AppError> {
     let relative_dir = model_dir.strip_prefix(root.root()).map_err(|_| {
-        AppError::ModelDownloadFailed(
-            "model package is outside the portable root".to_string(),
-        )
+        AppError::ModelDownloadFailed("model package is outside the portable root".to_string())
     })?;
     let relative_package = relative_dir.to_string_lossy();
     let mut digest = Sha256::new();
