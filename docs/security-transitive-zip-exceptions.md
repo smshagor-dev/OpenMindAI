@@ -118,6 +118,22 @@ and cannot stop an attacker who controls both files and their hashes, or a
 time-of-check/time-of-use replacement after preflight. This does not patch
 transitive ZIP 7.
 
+## Installed model package manifest boundaries
+
+Installed model dependency validation now bounds `package-manifest.json` to
+64 KiB **before** parsing its contents. Dependency filenames must be clean,
+relative, portable paths without traversal, drive prefixes, backslashes or
+empty segments. Both recorded SHA-256 values must be full hexadecimal digests,
+and duplicate matching dependency records are rejected instead of accepting
+the first match. Resolved dependency files and the manifest itself must
+remain **inside the expected package directory**, not merely inside the
+OpenMindAI portable root; package-local symlink escape is rejected.
+
+These checks protect model packages that reuse the dependency validator,
+including the Kokoro voice/config load-time integrity step. A package
+manifest is still editable local metadata rather than an independent
+signature, and these checks do not replace the vulnerable upstream ZIP 7.
+
 ## Pinned upstream ZIP API source inspection
 
 In addition to the lockfile ownership check, Security CI resolves the exact
