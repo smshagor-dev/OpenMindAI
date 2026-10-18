@@ -88,10 +88,12 @@ web search pages otherwise; no paid external AI model is required.
   count such as `95 participants`. Similarly, a timing claim of `95 ms`
   or `95 milliseconds` cannot be supported merely by `95 seconds`,
   `95 sec` or an untyped count. Common spellings of milliseconds and
-  seconds are normalized, including single-digit durations. Different
-  numerical units are not automatically converted (for example, `1000 ms`
-  versus `1 s` may still prompt a manual review). Each citation is
-  checked separately.
+  seconds are normalized, including single-digit durations. Exactly equivalent
+  values across those two units (for example, `1000 ms` and `1 s`, or `95 ms`
+  and `0.095 s`) are compared using decimal arithmetic without floating-point
+  rounding; non-equivalent values still trigger review. This does not prove
+  that the claim describes the same experiment or measurement context.
+  Each citation is checked separately.
   When a figure or its percentage/timing unit is absent, the app adds a
   **numerical evidence warning** for manual verification against the
   original article. Missing excerpt values
