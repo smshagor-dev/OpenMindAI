@@ -381,8 +381,7 @@ pub(crate) fn validate_installed_dependencies(
             return Ok(false);
         }
         if record.sha256.as_deref().is_some_and(|expected| {
-            !valid_package_digest(expected)
-                || !expected.eq_ignore_ascii_case(&record.actual_sha256)
+            !valid_package_digest(expected) || !expected.eq_ignore_ascii_case(&record.actual_sha256)
         }) {
             return Ok(false);
         }
@@ -422,9 +421,9 @@ fn valid_package_filename(filename: &str) -> bool {
     !filename.is_empty()
         && !filename.contains('\\')
         && !filename.contains(':')
-        && filename.split('/').all(|segment| {
-            !segment.is_empty() && segment != "." && segment != ".."
-        })
+        && filename
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
         && Path::new(filename)
             .components()
             .all(|part| matches!(part, Component::Normal(_)))
@@ -483,8 +482,13 @@ mod tests {
         assert!(valid_package_filename("voices/af_heart.pt"));
         assert!(valid_package_filename("mmproj-file.gguf"));
         for invalid in [
-            "", "../outside.gguf", "./file.gguf", "voices/../file.pt",
-            "voices//file.pt", "/absolute.gguf", "C:/windows/file.pt",
+            "",
+            "../outside.gguf",
+            "./file.gguf",
+            "voices/../file.pt",
+            "voices//file.pt",
+            "/absolute.gguf",
+            "C:/windows/file.pt",
             "voices\\af_heart.pt",
         ] {
             assert!(!valid_package_filename(invalid), "accepted {invalid}");
