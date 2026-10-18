@@ -27,7 +27,12 @@ web search pages otherwise; no paid external AI model is required.
   decimals such as `87.5%` across sentence boundaries and matches query
   terms at word boundaries (including hyphenated terms such as
   `GPS-denied`) instead of treating substrings as independent matches.
-  Selection remains heuristic and may omit supporting passages.
+  Extraction now reserves the 2,200-character allowance for the highest
+  query-overlap passages first, so unrelated introductions cannot crowd out
+  late source evidence. Selected complete clauses are restored to document
+  order; oversized individual clauses are excerpted near matching words.
+  When no significant query terms match, the original leading excerpt is
+  retained. Selection is still heuristic and may omit supporting passages.
 - The engine marks a result as snippet-only when its page cannot be fetched.
   Sources are numbered consistently; the model must cite their real links,
   assess independent corroboration and disclose uncertainty.
