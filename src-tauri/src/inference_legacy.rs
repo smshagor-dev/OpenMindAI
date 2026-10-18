@@ -1138,7 +1138,11 @@ fn duration_evidence_values(text: &str) -> BTreeSet<(String, &'static str)> {
                 .map(|_| unit)
         });
         if let Some(unit) = unit {
-            if let Some(normalized) = numeric_evidence_values(&text[start..index]).into_iter().next() {
+            // The existing bare-number parser skips single digits, but
+            // explicit units make even "3 ms" a meaningful measurement.
+            if let Some(normalized) = numeric_evidence_values(
+                &format!("{}%", &text[start..index])
+            ).into_iter().next() {
                 values.insert((normalized, unit));
             }
         }
