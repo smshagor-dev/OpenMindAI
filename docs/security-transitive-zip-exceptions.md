@@ -97,6 +97,24 @@ The hash is checked before the third-party loader opens the path, so this
 also does not eliminate possible concurrent file replacement or patch the
 upstream ZIP 7.2.0 crate.
 
+## Kokoro voice/config load-time dependency integrity
+
+For packaged Kokoro installs, generation now reuses the existing
+`package-manifest.json` format and `validate_installed_dependencies(..., true)`
+to rehash both required `config.json` and `voices/af_heart.pt` files
+immediately before the third-party loader runs. Metadata-only preflight
+would miss a same-size replacement after installation; the fresh digest
+comparison fails closed, including when the dependency manifest is missing
+or malformed. The package path must match the model catalog's installed
+directory.
+
+Unlike the primary model `.pth` digest path, these two dependencies have
+recorded installation digests even when upstream does not publish a separate
+expected SHA-256. A local, editable manifest is **not** independently signed
+and cannot stop an attacker who controls both files and their hashes, or a
+time-of-check/time-of-use replacement after preflight. This does not patch
+transitive ZIP 7.
+
 ## Pinned upstream ZIP API source inspection
 
 In addition to the lockfile ownership check, Security CI resolves the exact
