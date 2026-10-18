@@ -1,6 +1,7 @@
 use std::{
     fs,
-    path::{Component, Path},
+    io::ErrorKind,
+    path::{Component, Path, PathBuf},
 };
 
 use reqwest::Client;
@@ -150,7 +151,10 @@ fn resolve_dependency(
     let sibling = model
         .siblings
         .iter()
-        .filter(|sibling| wildcard_match(&dependency.filename_pattern, &sibling.rfilename))
+        .filter(|sibling| {
+            valid_package_filename(&sibling.rfilename)
+                && wildcard_match(&dependency.filename_pattern, &sibling.rfilename)
+        })
         .max_by_key(|sibling| {
             sibling
                 .lfs
@@ -177,6 +181,16 @@ fn resolve_dependency(
             dependency.role, sibling.rfilename
         )));
     }
+    if sibling
+        .lfs
+        .as_ref()
+        .and_then(|lfs| lfs.sha256.as_deref())
+        .is_some_and(|digest| !valid_package_digest(digest))
+    {
+        return Err(AppError::ModelDownloadFailed(
+            "model dependency metadata contains an invalid SHA-256".to_string(),
+        ));
+    }
 
     Ok(ResolvedDependency {
         role: dependency.role.clone(),
@@ -191,6 +205,56 @@ fn resolve_dependency(
     })
 }
 
+/// Validate server-provided filenames before touching the filesystem.
+/// Inspect each existing ancestor using symlink_metadata so a package-local
+/// symlink cannot redirect the creation or replacement of dependency files.
+fn prepare_dependency_destination(
+    root: &PortableRootManager,
+    model_dir: &Path,
+    filename: &str,
+) -> Result<PathBuf, AppError> {
+    if !valid_package_filename(filename) {
+        return Err(AppError::ModelDownloadFailed(
+            "model dependency filename is unsafe".to_string(),
+        ));
+    }
+    let canonical_model_dir = fs::canonicalize(model_dir)?;
+    ensure_contained(root.root(), &canonical_model_dir)?;
+    let mut parent = model_dir.to_path_buf();
+    let segments = filename.split('/').collect::<Vec<_>>();
+    for segment in &segments[..segments.len() - 1] {
+        parent.push(segment);
+        match fs::symlink_metadata(&parent) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => {
+                return Err(AppError::ModelDownloadFailed(
+                    "model dependency directory is a symlink or not a directory".to_string(),
+                ));
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => fs::create_dir(&parent)?,
+            Err(error) => return Err(error.into()),
+        }
+        if !fs::canonicalize(&parent)?.starts_with(&canonical_model_dir) {
+            return Err(AppError::ModelDownloadFailed(
+                "model dependency directory escapes its package".to_string(),
+            ));
+        }
+    }
+    let target = model_dir.join(filename);
+    match fs::symlink_metadata(&target) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(AppError::ModelDownloadFailed(
+                "model dependency destination is not a regular file".to_string(),
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    ensure_contained(&canonical_model_dir, &target)?;
+    Ok(target)
+}
+
 async fn download_dependency(
     root: &PortableRootManager,
     client: &Client,
@@ -198,15 +262,11 @@ async fn download_dependency(
     dependency: &ResolvedDependency,
     cancellation: &CancellationToken,
 ) -> Result<PackageFileManifest, AppError> {
-    let final_path = model_dir.join(&dependency.filename);
-    if let Some(parent) = final_path.parent() {
-        fs::create_dir_all(parent)?;
-        ensure_contained(root.root(), parent)?;
-    }
+    let final_path = prepare_dependency_destination(root, model_dir, &dependency.filename)?;
     let temp_dir = root.resolve_relative("temp/downloads")?;
     fs::create_dir_all(&temp_dir)?;
     let part_path = temp_dir.join(safe_part_filename(&dependency.filename));
-    ensure_contained(root.root(), &final_path)?;
+    ensure_contained(model_dir, &final_path)?;
     ensure_contained(root.root(), &part_path)?;
 
     if final_path.exists() {
@@ -419,8 +479,9 @@ fn valid_package_digest(digest: &str) -> bool {
 
 fn valid_package_filename(filename: &str) -> bool {
     !filename.is_empty()
-        && !filename.contains('\\')
-        && !filename.contains(':')
+        && !filename.chars().any(|c| {
+            c.is_control() || matches!(c, '\\' | ':' | '?' | '*' | '"' | '<' | '>' | '|' | '#')
+        })
         && filename
             .split('/')
             .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
@@ -475,6 +536,85 @@ mod tests {
             "mmproj-*Q8_0*.gguf",
             "Qwen2.5-VL-3B-Instruct-Q8_0.gguf"
         ));
+    }
+
+    #[test]
+    fn dependency_resolver_skips_unsafe_remote_sibling_paths() {
+        let entry = crate::model_catalog::entry_by_id("qwen25-vl-3b-q4km").unwrap();
+        let dep = entry
+            .download
+            .as_ref()
+            .unwrap()
+            .dependencies
+            .iter()
+            .find(|dependency| dependency.role == "mmproj")
+            .unwrap();
+        let unsafe_name = "../mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf";
+        let safe_name = "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf";
+        let model = HuggingFaceModel {
+            siblings: vec![
+                HuggingFaceSibling {
+                    rfilename: unsafe_name.to_string(),
+                    size: Some(100),
+                    lfs: None,
+                },
+                HuggingFaceSibling {
+                    rfilename: safe_name.to_string(),
+                    size: Some(9),
+                    lfs: None,
+                },
+            ],
+        };
+        let selected = resolve_dependency(&entry.repo, &model, dep).unwrap();
+        assert_eq!(selected.filename, safe_name);
+
+        let invalid_only = HuggingFaceModel {
+            siblings: vec![HuggingFaceSibling {
+                rfilename: unsafe_name.to_string(),
+                size: Some(100),
+                lfs: None,
+            }],
+        };
+        assert!(resolve_dependency(&entry.repo, &invalid_only, dep).is_err());
+    }
+
+    #[test]
+    fn dependency_destination_rejects_traversal_before_writing_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let model_dir = root.resolve_relative("models/vision/test-package").unwrap();
+        fs::create_dir_all(&model_dir).unwrap();
+        for filename in [
+            "../bad.pt",
+            "voices/../../bad.pt",
+            "/absolute.pt",
+            "C:/bad.pt",
+            "voices\\bad.pt",
+        ] {
+            assert!(prepare_dependency_destination(&root, &model_dir, filename).is_err());
+        }
+        assert!(!model_dir.join("voices").exists());
+        let normal = prepare_dependency_destination(&root, &model_dir, "voices/af_heart.pt")
+            .unwrap();
+        assert_eq!(normal, model_dir.join("voices/af_heart.pt"));
+        assert!(model_dir.join("voices").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dependency_destination_rejects_package_local_symlink_escape() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let model_dir = root.resolve_relative("models/vision/test-package").unwrap();
+        fs::create_dir_all(&model_dir).unwrap();
+        let other = root.resolve_relative("models/other-package").unwrap();
+        fs::create_dir_all(&other).unwrap();
+        symlink(&other, model_dir.join("voices")).unwrap();
+        assert!(prepare_dependency_destination(&root, &model_dir, "voices/af_heart.pt").is_err());
+        assert!(!other.join("af_heart.pt").exists());
     }
 
     #[test]
