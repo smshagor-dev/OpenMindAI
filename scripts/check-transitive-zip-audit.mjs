@@ -30,9 +30,12 @@ if (entries.filter((x) => x.name === "tauri-plugin-updater").some((x) =>
   x.deps.some((d) => d === "zip" || d.startsWith("zip "))))
   fail("legacy updater ZIP transitive dependency was re-enabled");
 
+// ZIP 8 / docx-rs were removed from DOCX export. Do not reintroduce them
+// under an exception after the export migrated to the patched direct ZIP 9.
+if (entries.some((entry) => entry.name === "docx-rs"))
+  fail("DOCX export must not reintroduce docx-rs and its legacy ZIP");
 const allowed = new Map([
   ["7.2.0", ["any-tts@0.1.3", "candle-core@0.10.2"]],
-  ["8.6.0", ["docx-rs@0.4.22"]],
 ]);
 for (const item of entries.filter((x) => x.name === "zip")) {
   if (item.version === "9.0.4") continue;
@@ -53,4 +56,4 @@ for (const version of allowed.keys()) {
 const expiry = Date.UTC(2026, 10, 17);
 if (Date.now() >= expiry) fail("temporary upstream ZIP exception expired 2026-11-17");
 if (process.exitCode) process.exit(process.exitCode);
-console.log("Temporary transitive ZIP exception is confined to three reviewed upstream dependencies.");
+console.log("Temporary transitive ZIP exception is confined to any-tts and candle-core.");

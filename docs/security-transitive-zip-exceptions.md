@@ -11,6 +11,10 @@
   `features = ["rustls-tls"]`, eliminating the old zip 4.x lockfile entry.
 - The manually extracted diffusion runtime strips Unix SUID, SGID and sticky
   permission bits instead of carrying these bits into new files.
+- **DOCX export**: uses a minimal WordprocessingML package writer and patched
+  direct ZIP 9.0.4, removing `docx-rs 0.4.22`, `zip 8.6.0`, and their unused
+  lockfile dependencies. Existing headings, paragraphs, lists, code and tables
+  are supported, with explicit XML escaping and ZIP package regression tests.
 
 ## Runtime installer ZIP preflight (defense in depth)
 
@@ -24,20 +28,19 @@ existing installer tests cover failed-extraction cleanup and preserving a
 working runtime.
 
 This reduces exposure in the **direct runtime installer**. It is **not** a
-replacement for upstream ZIP 7/8 remediation and does not establish that every
+replacement for upstream ZIP 7 remediation and does not establish that every
 archive-handling code path in a transitive crate is safe. The exception and its
 original expiry remain in force.
 
 ## Remaining upstream dependencies — NOT FIXED
 
-`cargo audit` still reports three real advisories against each of two legacy
-ZIP versions (six findings). **The presence of these advisories is not a false
-positive and a green audited CI job does not mean the dependencies are patched.**
+`cargo audit` still reports three real advisories against the remaining
+ZIP 7.2.0 package. **These advisories are real: a green audited CI job with
+exceptions does not mean that the dependency is patched.**
 
 | ZIP dependency | Transitive consumers | Why not simply update |
 | --- | --- | --- |
 | zip 7.2.0 | any-tts 0.1.3, candle-core 0.10.2 | Upstream versions depend on ZIP 7. |
-| zip 8.6.0 | docx-rs 0.4.22 | Upstream published crate depends on ZIP 8. |
 
 Affected advisories:
 - [RUSTSEC-2026-0367](https://rustsec.org/advisories/RUSTSEC-2026-0367) — permission-bit preservation in ZIP extraction
@@ -45,10 +48,10 @@ Affected advisories:
 - [RUSTSEC-2026-0369](https://rustsec.org/advisories/RUSTSEC-2026-0369) — symlink traversal during ZIP extraction
 
 These affect ZIP archive extraction APIs. The app's **direct** runtime archive
-extractor now uses patched ZIP 9.0.4. Document export primarily *writes* DOCX
-archives, but this does not prove arbitrary transitive extraction paths are
-unreachable in all runtime configurations. In particular, upstream speech/model
-packages need continued review. Treat input archives as untrusted.
+extractor now uses patched ZIP 9.0.4. DOCX export now writes archives directly through ZIP 9.0.4 and no longer
+links docx-rs or ZIP 8.6.0. However, upstream speech/model packages still
+require investigation of all archive-handling paths. Treat input archives as
+untrusted.
 
 ## Temporary audit policy
 
@@ -57,7 +60,8 @@ Before invoking cargo-audit, `scripts/check-transitive-zip-audit.mjs`:
 
 1. Requires the patched direct ZIP, rustls and quinn-proto versions.
 2. Requires the updater's legacy ZIP dependency to be absent.
-3. Fails on **any new legacy ZIP version or transitive consumer**.
+3. Fails on **any new legacy ZIP version or transitive consumer**, including
+   reintroducing `docx-rs`.
 4. **Expires on 2026-11-17** so this exception cannot silently persist.
 
 All other RustSec advisories, and all NPM high-severity findings, continue to
@@ -66,8 +70,8 @@ visible; they are not silently added to the exception.
 
 ## Required follow-up before claiming fully resolved
 
-- Update any-tts/candle-core and docx-rs to versions depending on patched ZIP,
-  or replace/vendoring them after compatibility and security verification.
+- Update or safely replace `any-tts` / `candle-core` to avoid ZIP 7, or use
+  a reviewed, maintained fork with a compatible patched archive dependency.
 - Review their ZIP archive handling, including malicious filenames, symlinks,
   and inherited Unix permission bits. Do not depend on the temporary exception
   to establish safety.

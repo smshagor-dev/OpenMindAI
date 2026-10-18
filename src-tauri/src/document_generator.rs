@@ -526,28 +526,55 @@ pub fn generate_pdf(markdown: &str, title: &str, dest: &Path) -> Result<PdfMeta,
     Ok(PdfMeta { page_count })
 }
 
-pub fn generate_docx(markdown: &str, title: &str, dest: &Path) -> Result<(), AppError> {
-    let blocks = parse_markdown_blocks(markdown);
-
-    let mut docx = docx_rs::Docx::new().add_paragraph(
-        docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_text(title).bold().size(36)),
-    );
-    docx = docx.add_paragraph(docx_rs::Paragraph::new());
-
-    for block in blocks {
-        docx = push_docx_block(docx, block);
+/// DOCX uses a small, self-contained WordprocessingML writer backed by the
+/// patched ZIP crate. The supported block model is the same one used for PDF.
+/// We only produce files here: we never extract DOCX archives.
+fn docx_xml_text(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => output.push_str("&amp;"),
+            '<' => output.push_str("&lt;"),
+            '>' => output.push_str("&gt;"),
+            '"' => output.push_str("&quot;"),
+            '\'' => output.push_str("&apos;"),
+            '\t' | '\n' | '\r' => output.push(ch),
+            c if (c as u32) < 0x20
+                || matches!(c as u32, 0xfffe | 0xffff)
+                || ((c as u32) & 0xffff) >= 0xfffe =>
+            {
+                output.push('\u{fffd}');
+            }
+            _ => output.push(ch),
+        }
     }
-
-    let file = std::fs::File::create(dest)
-        .map_err(|error| AppError::ArtifactGenerationFailed(error.to_string()))?;
-    docx.pack(file)
-        .map_err(|error| AppError::ArtifactGenerationFailed(error.to_string()))?;
-    Ok(())
+    output
 }
 
-fn push_docx_block(docx: docx_rs::Docx, block: Block) -> docx_rs::Docx {
-    use docx_rs::{Paragraph, Run, Table, TableCell, TableRow};
+fn docx_paragraph(xml: &mut String, text: &str, size: u32, bold: bool, mono: bool) {
+    xml.push_str("<w:p><w:pPr><w:spacing w:after=\"140\"/></w:pPr><w:r><w:rPr>");
+    if bold {
+        xml.push_str("<w:b/>");
+    }
+    if mono {
+        xml.push_str("<w:rFonts w:ascii=\"Consolas\" w:hAnsi=\"Consolas\"/>");
+    }
+    xml.push_str(&format!("<w:sz w:val=\"{size}\"/></w:rPr><w:t xml:space=\"preserve\">"));
+    xml.push_str(&docx_xml_text(text));
+    xml.push_str("</w:t></w:r></w:p>");
+}
 
+fn docx_table_row(xml: &mut String, cells: &[String], columns: usize, header: bool) {
+    xml.push_str("<w:tr>");
+    for index in 0..columns {
+        xml.push_str("<w:tc><w:tcPr><w:tcW w:w=\"0\" w:type=\"auto\"/></w:tcPr>");
+        docx_paragraph(xml, cells.get(index).map_or("", String::as_str), 20, header, false);
+        xml.push_str("</w:tc>");
+    }
+    xml.push_str("</w:tr>");
+}
+
+fn docx_block(xml: &mut String, block: Block) {
     match block {
         Block::Heading { level, text } => {
             let size = match level {
@@ -557,72 +584,92 @@ fn push_docx_block(docx: docx_rs::Docx, block: Block) -> docx_rs::Docx {
                 4 => 24,
                 _ => 22,
             };
-            docx.add_paragraph(
-                Paragraph::new().add_run(Run::new().add_text(text).bold().size(size)),
-            )
+            docx_paragraph(xml, &text, size, true, false);
         }
-        Block::Paragraph { text } => {
-            docx.add_paragraph(Paragraph::new().add_run(Run::new().add_text(text).size(22)))
-        }
+        Block::Paragraph { text } => docx_paragraph(xml, &text, 22, false, false),
         Block::UnorderedList { items } => {
-            let mut updated = docx;
             for item in items {
-                updated = updated.add_paragraph(
-                    Paragraph::new()
-                        .add_run(Run::new().add_text(format!("\u{2022}  {item}")).size(22)),
-                );
+                docx_paragraph(xml, &format!("\u{2022}  {item}"), 22, false, false);
             }
-            updated
         }
         Block::OrderedList { start, items } => {
-            let mut updated = docx;
             for (index, item) in items.into_iter().enumerate() {
-                let number = start + index as u64;
-                updated = updated.add_paragraph(
-                    Paragraph::new()
-                        .add_run(Run::new().add_text(format!("{number}.  {item}")).size(22)),
-                );
+                docx_paragraph(xml, &format!("{}.  {item}", start + index as u64), 22, false, false);
             }
-            updated
         }
         Block::Code { code } => {
-            let mut updated = docx;
             for line in code.lines() {
-                updated = updated
-                    .add_paragraph(Paragraph::new().add_run(Run::new().add_text(line).size(20)));
+                docx_paragraph(xml, line, 20, false, true);
             }
-            updated
         }
         Block::Table { headers, rows } => {
             if headers.is_empty() {
-                return docx;
+                return;
             }
-            let mut table_rows = vec![TableRow::new(
-                headers
-                    .iter()
-                    .map(|header| {
-                        TableCell::new().add_paragraph(
-                            Paragraph::new().add_run(Run::new().add_text(header).bold()),
-                        )
-                    })
-                    .collect(),
-            )];
+            xml.push_str("<w:tbl><w:tblPr><w:tblW w:w=\"0\" w:type=\"auto\"/>");
+            xml.push_str("<w:tblBorders><w:top w:val=\"single\"/>");
+            xml.push_str("<w:left w:val=\"single\"/><w:bottom w:val=\"single\"/>");
+            xml.push_str("<w:right w:val=\"single\"/><w:insideH w:val=\"single\"/>");
+            xml.push_str("<w:insideV w:val=\"single\"/></w:tblBorders></w:tblPr>");
+            docx_table_row(xml, &headers, headers.len(), true);
             for row in rows {
-                table_rows.push(TableRow::new(
-                    row.iter()
-                        .map(|cell| {
-                            TableCell::new()
-                                .add_paragraph(Paragraph::new().add_run(Run::new().add_text(cell)))
-                        })
-                        .collect(),
-                ));
+                docx_table_row(xml, &row, headers.len(), false);
             }
-            docx.add_table(Table::new(table_rows))
+            xml.push_str("</w:tbl>");
         }
-        Block::Rule => {
-            docx.add_paragraph(Paragraph::new().add_run(Run::new().add_text("\u{2014}".repeat(40))))
-        }
+        Block::Rule => docx_paragraph(xml, &"\u{2014}".repeat(40), 22, false, false),
     }
+}
+
+fn word_document_xml(blocks: Vec<Block>, title: &str) -> String {
+    let mut xml = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+    );
+    xml.push_str(r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>"#);
+    docx_paragraph(&mut xml, title, 36, true, false);
+    docx_paragraph(&mut xml, "", 22, false, false);
+    for block in blocks {
+        docx_block(&mut xml, block);
+    }
+    xml.push_str(r#"<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1021" w:right="1021" w:bottom="1021" w:left="1021" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr></w:body></w:document>"#);
+    xml
+}
+
+pub fn generate_docx(markdown: &str, title: &str, dest: &Path) -> Result<(), AppError> {
+    use std::io::Write;
+
+    let document = word_document_xml(parse_markdown_blocks(markdown), title);
+    let file = std::fs::File::create(dest)
+        .map_err(|error| AppError::ArtifactGenerationFailed(error.to_string()))?;
+    let mut archive = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .unix_permissions(0o644);
+
+    let parts: [(&str, &str); 3] = [
+        (
+            "[Content_Types].xml",
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#,
+        ),
+        (
+            "_rels/.rels",
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#,
+        ),
+        ("word/document.xml", &document),
+    ];
+
+    for (name, content) in parts {
+        archive
+            .start_file(name, options)
+            .map_err(|error| AppError::ArtifactGenerationFailed(error.to_string()))?;
+        archive
+            .write_all(content.as_bytes())
+            .map_err(|error| AppError::ArtifactGenerationFailed(error.to_string()))?;
+    }
+    archive
+        .finish()
+        .map_err(|error| AppError::ArtifactGenerationFailed(error.to_string()))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -682,5 +729,38 @@ mod tests {
 
         let bytes = std::fs::read(&dest).unwrap();
         assert_eq!(&bytes[0..4], b"PK\x03\x04");
+        let file = std::fs::File::open(&dest).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert_eq!(archive.len(), 3);
+        for path in ["[Content_Types].xml", "_rels/.rels", "word/document.xml"] {
+            assert!(archive.by_name(path).is_ok(), "{path} must exist");
+        }
+        let mut xml = String::new();
+        std::io::Read::read_to_string(
+            &mut archive.by_name("word/document.xml").unwrap(),
+            &mut xml,
+        ).unwrap();
+        assert!(xml.contains("<w:tbl>"));
+        assert!(xml.contains("Report Title"));
+        assert!(xml.contains("fn main() {}"));
+        assert!(xml.contains("Alpha"));
+    }
+
+    #[test]
+    fn docx_escapes_untrusted_text_and_preserves_unicode() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("escaped.docx");
+        let escaped = docx_xml_text("<unsafe>&'\" বাংলা");
+        assert_eq!(escaped, "&lt;unsafe&gt;&amp;&apos;&quot; বাংলা");
+        generate_docx("**Bangla বাংলা & quotes**", "A <B> & \"C\"", &dest).unwrap();
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(dest).unwrap()).unwrap();
+        let mut xml = String::new();
+        std::io::Read::read_to_string(
+            &mut zip.by_name("word/document.xml").unwrap(),
+            &mut xml,
+        ).unwrap();
+        assert!(xml.contains("A &lt;B&gt; &amp; &quot;C&quot;"));
+        assert!(xml.contains("Bangla বাংলা &amp; quotes"));
+        assert!(!xml.contains("<unsafe>"));
     }
 }

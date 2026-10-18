@@ -27,7 +27,6 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 cxx = { version = "1.0", optional = true }
 dirs = "5"
-docx-rs = "0.4.22"
 flate2 = "1"
 futures-util = "0.3"
 hound = "3.5"
