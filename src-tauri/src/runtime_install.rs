@@ -19,6 +19,8 @@ use crate::{
 
 const RELEASES_URL: &str = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=20";
 const SAFE_SPACE_MARGIN: u64 = 512 * 1024 * 1024;
+const MAX_RUNTIME_ZIP_ENTRIES: usize = 20_000;
+const MAX_RUNTIME_ZIP_UNPACKED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -528,6 +530,11 @@ fn extract_archive(archive_path: &Path, dest_dir: &Path) -> Result<(), AppError>
         let file = fs::File::open(archive_path)?;
         let mut archive = zip::ZipArchive::new(file)
             .map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?;
+        validate_runtime_zip_archive(
+            &mut archive,
+            MAX_RUNTIME_ZIP_ENTRIES,
+            MAX_RUNTIME_ZIP_UNPACKED_BYTES,
+        )?;
         archive
             .extract(dest_dir)
             .map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?;
@@ -540,6 +547,68 @@ fn extract_archive(archive_path: &Path, dest_dir: &Path) -> Result<(), AppError>
         return Err(AppError::RuntimeInstallFailed(format!(
             "unsupported archive format: {name}"
         )));
+    }
+    Ok(())
+}
+
+/// Fail closed before extracting a downloaded runtime archive. ZIP 9 already
+/// rejects path escapes during extraction, but these checks also reject link
+/// entries, privileged modes and decompression sizes we do not need for the
+/// official llama.cpp runtime packages.
+fn safe_runtime_zip_mode(mode: Option<u32>, is_dir: bool) -> bool {
+    let Some(mode) = mode else { return true };
+    if mode & 0o7000 != 0 {
+        return false;
+    }
+    match mode & 0o170000 {
+        0 => true, // Archives from Windows may omit Unix type bits.
+        0o040000 => is_dir,
+        0o100000 => !is_dir,
+        _ => false, // Unix symlinks, devices and other special entries.
+    }
+}
+
+fn validate_runtime_zip_archive(
+    archive: &mut zip::ZipArchive<fs::File>,
+    max_entries: usize,
+    max_unpacked: u64,
+) -> Result<(), AppError> {
+    if archive.len() > max_entries {
+        return Err(AppError::RuntimeInstallFailed(
+            "runtime ZIP archive contains too many entries".to_string(),
+        ));
+    }
+
+    let mut unpacked = 0u64;
+    let mut seen = std::collections::HashSet::new();
+    for index in 0..archive.len() {
+        let entry = archive
+            .by_index(index)
+            .map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?;
+        let relative = entry.enclosed_name().ok_or_else(|| {
+            AppError::RuntimeInstallFailed(
+                "runtime ZIP archive contains an unsafe path".to_string(),
+            )
+        })?;
+        if relative.as_os_str().is_empty() || !seen.insert(relative.to_path_buf()) {
+            return Err(AppError::RuntimeInstallFailed(
+                "runtime ZIP archive contains an empty or duplicate path".to_string(),
+            ));
+        }
+        if !safe_runtime_zip_mode(entry.unix_mode(), entry.is_dir()) {
+            return Err(AppError::RuntimeInstallFailed(
+                "runtime ZIP archive contains a link, special entry or privileged mode"
+                    .to_string(),
+            ));
+        }
+        unpacked = unpacked.checked_add(entry.size()).ok_or_else(|| {
+            AppError::RuntimeInstallFailed("runtime ZIP uncompressed size overflow".to_string())
+        })?;
+        if unpacked > max_unpacked {
+            return Err(AppError::RuntimeInstallFailed(
+                "runtime ZIP archive exceeds the uncompressed size limit".to_string(),
+            ));
+        }
     }
     Ok(())
 }
@@ -729,6 +798,55 @@ mod tests {
             std::io::Write::write_all(&mut writer, data).unwrap();
         }
         writer.finish().unwrap();
+    }
+
+    #[test]
+    fn runtime_zip_rejects_symlinks_and_privileged_modes() {
+        assert!(safe_runtime_zip_mode(Some(0o100755), false));
+        assert!(safe_runtime_zip_mode(Some(0o040755), true));
+        assert!(safe_runtime_zip_mode(None, false));
+        assert!(!safe_runtime_zip_mode(Some(0o120777), false));
+        assert!(!safe_runtime_zip_mode(Some(0o1004755), false));
+        assert!(!safe_runtime_zip_mode(Some(0o1002755), false));
+        assert!(!safe_runtime_zip_mode(Some(0o1001755), false));
+        assert!(!safe_runtime_zip_mode(Some(0o040755), false));
+    }
+
+    #[test]
+    fn runtime_zip_rejects_entry_count_and_expanded_size_limits() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive_path = temp.path().join("runtime.zip");
+        zip_with(&archive_path, &[
+            ("bin/llama-server.exe", b"server"),
+            ("bin/ggml.dll", b"library"),
+        ]);
+        let open = || {
+            zip::ZipArchive::new(fs::File::open(&archive_path).unwrap()).unwrap()
+        };
+        assert!(validate_runtime_zip_archive(&mut open(), 2, 13).is_ok());
+        let count_error = validate_runtime_zip_archive(&mut open(), 1, 100)
+            .unwrap_err().to_string();
+        assert!(count_error.contains("too many entries"), "{count_error}");
+        let size_error = validate_runtime_zip_archive(&mut open(), 2, 12)
+            .unwrap_err().to_string();
+        assert!(size_error.contains("uncompressed size limit"), "{size_error}");
+    }
+
+    #[test]
+    fn invalid_runtime_zip_never_replaces_a_working_install() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive_path = temp.path().join("runtime.zip");
+        zip_with(&archive_path, &[("bin/llama-server.exe", b"replacement")]);
+        let install = temp.path().join("installed");
+        fs::create_dir_all(&install).unwrap();
+        fs::write(install.join("llama-server.exe"), b"working original").unwrap();
+        let staging = temp.path().join("staging");
+        // Explicitly verify preflight failure leaves the current binary intact.
+        let file = fs::File::open(&archive_path).unwrap();
+        let mut zip = zip::ZipArchive::new(file).unwrap();
+        assert!(validate_runtime_zip_archive(&mut zip, 0, 100).is_err());
+        assert_eq!(fs::read(install.join("llama-server.exe")).unwrap(), b"working original");
+        assert!(!staging.exists());
     }
 
     #[test]
