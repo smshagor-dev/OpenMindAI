@@ -68,6 +68,9 @@ pub async fn generate_voice(
     // model and voices directories: a symlinked config/voice file can escape
     // the intended package without changing either parent directory.
     validate_kokoro_assets(root, package_dir, &voices_dir)?;
+    // Candle reads PyTorch ZIP metadata from the primary .pth model as well
+    // as from voice weights. Preflight both before entering upstream code.
+    validate_kokoro_pytorch_archive(&model_path)?;
     let package_dir = package_dir.to_path_buf();
 
     let output_parent = output_path.parent().ok_or_else(|| {
@@ -163,9 +166,11 @@ fn canonical_dir_under_root(
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-const MAX_KOKORO_VOICE_ZIP_ENTRIES: usize = 4096;
+const MAX_KOKORO_ARCHIVE_ENTRIES: usize = 4096;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-const MAX_KOKORO_VOICE_ZIP_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_KOKORO_ARCHIVE_BYTES: u64 = 1024 * 1024 * 1024;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+const MAX_KOKORO_CONFIG_BYTES: u64 = 1024 * 1024;
 
 /// Verify both the OpenMindAI root and the expected model subdirectory after
 /// symlink resolution, before invoking the upstream Kokoro/Candle loader.
@@ -182,6 +187,7 @@ fn validate_kokoro_assets(
             "Kokoro config.json resolves outside its model package".to_string(),
         ));
     }
+    validate_kokoro_config(&config)?;
     let voice = canonical_file_under_root(
         root,
         &voices_dir.join(format!("{DEFAULT_VOICE}.pt")),
@@ -192,29 +198,51 @@ fn validate_kokoro_assets(
             "Kokoro voice file resolves outside its voices directory".to_string(),
         ));
     }
-    validate_kokoro_voice_archive(&voice)
+    validate_kokoro_pytorch_archive(&voice)
 }
 
-/// PyTorch .pt files can be ZIP containers. Use the already-patched ZIP 9
+/// Bound and parse model configuration before passing it to the external
+/// loader. In addition to invalid JSON, excessively large configs are rejected
+/// without reading them into memory.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn validate_kokoro_config(path: &Path) -> Result<(), AppError> {
+    if fs::metadata(path)?.len() > MAX_KOKORO_CONFIG_BYTES {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro config.json exceeds the 1 MiB size limit".to_string(),
+        ));
+    }
+    let contents = fs::read(path)?;
+    let parsed: serde_json::Value = serde_json::from_slice(&contents).map_err(|error| {
+        AppError::ArtifactGenerationFailed(format!("Kokoro config.json is invalid: {error}"))
+    })?;
+    if !parsed.is_object() {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro config.json must contain an object".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// PyTorch .pt and .pth files can be ZIP containers. Use the already-patched ZIP 9
 /// reader to screen suspicious archive metadata before passing the file to
 /// upstream Candle code still linked to ZIP 7. This does not replace or patch
-/// ZIP 7 and intentionally leaves legacy non-ZIP .pt files to the model loader.
+/// ZIP 7 and intentionally leaves legacy non-ZIP PyTorch files to the model loader.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn validate_kokoro_voice_archive(path: &Path) -> Result<(), AppError> {
+fn validate_kokoro_pytorch_archive(path: &Path) -> Result<(), AppError> {
     let mut file = fs::File::open(path)?;
     let mut magic = [0_u8; 4];
     file.read_exact(&mut magic).map_err(|error| {
-        AppError::ArtifactGenerationFailed(format!("Kokoro voice is incomplete: {error}"))
+        AppError::ArtifactGenerationFailed(format!("Kokoro PyTorch archive is incomplete: {error}"))
     })?;
     if magic != *b"PK\x03\x04" {
         return Ok(());
     }
     let mut archive = zip::ZipArchive::new(file).map_err(|error| {
-        AppError::ArtifactGenerationFailed(format!("Kokoro voice ZIP is invalid: {error}"))
+        AppError::ArtifactGenerationFailed(format!("Kokoro PyTorch ZIP is invalid: {error}"))
     })?;
-    if archive.len() > MAX_KOKORO_VOICE_ZIP_ENTRIES {
+    if archive.len() > MAX_KOKORO_ARCHIVE_ENTRIES {
         return Err(AppError::ArtifactGenerationFailed(
-            "Kokoro voice ZIP contains too many entries".to_string(),
+            "Kokoro PyTorch ZIP contains too many entries".to_string(),
         ));
     }
     let mut total = 0_u64;
@@ -222,17 +250,17 @@ fn validate_kokoro_voice_archive(path: &Path) -> Result<(), AppError> {
     for index in 0..archive.len() {
         let entry = archive.by_index(index).map_err(|error| {
             AppError::ArtifactGenerationFailed(format!(
-                "Kokoro voice ZIP entry is invalid: {error}"
+                "Kokoro PyTorch ZIP entry is invalid: {error}"
             ))
         })?;
         let enclosed = entry.enclosed_name().ok_or_else(|| {
             AppError::ArtifactGenerationFailed(
-                "Kokoro voice ZIP contains an unsafe path".to_string(),
+                "Kokoro PyTorch ZIP contains an unsafe path".to_string(),
             )
         })?;
         if enclosed.as_os_str().is_empty() || !names.insert(enclosed.to_path_buf()) {
             return Err(AppError::ArtifactGenerationFailed(
-                "Kokoro voice ZIP contains empty or duplicate paths".to_string(),
+                "Kokoro PyTorch ZIP contains empty or duplicate paths".to_string(),
             ));
         }
         if let Some(mode) = entry.unix_mode() {
@@ -243,17 +271,17 @@ fn validate_kokoro_voice_archive(path: &Path) -> Result<(), AppError> {
                 )
             {
                 return Err(AppError::ArtifactGenerationFailed(
-                    "Kokoro voice ZIP contains a link, special entry or privileged mode"
+                    "Kokoro PyTorch ZIP contains a link, special entry or privileged mode"
                         .to_string(),
                 ));
             }
         }
         total = total.checked_add(entry.size()).ok_or_else(|| {
-            AppError::ArtifactGenerationFailed("Kokoro voice ZIP size overflow".to_string())
+            AppError::ArtifactGenerationFailed("Kokoro PyTorch ZIP size overflow".to_string())
         })?;
-        if total > MAX_KOKORO_VOICE_ZIP_BYTES {
+        if total > MAX_KOKORO_ARCHIVE_BYTES {
             return Err(AppError::ArtifactGenerationFailed(
-                "Kokoro voice ZIP exceeds the uncompressed size limit".to_string(),
+                "Kokoro PyTorch ZIP exceeds the uncompressed size limit".to_string(),
             ));
         }
     }
@@ -340,7 +368,7 @@ mod tests {
             .unwrap();
         writer.write_all(b"model-data").unwrap();
         writer.finish().unwrap();
-        assert!(validate_kokoro_voice_archive(&path).is_ok());
+        assert!(validate_kokoro_pytorch_archive(&path).is_ok());
         let mut file = fs::File::open(&path).unwrap();
         let mut archive = zip::ZipArchive::new(&mut file).unwrap();
         assert_eq!(archive.len(), 1);
@@ -348,11 +376,41 @@ mod tests {
     }
 
     #[test]
+    fn kokoro_primary_model_pth_archive_is_screened() {
+        let temp = tempfile::tempdir().unwrap();
+        let model_path = temp.path().join("kokoro-v1_0.pth");
+        let file = fs::File::create(&model_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file("kokoro/data.pkl", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"pickle-placeholder").unwrap();
+        writer.finish().unwrap();
+        assert!(validate_kokoro_pytorch_archive(&model_path).is_ok());
+        fs::write(&model_path, b"PK\x03\x04corrupted-model").unwrap();
+        assert!(validate_kokoro_pytorch_archive(&model_path).is_err());
+    }
+
+    #[test]
+    fn kokoro_config_must_be_bounded_valid_json_object() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.json");
+        fs::write(&path, b"{\"model\":\"kokoro\"}").unwrap();
+        assert!(validate_kokoro_config(&path).is_ok());
+        fs::write(&path, b"not json").unwrap();
+        assert!(validate_kokoro_config(&path).is_err());
+        fs::write(&path, b"[]").unwrap();
+        assert!(validate_kokoro_config(&path).is_err());
+        fs::write(&path, vec![b'x'; MAX_KOKORO_CONFIG_BYTES as usize + 1]).unwrap();
+        assert!(validate_kokoro_config(&path).is_err());
+    }
+
+    #[test]
     fn kokoro_voice_zip_preflight_rejects_invalid_zip() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("af_heart.pt");
         fs::write(&path, b"PK\x03\x04not-a-real-zip").unwrap();
-        assert!(validate_kokoro_voice_archive(&path).is_err());
+        assert!(validate_kokoro_pytorch_archive(&path).is_err());
     }
 
     #[test]
