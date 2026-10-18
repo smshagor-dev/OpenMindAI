@@ -950,6 +950,30 @@ fn research_term_overlap(clause: &str, query_terms: &HashSet<String>) -> usize {
         .len()
 }
 
+/// When one relevant clause is longer than the whole evidence budget, center
+/// its excerpt near a complete matching query word instead of silently
+/// truncating away the matching information at the end of that clause.
+fn relevant_clause_window(clause: &str, query_terms: &HashSet<String>) -> String {
+    let mut word_start = None;
+    for (index, character) in clause.char_indices() {
+        if character.is_alphanumeric() {
+            word_start.get_or_insert(index);
+        } else if let Some(start) = word_start.take() {
+            if query_terms.contains(&clause[start..index].to_lowercase()) {
+                let prefix_chars = clause[..start].chars().count();
+                return clause.chars()
+                    .skip(prefix_chars.saturating_sub(PAGE_CHARS / 5))
+                    .take(PAGE_CHARS)
+                    .collect();
+            }
+        }
+    }
+    clause.chars().take(PAGE_CHARS).collect()
+}
+
+/// Rank passages before applying the page character budget. Previously an
+/// unrelated first paragraph and 14 selected paragraphs were restored to page
+/// order before truncation, hiding strong evidence near the end of long pages.
 fn select_relevant_text(text: &str, query: &str) -> String {
     if text.chars().count() <= PAGE_CHARS { return text.to_string(); }
     let terms: HashSet<String> = query
@@ -959,21 +983,30 @@ fn select_relevant_text(text: &str, query: &str) -> String {
         .map(str::to_lowercase)
         .collect();
     let clauses = research_page_clauses(text);
-    if clauses.is_empty() { return text.chars().take(PAGE_CHARS).collect(); }
+    let fallback = || text.chars().take(PAGE_CHARS).collect::<String>();
+    if clauses.is_empty() || terms.is_empty() { return fallback(); }
     let mut best: Vec<_> = clauses.iter().enumerate()
         .map(|(index, clause)| (index, research_term_overlap(clause, &terms)))
         .collect();
-    best.sort_by(|a,b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    let mut chosen: Vec<usize> = vec![0];
-    for (index, score) in best.into_iter().take(14) {
-        if score == 0 || chosen.contains(&index) { continue; }
-        chosen.push(index);
+    // Stable tie breaking keeps earlier evidence first at equal relevance.
+    best.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let mut chosen = Vec::new();
+    let mut chars_used = 0usize;
+    for (index, score) in best.into_iter().filter(|(_, score)| *score > 0).take(14) {
+        let length = clauses[index].chars().count();
+        let separator = if chosen.is_empty() { 0 } else { 2 };
+        if length + separator <= PAGE_CHARS - chars_used {
+            chosen.push(index);
+            chars_used += length + separator;
+        } else if chosen.is_empty() {
+            return relevant_clause_window(clauses[index], &terms);
+        }
     }
+    if chosen.is_empty() { return fallback(); }
+    // Keep selected clauses in original document order without losing their
+    // budget reservations to unrelated paragraphs.
     chosen.sort_unstable();
-    let output = chosen.into_iter().map(|index| clauses[index])
-        .collect::<Vec<_>>().join(". ");
-    if output.chars().count() < 80 { text.chars().take(PAGE_CHARS).collect() }
-    else { output.chars().take(PAGE_CHARS).collect() }
+    chosen.into_iter().map(|index| clauses[index]).collect::<Vec<_>>().join(". ")
 }
 
 #[cfg(test)]
@@ -1050,6 +1083,45 @@ mod tests {
             .into_iter().map(str::to_string).collect();
         assert_eq!(research_term_overlap("GPS-denied drone localization results", &terms), 3);
         assert_eq!(research_term_overlap("The partial article describes a painting", &terms), 0);
+    }
+
+    #[test]
+    fn research_excerpt_prioritizes_late_relevant_evidence_over_early_introduction() {
+        let mut page = "A long catalog introduction describes unrelated inventory and shipping notices. ".repeat(56);
+        page.push_str(
+            "GPS-denied drone localization achieved 87.5% accuracy using UWB anchors in 2026. "
+        );
+        let excerpt = select_relevant_text(&page, "GPS-denied drone localization accuracy");
+        assert!(excerpt.contains("87.5% accuracy using UWB anchors in 2026"), "{excerpt}");
+        assert!(!excerpt.starts_with("A long catalog introduction"), "{excerpt}");
+        assert!(excerpt.chars().count() <= PAGE_CHARS);
+    }
+
+    #[test]
+    fn research_excerpt_reserves_space_for_highest_overlap_before_weaker_clauses() {
+        let mut page = (0..38).map(|i| {
+            format!("A drone summary entry {i} describes a very general topic overview. ")
+        }).collect::<String>();
+        page.push_str("The GPS-denied drone localization accuracy study measured 92.5% on the test set.");
+        let excerpt = select_relevant_text(&page, "GPS denied drone localization accuracy");
+        assert!(excerpt.contains("92.5%"), "{excerpt}");
+        assert!(excerpt.chars().count() <= PAGE_CHARS);
+    }
+
+    #[test]
+    fn research_excerpt_uses_bounded_window_when_relevant_clause_is_huge() {
+        let mut page = "Large introductory material about museum collections without research context ".repeat(65);
+        page.push_str("GPS denied drone localization achieved 93.5% accuracy in the test flight");
+        let excerpt = select_relevant_text(&page, "GPS drone localization accuracy");
+        assert!(excerpt.contains("GPS denied drone localization"), "{excerpt}");
+        assert!(excerpt.chars().count() <= PAGE_CHARS);
+    }
+
+    #[test]
+    fn research_excerpt_without_query_overlap_retains_a_bounded_leading_fallback() {
+        let page = "An unrelated encyclopedic history entry about rivers and cities. ".repeat(65);
+        let excerpt = select_relevant_text(&page, "quantum encryption");
+        assert_eq!(excerpt, page.chars().take(PAGE_CHARS).collect::<String>());
     }
 
     #[test]
