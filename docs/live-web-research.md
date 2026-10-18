@@ -32,6 +32,12 @@ web search pages otherwise; no paid external AI model is required.
   query terms match, a bounded leading-page excerpt is used. This is still
   a bounded, lexical sample, not a complete transcript or factual verification;
   relevant evidence may still be missed within long individual pages.
+  During final per-source relevance selection, **each retained PDF passage**
+  now carries its original sampled PDF page number. This prevents a result
+  selected from a later sentence on page 16, for example, from losing its
+  page provenance after sentence splitting. These are document page numbers,
+  not automatically validated scientific claims; PDF page selection and text
+  extraction can still omit or misinterpret complex layouts.
   Encrypted, scanned/image-only,
   malformed, oversized and unextractable PDFs remain snippet-only sources.
   No PDF scripts are run and no external PDF viewer or OCR is invoked.
@@ -150,6 +156,10 @@ destination constraint.
    extract budget instead of being displaced by the introduction. Also verify
    query-matching results near the end of a single long sampled page survive
    that page's budget, without losing its actual PDF page-number label.
+10. Use a long PDF with query-matching passages on multiple sampled pages.
+    Confirm each final quoted research excerpt retains its corresponding PDF
+    page number after global passage ranking, including a later sentence on
+    the final sampled page.
 
 CI covers parsing, retry classification, provider ordering and a local HTTP
 429 response fixture. These tests do not prove live vendor availability,
