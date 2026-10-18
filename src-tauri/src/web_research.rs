@@ -1181,10 +1181,10 @@ mod tests {
                     &mut combined,
                     number as u32,
                     "GPS denied drone localization reached 97.5 percent accuracy in 2026.",
-                    page_budget,
+                    "GPS denied drone localization accuracy", page_budget,
                 );
             } else {
-                append_pdf_page_excerpt(&mut combined, number as u32, &huge_intro, page_budget);
+                append_pdf_page_excerpt(&mut combined, number as u32, &huge_intro, "", page_budget);
             }
         }
         assert!(combined.chars().count() <= PDF_MAX_TEXT_CHARS);
@@ -1194,9 +1194,51 @@ mod tests {
     }
 
     #[test]
+    fn pdf_page_excerpt_finds_results_after_oversized_irrelevant_introduction() {
+        let mut page = "A lengthy municipal history and museum inventory notice. ".repeat(120);
+        page.push_str(
+            "GPS denied drone localization achieved 98.75 percent accuracy with UWB anchors during the flight trials."
+        );
+        assert!(page.chars().count() > PDF_MAX_TEXT_CHARS / PDF_MAX_EXTRACT_PAGES);
+        let mut extracted = String::new();
+        append_pdf_page_excerpt(
+            &mut extracted, 14, &page,
+            "GPS denied drone localization accuracy UWB",
+            PDF_MAX_TEXT_CHARS / PDF_MAX_EXTRACT_PAGES,
+        );
+        assert!(extracted.contains("PDF page 14:"), "{extracted}");
+        assert!(extracted.contains("98.75 percent accuracy"), "{extracted}");
+        assert!(extracted.chars().count() <= PDF_MAX_TEXT_CHARS / PDF_MAX_EXTRACT_PAGES);
+        assert!(!extracted.contains("A lengthy municipal history"), "{extracted}");
+    }
+
+    #[test]
+    fn pdf_page_excerpt_without_query_matches_preserves_bounded_leading_text() {
+        let page = "A scientific discussion about marine ecology and coastal surveys. ".repeat(115);
+        let mut extracted = String::new();
+        let page_budget = 160;
+        append_pdf_page_excerpt(&mut extracted, 7, &page, "quantum cryptography", page_budget);
+        assert!(extracted.starts_with("PDF page 7: A scientific discussion"), "{extracted}");
+        assert!(extracted.chars().count() <= page_budget);
+    }
+
+    #[test]
+    fn research_excerpt_selector_respects_custom_pdf_page_budget() {
+        let text = "The geographical and environmental survey describes ship movements. "
+            .repeat(95);
+        let relevant = select_relevant_text_bounded(
+            &(text + "Drone localization achieved 97.5 percent accuracy."),
+            "drone localization accuracy", 240,
+        );
+        assert!(relevant.contains("97.5 percent accuracy"), "{relevant}");
+        assert!(relevant.chars().count() <= 240);
+        assert!(select_relevant_text_bounded("some text", "anything", 0).is_empty());
+    }
+
+    #[test]
     fn pdf_page_text_budget_is_unicode_safe_and_includes_headings() {
         let mut combined = String::new();
-        append_pdf_page_excerpt(&mut combined, 12, &"Исследование".repeat(200), 45);
+        append_pdf_page_excerpt(&mut combined, 12, &"Исследование".repeat(200), "", 45);
         assert!(combined.starts_with("PDF page 12: "));
         assert!(combined.chars().count() <= 45);
         assert!(combined.ends_with('\n'));
@@ -1205,15 +1247,15 @@ mod tests {
     #[test]
     fn pdf_page_text_budget_rejects_empty_and_too_small_allocations() {
         let mut combined = String::new();
-        append_pdf_page_excerpt(&mut combined, 1, "", 4000);
-        append_pdf_page_excerpt(&mut combined, 2, "Scientific results", 5);
+        append_pdf_page_excerpt(&mut combined, 1, "", "", 4000);
+        append_pdf_page_excerpt(&mut combined, 2, "Scientific results", "", 5);
         assert!(combined.is_empty());
     }
 
     #[test]
     fn research_pdf_reader_extracts_late_text_from_sampled_final_page() {
         let pdf = multipage_research_pdf_fixture(16);
-        let evidence = extract_pdf_text(&pdf).expect("PDF text from distributed pages");
+        let evidence = extract_pdf_text(&pdf, "").expect("PDF text from distributed pages");
         assert!(evidence.contains("PDF page 1:"), "{evidence}");
         assert!(evidence.contains("PDF page 16:"), "{evidence}");
         assert!(evidence.contains("97.5 percent accuracy"), "{evidence}");
@@ -1225,7 +1267,7 @@ mod tests {
 
     #[test]
     fn research_pdf_reader_extracts_text_without_executing_content() {
-        let content = extract_pdf_text(&text_pdf_fixture()).expect("text PDF should be readable");
+        let content = extract_pdf_text(&text_pdf_fixture(), "").expect("text PDF should be readable");
         assert!(content.contains("GPS denied drone localization"), "{content}");
         assert!(content.contains("87.5 percent"), "{content}");
         assert!(content.contains("PDF page 1:"), "{content}");
@@ -1234,9 +1276,9 @@ mod tests {
 
     #[test]
     fn research_pdf_reader_rejects_invalid_and_oversized_input() {
-        assert!(extract_pdf_text(b"<html>not a PDF</html>").is_err());
-        assert!(extract_pdf_text(b"%PDF-1.4\ninvalid").is_err());
-        assert!(extract_pdf_text(&vec![b'A'; PAGE_BYTES + 1]).is_err());
+        assert!(extract_pdf_text(b"<html>not a PDF</html>", "").is_err());
+        assert!(extract_pdf_text(b"%PDF-1.4\ninvalid", "").is_err());
+        assert!(extract_pdf_text(&vec![b'A'; PAGE_BYTES + 1], "").is_err());
     }
 
     #[test]
@@ -1345,7 +1387,7 @@ mod tests {
         let mut clause = "A very long extended unrelated archive heading ".repeat(75);
         clause.push_str(" GPS");
         let excerpt = relevant_clause_window(
-            &clause, &HashSet::from(["gps".to_string()])
+            &clause, &HashSet::from(["gps".to_string()]), PAGE_CHARS
         );
         assert!(excerpt.contains("GPS"), "{excerpt}");
         assert!(excerpt.chars().count() <= PAGE_CHARS);
