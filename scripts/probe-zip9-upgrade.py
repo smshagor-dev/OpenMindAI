@@ -88,7 +88,7 @@ def adapt_upstream_zip9_api(crate: str, directory: Path) -> None:
             ".file_names()\n"
             "            .map(|name| name.map(|name| name.to_string()))\n"
             "            .collect::<std::result::Result<Vec<_>, _>>()\n"
-            "            .map_err(|error| TtsError::WeightLoadError(format!(\\"Invalid .pth ZIP name: {error}\\")))?;",
+            "            .map_err(|error| TtsError::WeightLoadError(format!(\"Invalid .pth ZIP name: {error}\")))?;",
         )
 
 
