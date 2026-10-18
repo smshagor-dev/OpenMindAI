@@ -61,20 +61,13 @@ pub async fn generate_voice(
 
     let model_path = canonical_file_under_root(root, model_path, "Kokoro model")?;
     let voices_dir = canonical_dir_under_root(root, voices_dir, "Kokoro voices")?;
-    if !voices_dir.join(format!("{DEFAULT_VOICE}.pt")).is_file() {
-        return Err(AppError::ArtifactGenerationFailed(format!(
-            "required Kokoro voice {DEFAULT_VOICE} is missing"
-        )));
-    }
     let package_dir = model_path.parent().ok_or_else(|| {
         AppError::ArtifactGenerationFailed("Kokoro package directory is unavailable".to_string())
     })?;
-    if !package_dir.join("config.json").is_file() {
-        return Err(AppError::ArtifactGenerationFailed(
-            "required Kokoro config.json is missing; validate or re-download the model package"
-                .to_string(),
-        ));
-    }
+    // Resolve every asset passed to a third-party model loader, not just the
+    // model and voices directories: a symlinked config/voice file can escape
+    // the intended package without changing either parent directory.
+    validate_kokoro_assets(root, package_dir, &voices_dir)?;
     let package_dir = package_dir.to_path_buf();
 
     let output_parent = output_path.parent().ok_or_else(|| {
@@ -170,6 +163,104 @@ fn canonical_dir_under_root(
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+const MAX_KOKORO_VOICE_ZIP_ENTRIES: usize = 4096;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+const MAX_KOKORO_VOICE_ZIP_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Verify both the OpenMindAI root and the expected model subdirectory after
+/// symlink resolution, before invoking the upstream Kokoro/Candle loader.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn validate_kokoro_assets(
+    root: &PortableRootManager,
+    package_dir: &Path,
+    voices_dir: &Path,
+) -> Result<(), AppError> {
+    let config =
+        canonical_file_under_root(root, &package_dir.join("config.json"), "Kokoro config.json")?;
+    if !config.starts_with(package_dir) {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro config.json resolves outside its model package".to_string(),
+        ));
+    }
+    let voice = canonical_file_under_root(
+        root,
+        &voices_dir.join(format!("{DEFAULT_VOICE}.pt")),
+        "required Kokoro voice",
+    )?;
+    if !voice.starts_with(voices_dir) {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro voice file resolves outside its voices directory".to_string(),
+        ));
+    }
+    validate_kokoro_voice_archive(&voice)
+}
+
+/// PyTorch .pt files can be ZIP containers. Use the already-patched ZIP 9
+/// reader to screen suspicious archive metadata before passing the file to
+/// upstream Candle code still linked to ZIP 7. This does not replace or patch
+/// ZIP 7 and intentionally leaves legacy non-ZIP .pt files to the model loader.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn validate_kokoro_voice_archive(path: &Path) -> Result<(), AppError> {
+    let mut file = fs::File::open(path)?;
+    let mut magic = [0_u8; 4];
+    file.read_exact(&mut magic).map_err(|error| {
+        AppError::ArtifactGenerationFailed(format!("Kokoro voice is incomplete: {error}"))
+    })?;
+    if magic != *b"PK\x03\x04" {
+        return Ok(());
+    }
+    let mut archive = zip::ZipArchive::new(file).map_err(|error| {
+        AppError::ArtifactGenerationFailed(format!("Kokoro voice ZIP is invalid: {error}"))
+    })?;
+    if archive.len() > MAX_KOKORO_VOICE_ZIP_ENTRIES {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro voice ZIP contains too many entries".to_string(),
+        ));
+    }
+    let mut total = 0_u64;
+    let mut names = std::collections::HashSet::new();
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index).map_err(|error| {
+            AppError::ArtifactGenerationFailed(format!(
+                "Kokoro voice ZIP entry is invalid: {error}"
+            ))
+        })?;
+        let enclosed = entry.enclosed_name().ok_or_else(|| {
+            AppError::ArtifactGenerationFailed(
+                "Kokoro voice ZIP contains an unsafe path".to_string(),
+            )
+        })?;
+        if enclosed.as_os_str().is_empty() || !names.insert(enclosed.to_path_buf()) {
+            return Err(AppError::ArtifactGenerationFailed(
+                "Kokoro voice ZIP contains empty or duplicate paths".to_string(),
+            ));
+        }
+        if let Some(mode) = entry.unix_mode() {
+            if mode & 0o7000 != 0
+                || !matches!(
+                    (mode & 0o170000, entry.is_dir()),
+                    (0, _) | (0o040000, true) | (0o100000, false)
+                )
+            {
+                return Err(AppError::ArtifactGenerationFailed(
+                    "Kokoro voice ZIP contains a link, special entry or privileged mode"
+                        .to_string(),
+                ));
+            }
+        }
+        total = total.checked_add(entry.size()).ok_or_else(|| {
+            AppError::ArtifactGenerationFailed("Kokoro voice ZIP size overflow".to_string())
+        })?;
+        if total > MAX_KOKORO_VOICE_ZIP_BYTES {
+            return Err(AppError::ArtifactGenerationFailed(
+                "Kokoro voice ZIP exceeds the uncompressed size limit".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn write_pcm16_wav(path: &Path, samples: &[f32]) -> Result<(), AppError> {
     let data_bytes = samples
         .len()
@@ -237,6 +328,75 @@ fn validate_wav(path: &Path) -> Result<(), AppError> {
 #[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kokoro_voice_zip_preflight_accepts_standard_archive_and_checks_count() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("af_heart.pt");
+        let file = fs::File::create(&path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file("voices/data.pkl", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"model-data").unwrap();
+        writer.finish().unwrap();
+        assert!(validate_kokoro_voice_archive(&path).is_ok());
+        let mut file = fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(&mut file).unwrap();
+        assert_eq!(archive.len(), 1);
+        assert!(archive.by_name("voices/data.pkl").is_ok());
+    }
+
+    #[test]
+    fn kokoro_voice_zip_preflight_rejects_invalid_zip() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("af_heart.pt");
+        fs::write(&path, b"PK\x03\x04not-a-real-zip").unwrap();
+        assert!(validate_kokoro_voice_archive(&path).is_err());
+    }
+
+    #[test]
+    fn kokoro_assets_require_files_inside_the_expected_package() {
+        let temp = tempfile::tempdir().unwrap();
+        let root_dir = temp.path().join("OpenMindAI");
+        let package = root_dir.join("models/kokoro");
+        let voices = package.join("voices");
+        fs::create_dir_all(&voices).unwrap();
+        fs::write(package.join("config.json"), b"{}").unwrap();
+        fs::write(voices.join("af_heart.pt"), b"legacy-model-data").unwrap();
+        let root = PortableRootManager::from_root(root_dir);
+        let package = fs::canonicalize(package).unwrap();
+        let voices = fs::canonicalize(voices).unwrap();
+        assert!(validate_kokoro_assets(&root, &package, &voices).is_ok());
+        fs::remove_file(voices.join("af_heart.pt")).unwrap();
+        assert!(validate_kokoro_assets(&root, &package, &voices).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kokoro_assets_reject_symlinked_files_outside_their_directories() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let root_dir = temp.path().join("OpenMindAI");
+        let package = root_dir.join("models/kokoro");
+        let voices = package.join("voices");
+        let elsewhere = root_dir.join("unrelated");
+        fs::create_dir_all(&voices).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(elsewhere.join("config.json"), b"{}").unwrap();
+        fs::write(elsewhere.join("af_heart.pt"), b"external-voice").unwrap();
+        fs::write(package.join("config.json"), b"{}").unwrap();
+        symlink(elsewhere.join("af_heart.pt"), voices.join("af_heart.pt")).unwrap();
+        let root = PortableRootManager::from_root(root_dir);
+        let package = fs::canonicalize(package).unwrap();
+        let voices = fs::canonicalize(voices).unwrap();
+        assert!(validate_kokoro_assets(&root, &package, &voices).is_err());
+        fs::remove_file(voices.join("af_heart.pt")).unwrap();
+        fs::write(voices.join("af_heart.pt"), b"local-voice").unwrap();
+        fs::remove_file(package.join("config.json")).unwrap();
+        symlink(elsewhere.join("config.json"), package.join("config.json")).unwrap();
+        assert!(validate_kokoro_assets(&root, &package, &voices).is_err());
+    }
 
     #[test]
     fn writes_and_validates_pcm16_wav() {

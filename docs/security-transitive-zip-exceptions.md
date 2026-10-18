@@ -53,6 +53,23 @@ links docx-rs or ZIP 8.6.0. However, upstream speech/model packages still
 require investigation of all archive-handling paths. Treat input archives as
 untrusted.
 
+## Kokoro model-load boundary checks
+
+Before local Kokoro TTS loads its voice and config files through upstream
+`any-tts` / Candle, OpenMindAI now resolves the required `config.json`
+and `af_heart.pt` paths and rejects symlinks escaping the expected model
+package or voices directory, even when the targets remain elsewhere within
+the portable root. ZIP-format `.pt` voice files also receive read-only
+metadata screening through the patched direct ZIP 9 reader before upstream
+loading: path enclosure, duplicate members, symlink/special member types,
+privileged Unix mode bits, 4,096 entry limit, and 1 GiB declared uncompressed
+size limit. Existing non-ZIP PyTorch assets remain supported.
+
+This reduces the input surface of the **Kokoro voice loader only**; it does
+not patch `zip 7.2.0`, prove that all upstream code paths avoid extraction,
+or provide a sandbox. The remaining three RustSec advisories must not be
+marked resolved based on these controls.
+
 ## Temporary audit policy
 
 The Security workflow ignores **only** the three ZIP advisory IDs above.
