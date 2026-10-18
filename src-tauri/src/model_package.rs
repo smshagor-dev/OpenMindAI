@@ -270,9 +270,10 @@ fn dependency_partial_path(
             "model dependency package is outside the portable root".to_string(),
         )
     })?;
+    let relative_package = relative_dir.to_string_lossy();
     let mut digest = Sha256::new();
     for field in [
-        relative_dir.to_string_lossy().as_bytes(),
+        relative_package.as_bytes(),
         dependency.source_url.as_bytes(),
         dependency.filename.as_bytes(),
     ] {
