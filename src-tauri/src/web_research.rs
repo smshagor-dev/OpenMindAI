@@ -1219,6 +1219,72 @@ mod tests {
     }
 
     #[test]
+    fn selected_pdf_evidence_keeps_real_page_label_for_late_relevant_sentences() {
+        let text = format!(
+            "PDF page 1: {}\nPDF page 16: A general archival introduction. The GPS-denied drone localization trial reached 97.5% accuracy in the final experiment.\n",
+            "This long document provides extensive historical context unrelated to the experiment. ".repeat(45)
+        );
+        let selected = select_relevant_pdf_text(
+            &text, "GPS denied drone localization accuracy"
+        );
+        assert!(selected.contains(
+            "PDF page 16: The GPS-denied drone localization trial reached 97.5% accuracy"
+        ), "{selected}");
+        assert!(!selected.contains("PDF page 1:"), "{selected}");
+        assert!(selected.chars().count() <= PAGE_CHARS);
+    }
+
+    #[test]
+    fn selected_pdf_evidence_labels_each_clause_including_same_page() {
+        let text = concat!(
+            "PDF page 4: The GPS-denied drone navigation assessment recorded stable localization. ",
+            "The GPS-denied drone accuracy was measured as 87.5% after retraining.\n",
+            "PDF page 12: GPS-denied localization accuracy reached 92.5% in the held-out evaluation.\n"
+        );
+        let selected = select_relevant_pdf_text(text, "GPS denied drone localization accuracy");
+        assert!(selected.contains("PDF page 4: The GPS-denied drone navigation"), "{selected}");
+        assert!(selected.contains("PDF page 4: The GPS-denied drone accuracy"), "{selected}");
+        assert!(selected.contains("PDF page 12: GPS-denied localization accuracy"), "{selected}");
+        assert_eq!(selected.matches("PDF page 4:").count(), 2);
+        assert!(selected.chars().count() <= PAGE_CHARS);
+    }
+
+    #[test]
+    fn selected_pdf_evidence_retains_page_number_for_oversized_clause_window() {
+        let text = format!(
+            "PDF page 38: {} GPS denied drone localization achieved 93.5% accuracy in the test flight.\n",
+            "Unrelated bibliographic introductory notes and catalog entries ".repeat(85)
+        );
+        let selected = select_relevant_pdf_text(
+            &text, "GPS denied drone localization accuracy"
+        );
+        assert!(selected.starts_with("PDF page 38: "), "{selected}");
+        assert!(selected.contains("93.5% accuracy"), "{selected}");
+        assert!(selected.chars().count() <= PAGE_CHARS);
+    }
+
+    #[test]
+    fn selected_pdf_evidence_never_invents_page_number_for_malformed_input() {
+        let text = "No page number: A GPS-denied drone localization experiment reached 92.5%.";
+        assert_eq!(select_relevant_pdf_text(text, "GPS drone"), text);
+        let text = "PDF page not-a-number: GPS denied drone localization reached 92.5%.";
+        assert_eq!(select_relevant_pdf_text(text, "GPS drone"), text);
+    }
+
+    #[test]
+    fn selected_pdf_evidence_preserves_numeric_result_after_real_pdf_parsing() {
+        let pdf = multipage_research_pdf_fixture(16);
+        let extracted = extract_pdf_text(&pdf, "GPS denied drone localization accuracy")
+            .expect("generated PDF should extract text");
+        let selected = select_relevant_pdf_text(
+            &extracted, "GPS denied drone localization accuracy"
+        );
+        assert!(selected.contains("PDF page 16:"), "{selected}");
+        assert!(selected.contains("97.5 percent accuracy"), "{selected}");
+        assert!(selected.chars().count() <= PAGE_CHARS);
+    }
+
+    #[test]
     fn pdf_page_sampling_spans_long_documents_without_exceeding_limit() {
         let pages: Vec<u32> = (1..=40).collect();
         let picked = sample_pdf_page_numbers(&pages, PDF_MAX_EXTRACT_PAGES);
