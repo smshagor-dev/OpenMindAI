@@ -82,13 +82,16 @@ marked resolved based on these controls.
 
 ## Kokoro checkpoint re-verification at load time
 
-When a local `model-manifest.json` contains an expected SHA-256, OpenMindAI
-now streams and rehashes the selected Kokoro `.pth` checkpoint immediately
-before loading it into Candle. A modified checkpoint, mismatched filename,
-invalid digest or malformed manifest is rejected. The manifest must remain
-inside the model package and is bounded to 64 KiB. Existing installations
-without a recorded expected digest continue to work; they **do not** gain
-this hash check.
+When a local `model-manifest.json` records either an upstream expected
+`sha256` or an installer-measured `actualSha256`, OpenMindAI streams and
+rehashes the selected Kokoro `.pth` checkpoint immediately before loading
+it into Candle. The upstream value takes precedence, while the measured
+value covers model packages whose upstream SHA-256 was unavailable. If both
+are present they must agree. A modified checkpoint, mismatched filename,
+conflicting/invalid digest, declared size mismatch or malformed manifest is
+rejected. The manifest must remain inside the model package and is bounded
+to 64 KiB. Existing installations without any recorded digest continue to
+work; they **do not** gain this hash check.
 
 This detects changes since an expected digest was recorded, but an editable
 local manifest is **not** a signature or independent trust anchor. An attacker
