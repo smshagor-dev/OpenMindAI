@@ -1905,11 +1905,11 @@ button {
   align-items: center;
   padding: clamp(18px, 5vh, 46px) 24px 28px;
   background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.065), rgba(255, 255, 255, 0.018) 46%),
-    radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.055), transparent 30%),
-    radial-gradient(circle at 86% 18%, rgba(255, 255, 255, 0.035), transparent 28%),
-    color-mix(in srgb, var(--surface-2) 76%, #050505 24%);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 5%);
+    radial-gradient(circle at 18% 12%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 33%),
+    radial-gradient(circle at 86% 18%, color-mix(in srgb, var(--accent) 4%, transparent), transparent 32%),
+    linear-gradient(135deg, var(--bg), color-mix(in srgb, var(--surface) 45%, var(--bg)));
+  color: var(--text);
+  box-shadow: inset 0 1px 0 var(--border);
 }
 
 .chat-empty-state {
@@ -2106,7 +2106,7 @@ button {
 .suggestion-row-item:hover {
   transform: translateY(-1px);
   border-color: var(--border-strong);
-  background: color-mix(in srgb, var(--surface) 82%, white 6%);
+  background: color-mix(in srgb, var(--surface) 92%, var(--accent) 8%);
   color: var(--text);
 }
 
@@ -4276,3 +4276,169 @@ button {
 .runtime-recovery-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .runtime-recovery-actions button { padding: 7px 12px; }
 .runtime-recovery-error { color: var(--danger, #c55454); overflow-wrap: anywhere; }
+
+/* Downloads and the first-run workspace share the same accessible theme surfaces. */
+.models-modal-card,
+.datasets-modal-card {
+  color: var(--text);
+}
+
+.models-modal-card .model-selector-error,
+.datasets-modal-card .model-selector-error,
+.setup-model-catalog .model-selector-error,
+.download-feedback-error {
+  position: static;
+  display: block;
+  width: auto;
+  max-width: 100%;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--status-error) 32%, var(--border));
+  border-radius: 9px;
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.model-catalog-section,
+.datasets-manager {
+  min-width: 0;
+  color: var(--text);
+}
+
+.model-catalog-overview,
+.dataset-overview {
+  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--surface-2) 86%, var(--accent) 14%);
+}
+
+.model-download-card,
+.dataset-use-card,
+.dataset-download-status {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.model-download-card > div:first-child > span,
+.model-download-card > div:first-child > small,
+.model-download-card .download-progress small,
+.dataset-download-status > span,
+.dataset-card small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.model-download-card .download-progress {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.model-download-card .download-progress > span {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.download-progress-track,
+.dataset-progress-track,
+.setup-progress-bar {
+  min-height: 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--border-strong) 55%, var(--surface));
+}
+
+.download-progress-track > span,
+.dataset-progress-track > span,
+.setup-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 180ms ease;
+}
+
+.model-download-card .model-download-status,
+.dataset-download-status .model-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 22px;
+  padding: 3px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface-2));
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.dataset-download-status .model-badge.downloaded {
+  border-color: color-mix(in srgb, var(--success) 35%, var(--border));
+  background: color-mix(in srgb, var(--success) 10%, var(--surface-2));
+  color: var(--success);
+}
+
+.model-download-card button:disabled,
+.dataset-actions button:disabled,
+.model-catalog-overview-actions button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.models-modal-card button:focus-visible,
+.datasets-modal-card button:focus-visible,
+.setup-card button:focus-visible,
+.chat-empty-inner button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.dataset-search input::placeholder,
+.setup-step input::placeholder,
+.composer textarea::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+.dataset-toolbar select {
+  color-scheme: inherit;
+}
+.dataset-toolbar option {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+:root[data-theme="light"] .setup-wizard,
+:root[data-theme="light"] .app-loading {
+  background: var(--bg);
+}
+
+:root[data-theme="light"] .setup-card,
+:root[data-theme="light"] .models-modal-card {
+  box-shadow: 0 22px 50px rgb(29 35 55 / 12%);
+}
+
+:root[data-theme="light"] .chat-empty-inner .composer-box {
+  background: var(--surface-2);
+}
+
+:root[data-theme="light"] .suggestion-row-item,
+:root[data-theme="light"] .chat-empty-pills span,
+:root[data-theme="light"] .chat-empty-brand {
+  background: var(--surface-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .download-progress-track > span,
+  .dataset-progress-track > span,
+  .setup-progress-fill {
+    transition: none;
+  }
+}
