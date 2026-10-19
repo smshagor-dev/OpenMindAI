@@ -918,6 +918,9 @@ fn list_artifacts(
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    // Opening a chat after the safety window should also recover an old
+    // image job, without needing the user to restart the app again.
+    db.recover_stale_image_artifacts()?;
     ArtifactRepository::new(&db).list_for_conversation(&conversation_id)
 }
 
@@ -927,6 +930,7 @@ fn list_library_entries(state: State<AppState>) -> Result<Vec<LibraryEntry>, app
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    db.recover_stale_image_artifacts()?;
     ArtifactRepository::new(&db).list_all(200)
 }
 
