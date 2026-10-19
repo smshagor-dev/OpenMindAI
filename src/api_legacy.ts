@@ -410,6 +410,21 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
     } as T);
   }
   if (command === "list_messages") return Promise.resolve([] as T);
+  if (command === "add_user_message" || command === "create_streaming_assistant_message") {
+    return Promise.resolve({
+      id: crypto.randomUUID(),
+      conversationId: (args?.conversationId as string) ?? "",
+      role: command === "add_user_message" ? "user" : "assistant",
+      content: command === "add_user_message" ? ((args?.content as string) ?? "") : "",
+      status: command === "add_user_message" ? "completed" : "streaming",
+      modelId: null,
+      createdAt: now,
+      updatedAt: now,
+    } as T);
+  }
+  if (command === "append_message_chunk" || command === "complete_message") {
+    return Promise.resolve(undefined as T);
+  }
   if (command === "set_conversation_model") {
     return Promise.resolve({
       id: (args?.id as string) ?? crypto.randomUUID(),
@@ -475,10 +490,10 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
       kind: artifactKind,
       sizeBytes: content.length || prompt.length,
       pageCount: null,
-      status: command === "create_generation_artifact" && kind !== "image" ? "failed" : "ready",
+      status: command === "create_generation_artifact" ? "failed" : "ready",
       error:
-        command === "create_generation_artifact" && kind !== "image"
-          ? "Local media runtime connector is not available in browser preview."
+        command === "create_generation_artifact"
+          ? "Local media rendering requires the OpenMindAI desktop app; no image was generated in browser preview."
           : null,
       createdAt: now,
       updatedAt: now,

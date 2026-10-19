@@ -140,7 +140,9 @@ pub fn check_model_updates(
             let download_supported = entry
                 .download
                 .as_ref()
-                .is_some_and(|download| download.strategy == ModelDownloadStrategy::SingleFile);
+                .is_some_and(|download| download.strategy == ModelDownloadStrategy::SingleFile)
+                // Canvas Pro is listed for discovery only: no FLUX renderer is wired yet.
+                && (entry.kind != "image" || entry.id == "sdxl-base-1");
             ModelCatalogStatus {
                 entry,
                 installed: installed_path.is_some(),

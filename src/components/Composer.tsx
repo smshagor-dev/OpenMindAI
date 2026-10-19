@@ -413,7 +413,7 @@ function ComposerTools(props: {
       .then((catalog) => {
         if (cancelled) return;
         setGenerationModels({
-          image: catalog.entries.some((item) => item.installed && item.entry.kind === "image"),
+          image: catalog.entries.some((item) => item.installed && item.entry.id === "sdxl-base-1"),
           video: catalog.entries.some((item) => item.installed && item.entry.kind === "video"),
           voice: catalog.entries.some(
             (item) => item.installed && item.entry.kind === "text-to-speech",
