@@ -8,8 +8,9 @@ See docs/zip9-upstream-migration.md.
 from __future__ import annotations
 
 import argparse
+import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import shutil
 import subprocess
@@ -128,6 +129,18 @@ def stage_desktop_crate(source: Path, destination: Path) -> tuple[Path, Path]:
             raise RuntimeError(f"Staged {name} did not match the checked-in input")
     return destination / "Cargo.toml", destination / "Cargo.lock"
 
+def cargo_patch_override(crate: str, path: Path) -> str:
+    """Emit a valid Cargo CLI TOML path on Windows, macOS, and Linux.
+
+    Native Windows backslashes inside a TOML quoted string are interpreted as
+    escapes (for example, \\t or \\U). A forward-slash absolute path and
+    JSON/TOML-compatible quoting avoid that ambiguity and handle spaces.
+    """
+    if crate not in TARGETS:
+        raise ValueError(f"Unexpected patched upstream crate: {crate}")
+    return f"patch.crates-io.{crate}.path={json.dumps(path.resolve().as_posix())}"
+
+
 def lock_versions(path: Path, name: str) -> list[str]:
     document = tomllib.loads(path.read_text(encoding="utf-8"))
     return [p["version"] for p in document["package"] if p["name"] == name]
@@ -145,6 +158,19 @@ def self_test() -> None:
         except ValueError:
             continue
         raise AssertionError("Unsupported ZIP dependency syntax must fail closed")
+
+    assert PureWindowsPath("C:/Users/runneradmin/AppData/Local/Temp/tts").as_posix() == (
+        "C:/Users/runneradmin/AppData/Local/Temp/tts"
+    )
+    override = cargo_patch_override("candle-core", ROOT)
+    assert override.startswith("patch.crates-io.candle-core.path=")
+    assert json.loads(override.split("=", 1)[1]) == ROOT.resolve().as_posix()
+    try:
+        cargo_patch_override("unexpected-crate", ROOT)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Unreviewed crate overrides must fail closed")
 
     # Simulate a resolver rewrite in an isolated working copy, including a
     # local build-output directory that must not be recursively copied.
@@ -195,7 +221,7 @@ def main() -> None:
             cargo_toml = dst / "Cargo.toml"
             cargo_toml.write_text(replace_zip_requirement(cargo_toml.read_text(encoding="utf-8")), encoding="utf-8")
             adapt_upstream_zip9_api(crate, dst)
-            patches.extend(["--config", f'patch.crates-io.{crate}.path="{dst}"'])
+            patches.extend(["--config", cargo_patch_override(crate, dst)])
             print(f"Locally substituted {crate}@{version} zip requirement with {ZIP_TARGET}")
         # Cargo cannot run integration tests in a non-workspace dependency
         # via -p. Use a disposable standalone harness that depends on the
