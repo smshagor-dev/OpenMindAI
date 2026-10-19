@@ -105,6 +105,12 @@ def stage(candidate: Path, apply: bool) -> None:
     shutil.copy2(candidate / "vendor" / "candle-core-0.10.2" / "LICENSE",
                  ROOT / "vendor" / "LICENSE-APACHE-2.0")
     (ROOT / "vendor" / "THIRD_PARTY_NOTICES.md").write_text(notice, encoding="utf-8")
+    # Exact upstream Rust sources are retained; the registry's macOS Finder
+    # metadata is intentionally omitted from the review branch. The committed
+    # 88-file hash is pinned by verify-zip9-vendor.py.
+    mac_metadata = ROOT / "vendor" / "any-tts-0.1.3" / "src" / ".DS_Store"
+    if mac_metadata.is_file():
+        mac_metadata.unlink()
     shutil.copy2(candidate / "src-tauri" / "Cargo.lock", lock)
     manifest.write_text(changed, encoding="utf-8")
     print("Staged reviewed ZIP 9-only dependency sources; no commit or merge performed.")
