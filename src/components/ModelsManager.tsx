@@ -153,7 +153,7 @@ export function ModelsManager(props: {
   return (
     <>
       {props.showRootInfo === false ? null : <Info label="Model folder" value={props.root?.modelsDir} />}
-      {catalogError ? <p className="model-selector-error">{catalogError}</p> : null}
+      {catalogError ? <p className="download-feedback-error" role="alert">{catalogError}</p> : null}
       <ModelCatalogOverview
         variant={props.variant ?? "settings"}
         hardware={props.hardware}
@@ -175,6 +175,7 @@ export function ModelsManager(props: {
               key={item.entry.id}
               item={item}
               status={downloadStatus?.modelId === item.entry.id ? downloadStatus : null}
+              anotherDownloadActive={downloadStatus !== null && isActiveDownload(downloadStatus) && downloadStatus.modelId !== item.entry.id}
               recommended={recommendedIds.has(item.entry.id)}
               onDownload={() => downloadModel(item.entry.id)}
               onPause={pauseDownload}
@@ -301,6 +302,7 @@ function ModelCatalogOverview(props: {
 function CatalogModelCard(props: {
   item: ModelCatalogStatus;
   status: DownloadStatus | null;
+  anotherDownloadActive: boolean;
   recommended: boolean;
   onDownload: () => void | Promise<void>;
   onPause: () => void | Promise<void>;
@@ -333,7 +335,7 @@ function CatalogModelCard(props: {
         <small>{entry.capabilities.map(capabilityLabel).join(" · ")}</small>
         <small>{entry.description}</small>
       </div>
-      <div className="download-progress">
+      <div className="download-progress" aria-live="polite">
         <span>{catalogAvailabilityLabel(props.item, props.status)}</span>
         {props.status?.totalBytes ? (
           <small>
@@ -344,6 +346,19 @@ function CatalogModelCard(props: {
         ) : props.item.installed ? null : (
           <small>{systemFitLabel(props.item)}</small>
         )}
+        {props.status && isActiveDownload(props.status) ? (
+          <div
+            className="download-progress-track"
+            role="progressbar"
+            aria-label={`${entry.name} download progress`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={props.status.percentage == null ? undefined : Math.max(0, Math.min(100, props.status.percentage))}
+            aria-valuetext={props.status.percentage == null ? "Preparing download" : undefined}
+          >
+            <span style={{ width: `${Math.max(0, Math.min(100, props.status.percentage ?? 0))}%` }} />
+          </div>
+        ) : null}
       </div>
       <div className="button-row">
         {props.item.installed ? (
@@ -380,13 +395,13 @@ function CatalogModelCard(props: {
                 ? `${paused ? "Resume" : "Download"} ${entry.name}`
                 : `${entry.name} requires manual upstream license/access setup`
             }
-            disabled={!props.item.downloadSupported}
+            disabled={!props.item.downloadSupported || props.anotherDownloadActive}
           >
             <Download size={16} />
           </button>
         )}
       </div>
-      {props.status?.error ? <p className="muted">{props.status.error}</p> : null}
+      {props.status?.error ? <p className="download-feedback-error" role="alert">{props.status.error}</p> : null}
     </div>
   );
 }
