@@ -46,6 +46,30 @@ does not commit third-party weights or the generated audio.
 Real voice output on Linux is proven; different CPU/GPU platforms and
 additional voices still require their own smoke coverage.
 
+## Ongoing real-voice regression coverage
+
+The `Kokoro Real Voice Inference` workflow runs automatically for pull
+requests that change the pinned TTS Rust/runtime sources, model/package
+loading, Cargo dependencies, or the real inference test itself. It also
+runs on applicable `main` pushes, every Monday at 05:31 UTC, and by
+manual dispatch. This intentionally avoids large pretrained downloads
+on unrelated UI or documentation changes. Concurrent runs for the same
+pull request are canceled when superseded.
+
+The genuine checkpoint, voice and config are all SHA-256-pinned at an
+immutable model revision. The config checksum
+`5abb01e2403b072bf03d04fde160443e209d7a0dad49a423be15196b9b43c17f`
+was verified on the successful Linux inference run #39274446841 and is now
+required before Rust/Candle loads the package. Evidence includes the
+pinned config checksum alongside voice/model hashes and WAV duration,
+format and signal metrics. A regression or inability to fetch the upstream
+assets fails the job; no synthetic fallback can mark real inference green.
+
+This is a Linux CPU end-to-end regression. Real voices, model availability
+and the same inference route on Windows/macOS or multiple accelerators remain
+separate validation subjects. The scheduled check and PR trigger are
+additional protections rather than a replacement for full release testing.
+
 ## Historical work and source evidence
 
 The review history traces the original package adaptation, registry
