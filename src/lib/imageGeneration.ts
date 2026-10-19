@@ -2,7 +2,7 @@ const IMAGE_NOUNS =
   "image|photo|photograph|picture|artwork|graphic|poster|logo|thumbnail|illustration|wallpaper|banner|icon";
 
 const IMAGE_ACTION_INTENT = new RegExp(
-  `\\b(?:create|make|generate|design|render|draw|paint|illustrate|sketch)\\s+(?:(?:an?|the|me|my|some|new)\\s+){0,2}(?:${IMAGE_NOUNS})\\b`,
+  `\\b(?:create|make|generate|design|render|draw|paint|illustrate|sketch)\\s+(?:(?:[a-z-]+\\s+){0,7})(?:${IMAGE_NOUNS})\\b`,
   "i",
 );
 const IMAGE_NOUN_INTENT =
