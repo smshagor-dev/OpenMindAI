@@ -40,6 +40,87 @@ const MAX_PROMPT_CHARS: usize = 4_000;
 
 // Avoid parallel downloads/extraction and manifest races within one app process.
 static RUNTIME_INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static RUNTIME_INSTALL_ACTIVITY: std::sync::Mutex<Option<DiffusionRuntimeStatus>> =
+    std::sync::Mutex::new(None);
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffusionRuntimeStatus {
+    pub state: String,
+    pub backend: Option<BackendKind>,
+    pub version: Option<String>,
+    pub detail: String,
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+    pub percentage: Option<f64>,
+}
+
+fn runtime_activity(state: &str, detail: impl Into<String>) -> DiffusionRuntimeStatus {
+    DiffusionRuntimeStatus {
+        state: state.to_string(),
+        backend: None,
+        version: None,
+        detail: detail.into(),
+        downloaded_bytes: 0,
+        total_bytes: None,
+        percentage: None,
+    }
+}
+
+fn set_runtime_activity(status: DiffusionRuntimeStatus) {
+    if let Ok(mut activity) = RUNTIME_INSTALL_ACTIVITY.lock() {
+        *activity = Some(status);
+    }
+}
+
+pub fn diffusion_runtime_status(
+    root: &PortableRootManager,
+    hardware: &HardwareProfile,
+) -> Result<DiffusionRuntimeStatus, AppError> {
+    if let Ok(activity) = RUNTIME_INSTALL_ACTIVITY.lock() {
+        if let Some(status) = activity.as_ref() {
+            if matches!(status.state.as_str(), "resolving" | "downloading" | "verifying" | "extracting" | "failed") {
+                return Ok(status.clone());
+            }
+        }
+    }
+
+    let candidates = runtime_asset_candidates(std::env::consts::OS, std::env::consts::ARCH, hardware);
+    if candidates.is_empty() {
+        return Ok(runtime_activity("unsupported", format!(
+            "No prebuilt diffusion runtime is available for {}/{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        )));
+    }
+    let Some(manifest) = load_manifest(root)? else {
+        return Ok(runtime_activity("missing", "Image renderer is not installed. Install it here before generating images."));
+    };
+
+    let preferred = candidates.first().map(|(backend, _)| backend);
+    let verified = runtime_manifest_is_reusable(root, &manifest, preferred)?;
+    let mut status = runtime_activity(
+        if verified { "ready" } else { "repairNeeded" },
+        if verified {
+            "Image renderer installed and its executable checksum verified."
+        } else {
+            "Installed renderer is missing, outdated, or failed integrity checks. Choose Install / repair."
+        },
+    );
+    status.backend = Some(manifest.backend);
+    status.version = Some(manifest.version);
+    Ok(status)
+}
+
+pub async fn install_diffusion_runtime(
+    root: &PortableRootManager,
+    client: &Client,
+    hardware: &HardwareProfile,
+) -> Result<DiffusionRuntimeStatus, AppError> {
+    ensure_runtime(root, client, hardware).await?;
+    diffusion_runtime_status(root, hardware)
+}
+
 const GENERATION_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 const VIDEO_GENERATION_TIMEOUT: Duration = Duration::from_secs(90 * 60);
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
@@ -357,9 +438,31 @@ async fn ensure_runtime(
     client: &Client,
     hardware: &HardwareProfile,
 ) -> Result<DiffusionRuntimeManifest, AppError> {
-    // The mutex covers reuse checks as well as download/extraction so concurrent
-    // image and video requests cannot replace the runtime beneath each other.
+    // Keep install, validation and replacement serialized with image and video generation.
     let _runtime_install_guard = RUNTIME_INSTALL_LOCK.lock().await;
+    set_runtime_activity(runtime_activity("resolving", "Checking local renderer and release assets…"));
+    let result = ensure_runtime_inner(root, client, hardware).await;
+    match &result {
+        Ok(manifest) => {
+            let mut status = runtime_activity("ready", "Image renderer is installed and verified.");
+            status.backend = Some(manifest.backend.clone());
+            status.version = Some(manifest.version.clone());
+            set_runtime_activity(status);
+        }
+        Err(error) => {
+            set_runtime_activity(runtime_activity("failed", format!(
+                "Image renderer setup failed: {error}"
+            )));
+        }
+    }
+    result
+}
+
+async fn ensure_runtime_inner(
+    root: &PortableRootManager,
+    client: &Client,
+    hardware: &HardwareProfile,
+) -> Result<DiffusionRuntimeManifest, AppError> {
     let candidates =
         runtime_asset_candidates(std::env::consts::OS, std::env::consts::ARCH, hardware);
     let preferred_backend = candidates.first().map(|(backend, _)| backend);
@@ -449,7 +552,16 @@ async fn install_runtime_asset(
 
     let archive_path = temp_dir.join(format!("{}.part", asset.name));
     ensure_contained(root.root(), &archive_path)?;
+    let mut progress = runtime_activity("downloading", "Downloading the verified image renderer…");
+    progress.backend = Some(backend.clone());
+    progress.version = Some(version.to_string());
+    progress.total_bytes = Some(asset.size);
+    set_runtime_activity(progress);
     download_asset(asset, &archive_path).await?;
+    let mut verifying = runtime_activity("verifying", "Verifying the downloaded runtime checksum…");
+    verifying.backend = Some(backend.clone());
+    verifying.version = Some(version.to_string());
+    set_runtime_activity(verifying);
 
     let actual_sha256 = sha256_file(&archive_path)?;
     if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
@@ -464,6 +576,10 @@ async fn install_runtime_asset(
         backend_slug(&backend),
         safe_component(version)
     ))?;
+    let mut extracting = runtime_activity("extracting", "Extracting the verified image renderer…");
+    extracting.backend = Some(backend.clone());
+    extracting.version = Some(version.to_string());
+    set_runtime_activity(extracting);
     let cli_path = extract_runtime_archive(root, &archive_path, &install_dir)?;
     let _ = fs::remove_file(&archive_path);
 
@@ -507,7 +623,19 @@ async fn download_asset(asset: &GithubAsset, destination: &Path) -> Result<(), A
         destination,
         Some(asset.size),
         None,
-        |_| {},
+        |progress| {
+            if let Ok(mut activity) = RUNTIME_INSTALL_ACTIVITY.lock() {
+                if let Some(status) = activity.as_mut() {
+                    status.downloaded_bytes = progress.downloaded;
+                    status.total_bytes = Some(asset.size);
+                    status.percentage = if asset.size == 0 {
+                        None
+                    } else {
+                        Some(100.0 * progress.downloaded as f64 / asset.size as f64)
+                    };
+                }
+            }
+        },
     )
     .await
     .map_err(|error| {
@@ -1116,6 +1244,18 @@ mod tests {
         let result = extract_runtime_archive_bounded(&root, &archive, &install, 1, 64);
         assert!(result.is_err());
         assert!(!install.exists());
+    }
+
+    #[test]
+    fn diffusion_runtime_settings_report_missing_installation() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let report = diffusion_runtime_status(
+            &root,
+            &hardware(Some(GpuVendor::Amd), Some(8 * 1024_u64.pow(3))),
+        ).unwrap();
+        assert!(matches!(report.state.as_str(), "missing" | "unsupported"));
     }
 
     #[test]
