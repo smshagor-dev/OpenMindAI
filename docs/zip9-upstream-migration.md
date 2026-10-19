@@ -57,8 +57,16 @@ and ZIP structure are reconstructed in the Rust test without a Python or model
 download dependency. These small deterministic fixtures verify a concrete
 storage-loading path, **not** representative model size, the full range of
 PyTorch checkpoint formats, Kokoro speech output, or hostile ZIP metadata
-handling. Real Kokoro load-and-synthesize and Windows/macOS/Linux checks are
-still separate release gates.
+handling. The ZIP 9 workflow runs its patched dependency compile and synthetic
+reader tests in a **Linux, Windows and macOS matrix**; these are compatibility
+checks, not a real asset load-and-synthesize test. Real Kokoro synthesis and
+representative model/voice loading are still separate release gates.
+
+The probe uses Python 3.12 on each runner and quotes Cargo source overrides
+as TOML-compatible absolute paths with forward slashes, avoiding invalid
+Windows backslash escapes. Its Cargo writes remain confined to the temporary
+staged crate, and the matrix deliberately keeps platform failures separate
+(`fail-fast: false`) so all three operating systems provide evidence.
 
 A red result is **evidence of a migration blocker**, not permission to
 disable the actual security gate. The probe does not test full speech output,
