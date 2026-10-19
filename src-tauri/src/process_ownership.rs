@@ -785,3 +785,44 @@ mod tests {
         let _ = child.wait();
     }
 }
+
+
+#[cfg(test)]
+mod renderer_output_tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn renderer_lines_handle_carriage_returns_and_split_writes() {
+        let (mut writer, reader) = tokio::io::duplex(128);
+        let write_task = tokio::spawn(async move {
+            writer.write_all(b"Sampling step 1/12\rSampling step ").await.unwrap();
+            writer.write_all(b"2/12\ncompleted").await.unwrap();
+        });
+        let lines = Mutex::new(Vec::<String>::new());
+        let callback = |line: &str| lines.lock().unwrap().push(line.to_string());
+        let bytes = capture_renderer_stream(reader, Some(&callback)).await.unwrap();
+        write_task.await.unwrap();
+        assert_eq!(bytes, b"Sampling step 1/12\rSampling step 2/12\ncompleted");
+        assert_eq!(
+            *lines.lock().unwrap(),
+            vec![
+                "Sampling step 1/12",
+                "Sampling step 2/12",
+                "completed",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn renderer_output_memory_is_bounded() {
+        let (mut writer, reader) = tokio::io::duplex(8192);
+        let write_task = tokio::spawn(async move {
+            writer.write_all(&vec![b'x'; MAX_RENDERER_LOG_BYTES + 1024]).await.unwrap();
+        });
+        let bytes = capture_renderer_stream(reader, None).await.unwrap();
+        write_task.await.unwrap();
+        assert_eq!(bytes.len(), MAX_RENDERER_LOG_BYTES);
+        assert!(bytes.iter().all(|byte| *byte == b'x'));
+    }
+}
