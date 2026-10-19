@@ -46,6 +46,7 @@ import { AppsSettings } from "./AppsSettings";
 import { MaintenanceCenter } from "./MaintenanceCenter";
 import { UpdatesPanel } from "./UpdatesPanel";
 import { AgentSettings } from "./AgentSettings";
+import { DiffusionRuntimePanel } from "./DiffusionRuntimePanel";
 
 export function SettingsDialog(props: {
   root: PortableRootInfo | null;
@@ -603,6 +604,7 @@ export function SettingsDialog(props: {
                 )}
               </button>
             </div>
+            <DiffusionRuntimePanel />
           </SettingsGroup>
         )}
 
