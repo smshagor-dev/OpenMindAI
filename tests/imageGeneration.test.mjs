@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 import {
   DIRECT_IMAGE_MESSAGE,
   imageRendererPrompt,
@@ -88,4 +89,10 @@ test("persist error marks the generated assistant turn failed", async () => {
     /disk full/,
   );
   assert.deepEqual(calls, [["message-2", "failed"]]);
+});
+
+test("browser preview cannot report phantom generated image artifacts", () => {
+  const source = readFileSync(new URL("../src/api_legacy.ts", import.meta.url), "utf8");
+  assert.match(source, /status: command === "create_generation_artifact" \\? "failed" : "ready"/);
+  assert.match(source, /no image was generated in browser preview/);
 });
