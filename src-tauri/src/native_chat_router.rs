@@ -212,7 +212,6 @@ fn prepare_native_request(request: &StreamRequest<'_>) -> Result<PreparedNativeR
         n_batch: plan.config.batch_size,
         n_threads,
         kv_cache_limit_bytes: (remaining / 2).clamp(16 * 1024 * 1024, 2 * 1024 * 1024 * 1024),
-        ..GenerationConfig::default()
     };
     config
         .validate()
