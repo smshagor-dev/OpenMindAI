@@ -41,7 +41,7 @@ use github::{GithubAccount, GithubIssueSummary, GithubRepoSummary, GithubReposit
 use google::{GoogleCredentialsStatus, GoogleRepository};
 use hardware::{HardwareProfile, HardwareProfiler};
 use inference::{
-    ActiveGenerations, InferenceMedia, InferenceMode, StreamRequest, StreamStartedEvent,
+    ActiveGenerations, InferenceMedia, InferenceMode, StreamDoneEvent, StreamRequest, StreamStartedEvent,
 };
 use dataset_download::{DatasetDownloadManager, DatasetDownloadStatus};
 use launch_planner::{LaunchPlan, ModelLaunchPlanner};
