@@ -391,6 +391,27 @@ export function DatasetsManager() {
     };
   }, []);
 
+  useEffect(() => {
+    if (downloadStatus?.state !== "completed" || !downloadStatus.datasetId) return;
+    setInstalledDatasets((current) => {
+      if (current.has(downloadStatus.datasetId)) return current;
+      const next = new Set(current);
+      next.add(downloadStatus.datasetId);
+      return next;
+    });
+  }, [downloadStatus?.datasetId, downloadStatus?.state]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        "openmindaiInstalledDatasets",
+        JSON.stringify(Array.from(installedDatasets)),
+      );
+    } catch {
+      // Download progress must remain usable when local storage is unavailable.
+    }
+  }, [installedDatasets]);
+
   async function openDataset(id: string) {
     await api.openExternalUrl(openMindDatasetPageUrl(id));
   }
@@ -419,12 +440,7 @@ export function DatasetsManager() {
     try {
       const status = await api.downloadOpenMindDataset(id);
       setDownloadStatus(status);
-      if (status.state === "completed") {
-        const next = new Set(installedDatasets);
-        next.add(id);
-        setInstalledDatasets(next);
-        window.localStorage.setItem("openmindaiInstalledDatasets", JSON.stringify(Array.from(next)));
-      }
+      // The status-polling effect also records downloads that finish after this call returns.
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
       try {
@@ -485,7 +501,7 @@ export function DatasetsManager() {
       </div>
 
       {downloadStatus && downloadStatus.state !== "queued" ? (
-        <div className="dataset-download-status">
+        <div className="dataset-download-status" role="status" aria-live="polite">
           <strong>
             {downloadStatus.datasetId}
             <span className={downloadStatus.state === "completed" ? "model-badge downloaded" : "model-badge"}>
@@ -493,11 +509,20 @@ export function DatasetsManager() {
             </span>
           </strong>
           <span>{datasetDownloadLabel(downloadStatus)}</span>
-          {downloadStatus.percentage !== null ? (
-            <div className="dataset-progress-track">
-              <span style={{ width: `${Math.min(100, downloadStatus.percentage)}%` }} />
+          {downloadStatus.state === "downloading" || downloadStatus.state === "resolving" ? (
+            <div
+              className="dataset-progress-track"
+              role="progressbar"
+              aria-label="Dataset download progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={downloadStatus.percentage == null ? undefined : Math.max(0, Math.min(100, downloadStatus.percentage))}
+              aria-valuetext={downloadStatus.percentage == null ? "Preparing download" : undefined}
+            >
+              <span style={{ width: `${Math.max(0, Math.min(100, downloadStatus.percentage ?? 0))}%` }} />
             </div>
           ) : null}
+          {downloadStatus.error ? <p className="download-feedback-error" role="alert">{downloadStatus.error}</p> : null}
         </div>
       ) : null}
 
@@ -527,6 +552,7 @@ export function DatasetsManager() {
               copied={copiedId === dataset.sourceId}
               installed={installedDatasets.has(dataset.sourceId)}
               downloadStatus={downloadStatus?.datasetId === dataset.sourceId ? downloadStatus : null}
+              anotherDownloadActive={Boolean(downloadStatus && (downloadStatus.state === "downloading" || downloadStatus.state === "resolving") && downloadStatus.datasetId !== dataset.sourceId)}
               onOpen={() => void openDataset(dataset.sourceId)}
               onCopy={() => void copyDatasetKey(dataset.sourceId, dataset.id)}
               onDownload={() => void downloadDataset(dataset.sourceId)}
@@ -537,7 +563,7 @@ export function DatasetsManager() {
 
       <section className="model-catalog-section">
         <h3>OpenMindAI live datasets</h3>
-        {error ? <p className="model-selector-error">{error}</p> : null}
+        {error ? <p className="download-feedback-error" role="alert">{error}</p> : null}
         {loading && datasets.length === 0 ? <p className="muted">Loading OpenMindAI datasets...</p> : null}
         {!loading && datasets.length === 0 && !error ? (
           <p className="muted">No live datasets matched this search.</p>
@@ -549,6 +575,7 @@ export function DatasetsManager() {
             copied={copiedId === dataset.id}
             installed={installedDatasets.has(dataset.id)}
             downloadStatus={downloadStatus?.datasetId === dataset.id ? downloadStatus : null}
+            anotherDownloadActive={Boolean(downloadStatus && (downloadStatus.state === "downloading" || downloadStatus.state === "resolving") && downloadStatus.datasetId !== dataset.id)}
             onOpen={() => void openDataset(dataset.id)}
             onCopy={() => void copyDatasetKey(dataset.id, displayDatasetId(dataset.id))}
             onDownload={() => void downloadDataset(dataset.id)}
@@ -574,6 +601,7 @@ function CuratedDatasetCard(props: {
   copied: boolean;
   installed: boolean;
   downloadStatus: DatasetDownloadStatus | null;
+  anotherDownloadActive: boolean;
   onOpen: () => void;
   onCopy: () => void;
   onDownload: () => void;
@@ -600,6 +628,7 @@ function CuratedDatasetCard(props: {
         copied={props.copied}
         installed={props.installed}
         downloadStatus={props.downloadStatus}
+        anotherDownloadActive={props.anotherDownloadActive}
         onOpen={props.onOpen}
         onCopy={props.onCopy}
         onDownload={props.onDownload}
@@ -613,6 +642,7 @@ function OpenMindDatasetCard(props: {
   copied: boolean;
   installed: boolean;
   downloadStatus: DatasetDownloadStatus | null;
+  anotherDownloadActive: boolean;
   onOpen: () => void;
   onCopy: () => void;
   onDownload: () => void;
@@ -652,6 +682,7 @@ function OpenMindDatasetCard(props: {
         copied={props.copied}
         installed={props.installed}
         downloadStatus={props.downloadStatus}
+        anotherDownloadActive={props.anotherDownloadActive}
         onOpen={props.onOpen}
         onCopy={props.onCopy}
         onDownload={props.onDownload}
@@ -664,6 +695,7 @@ function DatasetActions(props: {
   copied: boolean;
   installed: boolean;
   downloadStatus: DatasetDownloadStatus | null;
+  anotherDownloadActive: boolean;
   onOpen: () => void;
   onCopy: () => void;
   onDownload: () => void;
@@ -676,7 +708,7 @@ function DatasetActions(props: {
         type="button"
         onClick={props.onDownload}
         title={props.installed ? "Dataset downloaded" : "Download dataset to OpenMindAI datasets folder"}
-        disabled={busy || props.installed}
+        disabled={busy || props.installed || props.anotherDownloadActive}
       >
         {props.installed || props.downloadStatus?.state === "completed" ? (
           <CheckCircle2 size={16} />
