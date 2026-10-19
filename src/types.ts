@@ -328,6 +328,14 @@ export interface WebResearchProgressEvent {
 export type ArtifactKind = "text" | "markdown" | "code" | "pdf" | "docx" | "image" | "audio" | "video";
 export type ArtifactStatus = "generating" | "ready" | "failed";
 
+export type ImageRenderStage = "preparing" | "rendering" | "validating";
+
+export interface ImageRenderProgress {
+  artifactId: string;
+  stage: ImageRenderStage;
+}
+
+
 export interface Artifact {
   id: string;
   conversationId: string;
