@@ -1402,7 +1402,7 @@ export function App() {
               onRevealArtifact={revealArtifactHandler}
               onRetryArtifact={retryArtifact}
               onCancelImageArtifact={cancelImageArtifact}
-            imageProgressByArtifact={imageProgressByArtifact}
+              imageProgressByArtifact={imageProgressByArtifact}
               onPreview={setPreviewTarget}
             />
           ) : (
