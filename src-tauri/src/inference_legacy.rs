@@ -5,7 +5,7 @@ use std::{
     time::Instant,
 };
 
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use reqwest::{header, Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -199,6 +199,22 @@ struct InlineDataImage {
     data_url: String,
 }
 
+enum StreamPoll<T> {
+    Cancelled,
+    Item(Option<T>),
+}
+
+async fn next_stream_chunk<S: Stream + Unpin>(
+    stream: &mut S,
+    cancellation: &CancellationToken,
+) -> StreamPoll<S::Item> {
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => StreamPoll::Cancelled,
+        chunk = stream.next() => StreamPoll::Item(chunk),
+    }
+}
+
 pub async fn stream_chat_completion(
     request: StreamRequest<'_>,
 ) -> Result<InferenceMetrics, AppError> {
@@ -252,16 +268,13 @@ pub async fn stream_chat_completion(
     let mut status = "completed";
 
     loop {
-        let chunk = tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => {
+        let chunk = match next_stream_chunk(&mut stream, &cancellation).await {
+            StreamPoll::Cancelled => {
                 status = "cancelled";
                 break;
             }
-            chunk = stream.next() => chunk,
-        };
-        let Some(chunk) = chunk else {
-            break;
+            StreamPoll::Item(Some(chunk)) => chunk,
+            StreamPoll::Item(None) => break,
         };
         let bytes = chunk.map_err(|error| AppError::StreamFailed(error.to_string()))?;
         sse_buffer.push_str(&String::from_utf8_lossy(&bytes));
@@ -2265,6 +2278,28 @@ mod tests {
     fn parses_streaming_delta() {
         let data = r#"{"choices":[{"delta":{"content":"hello"}}]}"#;
         assert_eq!(parse_openai_delta(data).unwrap(), Some("hello".to_string()));
+    }
+
+    #[tokio::test]
+    async fn stop_interrupts_stream_wait_without_another_network_chunk() {
+        let cancellation = CancellationToken::new();
+        let stop = cancellation.clone();
+        let mut stalled = futures_util::stream::pending::<String>();
+        let stop_task = async move {
+            tokio::task::yield_now().await;
+            stop.cancel();
+        };
+        let receive_task = async {
+            assert!(matches!(
+                next_stream_chunk(&mut stalled, &cancellation).await,
+                StreamPoll::Cancelled
+            ));
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::join!(stop_task, receive_task);
+        })
+        .await
+        .expect("Stop should not depend on another network chunk");
     }
 
     #[test]
