@@ -17,6 +17,7 @@ import type {
   PortableRootInfo,
   Project,
   RuntimeInventory,
+  RuntimeInstallStatus,
   StreamChunkEvent,
   StreamDoneEvent,
   StreamStartedEvent,
@@ -92,6 +93,9 @@ export function App() {
   const [models, setModels] = useState<ModelRecord[]>([]);
   const [runtime, setRuntime] = useState<RuntimeInventory | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<LlamaRuntimeStatus | null>(null);
+  const [runtimeInstallStatus, setRuntimeInstallStatus] = useState<RuntimeInstallStatus | null>(null);
+  const [runtimeInstallError, setRuntimeInstallError] = useState<string | null>(null);
+  const [runtimeInstalling, setRuntimeInstalling] = useState(false);
   const [performance, setPerformance] = useState<PerformanceProfile | null>(null);
   const [preferences, setPreferences] = useState<AppPreferences | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
@@ -133,6 +137,8 @@ export function App() {
   const [runtimeAction, setRuntimeAction] = useState<RuntimeAction | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const runtimeAutostartAttemptedRef = useRef(false);
+  const runtimeAutoInstallAttemptedRef = useRef(false);
+  const runtimeInstallInFlightRef = useRef(false);
 
   const showError = useCallback((caught: unknown) => {
     setError(formatError(caught));
@@ -145,7 +151,7 @@ export function App() {
       api.hardware(),
       api.storage(),
       api.models(),
-      api.runtimeInventory(),
+      api.refreshRuntimeInventory(),
       api.runtimeStatus(),
       api.performance(),
       api.preferences(),
@@ -194,11 +200,30 @@ export function App() {
   }, [refreshApp]);
 
   useEffect(() => {
+    if (!runtimeInstalling) return;
+    const refreshProgress = () => {
+      void api.runtimeInstallStatus().then(setRuntimeInstallStatus).catch(() => undefined);
+    };
+    refreshProgress();
+    const timer = window.setInterval(refreshProgress, 750);
+    return () => window.clearInterval(timer);
+  }, [runtimeInstalling]);
+
+  useEffect(() => {
+    if (!refreshedOnce || !installationStatus || installationStatus.setupRequired ||
+        runtime === null || runtime.selected !== null || runtimeAutoInstallAttemptedRef.current) return;
+    runtimeAutoInstallAttemptedRef.current = true;
+    void installRuntime();
+    // One automatic attempt per application launch; manual retry remains available.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshedOnce, installationStatus, runtime]);
+
+  useEffect(() => {
     if (!refreshedOnce || installationStatus === null || wizardActive !== null) return;
-    const modelReady = models.some((model) => model.state === "ready" || model.state === "loaded");
-    const runtimeReady = runtime?.selected != null;
-    setWizardActive(installationStatus.setupRequired || !modelReady || !runtimeReady);
-  }, [refreshedOnce, installationStatus, models, runtime, wizardActive]);
+    // Only first-time root/profile configuration is modal. Runtime repair
+    // must not hide existing chats or prevent access to Settings.
+    setWizardActive(installationStatus.setupRequired);
+  }, [refreshedOnce, installationStatus, wizardActive]);
 
   useEffect(() => {
     if (!preferences?.localRuntimeAutostart) {
@@ -910,6 +935,33 @@ export function App() {
     await refreshApp();
   }
 
+  async function installRuntime() {
+    if (runtimeInstallInFlightRef.current) return;
+    runtimeInstallInFlightRef.current = true;
+    setRuntimeInstalling(true);
+    setRuntimeInstallError(null);
+    setRuntimeInstallStatus(null);
+    try {
+      setRuntimeInstallStatus(await api.installRecommendedRuntime());
+      await refreshApp();
+    } catch (caught) {
+      const message = formatError(caught);
+      if (!message.toLowerCase().includes("cancel")) setRuntimeInstallError(message);
+      void api.runtimeInstallStatus().then(setRuntimeInstallStatus).catch(() => undefined);
+    } finally {
+      runtimeInstallInFlightRef.current = false;
+      setRuntimeInstalling(false);
+    }
+  }
+
+  async function cancelRuntimeInstall() {
+    try {
+      setRuntimeInstallStatus(await api.cancelRuntimeInstall());
+    } catch (caught) {
+      setRuntimeInstallError(formatError(caught));
+    }
+  }
+
   async function startRuntime(action: RuntimeAction = "restart") {
     if (runtimeAction) return;
     setRuntimeAction(action);
@@ -1211,6 +1263,30 @@ export function App() {
           </button>
         ) : null}
 
+        {runtime && !runtime.selected ? (
+          <div className="runtime-recovery-banner" role="status" aria-live="polite">
+            <div>
+              <strong>Local AI engine is missing</strong>
+              <span>
+                {runtimeInstalling
+                  ? `Installing with OpenMindAI Download Manager · ${runtimeInstallStatus?.state ?? "resolving"} ${runtimeInstallStatus?.percentage != null ? `(${Math.round(runtimeInstallStatus.percentage)}%)` : ""}`
+                  : "Your chats are accessible. Install llama.cpp to run the local model."}
+              </span>
+              {runtimeInstallError ? <span className="runtime-recovery-error">{runtimeInstallError}</span> : null}
+            </div>
+            <div className="runtime-recovery-actions">
+              {runtimeInstalling ? (
+                <button type="button" onClick={() => void cancelRuntimeInstall()}>Cancel</button>
+              ) : (
+                <button type="button" onClick={() => void installRuntime()}>Retry install</button>
+              )}
+              <button type="button" onClick={() => { setSettingsSection("runtime"); setView("settings"); }}>
+                Runtime settings
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         {view === "chat" ? (
           <ChatView
             conversation={activeConversation}
@@ -1355,6 +1431,11 @@ export function App() {
             startRuntime={startRuntime}
             stopRuntime={stopRuntime}
             runtimeAction={runtimeAction}
+            runtimeInstallStatus={runtimeInstallStatus}
+            runtimeInstalling={runtimeInstalling}
+            runtimeInstallError={runtimeInstallError}
+            installRuntime={() => void installRuntime()}
+            cancelRuntimeInstall={() => void cancelRuntimeInstall()}
             initialSection={settingsSection}
           />
         )}

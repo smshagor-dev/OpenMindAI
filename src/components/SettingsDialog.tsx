@@ -35,6 +35,7 @@ import type {
   PerformanceProfile,
   PortableRootInfo,
   RuntimeInventory,
+  RuntimeInstallStatus,
   StorageSummary,
   UserProfile,
 } from "../types";
@@ -62,6 +63,11 @@ export function SettingsDialog(props: {
   startRuntime: (action?: "start" | "restart") => void;
   stopRuntime: () => void;
   runtimeAction: "start" | "restart" | "stop" | null;
+  runtimeInstallStatus: RuntimeInstallStatus | null;
+  runtimeInstalling: boolean;
+  runtimeInstallError: string | null;
+  installRuntime: () => void;
+  cancelRuntimeInstall: () => void;
   initialSection?: string;
 }) {
   const [activeSection, setActiveSection] = useState(props.initialSection ?? "general");
@@ -530,6 +536,44 @@ export function SettingsDialog(props: {
             <Info label="Backend" value={props.runtime?.selected?.manifest.backend} />
             <Info label="Version" value={props.runtime?.selected?.manifest.version} />
             <Info label="Location" value={props.runtime?.selected?.manifest.binaries.server} />
+            {!props.runtime?.selected ? (
+              <p className="setup-warning">
+                No usable llama.cpp runtime was detected. Chat history and Settings remain available.
+                OpenMindAI can download, verify, and install an official runtime in its portable storage.
+              </p>
+            ) : null}
+            <div className="button-row">
+              <button
+                type="button"
+                onClick={props.installRuntime}
+                disabled={props.runtimeInstalling || props.runtimeAction !== null}
+              >
+                {props.runtimeInstalling ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
+                {props.runtimeInstalling ? "Installing runtime…" : "Install / repair runtime"}
+              </button>
+              {props.runtimeInstalling ? (
+                <button type="button" onClick={props.cancelRuntimeInstall}>Cancel download</button>
+              ) : null}
+            </div>
+            {props.runtimeInstalling || props.runtimeInstallStatus ? (
+              <div className="setup-progress" role="status" aria-live="polite">
+                <progress
+                  max={100}
+                  value={props.runtimeInstallStatus?.percentage ?? 0}
+                  aria-label="Runtime download progress"
+                />
+                <p className="muted">
+                  {props.runtimeInstallStatus?.backend ? `${props.runtimeInstallStatus.backend} · ` : ""}
+                  {props.runtimeInstallStatus?.state ?? "resolving"}
+                  {props.runtimeInstallStatus?.percentage != null
+                    ? ` · ${Math.round(props.runtimeInstallStatus.percentage)}%`
+                    : ""}
+                </p>
+              </div>
+            ) : null}
+            {props.runtimeInstallError || props.runtimeInstallStatus?.error ? (
+              <p className="setup-warning">{props.runtimeInstallError ?? props.runtimeInstallStatus?.error}</p>
+            ) : null}
             <div className="button-row">
               <button type="button" onClick={props.refresh} title="Validate">
                 <RefreshCw size={16} />
@@ -538,7 +582,7 @@ export function SettingsDialog(props: {
                 type="button"
                 onClick={() => props.startRuntime("restart")}
                 title="Restart Runtime"
-                disabled={props.runtimeAction !== null}
+                disabled={props.runtimeAction !== null || !props.runtime?.selected || props.runtimeInstalling}
               >
                 {props.runtimeAction === "start" || props.runtimeAction === "restart" ? (
                   <LoaderCircle className="spin" size={16} />

@@ -4,7 +4,6 @@ import type {
   LlamaRuntimeStatus,
   Message,
   RuntimeInventory,
-  RuntimeValidation,
 } from "./types";
 import type {
   ConnectedProvider,
@@ -112,60 +111,16 @@ export type CodingMetrics = { runId: string; promptTokens: number; completionTok
 export type CodingRunSnapshot = { details: OpenAgentRunDetails; plan: CodingPlan | null; events: CodingEvent[]; approvals: CodingApproval[]; metrics: CodingMetrics | null; parentRunId: string | null };
 export type CodingQualificationReport = { id: string; passed: boolean; modelId: string | null; checks: { id: string; passed: boolean; detail: string }[]; startedAt: string; completedAt: string };
 
-type RuntimeBootstrapSnapshot = {
-  inventory: RuntimeInventory;
-  status: LlamaRuntimeStatus;
-};
-
 let runtimeForegroundStarted = false;
 let runtimeScanTimer: number | null = null;
 let runtimeInventoryCache: RuntimeInventory | null = null;
 let runtimeScanPromise: Promise<RuntimeInventory> | null = null;
-let runtimeBootstrapPromise: Promise<RuntimeBootstrapSnapshot> | null = null;
 
 function connectedInvoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri) {
     return Promise.reject(new Error("Connected app actions require the OpenMindAI desktop app."));
   }
   return invoke<T>(command, args);
-}
-
-function cachedRuntimeValidation(): RuntimeValidation {
-  return {
-    manifest: {
-      runtimeName: "OpenMindAI Runtime",
-      version: "cached",
-      platform: navigator.platform || "desktop",
-      architecture: "cached",
-      backend: "cpu",
-      source: "saved installation",
-      installedAt: "",
-      binaries: {
-        server: null,
-        cli: null,
-        bench: null,
-      },
-      checksum: null,
-      status: "ready",
-    },
-    serverExists: true,
-    cliExists: true,
-    benchExists: false,
-    versionOutput: null,
-    deviceOutput: null,
-    usable: true,
-    message: "Saved runtime readiness; deep validation deferred until after startup.",
-  };
-}
-
-function statusFromInventory(inventory: RuntimeInventory): LlamaRuntimeStatus {
-  return {
-    available: inventory.selected !== null,
-    backend: inventory.selected?.manifest.backend ?? null,
-    endpoint: null,
-    state: inventory.serverState,
-    selectedRuntime: inventory.selected,
-  };
 }
 
 function cacheRuntimeStatus(status: LlamaRuntimeStatus) {
@@ -175,51 +130,6 @@ function cacheRuntimeStatus(status: LlamaRuntimeStatus) {
     selected,
     serverState: status.state,
   };
-  runtimeBootstrapPromise = null;
-}
-
-async function runtimeBootstrapSnapshot(): Promise<RuntimeBootstrapSnapshot> {
-  if (runtimeBootstrapPromise) return runtimeBootstrapPromise;
-
-  runtimeBootstrapPromise = legacyApi
-    .installationStatus()
-    .then((installation) => {
-      if (installation.setupRequired) {
-        const inventory: RuntimeInventory = {
-          runtimes: [],
-          selected: null,
-          serverState: "stopped",
-        };
-        return {
-          inventory,
-          status: statusFromInventory(inventory),
-        };
-      }
-
-      const selected = cachedRuntimeValidation();
-      const inventory: RuntimeInventory = {
-        runtimes: [selected],
-        selected,
-        serverState: "stopped",
-      };
-      return {
-        inventory,
-        status: statusFromInventory(inventory),
-      };
-    })
-    .catch(() => {
-      const inventory: RuntimeInventory = {
-        runtimes: [],
-        selected: null,
-        serverState: "stopped",
-      };
-      return {
-        inventory,
-        status: statusFromInventory(inventory),
-      };
-    });
-
-  return runtimeBootstrapPromise;
 }
 
 async function deepRuntimeInventory(): Promise<RuntimeInventory> {
@@ -303,13 +213,24 @@ async function shouldUseProjectAgent(conversationId: string, mode: string) {
 
 export const api = {
   ...legacyApi,
-  runtimeInventory: async () => {
-    if (runtimeInventoryCache) return runtimeInventoryCache;
-    return (await runtimeBootstrapSnapshot()).inventory;
+  // A saved installation marker is not evidence that llama-server still exists
+  // on the current portable drive.
+  runtimeInventory: () => deepRuntimeInventory(),
+  refreshRuntimeInventory: async () => {
+    // The user may have repaired or moved a portable runtime while the app
+    // was open. An explicit refresh must re-read manifests from disk.
+    if (runtimeScanPromise) await runtimeScanPromise.catch(() => undefined);
+    runtimeInventoryCache = null;
+    return deepRuntimeInventory();
   },
-  runtimeStatus: async () => {
-    if (runtimeInventoryCache) return statusFromInventory(runtimeInventoryCache);
-    return (await runtimeBootstrapSnapshot()).status;
+  runtimeStatus: () => legacyApi.runtimeStatus(),
+  installRecommendedRuntime: async () => {
+    markRuntimeForegroundStarted();
+    const installed = await legacyApi.installRecommendedRuntime();
+    if (runtimeScanPromise) await runtimeScanPromise.catch(() => undefined);
+    runtimeInventoryCache = null;
+    await deepRuntimeInventory();
+    return installed;
   },
   activateModel: async (conversationId: string, modelId: string) => {
     markRuntimeForegroundStarted();
@@ -327,14 +248,13 @@ export const api = {
     markRuntimeForegroundStarted();
     await legacyApi.stopRuntime();
     const selected =
-      runtimeInventoryCache?.selected ?? (await runtimeBootstrapSnapshot()).inventory.selected;
+      runtimeInventoryCache?.selected ?? (await deepRuntimeInventory()).selected;
     runtimeInventoryCache = {
       runtimes: selected ? [selected] : [],
       selected,
       serverState: "stopped",
     };
-    runtimeBootstrapPromise = null;
-  },
+    },
   projectAgentStatus,
   listOpenAgentRuns: (conversationId: string, limit = 20) =>
     connectedInvoke<OpenAgentRun[]>("list_openagent_runs", { conversationId, limit }),
