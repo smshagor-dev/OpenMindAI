@@ -40,6 +40,7 @@ export function ArtifactCard(props: {
   onOpen: (artifact: Artifact) => void;
   onReveal: (artifact: Artifact) => void;
   onRetry: (artifact: Artifact, useCpu?: boolean) => void;
+  onCancel: (artifact: Artifact) => void;
 }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [mediaUrl, setMediaUrl] = useState<string | null>(null);
@@ -126,6 +127,11 @@ export function ArtifactCard(props: {
         {artifact.status === "ready" ? (
           <button type="button" title="Reveal in folder" onClick={() => props.onReveal(artifact)}>
             <Folder size={15} />
+          </button>
+        ) : null}
+        {artifact.status === "generating" && artifact.kind === "image" ? (
+          <button type="button" onClick={() => props.onCancel(artifact)}>
+            Stop image
           </button>
         ) : null}
         {artifact.status === "failed" ? (
