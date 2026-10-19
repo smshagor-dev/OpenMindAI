@@ -45,23 +45,41 @@ jobs:
         with:
           tool: cargo-audit
 
+      - name: Validate production ZIP audit mode
+        id: zip_mode
+        run: |
+          node scripts/check-zip-audit-mode.mjs --self-test
+          node scripts/check-zip-audit-mode.mjs
+
       - name: Check temporary legacy ZIP exception scope
+        if: steps.zip_mode.outputs.mode == 'legacy'
         run: node scripts/check-transitive-zip-audit.mjs
 
-      - name: Inspect pinned ZIP consumer sources
+      - name: Inspect pinned legacy ZIP consumer sources
+        if: steps.zip_mode.outputs.mode == 'legacy'
         run: |
           cargo metadata --locked --manifest-path src-tauri/Cargo.toml --format-version 1 > "$RUNNER_TEMP/openmind-cargo-metadata.json"
           node scripts/check-upstream-zip-source.mjs "$RUNNER_TEMP/openmind-cargo-metadata.json"
 
-      - name: Cargo audit (documented transitive ZIP exceptions)
-        # ZIP 7 remains pinned by upstream any-tts/candle-core.
-        # Keep this scoped, expiring exception guarded by source and lockfile
-        # checks above. Other advisories must still fail CI.
+      - name: Inspect pinned migrated ZIP 9 vendor sources
+        if: steps.zip_mode.outputs.mode == 'remediated'
+        run: |
+          cargo metadata --locked --manifest-path src-tauri/Cargo.toml --format-version 1 > "$RUNNER_TEMP/openmind-cargo-metadata.json"
+          node scripts/check-zip-audit-mode.mjs --metadata "$RUNNER_TEMP/openmind-cargo-metadata.json"
+
+      - name: Cargo audit (temporary, scoped ZIP 7 exceptions)
+        if: steps.zip_mode.outputs.mode == 'legacy'
+        # This branch only runs while the exact vulnerable registry crates and
+        # ZIP 7.2.0 remain. Unknown ZIP versions fail the mode guard above.
         run: |
           cargo audit --file src-tauri/Cargo.lock \
             --ignore RUSTSEC-2026-0367 \
             --ignore RUSTSEC-2026-0368 \
             --ignore RUSTSEC-2026-0369
+
+      - name: Cargo audit (migrated production graph, no exceptions)
+        if: steps.zip_mode.outputs.mode == 'remediated'
+        run: cargo audit --file src-tauri/Cargo.lock
 
   codeql:
     name: CodeQL
