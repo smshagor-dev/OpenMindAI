@@ -123,6 +123,15 @@ function connectedInvoke<T>(command: string, args?: Record<string, unknown>): Pr
   return invoke<T>(command, args);
 }
 
+function cacheRuntimeStatus(status: LlamaRuntimeStatus) {
+  const selected = status.selectedRuntime;
+  runtimeInventoryCache = {
+    runtimes: selected ? [selected] : [],
+    selected,
+    serverState: status.state,
+  };
+}
+
 async function deepRuntimeInventory(): Promise<RuntimeInventory> {
   if (runtimeInventoryCache) return runtimeInventoryCache;
   if (runtimeScanPromise) return runtimeScanPromise;
