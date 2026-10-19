@@ -106,3 +106,70 @@ jobs:
           path: ${{ runner.temp }}/kokoro-smoke-evidence.json
           if-no-files-found: error
           retention-days: 14
+
+
+  real-kokoro-desktop:
+    name: Generate authentic Kokoro speech (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    env:
+      RUST_BACKTRACE: "1"
+    steps:
+      - name: Checkout source-pinned production runtime
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Cache compiled Rust dependencies only
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: kokoro-native-${{ matrix.os }}
+
+      - name: Verify WAV acceptance rejects silent audio
+        run: python scripts/kokoro-real-smoke.py self-test
+
+      - name: Download SHA-256-pinned real Kokoro model, voice and config
+        shell: bash
+        env:
+          OPENMINDAI_ROOT: ${{ runner.temp }}/openmind-kokoro-smoke
+        run: |
+          python scripts/kokoro-real-smoke.py prepare \
+            --root "$OPENMINDAI_ROOT" --download
+
+      - name: Generate real Kokoro speech using production Rust/Candle
+        shell: bash
+        env:
+          OPENMINDAI_ROOT: ${{ runner.temp }}/openmind-kokoro-smoke
+        run: |
+          cargo run --locked --release \
+            --manifest-path src-tauri/Cargo.toml \
+            --example media_smoke -- speak --root "$OPENMINDAI_ROOT"
+
+      - name: Reject missing, silent or invalid generated audio
+        shell: bash
+        env:
+          OPENMINDAI_ROOT: ${{ runner.temp }}/openmind-kokoro-smoke
+        run: |
+          python scripts/kokoro-real-smoke.py verify-wav \
+            --wav "$OPENMINDAI_ROOT/generated/smoke/speak-smoke.wav" \
+            --evidence "$RUNNER_TEMP/kokoro-smoke-evidence.json"
+
+      - name: Upload only evidence, never model files or audio
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kokoro-real-candle-voice-evidence-${{ matrix.os }}
+          path: ${{ runner.temp }}/kokoro-smoke-evidence.json
+          if-no-files-found: error
+          retention-days: 14
