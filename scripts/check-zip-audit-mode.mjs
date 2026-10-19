@@ -30,11 +30,15 @@ function readPackages(text) {
 }
 
 function patchedSourcePaths(manifestText) {
-  const match = manifestText.match(/^\[patch\.crates-io\]\s*$([\s\S]*?)(?=^\[|\s*$)/m);
-  if (!match) return null;
+  const lines = manifestText.split(/\r?\n/);
+  const positions = lines.flatMap((line, index) =>
+    line.trim() === "[patch.crates-io]" ? [index] : []);
+  if (!positions.length) return null;
+  if (positions.length !== 1) die("Duplicate crates.io patch sections");
   const paths = new Map();
-  for (const raw of match[1].split("\n")) {
+  for (const raw of lines.slice(positions[0] + 1)) {
     const line = raw.trim();
+    if (line.startsWith("[")) break;
     if (!line || line.startsWith("#")) continue;
     const m = line.match(/^([a-z][a-z0-9-]*)\s*=\s*\{\s*path\s*=\s*"([^"]+)"\s*\}\s*$/);
     if (!m || paths.has(m[1])) die("Unexpected or duplicate crates.io patch entry");
