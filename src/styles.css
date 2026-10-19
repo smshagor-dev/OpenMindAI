@@ -1715,8 +1715,8 @@ button {
 }
 
 .tool-menu-badge-required {
-  background: rgba(210, 35, 35, 0.12);
-  color: #c5221f;
+  background: color-mix(in srgb, var(--status-error) 12%, var(--surface));
+  color: var(--status-error);
 }
 
 .composer-tools-note {
@@ -3174,15 +3174,15 @@ button {
 }
 
 .model-download-card .model-badge.downloaded {
-  border-color: rgba(36, 161, 72, 0.32);
-  color: #188038;
-  background: rgba(36, 161, 72, 0.08);
+  border-color: color-mix(in srgb, var(--success) 32%, var(--border));
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 8%, var(--surface));
 }
 
 .model-download-card .model-badge.recommended {
-  border-color: rgba(20, 103, 210, 0.28);
-  color: #0b57d0;
-  background: rgba(20, 103, 210, 0.08);
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
 }
 
 .dataset-card small {
@@ -3734,9 +3734,9 @@ button {
 }
 
 .tools-status .tools-status-ready {
-  color: #188038;
-  border-color: rgba(36, 161, 72, 0.3);
-  background: rgba(36, 161, 72, 0.08);
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 30%, var(--border));
+  background: color-mix(in srgb, var(--success) 8%, var(--surface));
 }
 
 .tools-grid {
