@@ -8,6 +8,8 @@ See docs/zip9-upstream-migration.md.
 from __future__ import annotations
 
 import argparse
+import difflib
+import hashlib
 import json
 import os
 from pathlib import Path, PureWindowsPath
@@ -23,6 +25,10 @@ MANIFEST = ROOT / "src-tauri" / "Cargo.toml"
 LOCK = ROOT / "src-tauri" / "Cargo.lock"
 TARGETS = {"any-tts": "0.1.3", "candle-core": "0.10.2"}
 ZIP_TARGET = "9.0.4"
+SOURCE_PATCH_FILES = {
+    "any-tts": ("Cargo.toml", "src/models/kokoro/model.rs"),
+    "candle-core": ("Cargo.toml", "src/npy.rs", "src/pickle.rs"),
+}
 
 
 def replace_zip_requirement(contents: str) -> str:
@@ -92,6 +98,106 @@ def adapt_upstream_zip9_api(crate: str, directory: Path) -> None:
             "            .map_err(|error| TtsError::WeightLoadError(format!(\"Invalid .pth ZIP name: {error}\")))?;",
         )
 
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def source_file_hashes(root: Path) -> dict[str, str]:
+    """Fingerprint every file; never silently follow a registry source symlink."""
+    files: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise RuntimeError(f"Unexpected source symlink: {path}")
+        if path.is_file():
+            files[path.relative_to(root).as_posix()] = sha256_bytes(path.read_bytes())
+    if not files:
+        raise RuntimeError(f"Source tree is empty: {root}")
+    return files
+
+
+def source_tree_hash(files: dict[str, str]) -> str:
+    digest = hashlib.sha256(b"openmind-zip9-source-tree-v1\0")
+    for name, file_sha in sorted(files.items()):
+        digest.update(name.encode("utf-8") + b"\0")
+        digest.update(bytes.fromhex(file_sha))
+    return digest.hexdigest()
+
+
+def cargo_registry_checksum(lock: Path, crate: str, version: str) -> str:
+    items = [
+        p for p in tomllib.loads(lock.read_text(encoding="utf-8"))["package"]
+        if p["name"] == crate and p["version"] == version
+    ]
+    if len(items) != 1:
+        raise RuntimeError(f"Expected exactly one {crate}@{version} lockfile package")
+    checksum = items[0].get("checksum", "")
+    if not re.fullmatch(r"[a-f0-9]{64}", checksum):
+        raise RuntimeError(f"Missing verified registry checksum for {crate}@{version}")
+    return checksum
+
+
+def source_patch_evidence(
+    crate: str, version: str, original: Path, patched: Path, lock: Path,
+) -> tuple[dict, str]:
+    """Report exactly reviewed ZIP edits and fail if any other source file changed."""
+    before = source_file_hashes(original)
+    after = source_file_hashes(patched)
+    if before.keys() != after.keys():
+        raise RuntimeError(f"{crate}: upstream source file set unexpectedly changed")
+    modified = sorted(name for name in before if before[name] != after[name])
+    expected = sorted(SOURCE_PATCH_FILES[crate])
+    if modified != expected:
+        raise RuntimeError(f"{crate}: changed files {modified}, expected {expected}")
+    changes = []
+    diffs = []
+    for name in modified:
+        before_bytes = (original / name).read_bytes()
+        after_bytes = (patched / name).read_bytes()
+        old_lines = before_bytes.decode("utf-8").splitlines(keepends=True)
+        new_lines = after_bytes.decode("utf-8").splitlines(keepends=True)
+        diff = "".join(difflib.unified_diff(
+            old_lines, new_lines, fromfile=f"a/{crate}/{name}",
+            tofile=f"b/{crate}/{name}",
+        ))
+        if not diff:
+            raise RuntimeError(f"{crate}: changed file missing unified diff: {name}")
+        diffs.append(diff)
+        changes.append({
+            "path": name,
+            "originalSha256": before[name],
+            "patchedSha256": after[name],
+        })
+    report = {
+        "crate": crate,
+        "version": version,
+        "registryChecksumFromCargoLock": cargo_registry_checksum(lock, crate, version),
+        "originalTreeSha256": source_tree_hash(before),
+        "patchedTreeSha256": source_tree_hash(after),
+        "sourceFileCount": len(before),
+        "changes": changes,
+    }
+    return report, "\n".join(diffs)
+
+
+def write_patch_evidence(directory: Path, reports: list[dict], patches: dict[str, str]) -> None:
+    """Export auditable, deterministic metadata and diffs, never unreviewed crate binaries."""
+    directory.mkdir(parents=True, exist_ok=True)
+    report = {
+        "schemaVersion": 1,
+        "purpose": "ZIP 9 candidate source provenance; not production remediation",
+        "zipVersion": ZIP_TARGET,
+        "cargoRegistrySource": "cargo fetch --locked; checksums pinned in src-tauri/Cargo.lock",
+        "packages": sorted(reports, key=lambda r: r["crate"]),
+    }
+    evidence = {
+        "zip9-source-provenance.json": json.dumps(report, sort_keys=True, indent=2) + "\n",
+        **{f"zip9-{name}.patch": value for name, value in patches.items()},
+    }
+    for name, contents in evidence.items():
+        with (directory / name).open("x", encoding="utf-8", newline="\n") as out:
+            out.write(contents)
 
 def registry_source(crate: str, version: str, cargo_home: Path) -> Path:
     paths = sorted((cargo_home / "registry" / "src").glob(f"*/{crate}-{version}/Cargo.toml"))
@@ -197,6 +303,25 @@ def self_test() -> None:
         lock.write_text("modified by simulated cargo update")
         assert (source / "Cargo.lock").read_text() == "original lock"
 
+        example = base / "source-files"
+        example.mkdir()
+        (example / "file.txt").write_text("before\n")
+        fingerprints = source_file_hashes(example)
+        assert len(fingerprints) == 1
+        assert source_tree_hash(fingerprints) == source_tree_hash(fingerprints)
+        (example / "file.txt").write_text("after\n")
+        assert source_tree_hash(fingerprints) != source_tree_hash(source_file_hashes(example))
+        output = base / "evidence"
+        write_patch_evidence(output, [{"crate": "test"}], {"test": "diff --fixture\n"})
+        assert (output / "zip9-test.patch").read_text() == "diff --fixture\n"
+        assert json.loads((output / "zip9-source-provenance.json").read_text())["schemaVersion"] == 1
+        try:
+            write_patch_evidence(output, [], {})
+        except FileExistsError:
+            pass
+        else:
+            raise AssertionError("Existing evidence must never be silently overwritten")
+
         migrated_lock = base / "migrated.lock"
         migrated_lock.write_text(
             '[[package]]\nname = "zip"\nversion = "9.0.4"\n',
@@ -225,6 +350,7 @@ def main() -> None:
         help="Run unignored cargo audit on the temporary resolved lockfile",
     )
     parser.add_argument("--cargo-home", type=Path)
+    parser.add_argument("--evidence-dir", type=Path, help="Output deterministic patched source provenance and diffs")
     args = parser.parse_args()
     if args.self_test:
         self_test()
@@ -245,6 +371,8 @@ def main() -> None:
             ROOT / "src-tauri", overlay / "src-tauri",
         )
         patches = []
+        reports: list[dict] = []
+        evidence_patches: dict[str, str] = {}
         for crate, version in TARGETS.items():
             src = registry_source(crate, version, cargo_home)
             dst = overlay / f"{crate}-{version}"
@@ -252,8 +380,18 @@ def main() -> None:
             cargo_toml = dst / "Cargo.toml"
             cargo_toml.write_text(replace_zip_requirement(cargo_toml.read_text(encoding="utf-8")), encoding="utf-8")
             adapt_upstream_zip9_api(crate, dst)
+            report, diff = source_patch_evidence(crate, version, src, dst, LOCK)
+            reports.append(report)
+            evidence_patches[crate] = diff
             patches.extend(["--config", cargo_patch_override(crate, dst)])
             print(f"Locally substituted {crate}@{version} zip requirement with {ZIP_TARGET}")
+        evidence_dir = args.evidence_dir or (
+            Path(os.environ["ZIP9_EVIDENCE_DIR"]) if os.environ.get("ZIP9_EVIDENCE_DIR") else None
+        )
+        if evidence_dir is not None:
+            write_patch_evidence(evidence_dir, reports, evidence_patches)
+            print(f"Written reviewable source provenance and patches into {evidence_dir}")
+
         # Cargo cannot run integration tests in a non-workspace dependency
         # via -p. Use a disposable standalone harness that depends on the
         # exact patched Candle source instead of editing its registry files.
