@@ -224,11 +224,22 @@ def stage_production_candidate(
         raise RuntimeError(f"Refusing to overwrite existing ZIP 9 candidate: {directory}")
     if set(patched_sources) != set(TARGETS):
         raise RuntimeError("ZIP 9 production candidate lacks a reviewed patched dependency")
+    by_crate = {item["crate"]: item for item in reports}
+    if set(by_crate) != set(TARGETS) or len(reports) != len(TARGETS):
+        raise RuntimeError("ZIP 9 candidate requires one verified report per dependency")
     directory.mkdir(parents=True)
     for name in sorted(patched_sources):
         src = patched_sources[name]
         version = TARGETS[name]
-        shutil.copytree(src, directory / "vendor" / f"{name}-{version}")
+        dest = directory / "vendor" / f"{name}-{version}"
+        shutil.copytree(src, dest)
+        vendor_tree_sha = source_tree_hash(source_file_hashes(dest))
+        expected = by_crate[name]["patchedTreeSha256"]
+        if vendor_tree_sha != expected:
+            raise RuntimeError(
+                f"{name}: staged vendor source SHA-256 differs from verified candidate: "
+                f"{vendor_tree_sha} != {expected}"
+            )
     dest_crate = directory / "src-tauri"
     shutil.copytree(
         source_crate, dest_crate, symlinks=True,
@@ -389,6 +400,30 @@ def self_test() -> None:
         else:
             raise AssertionError("Existing evidence must never be silently overwritten")
 
+        # A source-pinned candidate must reject a report whose expected
+        # staged vendor digest does not match the actual files.
+        upstream = base / "fake-candle"
+        upstream.mkdir()
+        (upstream / "Cargo.toml").write_text("[package]\nname = 'fixture'\n")
+        source_dir = base / "candidate-src"
+        source_dir.mkdir()
+        (source_dir / "Cargo.toml").write_text("[package]\nname = 'fixture'\n")
+        (source_dir / "Cargo.lock").write_text("test-lock")
+        try:
+            stage_production_candidate(
+                base / "tampered-candidate", source_dir,
+                {"any-tts": upstream, "candle-core": upstream},
+                [
+                    {"crate": "any-tts", "patchedTreeSha256": "0" * 64},
+                    {"crate": "candle-core", "patchedTreeSha256": "0" * 64},
+                ],
+                {"any-tts": "fixture", "candle-core": "fixture"},
+            )
+        except RuntimeError as exc:
+            assert "staged vendor source SHA-256 differs" in str(exc)
+        else:
+            raise AssertionError("Vendor source mismatch must fail closed")
+
         migrated_lock = base / "migrated.lock"
         migrated_lock.write_text(
             '[[package]]\nname = "zip"\nversion = "9.0.4"\n',
@@ -461,6 +496,10 @@ def main() -> None:
         if evidence_dir is not None:
             write_patch_evidence(evidence_dir, reports, evidence_patches)
             print(f"Written reviewable source provenance and patches into {evidence_dir}")
+        candidate_dir = args.candidate_dir or (
+            Path(os.environ["ZIP9_CANDIDATE_DIR"])
+            if os.environ.get("ZIP9_CANDIDATE_DIR") else None
+        )
 
         # Cargo cannot run integration tests in a non-workspace dependency
         # via -p. Use a disposable standalone harness that depends on the
@@ -506,9 +545,9 @@ def main() -> None:
                 "--test", "zip9_reader_regressions", "--", "--nocapture",
             ], env=testing_env)
             require_patched_zip_only(trial / "Cargo.lock")
-            if args.candidate_dir is not None:
+            if candidate_dir is not None:
                 candidate_manifest_path, candidate_lock_path = stage_production_candidate(
-                    args.candidate_dir, overlay / "src-tauri", patched_sources,
+                    candidate_dir, overlay / "src-tauri", patched_sources,
                     reports, evidence_patches,
                 )
                 # The candidate must resolve and compile using only the manifest's
@@ -522,11 +561,17 @@ def main() -> None:
                     "cargo", "check", "--locked", "--manifest-path",
                     str(candidate_manifest_path), "--lib",
                 ], env=testing_env)
+                # Exercise actual source-pinned crate tests, not merely a Cargo
+                # resolver success or metadata-only compilation.
+                run([
+                    "cargo", "test", "--locked", "--manifest-path",
+                    str(candidate_manifest_path), "--lib",
+                ], env=testing_env)
                 if args.audit:
                     run([
                         "cargo", "audit", "--file", str(candidate_lock_path),
                     ], env=testing_env)
-                print(f"Validated ZIP 9 source-pinned production candidate: {args.candidate_dir}")
+                print(f"Validated ZIP 9 source-pinned production candidate: {candidate_dir}")
             print("ZIP 9 compilation and synthetic NPZ/PTH regression probe PASSED.")
             if args.audit:
                 print("Unignored RustSec audit of the temporary ZIP 9 lockfile PASSED.")
