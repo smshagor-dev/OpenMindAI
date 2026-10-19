@@ -6,6 +6,8 @@ import { api } from "./api";
 import type {
   Artifact,
   ArtifactKind,
+  ImageRenderProgress,
+  ImageRenderStage,
   Conversation,
   AppPreferences,
   HardwareProfile,
@@ -103,6 +105,7 @@ export function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [imageProgressByArtifact, setImageProgressByArtifact] = useState<Record<string, ImageRenderStage>>({});
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<AttachmentDraft[]>([]);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -456,9 +459,21 @@ export function App() {
       listen<Artifact>("artifact:started", (event) =>
         setArtifacts((items) => upsertArtifactInList(items, event.payload)),
       ),
-      listen<Artifact>("artifact:done", (event) =>
-        setArtifacts((items) => upsertArtifactInList(items, event.payload)),
-      ),
+      listen<Artifact>("artifact:done", (event) => {
+        setArtifacts((items) => upsertArtifactInList(items, event.payload));
+        setImageProgressByArtifact((current) => {
+          if (!(event.payload.id in current)) return current;
+          const next = { ...current };
+          delete next[event.payload.id];
+          return next;
+        });
+      }),
+      listen<ImageRenderProgress>("image:progress", (event) => {
+        setImageProgressByArtifact((current) => ({
+          ...current,
+          [event.payload.artifactId]: event.payload.stage,
+        }));
+      }),
     ];
     return () => {
       void Promise.all(unlisteners).then((items) => items.forEach((unlisten) => unlisten()));
@@ -1331,6 +1346,7 @@ export function App() {
             onRevealArtifact={revealArtifactHandler}
             onRetryArtifact={retryArtifact}
             onCancelImageArtifact={cancelImageArtifact}
+            imageProgressByArtifact={imageProgressByArtifact}
             onPreview={setPreviewTarget}
           />
         ) : view === "tools" ? (
@@ -1386,6 +1402,7 @@ export function App() {
               onRevealArtifact={revealArtifactHandler}
               onRetryArtifact={retryArtifact}
               onCancelImageArtifact={cancelImageArtifact}
+              imageProgressByArtifact={imageProgressByArtifact}
               onPreview={setPreviewTarget}
             />
           ) : (

@@ -193,6 +193,8 @@ struct VideoRenderProfile {
     vae_on_cpu: bool,
 }
 
+// Keep the render's independent progress callback alongside its existing inputs.
+#[allow(clippy::too_many_arguments)]
 pub async fn generate_image(
     root: &PortableRootManager,
     client: &Client,
@@ -201,6 +203,7 @@ pub async fn generate_image(
     prompt: &str,
     output_path: &Path,
     use_cpu: bool,
+    on_stage: &(dyn Fn(&'static str) + Send + Sync),
 ) -> Result<(), AppError> {
     let prompt = prompt.trim();
     if prompt.is_empty() {
@@ -224,6 +227,7 @@ pub async fn generate_image(
     })?;
 
     let runtime = ensure_runtime(root, client, hardware, use_cpu).await?;
+    on_stage("rendering");
     let cli_path = root.resolve_relative(&runtime.cli_path)?;
     let profile = render_profile(hardware, &runtime.backend);
 
@@ -300,6 +304,7 @@ pub async fn generate_image(
         )));
     }
 
+    on_stage("validating");
     png_output_validation::validate_png(output_path)?;
     tracing::info!(path = %output_path.display(), "local diffusion image generated");
     Ok(())

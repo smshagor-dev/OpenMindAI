@@ -17,6 +17,7 @@ import type {
   AppPreferences,
   Artifact,
   ArtifactKind,
+  ImageRenderStage,
   Conversation,
   Message,
   ModelRecord,
@@ -78,6 +79,7 @@ export function ChatView(props: {
   onRevealArtifact: (artifact: Artifact) => void;
   onRetryArtifact: (artifact: Artifact, useCpu?: boolean) => void;
   onCancelImageArtifact: (artifact: Artifact) => void;
+  imageProgressByArtifact: Record<string, ImageRenderStage>;
   onPreview: (target: PreviewTarget) => void;
 }) {
   const latestMessageRef = useRef<globalThis.HTMLDivElement | null>(null);
@@ -208,6 +210,7 @@ export function ChatView(props: {
               onRevealArtifact={props.onRevealArtifact}
               onRetryArtifact={props.onRetryArtifact}
               onCancelImageArtifact={props.onCancelImageArtifact}
+              imageProgressByArtifact={props.imageProgressByArtifact}
               onPreview={props.onPreview}
               onEditUser={message.role === "user" ? (content) => props.editUserMessage(message.id, content) : undefined}
             />

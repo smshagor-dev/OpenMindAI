@@ -1,9 +1,15 @@
 import { useEffect, useState } from "react";
 import { FileCode, FileText, FileType, Folder, Image, Loader2, RefreshCw, Video, Volume2 } from "lucide-react";
-import type { Artifact } from "../types";
+import type { Artifact, ImageRenderStage } from "../types";
 import { formatBytes } from "../lib/format";
 import { renderMarkdown } from "../lib/markdown";
 import { artifactMediaDataUrl } from "../lib/media";
+
+const IMAGE_STAGE_LABELS: Record<ImageRenderStage, string> = {
+  preparing: "Preparing image renderer...",
+  rendering: "Rendering image...",
+  validating: "Checking generated image...",
+};
 
 const KIND_LABELS: Record<Artifact["kind"], string> = {
   text: "Text document",
@@ -41,11 +47,26 @@ export function ArtifactCard(props: {
   onReveal: (artifact: Artifact) => void;
   onRetry: (artifact: Artifact, useCpu?: boolean) => void;
   onCancel: (artifact: Artifact) => void;
+  imageStage?: ImageRenderStage;
 }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [mediaUrl, setMediaUrl] = useState<string | null>(null);
   const [mediaError, setMediaError] = useState<string | null>(null);
   const artifact = props.artifact;
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (artifact.status !== "generating" || artifact.kind !== "image") return;
+    setNow(Date.now());
+    const interval = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [artifact.status, artifact.kind]);
+  const startTime = Date.parse(artifact.createdAt);
+  const elapsed = Number.isFinite(startTime)
+    ? Math.max(0, Math.floor((now - startTime) / 1000))
+    : null;
+  const elapsedLabel = elapsed === null
+    ? null
+    : `${Math.floor(elapsed / 60)}m ${String(elapsed % 60).padStart(2, "0")}s`;
 
   useEffect(() => {
     let cancelled = false;
@@ -92,12 +113,13 @@ export function ArtifactCard(props: {
               : artifact.kind === "docx"
                 ? "Creating document..."
                 : artifact.kind === "image"
-                  ? "Generating image..."
+                  ? IMAGE_STAGE_LABELS[props.imageStage ?? "preparing"]
                   : artifact.kind === "audio"
                     ? "Generating audio..."
                     : artifact.kind === "video"
                       ? "Generating video..."
                       : "Generating..."}
+            {artifact.kind === "image" && elapsedLabel ? ` · ${elapsedLabel} elapsed` : ""}
           </span>
         ) : null}
         {artifact.status === "failed" ? (
