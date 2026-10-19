@@ -193,12 +193,21 @@ fn prepare_native_request(request: &StreamRequest<'_>) -> Result<PreparedNativeR
     } else {
         None
     };
-    // The native engine only supports temperature and top_p; it shares them
-    // with the llama-server Core chat path.
+    // Use the same response budget on both inference engines, including
+    // long-form writing. Allow sufficient native execution time for a
+    // longer reply on CPU rather than keeping the old two-minute cap.
+    let max_tokens = crate::native_stream::native_chat_output_budget(
+        request.database,
+        request.conversation_id,
+        request.request_mode,
+        plan.config.context_size,
+    )?;
+    let timeout_ms = max_tokens.saturating_mul(150).clamp(120_000, 900_000);
     let config = GenerationConfig {
         temperature: crate::sampling::SamplingProfile::CORE_CHAT.temperature as f32,
         top_p: crate::sampling::SamplingProfile::CORE_CHAT.top_p as f32,
-        max_tokens: crate::sampling::CORE_CHAT_MAX_TOKENS,
+        max_tokens,
+        timeout_ms,
         n_ctx: plan.config.context_size,
         n_batch: plan.config.batch_size,
         n_threads,
