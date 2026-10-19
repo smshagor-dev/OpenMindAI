@@ -1012,9 +1012,10 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(25)).await;
             to_stop.cancel();
         };
+        let profile = hardware(GpuVendor::Nvidia);
         let load = ensure_model_ready_cancellable(
             &runtime,
-            &hardware(GpuVendor::Nvidia),
+            &profile,
             &config,
             &cancelled,
         );
