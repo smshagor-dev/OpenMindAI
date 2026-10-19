@@ -114,7 +114,19 @@ jobs:
         shell: bash
         run: |
           git add -- src-tauri/Cargo.toml src-tauri/Cargo.lock vendor/
-          git diff --cached --check
+          # Verify all files being committed stay inside the reviewed scope.
+          while IFS= read -r staged; do
+            case "$staged" in
+              src-tauri/Cargo.toml|src-tauri/Cargo.lock|vendor/*) ;;
+              *) echo "::error::Unexpected staged path: $staged"; exit 1 ;;
+            esac
+          done < <(git diff --cached --name-only)
+          # Apply strict whitespace checks to our own edits. Upstream vendored
+          # sources contain existing trailing whitespace; rewriting them would
+          # invalidate the verified source-tree SHA-256. Their exact bytes were
+          # checked by verify-zip9-candidate.py in the previous step.
+          git diff --cached --check -- src-tauri/Cargo.toml src-tauri/Cargo.lock vendor/THIRD_PARTY_NOTICES.md
+          git -c core.whitespace=-trailing-space diff --cached --check -- vendor/
           git diff --cached --stat
           git -c user.name='github-actions[bot]' \
             -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
