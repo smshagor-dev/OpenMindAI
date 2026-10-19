@@ -5,11 +5,7 @@
 //! PNG chunk structure, CRCs, dimensions, and a complete bounded zlib scanline
 //! stream instead. No extra image-decoder dependency is needed.
 
-use std::{
-    fs,
-    io::{Read, ErrorKind},
-    path::Path,
-};
+use std::{fs, io::Read, path::Path};
 
 use flate2::read::ZlibDecoder;
 
