@@ -17,6 +17,7 @@ use std::os::windows::process::CommandExt;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     app_error::AppError,
@@ -632,6 +633,79 @@ pub fn ensure_model_ready(
             )));
         }
         thread::sleep(Duration::from_millis(250));
+    }
+}
+
+
+/** Wait for a chat model without blocking an async worker. The registration
+ * belongs to the calling chat request, which can cancel even before
+ * the engine has produced its first token.
+ */
+pub async fn ensure_model_ready_cancellable(
+    runtime: &Mutex<LlamaRuntimeManager>,
+    hardware: &HardwareProfile,
+    config: &ModelLaunchConfig,
+    cancellation: &CancellationToken,
+) -> Result<(LlamaRuntimeStatus, ModelLease), AppError> {
+    let lock = || {
+        runtime
+            .lock()
+            .map_err(|_| AppError::internal("runtime lock poisoned"))
+    };
+    let expected = lock()?.resolved_model_path(&config.model_path)?;
+    let started = Instant::now();
+    let mut launched = false;
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
+        }
+        {
+            let mut manager = lock()?;
+            if !launched {
+                match manager.launch_model_server(hardware, config)? {
+                    ModelLaunch::Resident(status) => {
+                        if cancellation.is_cancelled() {
+                            return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
+                        }
+                        return Ok((*status, manager.lease()));
+                    }
+                    ModelLaunch::Loading => launched = true,
+                    ModelLaunch::Busy => {}
+                }
+            }
+            if launched {
+                match manager.probe_model_server(&expected) {
+                    ModelProbe::Ready(_) => {
+                        if cancellation.is_cancelled() {
+                            return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
+                        }
+                        let lease = manager.lease();
+                        return Ok((manager.active_status(), lease));
+                    }
+                    ModelProbe::Failed(reason) => return Err(AppError::ModelLoadFailed(reason)),
+                    ModelProbe::Loading => {}
+                }
+            }
+        }
+        if started.elapsed() >= MODEL_LOAD_TIMEOUT {
+            if launched {
+                let mut manager = lock()?;
+                if manager.loaded_model_path() == Some(expected.as_str()) {
+                    let _ = manager.stop();
+                }
+            }
+            return Err(AppError::ModelLoadFailed(format!(
+                "the model did not finish loading within {} seconds",
+                MODEL_LOAD_TIMEOUT.as_secs()
+            )));
+        }
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
+            }
+            _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+        }
     }
 }
 
