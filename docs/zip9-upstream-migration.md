@@ -111,12 +111,19 @@ The candidate directory contains a staged `src-tauri` source tree and
 `Cargo.lock`, a `Cargo.toml` with **portable** `[patch.crates-io]` path
 overrides to the two exact patched source directories under `vendor/`,
 the original upstream license files, and `review/` provenance JSON plus
-minimal unified diffs. Cargo must independently re-resolve the candidate
-using the **manifest's own patch entries**, compile with `--locked` and
-pass a second, unignored RustSec audit of its candidate lockfile. The
-artifact is uploaded as `zip9-source-pinned-candidate-linux` for seven
-days. If those checks fail, the workflow fails and no validated candidate
-is claimed.
+minimal unified diffs. Every vendored source tree must match its reviewed
+patched-tree SHA-256 before the candidate can be built.
+
+The workflow now generates the same **source-pinned candidate separately on
+Linux, Windows and macOS**. Each runner re-resolves with the candidate's own
+manifest patches (without CLI overrides), requires only ZIP 9.0.4, runs
+`cargo check --locked --lib` and `cargo test --locked --lib` using that
+candidate, and uploads an OS-specific source-pinned artifact for seven days.
+Linux additionally performs a second **unignored RustSec audit** of its
+candidate lockfile. These checks exercise the patched production dependency
+graph itself, not only a standalone tensor-reader test. A failed hash, Cargo
+build, test or audit blocks the workflow, and no validated candidate artifact
+is published for that runner.
 
 The artifact is **not deployed or merged into production**. Its paths and
 upstream license terms require review before promoting `vendor/` and the
