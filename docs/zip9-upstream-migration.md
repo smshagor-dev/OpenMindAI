@@ -174,6 +174,31 @@ lockfile, prove model authenticity, or resolve the three existing advisories
 until the source replacement is actually committed. The temporary legacy
 exceptions must be deleted when the migration and final tests are complete.
 
+## Isolated source-replacement review branch
+
+A dedicated, review-only GitHub Actions workflow stages the verified ZIP 9
+source-pinned candidate on the branch `security/zip9-source-replacement`.
+The build job has **read-only** repository permissions and independently
+generates, compiles, tests, RustSec-audits (no ignores), and SHA-256-verifies
+the complete candidate before uploading it with hidden source files included.
+
+Only a second job with branch-scoped write permission downloads the verified
+artifact and runs `scripts/promote-zip9-production.py --apply`. The staging
+script independently reruns artifact checks, refuses any unreviewed
+`src-tauri/Cargo.toml` modifications or dirty vendor directories,
+retains the exact checked-in-style ZIP 9 Cargo.lock, and includes third-party
+source attribution and the bundled Apache-2.0 license text. The second job
+may commit **only vendor sources and src-tauri Cargo inputs** to the review
+branch. It must never push to main or merge a pull request.
+
+Source files for any-tts 0.1.3 declare `MIT OR Apache-2.0`, but its
+published registry crate does not bundle a top-level LICENSE; document and
+review the Apache-2.0 option and upstream attribution before approving the
+source replacement. Model weights are not vendored. The migration remains
+**NOT REMEDIATED** until the branch's complete CI (including unignored
+production RustSec audit), Kokoro real-model WAV test, and licensing review
+pass and its changes are deliberately approved and merged.
+
 ## Conditions for the real fix
 
 - Adapt all ZIP 9 API changes in **reviewed**, license-compliant upstream forks
