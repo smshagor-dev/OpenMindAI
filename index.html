@@ -5,22 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#f1f1f1" />
     <title>OpenMindAI</title>
-    <script>
-      // Keep the saved appearance through the native preference-loading screen.
-      try {
-        const savedTheme = localStorage.getItem("openmindai:theme");
-        const theme =
-          savedTheme === "dark" || savedTheme === "light"
-            ? savedTheme
-            : savedTheme === "system" && matchMedia("(prefers-color-scheme: dark)").matches
-              ? "dark"
-              : "light";
-        document.documentElement.dataset.theme = theme;
-        document.querySelector('meta[name="theme-color"]').setAttribute("content", theme === "light" ? "#f1f1f1" : "#090909");
-      } catch {
-        document.documentElement.dataset.theme = "light";
-      }
-    </script>
+    <script src="/theme-init.js"></script>
     <style>
       :root {
         color-scheme: light;
