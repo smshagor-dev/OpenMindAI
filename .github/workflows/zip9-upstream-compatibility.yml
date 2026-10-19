@@ -20,8 +20,6 @@ jobs:
         os: [ubuntu-22.04, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    env:
-      ZIP9_EVIDENCE_DIR: ${{ runner.temp }}/zip9-source-evidence
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -56,10 +54,14 @@ jobs:
 
       - name: Run unignored RustSec audit and ZIP 9 compatibility (Linux)
         if: runner.os == 'Linux'
+        env:
+          ZIP9_EVIDENCE_DIR: ${{ runner.temp }}/zip9-source-evidence
         run: python scripts/probe-zip9-upgrade.py --audit
 
       - name: Test ephemeral upstream ZIP 9 compatibility (Windows/macOS)
         if: runner.os != 'Linux'
+        env:
+          ZIP9_EVIDENCE_DIR: ${{ runner.temp }}/zip9-source-evidence
         run: python scripts/probe-zip9-upgrade.py
 
       - name: Upload ZIP 9 candidate source provenance and exact patches
