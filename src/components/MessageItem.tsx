@@ -36,6 +36,7 @@ export function MessageItem(props: {
   onOpenArtifact: (artifact: Artifact) => void;
   onRevealArtifact: (artifact: Artifact) => void;
   onRetryArtifact: (artifact: Artifact, useCpu?: boolean) => void;
+  onCancelImageArtifact: (artifact: Artifact) => void;
   onPreview: (target: PreviewTarget) => void;
   onEditUser?: (content: string) => void;
 }) {
@@ -137,6 +138,7 @@ export function MessageItem(props: {
               onOpen={props.onOpenArtifact}
               onReveal={props.onRevealArtifact}
               onRetry={props.onRetryArtifact}
+              onCancel={props.onCancelImageArtifact}
             />
           ))}
         </div>

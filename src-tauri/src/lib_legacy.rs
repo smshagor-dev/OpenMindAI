@@ -8,6 +8,7 @@ mod github;
 mod google;
 mod hardware;
 mod inference;
+mod image_jobs;
 mod launch_planner;
 mod logging;
 mod maintenance;
@@ -43,6 +44,7 @@ use hardware::{HardwareProfile, HardwareProfiler};
 use inference::{
     ActiveGenerations, InferenceMedia, InferenceMode, StreamDoneEvent, StreamRequest, StreamStartedEvent,
 };
+use image_jobs::ActiveImageJobs;
 use dataset_download::{DatasetDownloadManager, DatasetDownloadStatus};
 use launch_planner::{LaunchPlan, ModelLaunchPlanner};
 use maintenance::{BackupInfo, DiagnosticReport, RepairSummary};
@@ -88,6 +90,7 @@ struct AppState {
     dataset_downloads: DatasetDownloadManager,
     runtime_installer: RuntimeInstaller,
     active_generations: ActiveGenerations,
+    image_jobs: ActiveImageJobs,
     warm_start: warm_start::WarmStartCoordinator,
     http: Client,
 }
@@ -678,11 +681,42 @@ async fn create_generation_artifact(
         (artifact, path)
     };
 
+    let image_job = if kind == "image" {
+        Some(state.image_jobs.start(&artifact.id)?)
+    } else {
+        None
+    };
+
     app.emit("artifact:started", &artifact)
         .map_err(|error| app_error::AppError::internal(error.to_string()))?;
 
-    let generation_result =
-        generate_local_media_artifact(&state, &kind, &prompt, &path, use_cpu.unwrap_or(false)).await;
+    let generation_result = if let Some(job) = image_job.as_ref() {
+        tokio::select! {
+            biased;
+            _ = job.cancellation().cancelled() => {
+                Err(app_error::AppError::ArtifactGenerationFailed(
+                    "Image generation cancelled by user.".to_string(),
+                ))
+            }
+            result = generate_local_media_artifact(
+                &state, &kind, &prompt, &path, use_cpu.unwrap_or(false)
+            ) => result,
+        }
+    } else {
+        generate_local_media_artifact(&state, &kind, &prompt, &path, use_cpu.unwrap_or(false)).await
+    };
+    // A cancellation arriving just as inference finishes must not publish a ready image.
+    let generation_result = if image_job.as_ref().is_some_and(|job| job.cancellation().is_cancelled()) {
+        Err(app_error::AppError::ArtifactGenerationFailed(
+            "Image generation cancelled by user.".to_string(),
+        ))
+    } else {
+        generation_result
+    };
+    if generation_result.is_err() {
+        // The external renderer may have written a partial file before exiting.
+        let _ = std::fs::remove_file(&path);
+    }
 
     let db = state
         .database
@@ -707,6 +741,7 @@ async fn create_generation_artifact(
     app.emit("artifact:done", &updated)
         .map_err(|error| app_error::AppError::internal(error.to_string()))?;
 
+    drop(image_job);
     Ok(updated)
 }
 
@@ -883,6 +918,9 @@ fn list_artifacts(
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    // Opening a chat after the safety window should also recover an old
+    // image job, without needing the user to restart the app again.
+    db.recover_stale_image_artifacts()?;
     ArtifactRepository::new(&db).list_for_conversation(&conversation_id)
 }
 
@@ -892,6 +930,7 @@ fn list_library_entries(state: State<AppState>) -> Result<Vec<LibraryEntry>, app
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    db.recover_stale_image_artifacts()?;
     ArtifactRepository::new(&db).list_all(200)
 }
 
@@ -1976,6 +2015,14 @@ fn sync_project_context(
 }
 
 #[tauri::command]
+fn cancel_image_generation(
+    artifact_id: String,
+    state: State<AppState>,
+) -> Result<bool, app_error::AppError> {
+    state.image_jobs.cancel(&artifact_id)
+}
+
+#[tauri::command]
 fn cancel_generation(
     conversation_id: String,
     state: State<AppState>,
@@ -2259,6 +2306,7 @@ pub fn run() {
             dataset_downloads,
             runtime_installer,
             active_generations: ActiveGenerations::default(),
+            image_jobs: ActiveImageJobs::default(),
             warm_start: warm_start::WarmStartCoordinator::default(),
             http: net::http_client(),
         })
@@ -2307,6 +2355,7 @@ pub fn run() {
             create_text_artifact,
             create_document_artifact,
             create_generation_artifact,
+            cancel_image_generation,
             list_artifacts,
             list_library_entries,
             open_artifact,

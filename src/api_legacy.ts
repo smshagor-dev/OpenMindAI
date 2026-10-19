@@ -308,6 +308,8 @@ export const api = {
     return call<Message>("regenerate_message", { conversationId, assistantMessageId, mode });
   },
   cancelGeneration: (conversationId: string) => call<void>("cancel_generation", { conversationId }),
+  cancelImageGeneration: (artifactId: string) =>
+    call<boolean>("cancel_image_generation", { artifactId }),
   preferences: () => call<AppPreferences>("get_app_preferences"),
   savePreferences: (preferences: AppPreferences) =>
     call<AppPreferences>("save_app_preferences", { preferences }),

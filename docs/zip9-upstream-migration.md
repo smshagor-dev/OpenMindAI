@@ -79,6 +79,32 @@ and the same inference route on Windows/macOS or multiple accelerators remain
 separate validation subjects. The scheduled check and PR trigger are
 additional protections rather than a replacement for full release testing.
 
+## Production model installation and real synthesis acceptance
+
+In addition to the fixed-revision asset staging test, the `Kokoro Real
+Voice Inference` workflow now has a **production Model Download Manager**
+test job. It runs the existing application `media_smoke speak` harness
+with `--install-model` on an isolated Linux portable root. This first
+invokes `ModelDownloadManager::download_catalog_model`, using the same
+catalog, network download and dependency/package manifest writers as
+OpenMindAI's Settings > Models download path, then loads that install
+through the actual Rust/Candle Kokoro runtime and generates a WAV.
+
+`scripts/kokoro-real-smoke.py verify-install` independently checks the
+manager's generated `model-manifest.json` and `package-manifest.json`,
+including model/voice/config identity, expected filenames, exact pinned
+SHA-256 digests, file sizes and verified states. Unlike the original
+`prepare` command, this verifier **must never rewrite or repair**
+the package manifests being tested. The non-silent 24 kHz mono PCM16
+WAV acceptance test follows only if production installation passes.
+
+The model manager resolves current upstream Hugging Face metadata at
+runtime; if upstream files change from the previously SHA-256-verified
+revision, the independent check fails rather than silently claiming a
+known model passed. The new job is **not proven** until its actual
+GitHub Actions run finishes green. It tests real installation on Linux,
+not UI interactions or end-to-end Windows/macOS model downloading.
+
 ## Historical work and source evidence
 
 The review history traces the original package adaptation, registry

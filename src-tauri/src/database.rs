@@ -3,7 +3,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use rusqlite::{functions::FunctionFlags, params, Connection, Error as SqliteError};
 use uuid::Uuid;
 
@@ -91,6 +91,7 @@ impl Database {
         let mut database = Self { connection };
         database.migrate()?;
         database.recover_interrupted_chat_messages()?;
+        database.recover_stale_image_artifacts()?;
         database.recover_interrupted_openagent_runs()?;
         database.recover_interrupted_openagent_steps()?;
         database.recover_interrupted_restore_events()?;
@@ -180,6 +181,55 @@ impl Database {
                 params![now],
             )
             .map_err(AppError::from)
+    }
+
+    /// Renderers can die with the application, leaving a persisted image
+    /// artifact stuck in 'generating'. Only recover entries older than four
+    /// hours: a second OpenMindAI instance using the same portable database
+    /// could still own a more recent job, especially while downloading models.
+    ///
+    /// Each interrupted image becomes retryable in the existing artifact card.
+    /// A partial output is removed using the same root-contained SQLite
+    /// cleanup function used when an artifact is deleted.
+    pub(crate) fn recover_stale_image_artifacts(&self) -> Result<usize, AppError> {
+        const STALE_IMAGE_JOB_HOURS: i64 = 4;
+        let cutoff = (Utc::now() - Duration::hours(STALE_IMAGE_JOB_HOURS)).to_rfc3339();
+        let mut statement = self.connection.prepare(
+            "SELECT path FROM artifacts
+             WHERE kind = 'image' AND status = 'generating'
+               AND datetime(updated_at) < datetime(?1)",
+        )?;
+        let paths = statement
+            .query_map(params![cutoff], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+
+        // Cleanup failure must not prevent the user's database from opening:
+        // the failed artifact is hidden from ready previews regardless.
+        for path in &paths {
+            if let Err(error) = self.connection.query_row(
+                "SELECT openmind_delete_artifact(?1)",
+                params![path],
+                |row| row.get::<_, i64>(0),
+            ) {
+                tracing::warn!(path, error = %error, "could not clean up interrupted image output");
+            }
+        }
+
+        let recovered = self.connection.execute(
+            "UPDATE artifacts
+             SET status = 'failed',
+                 error = 'Image generation was interrupted. Retry to generate the image again.',
+                 size_bytes = 0,
+                 updated_at = ?2
+             WHERE kind = 'image' AND status = 'generating'
+               AND datetime(updated_at) < datetime(?1)",
+            params![cutoff, Utc::now().to_rfc3339()],
+        )?;
+        if recovered > 0 {
+            tracing::info!(recovered, "recovered stale image artifacts after restart");
+        }
+        Ok(recovered)
     }
 
     fn recover_interrupted_openagent_runs(&self) -> Result<usize, AppError> {
@@ -435,6 +485,90 @@ mod tests {
             )
             .unwrap();
         assert_eq!(status, "failed");
+    }
+
+    #[test]
+    fn stale_image_generation_is_retryable_after_reopening_database() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("OpenMindAI");
+        let db_path = root.join("data/database/openmind.db");
+        let partial = root.join("generated/images/partial.png");
+        std::fs::create_dir_all(partial.parent().unwrap()).unwrap();
+        std::fs::write(&partial, b"unfinished image data").unwrap();
+
+        let (stale_id, recent_id, ready_id, document_id) = {
+            let database = Database::open(db_path.clone()).unwrap();
+            let conversation = crate::chat::ChatRepository::new(&database)
+                .create_conversation(Some("Interrupted image"))
+                .unwrap();
+            let repo = crate::artifacts::ArtifactRepository::new(&database);
+            let stale = repo
+                .create(
+                    &conversation.id,
+                    None,
+                    "partial.png",
+                    "generated/images/partial.png",
+                    "image/png",
+                    "image",
+                    "generating",
+                )
+                .unwrap();
+            let recent = repo
+                .create(
+                    &conversation.id,
+                    None,
+                    "recent.png",
+                    "generated/images/recent.png",
+                    "image/png",
+                    "image",
+                    "generating",
+                )
+                .unwrap();
+            let ready = repo
+                .create(
+                    &conversation.id,
+                    None,
+                    "ready.png",
+                    "generated/images/ready.png",
+                    "image/png",
+                    "image",
+                    "generating",
+                )
+                .unwrap();
+            repo.set_ready(&ready.id, 100, None).unwrap();
+            let doc = repo
+                .create(
+                    &conversation.id,
+                    None,
+                    "report.pdf",
+                    "generated/exports/report.pdf",
+                    "application/pdf",
+                    "pdf",
+                    "generating",
+                )
+                .unwrap();
+
+            let earlier = (Utc::now() - Duration::hours(5)).to_rfc3339();
+            database
+                .connection()
+                .execute(
+                    "UPDATE artifacts SET updated_at = ?1 WHERE id IN (?2, ?3)",
+                    params![earlier, stale.id, doc.id],
+                )
+                .unwrap();
+            (stale.id, recent.id, ready.id, doc.id)
+        };
+
+        let reopened = Database::open(db_path).unwrap();
+        let artifacts = crate::artifacts::ArtifactRepository::new(&reopened);
+        let stale = artifacts.find(&stale_id).unwrap();
+        assert_eq!(stale.status, "failed");
+        assert!(stale.error.unwrap().contains("interrupted"));
+        assert_eq!(stale.size_bytes, 0);
+        assert!(!partial.exists(), "partial image should be removed");
+        assert_eq!(artifacts.find(&recent_id).unwrap().status, "generating");
+        assert_eq!(artifacts.find(&ready_id).unwrap().status, "ready");
+        assert_eq!(artifacts.find(&document_id).unwrap().status, "generating");
     }
 
     #[test]
