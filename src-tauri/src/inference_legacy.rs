@@ -5,7 +5,7 @@ use std::{
     time::Instant,
 };
 
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use reqwest::{header, Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -119,6 +119,15 @@ impl ActiveGenerations {
         Ok(token)
     }
 
+    pub fn token(&self, conversation_id: &str) -> Result<CancellationToken, AppError> {
+        self.tokens
+            .lock()
+            .map_err(|_| AppError::internal("generation lock poisoned"))?
+            .get(conversation_id)
+            .cloned()
+            .ok_or_else(|| AppError::InferenceFailed("generation was not registered".to_string()))
+    }
+
     pub fn cancel(&self, conversation_id: &str) -> Result<(), AppError> {
         if let Some(token) = self
             .tokens
@@ -190,10 +199,29 @@ struct InlineDataImage {
     data_url: String,
 }
 
+enum StreamPoll<T> {
+    Cancelled,
+    Item(Option<T>),
+}
+
+async fn next_stream_chunk<S: Stream + Unpin>(
+    stream: &mut S,
+    cancellation: &CancellationToken,
+) -> StreamPoll<S::Item> {
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => StreamPoll::Cancelled,
+        chunk = stream.next() => StreamPoll::Item(chunk),
+    }
+}
+
 pub async fn stream_chat_completion(
     request: StreamRequest<'_>,
 ) -> Result<InferenceMetrics, AppError> {
-    let cancellation = request.active.start(request.conversation_id)?;
+    let cancellation = request.active.token(request.conversation_id)?;
+    if cancellation.is_cancelled() {
+        return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
+    }
     let started = Instant::now();
     let mut messages = build_context(request.database, request.conversation_id)?;
     if let Some(dataset_context) = request.dataset_context.filter(|value| !value.trim().is_empty()) {
@@ -208,6 +236,9 @@ pub async fn stream_chat_completion(
         request.conversation_id,
         &request.assistant.id,
     ).await?;
+    if cancellation.is_cancelled() {
+        return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
+    }
     attach_media_to_latest_user_message(&mut messages, request.media)?;
     let mut body = json!({
         "model": request.model,
@@ -236,12 +267,15 @@ pub async fn stream_chat_completion(
     let mut first_token_at = None;
     let mut status = "completed";
 
-    while let Some(chunk) = stream.next().await {
-        if cancellation.is_cancelled() {
-            status = "cancelled";
-            break;
-        }
-
+    loop {
+        let chunk = match next_stream_chunk(&mut stream, &cancellation).await {
+            StreamPoll::Cancelled => {
+                status = "cancelled";
+                break;
+            }
+            StreamPoll::Item(Some(chunk)) => chunk,
+            StreamPoll::Item(None) => break,
+        };
         let bytes = chunk.map_err(|error| AppError::StreamFailed(error.to_string()))?;
         sse_buffer.push_str(&String::from_utf8_lossy(&bytes));
 
@@ -336,8 +370,6 @@ pub async fn stream_chat_completion(
             },
         )
         .map_err(|error| AppError::StreamFailed(error.to_string()))?;
-    request.active.finish(request.conversation_id);
-
     Ok(InferenceMetrics {
         time_to_first_token_ms: first_token_at,
         generated_chars,
@@ -1418,12 +1450,15 @@ async fn post_completion_with_retry(
     let url = format!("{endpoint}/v1/chat/completions");
     let mut attempt = 0;
     loop {
-        let response = client
-            .post(&url)
-            .json(body)
-            .send()
-            .await
-            .map_err(|error| AppError::InferenceServerUnavailable(error.to_string()))?;
+        let response = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
+            }
+            response = client.post(&url).json(body).send() => {
+                response.map_err(|error| AppError::InferenceServerUnavailable(error.to_string()))?
+            }
+        };
 
         if response.status() == StatusCode::SERVICE_UNAVAILABLE
             && attempt < COMPLETION_RETRY_ATTEMPTS
@@ -2243,6 +2278,44 @@ mod tests {
     fn parses_streaming_delta() {
         let data = r#"{"choices":[{"delta":{"content":"hello"}}]}"#;
         assert_eq!(parse_openai_delta(data).unwrap(), Some("hello".to_string()));
+    }
+
+    #[tokio::test]
+    async fn stop_interrupts_stream_wait_without_another_network_chunk() {
+        let cancellation = CancellationToken::new();
+        let stop = cancellation.clone();
+        let mut stalled = futures_util::stream::pending::<String>();
+        let stop_task = async move {
+            tokio::task::yield_now().await;
+            stop.cancel();
+        };
+        let receive_task = async {
+            assert!(matches!(
+                next_stream_chunk(&mut stalled, &cancellation).await,
+                StreamPoll::Cancelled
+            ));
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::join!(stop_task, receive_task);
+        })
+        .await
+        .expect("Stop should not depend on another network chunk");
+    }
+
+    #[test]
+    fn pre_registered_cancellation_survives_stream_setup() {
+        let active = ActiveGenerations::default();
+        let first = active.start("conversation").unwrap();
+        let stream_token = active.token("conversation").unwrap();
+        assert!(!stream_token.is_cancelled());
+        active.cancel("conversation").unwrap();
+        assert!(first.is_cancelled());
+        assert!(stream_token.is_cancelled());
+        active.finish("conversation");
+        assert!(active.token("conversation").is_err());
+        let next = active.start("conversation").unwrap();
+        assert!(!next.is_cancelled());
+        active.finish("conversation");
     }
 
     #[test]

@@ -41,7 +41,7 @@ use github::{GithubAccount, GithubIssueSummary, GithubRepoSummary, GithubReposit
 use google::{GoogleCredentialsStatus, GoogleRepository};
 use hardware::{HardwareProfile, HardwareProfiler};
 use inference::{
-    ActiveGenerations, InferenceMedia, InferenceMode, StreamRequest, StreamStartedEvent,
+    ActiveGenerations, InferenceMedia, InferenceMode, StreamDoneEvent, StreamRequest, StreamStartedEvent,
 };
 use dataset_download::{DatasetDownloadManager, DatasetDownloadStatus};
 use launch_planner::{LaunchPlan, ModelLaunchPlanner};
@@ -1499,6 +1499,28 @@ struct ModelRoutingDecision {
     reason: String,
 }
 
+/// A chat owns its cancellation registration from the moment it starts.
+/// Dropping the command also releases the registration after errors or an aborted future.
+struct ChatGenerationGuard<'a> {
+    active: &'a ActiveGenerations,
+    conversation_id: &'a str,
+    cancellation: tokio_util::sync::CancellationToken,
+}
+
+impl<'a> ChatGenerationGuard<'a> {
+    fn start(active: &'a ActiveGenerations, conversation_id: &'a str) -> Result<Self, app_error::AppError> {
+        let cancellation = active.start(conversation_id)?;
+        Ok(Self { active, conversation_id, cancellation })
+    }
+}
+
+impl Drop for ChatGenerationGuard<'_> {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+        self.active.finish(self.conversation_id);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_streaming_completion(
     app: &AppHandle,
@@ -1509,72 +1531,107 @@ async fn run_streaming_completion(
     mode: &str,
     media: &[InferenceMedia],
     dataset_context: Option<&str>,
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<(), app_error::AppError> {
-    let hardware = HardwareProfiler::for_inference(&state.hardware);
-    let plan = ModelLaunchPlanner::plan(model, &hardware, allocate_local_port()?);
-    // A model switch in the shared runtime can take minutes; tell the chat what it waits for.
-    if let Some(replacing) = model_switch_needed(state, &plan.config.model_path)? {
-        let _ = app.emit(
-            "runtime:model-loading",
-            serde_json::json!({
-                "conversationId": conversation_id,
-                "modelName": model.name,
-                "replacing": replacing,
-            }),
-        );
-    }
-    // Held until this chat response finishes streaming, so a coding-agent request cannot
-    // swap the shared runtime away mid-answer.
-    let (status, _model_lease) =
-        runtime::ensure_model_ready(&state.runtime, &hardware, &plan.config)?;
-    state.warm_start.mark_runtime_ready(&model.id);
-    let endpoint = status.endpoint.ok_or_else(|| {
-        app_error::AppError::InferenceServerUnavailable("runtime endpoint missing".to_string())
-    })?;
+    let result = async {
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                return Err(app_error::AppError::InferenceCancelled("generation cancelled".into()));
+            }
+            _ = state.warm_start.wait_if_loading(&model.id) => {}
+        }
+        let hardware = HardwareProfiler::for_inference(&state.hardware);
+        let plan = ModelLaunchPlanner::plan(model, &hardware, allocate_local_port()?);
+        if let Some(replacing) = model_switch_needed(state, &plan.config.model_path)? {
+            let _ = app.emit(
+                "runtime:model-loading",
+                serde_json::json!({
+                    "conversationId": conversation_id,
+                    "modelName": model.name,
+                    "replacing": replacing,
+                }),
+            );
+        }
+        // Keep the loaded model leased until streaming finishes. Waits are
+        // cancellable and do not block a Tokio worker with thread::sleep.
+        let (status, _model_lease) = runtime::ensure_model_ready_cancellable(
+            &state.runtime,
+            &hardware,
+            &plan.config,
+            cancellation,
+        )
+        .await?;
+        state.warm_start.mark_runtime_ready(&model.id);
+        let endpoint = status.endpoint.ok_or_else(|| {
+            app_error::AppError::InferenceServerUnavailable("runtime endpoint missing".to_string())
+        })?;
 
-    let inference_mode = if mode.eq_ignore_ascii_case("thinking") {
-        InferenceMode::Thinking
-    } else {
-        InferenceMode::Chat
-    };
-    let result = inference::stream_chat_completion(StreamRequest {
-        app,
-        database: &state.database,
-        active: &state.active_generations,
-        client: &state.http,
-        endpoint: &endpoint,
-        model: &model.id,
-        conversation_id,
-        assistant,
-        mode: inference_mode,
-        media,
-        dataset_context,
-        sampling: sampling::SamplingProfile::for_chat_model(model.family.as_deref().unwrap_or("")),
-    })
+        let inference_mode = if mode.eq_ignore_ascii_case("thinking") {
+            InferenceMode::Thinking
+        } else {
+            InferenceMode::Chat
+        };
+        inference::stream_chat_completion(StreamRequest {
+            app,
+            database: &state.database,
+            active: &state.active_generations,
+            client: &state.http,
+            endpoint: &endpoint,
+            model: &model.id,
+            conversation_id,
+            assistant,
+            mode: inference_mode,
+            media,
+            dataset_context,
+            sampling: sampling::SamplingProfile::for_chat_model(
+                model.family.as_deref().unwrap_or(""),
+            ),
+        })
+        .await
+    }
     .await;
 
-    if let Ok(metrics) = &result {
-        tracing::info!(
-            model = %model.name,
-            mode,
-            time_to_first_token_ms = ?metrics.time_to_first_token_ms,
-            generated_chars = metrics.generated_chars,
-            elapsed_ms = metrics.elapsed_ms,
-            "local inference completed"
-        );
+    match result {
+        Ok(metrics) => {
+            tracing::info!(
+                model = %model.name,
+                mode,
+                time_to_first_token_ms = ?metrics.time_to_first_token_ms,
+                generated_chars = metrics.generated_chars,
+                elapsed_ms = metrics.elapsed_ms,
+                "local inference completed"
+            );
+            Ok(())
+        }
+        Err(error) => {
+            let stopped = cancellation.is_cancelled()
+                || matches!(&error, app_error::AppError::InferenceCancelled(_));
+            let status = if stopped { "cancelled" } else { "failed" };
+            {
+                let db = state
+                    .database
+                    .lock()
+                    .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+                ChatRepository::new(&db).set_message_status(&assistant.id, status)?;
+            }
+            // A request may end before the stream is opened. The UI still
+            // needs its final event to clear the Stop button and typing state.
+            let _ = app.emit(
+                "inference:done",
+                StreamDoneEvent {
+                    conversation_id: conversation_id.to_string(),
+                    message_id: assistant.id.clone(),
+                    status: status.to_string(),
+                },
+            );
+            if stopped {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        }
     }
-
-    if let Err(error) = result {
-        let db = state
-            .database
-            .lock()
-            .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-        let repo = ChatRepository::new(&db);
-        let _ = repo.set_message_status(&assistant.id, "failed");
-        state.active_generations.finish(conversation_id);
-        return Err(error);
-    }
-    Ok(())
 }
 
 #[tauri::command]
@@ -1616,6 +1673,8 @@ async fn send_chat_message(
         &routing.reason,
     )?;
 
+    let generation = ChatGenerationGuard::start(&state.active_generations, &conversation_id)?;
+
     let (user, assistant) = {
         let db = state
             .database
@@ -1650,7 +1709,6 @@ async fn send_chat_message(
     )
     .map_err(|error| app_error::AppError::StreamFailed(error.to_string()))?;
 
-    state.warm_start.wait_if_loading(&model.id).await;
     run_streaming_completion(
         &app,
         &state,
@@ -1660,6 +1718,7 @@ async fn send_chat_message(
         &mode,
         &media,
         dataset_context.as_deref(),
+        &generation.cancellation,
     )
     .await?;
 
@@ -1721,6 +1780,8 @@ async fn regenerate_message(
         &model.name,
         &routing.reason,
     )?;
+    let generation = ChatGenerationGuard::start(&state.active_generations, &conversation_id)?;
+
     let assistant = {
         let db = state
             .database
@@ -1746,7 +1807,6 @@ async fn regenerate_message(
     )
     .map_err(|error| app_error::AppError::StreamFailed(error.to_string()))?;
 
-    state.warm_start.wait_if_loading(&model.id).await;
     run_streaming_completion(
         &app,
         &state,
@@ -1756,6 +1816,7 @@ async fn regenerate_message(
         &mode,
         &[],
         dataset_context.as_deref(),
+        &generation.cancellation,
     )
     .await?;
     Ok(assistant)

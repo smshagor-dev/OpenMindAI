@@ -17,6 +17,7 @@ use std::os::windows::process::CommandExt;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     app_error::AppError,
@@ -635,6 +636,82 @@ pub fn ensure_model_ready(
     }
 }
 
+
+/** Wait for a chat model without blocking an async worker. The registration
+ * belongs to the calling chat request, which can cancel even before
+ * the engine has produced its first token.
+ */
+pub async fn ensure_model_ready_cancellable(
+    runtime: &Mutex<LlamaRuntimeManager>,
+    hardware: &HardwareProfile,
+    config: &ModelLaunchConfig,
+    cancellation: &CancellationToken,
+) -> Result<(LlamaRuntimeStatus, ModelLease), AppError> {
+    let lock = || {
+        runtime
+            .lock()
+            .map_err(|_| AppError::internal("runtime lock poisoned"))
+    };
+    if cancellation.is_cancelled() {
+        return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
+    }
+    let expected = lock()?.resolved_model_path(&config.model_path)?;
+    let started = Instant::now();
+    let mut launched = false;
+    loop {
+        if cancellation.is_cancelled() {
+            return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
+        }
+        {
+            let mut manager = lock()?;
+            if !launched {
+                match manager.launch_model_server(hardware, config)? {
+                    ModelLaunch::Resident(status) => {
+                        if cancellation.is_cancelled() {
+                            return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
+                        }
+                        return Ok((*status, manager.lease()));
+                    }
+                    ModelLaunch::Loading => launched = true,
+                    ModelLaunch::Busy => {}
+                }
+            }
+            if launched {
+                match manager.probe_model_server(&expected) {
+                    ModelProbe::Ready(_) => {
+                        if cancellation.is_cancelled() {
+                            return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
+                        }
+                        let lease = manager.lease();
+                        return Ok((manager.active_status(), lease));
+                    }
+                    ModelProbe::Failed(reason) => return Err(AppError::ModelLoadFailed(reason)),
+                    ModelProbe::Loading => {}
+                }
+            }
+        }
+        if started.elapsed() >= MODEL_LOAD_TIMEOUT {
+            if launched {
+                let mut manager = lock()?;
+                if manager.loaded_model_path() == Some(expected.as_str()) {
+                    let _ = manager.stop();
+                }
+            }
+            return Err(AppError::ModelLoadFailed(format!(
+                "the model did not finish loading within {} seconds",
+                MODEL_LOAD_TIMEOUT.as_secs()
+            )));
+        }
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
+            }
+            _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+        }
+    }
+}
+
 impl Drop for LlamaRuntimeManager {
     fn drop(&mut self) {
         let _ = self.stop();
@@ -871,6 +948,41 @@ fn http_health_ok(host: &str, port: u16) -> bool {
 mod tests {
     use super::*;
     use crate::hardware::{CpuProfile, MemoryProfile};
+
+    #[tokio::test]
+    async fn cancelling_chat_loading_returns_without_starting_a_server() {
+        let root = PortableRootManager::from_root(
+            std::env::temp_dir().join("openmindai-cancelled-load-test"),
+        );
+        let runtime = Mutex::new(LlamaRuntimeManager::new(root));
+        let config = ModelLaunchConfig {
+            model_path: "missing.gguf".to_string(),
+            backend: BackendKind::Cpu,
+            device: None,
+            gpu_layers: 0,
+            context_size: 4096,
+            threads: 4,
+            batch_size: 256,
+            ubatch_size: 128,
+            flash_attention: false,
+            mmap: true,
+            mlock: false,
+            parallelism: 1,
+            host: "127.0.0.1".to_string(),
+            port: 12345,
+        };
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let result = ensure_model_ready_cancellable(
+            &runtime,
+            &hardware(GpuVendor::Nvidia),
+            &config,
+            &cancelled,
+        )
+        .await;
+        assert!(matches!(result, Err(AppError::InferenceCancelled(_))));
+        assert!(!runtime.lock().unwrap().has_process());
+    }
 
     #[test]
     fn a_different_model_waits_for_load_use_and_claim() {

@@ -90,6 +90,8 @@ pub(crate) async fn send_multimodal_chat_message(
     let persisted = persist_inference_media(&state.root, &media)?;
     let routing = crate::resolve_conversation_model(&state, &conversation_id, &mode, trimmed)?;
     let model = routing.model;
+    let generation =
+        crate::ChatGenerationGuard::start(&state.active_generations, &conversation_id)?;
 
     let (user, assistant) = {
         let db = state
@@ -153,6 +155,7 @@ pub(crate) async fn send_multimodal_chat_message(
         &mode,
         &media,
         dataset_context.as_deref(),
+        &generation.cancellation,
     )
     .await?;
 
@@ -193,6 +196,8 @@ pub(crate) async fn regenerate_multimodal_message(
         ));
     }
 
+    let generation =
+        crate::ChatGenerationGuard::start(&state.active_generations, &conversation_id)?;
     {
         let db = state
             .database
@@ -246,6 +251,7 @@ pub(crate) async fn regenerate_multimodal_message(
         mode,
         &media,
         dataset_context.as_deref(),
+        &generation.cancellation,
     )
     .await?;
 
