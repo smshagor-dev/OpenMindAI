@@ -626,8 +626,14 @@ async fn create_generation_artifact(
     message_id: Option<String>,
     kind: String,
     prompt: String,
+    use_cpu: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Artifact, app_error::AppError> {
+    if use_cpu == Some(true) && kind != "image" {
+        return Err(app_error::AppError::internal(
+            "CPU-only retry is available for images only",
+        ));
+    }
     if !matches!(kind.as_str(), "image" | "video" | "voice") {
         return Err(app_error::AppError::internal(
             "unsupported generation artifact kind",
@@ -675,7 +681,8 @@ async fn create_generation_artifact(
     app.emit("artifact:started", &artifact)
         .map_err(|error| app_error::AppError::internal(error.to_string()))?;
 
-    let generation_result = generate_local_media_artifact(&state, &kind, &prompt, &path).await;
+    let generation_result =
+        generate_local_media_artifact(&state, &kind, &prompt, &path, use_cpu.unwrap_or(false)).await;
 
     let db = state
         .database
@@ -708,6 +715,7 @@ async fn generate_local_media_artifact(
     kind: &str,
     prompt: &str,
     path: &std::path::Path,
+    use_cpu: bool,
 ) -> Result<(), app_error::AppError> {
     match kind {
         "image" => {
@@ -731,6 +739,7 @@ async fn generate_local_media_artifact(
                 &model_path,
                 prompt,
                 path,
+                use_cpu,
             )
             .await
         }

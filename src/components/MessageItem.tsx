@@ -35,7 +35,7 @@ export function MessageItem(props: {
   onCreateArtifact: (kind: ArtifactKind, content: string, filenameHint?: string) => void;
   onOpenArtifact: (artifact: Artifact) => void;
   onRevealArtifact: (artifact: Artifact) => void;
-  onRetryArtifact: (artifact: Artifact) => void;
+  onRetryArtifact: (artifact: Artifact, useCpu?: boolean) => void;
   onPreview: (target: PreviewTarget) => void;
   onEditUser?: (content: string) => void;
 }) {

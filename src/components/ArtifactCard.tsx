@@ -39,7 +39,7 @@ export function ArtifactCard(props: {
   previewContent: string | null;
   onOpen: (artifact: Artifact) => void;
   onReveal: (artifact: Artifact) => void;
-  onRetry: (artifact: Artifact) => void;
+  onRetry: (artifact: Artifact, useCpu?: boolean) => void;
 }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [mediaUrl, setMediaUrl] = useState<string | null>(null);
@@ -131,6 +131,15 @@ export function ArtifactCard(props: {
         {artifact.status === "failed" ? (
           <button type="button" onClick={() => props.onRetry(artifact)}>
             <RefreshCw size={15} /> Retry
+          </button>
+        ) : null}
+        {artifact.status === "failed" && artifact.kind === "image" ? (
+          <button
+            type="button"
+            title="Retry with the CPU renderer. This may take much longer than GPU rendering."
+            onClick={() => props.onRetry(artifact, true)}
+          >
+            Retry on CPU (slower)
           </button>
         ) : null}
       </div>

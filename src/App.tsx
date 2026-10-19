@@ -1036,7 +1036,7 @@ export function App() {
   );
 
   const retryArtifact = useCallback(
-    (artifact: Artifact) => {
+    (artifact: Artifact, useCpu = false) => {
       const source = messages.find((message) => message.id === artifact.messageId);
       if (!source || !artifact.messageId || !activeId) {
         showError("The original message for this file is no longer available.");
@@ -1057,7 +1057,7 @@ export function App() {
             ? imageRendererPrompt(source.content, precedingUser.content)
             : source.content;
         void api
-          .createGenerationArtifact(activeId, artifact.messageId, generationKind, generationPrompt)
+          .createGenerationArtifact(activeId, artifact.messageId, generationKind, generationPrompt, useCpu)
           .then((next) => {
             setArtifacts((items) => upsertArtifactInList(items, next));
             if (preferences?.openArtifactsAfterGeneration && next.status === "ready") {

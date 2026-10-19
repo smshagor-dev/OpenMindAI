@@ -76,7 +76,7 @@ export function ChatView(props: {
   onCreateArtifact: (messageId: string, kind: ArtifactKind, content: string, filenameHint?: string) => void;
   onOpenArtifact: (artifact: Artifact) => void;
   onRevealArtifact: (artifact: Artifact) => void;
-  onRetryArtifact: (artifact: Artifact) => void;
+  onRetryArtifact: (artifact: Artifact, useCpu?: boolean) => void;
   onPreview: (target: PreviewTarget) => void;
 }) {
   const latestMessageRef = useRef<globalThis.HTMLDivElement | null>(null);

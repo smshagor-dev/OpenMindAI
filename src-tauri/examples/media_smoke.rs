@@ -192,6 +192,7 @@ async fn smoke_canvas(
         &model,
         "A simple red circle centered on a clean white background, minimal composition.",
         &output,
+        false, // Standard smoke test keeps the platform's preferred renderer.
     )
     .await?;
     report_output("Canvas", &output, 8, OutputFormat::Png)?;
