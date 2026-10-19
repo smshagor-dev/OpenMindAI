@@ -979,9 +979,17 @@ mod tests {
             std::env::temp_dir().join("openmindai-chat-readiness-responsiveness"),
         );
         let runtime = Arc::new(Mutex::new(LlamaRuntimeManager::new(root)));
-        // Simulate a second operation holding the runtime mutex while a chat
-        // is waiting to begin loading its model.
-        let held = runtime.lock().expect("runtime lock");
+        // Keep the mutex held in a separate thread. The async test must not
+        // retain a std::sync::MutexGuard across an await point.
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder_runtime = Arc::clone(&runtime);
+        let holder = std::thread::spawn(move || {
+            let _guard = holder_runtime.lock().expect("runtime lock");
+            held_tx.send(()).expect("announce held lock");
+            release_rx.recv().expect("release runtime lock");
+        });
+        held_rx.recv().expect("wait for held lock");
         let cancelled = CancellationToken::new();
         let to_stop = cancelled.clone();
         let config = ModelLaunchConfig {
@@ -1016,7 +1024,8 @@ mod tests {
         .await
         .expect("the async caller blocked on the runtime mutex");
         assert!(matches!(result, Err(AppError::InferenceCancelled(_))));
-        drop(held);
+        release_tx.send(()).expect("release held lock");
+        holder.join().expect("mutex holder exited");
     }
 
     #[test]
