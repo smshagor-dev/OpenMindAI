@@ -3,14 +3,46 @@ name: Kokoro Real Voice Inference
 on:
   push:
     branches:
-      - test/kokoro-real-model-voice-smoke
+      - main
+      - test/kokoro-voice-regression-gate
     paths:
-      - scripts/kokoro-real-smoke.py
       - .github/workflows/kokoro-real-voice.yml
+      - scripts/kokoro-real-smoke.py
+      - src-tauri/Cargo.toml
+      - src-tauri/Cargo.lock
+      - src-tauri/examples/media_smoke.rs
+      - src-tauri/src/voice_runtime.rs
+      - src-tauri/src/model_package.rs
+      - src-tauri/src/model_download.rs
+      - src-tauri/src/model_catalog.rs
+      - src-tauri/model-catalog.json
+      - vendor/any-tts-0.1.3/**
+      - vendor/candle-core-0.10.2/**
+  pull_request:
+    paths:
+      - .github/workflows/kokoro-real-voice.yml
+      - scripts/kokoro-real-smoke.py
+      - src-tauri/Cargo.toml
+      - src-tauri/Cargo.lock
+      - src-tauri/examples/media_smoke.rs
+      - src-tauri/src/voice_runtime.rs
+      - src-tauri/src/model_package.rs
+      - src-tauri/src/model_download.rs
+      - src-tauri/src/model_catalog.rs
+      - src-tauri/model-catalog.json
+      - vendor/any-tts-0.1.3/**
+      - vendor/candle-core-0.10.2/**
+  # Verify upstream model availability and inference stability weekly.
+  schedule:
+    - cron: "31 5 * * 1"
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: kokoro-real-voice-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   real-kokoro-voice:
