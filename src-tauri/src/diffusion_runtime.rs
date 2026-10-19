@@ -561,7 +561,10 @@ fn extract_runtime_archive_bounded(
                 .map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?;
             // UNIX symlink entries must not be written as ordinary files. Reject
             // links rather than following archive paths outside the staging root.
-            if entry.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o120000) {
+            if entry
+                .unix_mode()
+                .is_some_and(|mode| mode & 0o170000 == 0o120000)
+            {
                 return Err(AppError::RuntimeInstallFailed(
                     "diffusion runtime archive contains a symbolic link".to_string(),
                 ));
@@ -591,7 +594,10 @@ fn extract_runtime_archive_bounded(
             }
             let mut output = fs::File::create(&destination)?;
             let copy_limit = MAX_RUNTIME_ENTRY_BYTES.min(remaining);
-            let written = std::io::copy(&mut entry.take(copy_limit.saturating_add(1)), &mut output)?;
+            let written = std::io::copy(
+                &mut (&mut entry).take(copy_limit.saturating_add(1)),
+                &mut output,
+            )?;
             if written > copy_limit || written != declared {
                 return Err(AppError::RuntimeInstallFailed(
                     "diffusion runtime archive contains an oversized or truncated entry"
@@ -1061,7 +1067,11 @@ mod tests {
         let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
         root.ensure_directories().unwrap();
         let archive = root.resolve_relative("temp/runtime-ok.zip").unwrap();
-        let cli = if cfg!(windows) { "bin/sd-cli.exe" } else { "bin/sd-cli" };
+        let cli = if cfg!(windows) {
+            "bin/sd-cli.exe"
+        } else {
+            "bin/sd-cli"
+        };
         sample_runtime_zip(&archive, &[(cli, b"test-runtime")]);
         let install = root.resolve_relative("runtimes/diffusion/test-ok").unwrap();
         let extracted =
@@ -1075,7 +1085,11 @@ mod tests {
         let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
         root.ensure_directories().unwrap();
         let archive = root.resolve_relative("temp/runtime-large.zip").unwrap();
-        let cli = if cfg!(windows) { "sd-cli.exe" } else { "sd-cli" };
+        let cli = if cfg!(windows) {
+            "sd-cli.exe"
+        } else {
+            "sd-cli"
+        };
         sample_runtime_zip(&archive, &[(cli, b"much-more-data-than-allowed")]);
         let install = root.resolve_relative("runtimes/diffusion/test-large").unwrap();
         let result = extract_runtime_archive_bounded(&root, &archive, &install, 8, 4);
@@ -1089,7 +1103,11 @@ mod tests {
         let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
         root.ensure_directories().unwrap();
         let archive = root.resolve_relative("temp/runtime-many.zip").unwrap();
-        let cli = if cfg!(windows) { "sd-cli.exe" } else { "sd-cli" };
+        let cli = if cfg!(windows) {
+            "sd-cli.exe"
+        } else {
+            "sd-cli"
+        };
         sample_runtime_zip(&archive, &[(cli, b"data"), ("extra.txt", b"x")]);
         let install = root.resolve_relative("runtimes/diffusion/test-many").unwrap();
         let result = extract_runtime_archive_bounded(&root, &archive, &install, 1, 64);
