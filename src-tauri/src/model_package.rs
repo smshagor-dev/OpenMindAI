@@ -164,8 +164,7 @@ async fn fetch_model_metadata(
     let actual_revision = super::pinned_repo_revision(model.sha.as_deref())?;
     if pinned_revision.is_some_and(|pinned| !pinned.eq_ignore_ascii_case(actual_revision)) {
         return Err(AppError::ModelDownloadFailed(
-            "Hugging Face dependency metadata changed from its pinned model revision"
-                .to_string(),
+            "Hugging Face dependency metadata changed from its pinned model revision".to_string(),
         ));
     }
     Ok(model)
