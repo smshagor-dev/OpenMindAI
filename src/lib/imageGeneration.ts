@@ -6,15 +6,15 @@ const IMAGE_ACTION_INTENT = new RegExp(
   "i",
 );
 const IMAGE_NOUN_INTENT =
-  /^(?:(?:an?|the|my)\\s+)?(?:poster|logo|thumbnail|illustration|wallpaper|banner)\\s+(?:for|of|showing|with)\\b/i;
+  /^(?:(?:an?|the|my)\s+)?(?:poster|logo|thumbnail|illustration|wallpaper|banner)\s+(?:for|of|showing|with)\b/i;
 const FREEFORM_DRAW_INTENT =
-  /\\b(?:draw|sketch|paint|illustrate)\\s+(?:(?:me|us|an?|the|my|some)\\s+){0,2}(?!conclusion\\b|attention\\b|parallel\\b|inference\\b|comparison\\b)[a-z][a-z -]{1,80}/i;
+  /\b(?:draw|sketch|paint|illustrate)\s+(?!(?:(?:me|us|an?|the|my|some)\s+){0,2}(?:conclusion|attention|parallel|inference|comparison)\b)(?:(?:me|us|an?|the|my|some)\s+){0,2}[a-z][a-z -]{1,80}/i;
 const BANGLA_IMAGE_INTENT =
   /(?=.*(?:ছবি|ইমেজ|ফটো|চিত্র|পোস্টার|লোগো|আইকন|থাম্বনেইল|আঁকো|আঁকুন))(?=.*(?:তৈরি|বানাও|বানিয়ে|বানিয়ে|করো|করুন|আঁকো|আঁকুন|দাও|দেখাও|জেনারেট))/u;
 const RUSSIAN_IMAGE_INTENT =
-  /(?:создай|создайте|сгенерируй|сгенерируйте|нарисуй|нарисуйте|изобрази|изобразите|сделай|сделайте)\\s+(?:(?:мне|пожалуйста|красивую|красивый|новую|новый|одну)\\s+){0,4}(?:изображени[ея]|картинк[уаие]|фото|рисунок|логотип|постер|баннер|кот[а-я]*)/iu;
+  /(?:создай|создайте|сгенерируй|сгенерируйте|нарисуй|нарисуйте|изобрази|изобразите|сделай|сделайте)\s+(?:(?:мне|пожалуйста|красивую|красивый|новую|новый|одну)\s+){0,4}(?:изображени[ея]|картинк[уаие]|фото|рисунок|логотип|постер|баннер|кот[а-я]*)/iu;
 const IMAGE_REFUSAL =
-  /(?:\\bi(?:'m| am)?\\s+sorry\\b|\\b(?:cannot|can't|unable to)\\b[^.\\n]{0,80}\\b(?:generate|create|make|render)\\b[^.\\n]{0,40}\\b(?:image|photo|picture|art)\\b|\\b(?:text[- ]only|do not have the ability)\\b)/i;
+  /(?:\bi(?:'m| am)?\s+sorry\b|\b(?:cannot|can't|unable to)\b[^.\n]{0,80}\b(?:generate|create|make|render)\b[^.\n]{0,40}\b(?:image|photo|picture|art)\b|\b(?:text[- ]only|do not have the ability)\b)/i;
 
 /** The image renderer works independently of the chat model. */
 export const DIRECT_IMAGE_MESSAGE = "Image request submitted to the local renderer. See the image artifact below.";
