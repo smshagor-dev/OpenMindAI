@@ -191,7 +191,7 @@ impl Database {
     /// Each interrupted image becomes retryable in the existing artifact card.
     /// A partial output is removed using the same root-contained SQLite
     /// cleanup function used when an artifact is deleted.
-    fn recover_stale_image_artifacts(&self) -> Result<usize, AppError> {
+    pub(crate) fn recover_stale_image_artifacts(&self) -> Result<usize, AppError> {
         const STALE_IMAGE_JOB_HOURS: i64 = 4;
         let cutoff = (Utc::now() - Duration::hours(STALE_IMAGE_JOB_HOURS)).to_rfc3339();
         let mut statement = self.connection.prepare(
