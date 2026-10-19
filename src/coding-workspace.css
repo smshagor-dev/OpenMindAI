@@ -2,15 +2,15 @@
   display: grid;
   gap: 12px;
   padding: 14px;
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.09));
+  border: 1px solid var(--border);
   border-radius: 14px;
-  background: color-mix(in srgb, var(--surface-2, #161616) 92%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
 }
 
 .coding-timeline-empty {
   grid-template-columns: auto 1fr;
   align-items: center;
-  color: var(--text-secondary, #a6a6a6);
+  color: var(--muted);
 }
 
 .coding-timeline-empty span,
@@ -28,7 +28,7 @@
 .coding-run-tabs strong,
 .coding-approval-card strong,
 .coding-timeline-events strong {
-  color: var(--text-primary, #f2f2f2);
+  color: var(--text);
   font-size: 13px;
 }
 
@@ -39,7 +39,7 @@
 .coding-approval-card small,
 .coding-timeline-events small,
 .coding-plan-card li small {
-  color: var(--text-secondary, #919191);
+  color: var(--muted);
   font-size: 11px;
   line-height: 1.35;
 }
@@ -66,10 +66,10 @@
   gap: 6px;
   min-height: 32px;
   padding: 6px 10px;
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  border: 1px solid var(--border);
   border-radius: 9px;
-  background: var(--surface-3, rgba(255, 255, 255, 0.04));
-  color: var(--text-primary, #f2f2f2);
+  background: var(--surface);
+  color: var(--text);
   cursor: pointer;
 }
 
@@ -100,16 +100,17 @@
   flex: 0 0 auto;
   min-width: 112px;
   padding: 8px 10px;
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  border: 1px solid var(--border);
   border-radius: 10px;
   background: transparent;
-  color: var(--text-secondary, #aaa);
+  color: var(--muted);
   text-align: left;
 }
 
 .coding-run-tabs > button.active {
-  background: var(--surface-3, rgba(255, 255, 255, 0.06));
-  border-color: color-mix(in srgb, currentColor 22%, transparent);
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: var(--text);
 }
 
 .coding-run-detail {
@@ -121,14 +122,14 @@
   flex-wrap: wrap;
   padding: 9px 10px;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.025);
+  background: color-mix(in srgb, var(--surface) 72%, var(--bg));
 }
 
 .coding-run-summary span {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  color: var(--text-secondary, #aaa);
+  color: var(--muted);
   font-size: 11px;
 }
 
@@ -137,9 +138,9 @@
   display: grid;
   gap: 9px;
   padding: 11px;
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  border: 1px solid var(--border);
   border-radius: 11px;
-  background: rgba(255, 255, 255, 0.025);
+  background: color-mix(in srgb, var(--surface) 72%, var(--bg));
 }
 
 .coding-card-title {
@@ -158,7 +159,7 @@
 
 .coding-plan-card li {
   padding: 3px 0;
-  color: var(--text-primary, #eee);
+  color: var(--text);
   font-size: 12px;
 }
 
@@ -218,7 +219,7 @@
   top: 20px;
   bottom: -4px;
   width: 1px;
-  background: var(--border-subtle, rgba(255, 255, 255, 0.09));
+  background: var(--border);
 }
 
 .coding-recovery-row {
