@@ -30,7 +30,7 @@ test("model download status is visible with accessible progress and failure mess
   assert.match(models, /aria-label=\{\`\$\{entry\.name\} download progress\`\}/);
   assert.match(models, /className="download-feedback-error" role="alert"/);
   assert.match(models, /anotherDownloadActive/);
-  assert.match(block(".download-progress-track,"), /var\(--border-strong\)/);
+  assert.match(css, /\.download-progress-track,\s*\.dataset-progress-track,\s*\.setup-progress-bar\s*\{[^}]*var\(--border-strong\)/);
   assert.match(css, /\.model-download-card \.download-progress > span\s*\{[^}]*var\(--text\)/);
 });
 
