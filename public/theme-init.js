@@ -12,7 +12,7 @@
     // The native preference load will apply the user's saved setting.
   }
   globalThis.document.documentElement.dataset.theme = theme;
-  document
+  globalThis.document
     .querySelector('meta[name="theme-color"]')
     ?.setAttribute("content", theme === "light" ? "#f1f1f1" : "#090909");
 })();
