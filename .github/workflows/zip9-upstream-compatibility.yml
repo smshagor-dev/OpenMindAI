@@ -13,9 +13,13 @@ permissions:
 
 jobs:
   probe:
-    name: Rebuild pinned TTS crates against ZIP 9
-    runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    name: ZIP 9-patched TTS and checkpoint readers (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -24,6 +28,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install Tauri system dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
@@ -39,10 +44,10 @@ jobs:
           python-version: "3.12"
 
       - name: Verify probe source transformation
-        run: python3 scripts/probe-zip9-upgrade.py --self-test
+        run: python scripts/probe-zip9-upgrade.py --self-test
 
       - name: Test ephemeral upstream ZIP 9 compatibility
-        run: python3 scripts/probe-zip9-upgrade.py
+        run: python scripts/probe-zip9-upgrade.py
 
       - name: Verify no tracked build input changed
         if: always()
