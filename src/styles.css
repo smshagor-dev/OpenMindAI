@@ -401,7 +401,7 @@ button {
 }
 
 .conversation-menu button.danger {
-  color: #ff8a65;
+  color: var(--status-error);
 }
 
 .conversation-empty {
