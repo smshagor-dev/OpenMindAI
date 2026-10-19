@@ -199,6 +199,33 @@ source replacement. Model weights are not vendored. The migration remains
 production RustSec audit), Kokoro real-model WAV test, and licensing review
 pass and its changes are deliberately approved and merged.
 
+## Real Kokoro voice inference acceptance test
+
+The optional **Kokoro Real Voice Inference** GitHub Actions job now tests the
+actual committed Rust/Candle voice generation path rather than only compiling
+the patched ZIP 9 dependencies or reading synthetic NPZ/PTH archives.
+It downloads `hexgrad/Kokoro-82M` from the immutable revision
+`04393022a04dcb701fd2061b8d5dbe23ac7be751`, validates the
+`kokoro-v1_0.pth` and `voices/af_heart.pt` SHA-256 hashes against
+published Hugging Face LFS records, and installs the matching config and
+integrity manifests in an isolated OpenMindAI root. It then invokes:
+
+```sh
+cargo run --locked --release --manifest-path src-tauri/Cargo.toml \
+  --example media_smoke -- speak --root "$OPENMINDAI_ROOT"
+```
+
+`scripts/kokoro-real-smoke.py` verifies the resulting output is non-silent
+24 kHz, mono, 16-bit PCM WAV, with a bounded duration and nonzero RMS.
+A self-test proves an artificial silent WAV would be rejected; **only the
+real-model step can establish that speech synthesis works**. The action only
+uploads JSON evidence with revision, source hashes and audio metrics, never
+pretrained weights or generated audio. A compilation success or synthetic
+self-test alone must not close #258. The workflow runs when its dedicated
+testing branch changes and is also manually dispatchable. If model network
+download or real inference fails, keep #258 open and fix the failure, do not
+silence this test.
+
 ## Conditions for the real fix
 
 - Adapt all ZIP 9 API changes in **reviewed**, license-compliant upstream forks
