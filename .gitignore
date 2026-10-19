@@ -40,6 +40,9 @@ OpenMindAI/
 docs/
 *.md
 !README.md
+# Keep complete, reviewed third-party documentation in the ZIP 9 vendor tree.
+!/vendor/*.md
+!/vendor/**/*.md
 
 # Downloaded/built release artifacts and bootstrap scratch space -- never
 # commit compiled installers, signatures, checksums, or a bootstrap-cloned

@@ -61,6 +61,12 @@ jobs:
           cargo metadata --locked --manifest-path src-tauri/Cargo.toml --format-version 1 > "$RUNNER_TEMP/openmind-cargo-metadata.json"
           node scripts/check-upstream-zip-source.mjs "$RUNNER_TEMP/openmind-cargo-metadata.json"
 
+      - name: Verify exact audited production ZIP 9 source tree and licenses
+        if: steps.zip_mode.outputs.mode == 'remediated'
+        run: |
+          python3 scripts/verify-zip9-vendor.py --self-test
+          python3 scripts/verify-zip9-vendor.py
+
       - name: Inspect pinned migrated ZIP 9 vendor sources
         if: steps.zip_mode.outputs.mode == 'remediated'
         run: |

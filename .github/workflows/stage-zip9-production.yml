@@ -1,0 +1,134 @@
+name: Stage reviewed ZIP 9 source replacement
+
+on:
+  push:
+    branches:
+      - security/zip9-source-replacement
+    paths:
+      - .github/workflows/stage-zip9-production.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate-candidate:
+    name: Build and audit ZIP 9 source-pinned candidate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout candidate branch without write credentials
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux Tauri dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install RustSec audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Check source promotion guard and candidate verification tests
+        run: |
+          python scripts/promote-zip9-production.py --self-test
+          python scripts/verify-zip9-candidate.py --self-test
+          python scripts/probe-zip9-upgrade.py --self-test
+
+      - name: Compile, test and unignored-audit source-pinned ZIP 9 candidate
+        env:
+          ZIP9_EVIDENCE_DIR: ${{ runner.temp }}/zip9-promotion-evidence
+        run: |
+          python scripts/probe-zip9-upgrade.py \
+            --audit --candidate-dir "$RUNNER_TEMP/zip9-production-candidate"
+          python scripts/verify-zip9-candidate.py \
+            "$RUNNER_TEMP/zip9-production-candidate"
+          python scripts/promote-zip9-production.py \
+            --candidate "$RUNNER_TEMP/zip9-production-candidate"
+
+      - name: Publish verified candidate for restricted branch staging
+        uses: actions/upload-artifact@v4
+        with:
+          name: zip9-production-source-candidate
+          path: ${{ runner.temp }}/zip9-production-candidate/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Publish reviewed source patch hashes
+        uses: actions/upload-artifact@v4
+        with:
+          name: zip9-production-source-evidence
+          path: ${{ runner.temp }}/zip9-promotion-evidence/
+          if-no-files-found: error
+          retention-days: 14
+
+  stage-review-branch:
+    name: Commit ZIP 9 candidate only to dedicated review branch
+    needs: validate-candidate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    if: github.repository == 'smshagor-dev/OpenMindAI' && github.ref == 'refs/heads/security/zip9-source-replacement'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout protected review branch
+        uses: actions/checkout@v7
+        with:
+          ref: security/zip9-source-replacement
+          persist-credentials: true
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Download immutable validated candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: zip9-production-source-candidate
+          path: ${{ runner.temp }}/zip9-candidate-download/
+
+      - name: Verify downloaded source and stage production Cargo inputs
+        run: |
+          python scripts/verify-zip9-candidate.py "$RUNNER_TEMP/zip9-candidate-download"
+          python scripts/promote-zip9-production.py \
+            --candidate "$RUNNER_TEMP/zip9-candidate-download" --apply
+
+      - name: Commit solely the reviewed source and Cargo manifest/lockfile
+        shell: bash
+        run: |
+          git add -- src-tauri/Cargo.toml src-tauri/Cargo.lock vendor/
+          # Verify all files being committed stay inside the reviewed scope.
+          while IFS= read -r staged; do
+            case "$staged" in
+              src-tauri/Cargo.toml|src-tauri/Cargo.lock|vendor/*) ;;
+              *) echo "::error::Unexpected staged path: $staged"; exit 1 ;;
+            esac
+          done < <(git diff --cached --name-only)
+          # Apply strict whitespace checks to our own edits. Upstream vendored
+          # sources contain existing trailing whitespace; rewriting them would
+          # invalidate the verified source-tree SHA-256. Their exact bytes were
+          # checked by verify-zip9-candidate.py in the previous step.
+          git diff --cached --check -- src-tauri/Cargo.toml src-tauri/Cargo.lock vendor/THIRD_PARTY_NOTICES.md
+          git -c core.whitespace=-trailing-space diff --cached --check -- vendor/
+          git diff --cached --stat
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m 'security: stage reviewed ZIP 9 TTS vendor sources'
+          git push origin HEAD:refs/heads/security/zip9-source-replacement
