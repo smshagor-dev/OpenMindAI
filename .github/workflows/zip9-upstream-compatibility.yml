@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - scripts/probe-zip9-upgrade.py
+      - scripts/verify-zip9-candidate.py
       - scripts/zip9-reader-regressions.rs
       - .github/workflows/zip9-upstream-compatibility.yml
   workflow_dispatch:
@@ -66,13 +67,28 @@ jobs:
           ZIP9_CANDIDATE_DIR: ${{ runner.temp }}/zip9-production-candidate
         run: python scripts/probe-zip9-upgrade.py
 
-      - name: Upload validated ZIP 9 source-pinned candidate
+      - name: Verify candidate artifact checker self-test
+        run: python scripts/verify-zip9-candidate.py --self-test
+
+      - name: Upload complete ZIP 9 source-pinned candidate
         uses: actions/upload-artifact@v4
         with:
           name: zip9-source-pinned-candidate-${{ matrix.os }}
           path: ${{ runner.temp }}/zip9-production-candidate/
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
+
+      - name: Download ZIP 9 candidate as a consumer
+        uses: actions/download-artifact@v4
+        with:
+          name: zip9-source-pinned-candidate-${{ matrix.os }}
+          path: ${{ runner.temp }}/zip9-candidate-roundtrip/
+
+      - name: Verify downloaded candidate hashes, lockfile and source patch list
+        env:
+          ZIP9_ROUNDTRIP_DIR: ${{ runner.temp }}/zip9-candidate-roundtrip
+        run: python scripts/verify-zip9-candidate.py
 
       - name: Upload ZIP 9 candidate source provenance and exact patches
         if: always()
