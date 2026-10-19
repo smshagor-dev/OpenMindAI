@@ -46,7 +46,18 @@ jobs:
       - name: Verify probe source transformation
         run: python scripts/probe-zip9-upgrade.py --self-test
 
-      - name: Test ephemeral upstream ZIP 9 compatibility
+      - name: Install RustSec audit tool
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Run unignored RustSec audit and ZIP 9 compatibility (Linux)
+        if: runner.os == 'Linux'
+        run: python scripts/probe-zip9-upgrade.py --audit
+
+      - name: Test ephemeral upstream ZIP 9 compatibility (Windows/macOS)
+        if: runner.os != 'Linux'
         run: python scripts/probe-zip9-upgrade.py
 
       - name: Verify no tracked build input changed
