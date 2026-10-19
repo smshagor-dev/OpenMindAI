@@ -27,9 +27,7 @@ struct Header {
 }
 
 fn invalid(detail: &str) -> AppError {
-    AppError::ArtifactGenerationFailed(format!(
-        "image renderer returned an invalid PNG: {detail}"
-    ))
+    AppError::ArtifactGenerationFailed(format!("image renderer returned an invalid PNG: {detail}"))
 }
 
 fn crc32(kind: &[u8], data: &[u8]) -> u32 {
@@ -67,7 +65,9 @@ fn header_from_ihdr(data: &[u8]) -> Result<Header, AppError> {
         || data[11] != 0
         || data[12] > 1
     {
-        return Err(invalid("unsupported dimensions, color format, or PNG header"));
+        return Err(invalid(
+            "unsupported dimensions, color format, or PNG header",
+        ));
     }
     Ok(Header {
         width,
@@ -134,8 +134,8 @@ fn verify_image_stream(header: Header, compressed: &[u8]) -> Result<(), AppError
         if expanded > MAX_DECOMPRESSED_BYTES {
             return Err(invalid("decoded pixel data exceeds memory limit"));
         }
-        let buffer_len = usize::try_from(row_with_filter)
-            .map_err(|_| invalid("scanline is too large"))?;
+        let buffer_len =
+            usize::try_from(row_with_filter).map_err(|_| invalid("scanline is too large"))?;
         let mut row = vec![0_u8; buffer_len];
         for _ in 0..height {
             decoder
@@ -158,7 +158,9 @@ fn verify_image_stream(header: Header, compressed: &[u8]) -> Result<(), AppError
 
 pub(crate) fn validate_png(path: &Path) -> Result<(), AppError> {
     let size = fs::metadata(path)
-        .map_err(|e| AppError::ArtifactGenerationFailed(format!("image output was not created: {e}")))?
+        .map_err(|e| {
+            AppError::ArtifactGenerationFailed(format!("image output was not created: {e}"))
+        })?
         .len();
     if size < 45 || size > MAX_PNG_FILE_BYTES {
         return Err(invalid("file size is outside supported bounds"));
@@ -193,8 +195,7 @@ pub(crate) fn validate_png(path: &Path) -> Result<(), AppError> {
         }
         let kind = &file[pos + 4..pos + 8];
         let payload = &file[pos + 8..pos + 8 + length];
-        let supplied_crc =
-            u32::from_be_bytes(file[next - 4..next].try_into().unwrap());
+        let supplied_crc = u32::from_be_bytes(file[next - 4..next].try_into().unwrap());
         if crc32(kind, payload) != supplied_crc {
             return Err(invalid("PNG chunk checksum mismatch"));
         }
