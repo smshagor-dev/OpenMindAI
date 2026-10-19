@@ -323,6 +323,30 @@ fn build_text_context(
     Ok(prepared)
 }
 
+/// Native chat uses the same model-context output limits as llama-server.
+/// Read the same trimmed conversation that the native worker will receive.
+pub(crate) fn native_chat_output_budget(
+    database: &Mutex<Database>,
+    conversation_id: &str,
+    mode: &str,
+    context_size: u32,
+) -> Result<u32, AppError> {
+    let messages = build_text_context(database, conversation_id)?;
+    let prepared = messages
+        .into_iter()
+        .map(|message| serde_json::json!({
+            "role": message.role,
+            "content": message.content,
+        }))
+        .collect::<Vec<_>>();
+    crate::sampling::chat_output_budget(mode, context_size, &prepared).ok_or_else(|| {
+        AppError::ContextOverflow(
+            "The chat history leaves too little room for a reply. Shorten the input or start a new conversation."
+                .to_string(),
+        )
+    })
+}
+
 fn emit_stream_chunk(
     request: &NativeStreamRequest<'_>,
     buffer: &mut String,
