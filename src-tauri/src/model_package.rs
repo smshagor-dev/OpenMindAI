@@ -102,7 +102,7 @@ pub async fn ensure_dependencies(
         let repo = dependency.repo.as_deref().unwrap_or(&entry.repo);
         // Fetch dependencies at the *same snapshot* as their primary model.
         // Independent dependency repositories use their own metadata commit SHA.
-        let pinned_revision = if repo == entry.repo {
+        let pinned_revision = if repo == entry.repo.as_str() {
             Some(super::pinned_repo_revision(primary_revision)?)
         } else {
             None
