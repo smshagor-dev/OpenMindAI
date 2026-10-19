@@ -20,6 +20,8 @@ jobs:
         os: [ubuntu-22.04, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      ZIP9_EVIDENCE_DIR: ${{ runner.temp }}/zip9-source-evidence
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -59,6 +61,15 @@ jobs:
       - name: Test ephemeral upstream ZIP 9 compatibility (Windows/macOS)
         if: runner.os != 'Linux'
         run: python scripts/probe-zip9-upgrade.py
+
+      - name: Upload ZIP 9 candidate source provenance and exact patches
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zip9-source-evidence-${{ matrix.os }}
+          path: ${{ runner.temp }}/zip9-source-evidence/
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Verify no tracked build input changed
         if: always()
