@@ -68,6 +68,115 @@ pub fn chat_output_budget(mode: &str, context_size: u32, messages: &[Value]) -> 
 }
 
 
+/// Compact a long conversation to fit the model currently loaded in memory.
+/// System instructions and the newest user input are never silently removed.
+/// Older turns are retained from newest to oldest, with short verbatim excerpts
+/// kept when earlier messages no longer fit.
+#[derive(Debug)]
+pub struct ChatContextWindow {
+    pub messages: Vec<Value>,
+    pub omitted_messages: usize,
+}
+
+pub fn compact_chat_context(
+    messages: Vec<Value>,
+    context_size: u32,
+) -> Result<ChatContextWindow, crate::app_error::AppError> {
+    use crate::app_error::AppError;
+
+    // Keep at least 1024 tokens for the answer and 512 for the model's chat
+    // template and special tokens. The actual reply budget is computed later.
+    let input_capacity = context_size.saturating_sub(1_536);
+    let latest_user = messages.iter().rposition(|message| message["role"] == "user");
+    let mandatory: Vec<bool> = messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| message["role"] == "system" || Some(index) == latest_user)
+        .collect();
+
+    let mut keep = mandatory.clone();
+    let mandatory_messages = messages
+        .iter()
+        .zip(&mandatory)
+        .filter_map(|(message, required)| required.then_some(message.clone()))
+        .collect::<Vec<_>>();
+    if estimated_prompt_tokens(&mandatory_messages) > input_capacity {
+        return Err(AppError::ContextOverflow(format!(
+            "The current request and required instructions exceed the model's {}-token context. Shorten the current input, attached content, or system instructions.",
+            context_size
+        )));
+    }
+
+    // Leave room for an explicit historical note if older turns are omitted.
+    let mut remaining = input_capacity.saturating_sub(estimated_prompt_tokens(&mandatory_messages));
+    let has_optional = keep.iter().any(|selected| !selected);
+    if has_optional {
+        remaining = remaining.saturating_sub(256);
+    }
+    // Do not skip an overlong older turn and then include even earlier turns:
+    // consecutive recent history retains the clearest conversational meaning.
+    for index in (0..messages.len()).rev() {
+        if keep[index] {
+            continue;
+        }
+        let tokens = estimated_prompt_tokens(std::slice::from_ref(&messages[index])).saturating_sub(128);
+        if tokens > remaining {
+            break;
+        }
+        keep[index] = true;
+        remaining = remaining.saturating_sub(tokens);
+    }
+
+    let omitted_indices = keep
+        .iter()
+        .enumerate()
+        .filter_map(|(index, selected)| (!selected).then_some(index))
+        .collect::<Vec<_>>();
+    let omitted_messages = omitted_indices.len();
+    let mut selected = messages
+        .iter()
+        .zip(&keep)
+        .filter_map(|(message, selected)| selected.then_some(message.clone()))
+        .collect::<Vec<_>>();
+
+    if omitted_messages > 0 {
+        let mut note = format!(
+            "Conversation history notice: {} older messages were abbreviated to fit this model's context. These are excerpts, not complete messages. Ask the user to repeat any missing details rather than guessing.",
+            omitted_messages
+        );
+        // Excerpts are verbatim and deliberately short. No invented
+        // model-generated summary or silent semantic replacement is made.
+        for index in omitted_indices.iter().rev().take(3).rev() {
+            if let Some(content) = messages[*index]["content"].as_str() {
+                let excerpt = content.chars().take(120).collect::<String>();
+                let excerpt = excerpt.replace('\n', " ");
+                note.push_str(&format!("\\n{} excerpt: {}", messages[*index]["role"].as_str().unwrap_or("message"), excerpt));
+            }
+        }
+        let note_message = json!({"role": "system", "content": note});
+        // Some prompts leave too little room even for a summary. The user
+        // still receives a visible omission notice on the completed reply.
+        let mut with_note = selected.clone();
+        with_note.push(note_message.clone());
+        if estimated_prompt_tokens(&with_note) <= input_capacity {
+            let insertion = selected.iter().position(|message| message["role"] != "system").unwrap_or(selected.len());
+            selected.insert(insertion, note_message);
+        }
+    }
+
+    Ok(ChatContextWindow {
+        messages: selected,
+        omitted_messages,
+    })
+}
+
+pub fn context_omission_notice(count: usize) -> String {
+    format!(
+        "\\n\\n---\\n\\n**Context notice:** {} older conversation messages were shortened or omitted to fit the current model. The recent messages and required instructions were retained; repeat an earlier detail if needed.",
+        count
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SamplingProfile {
     pub temperature: f64,
@@ -208,6 +317,45 @@ mod tests {
         let budget = chat_output_budget("vision", 8_192, &messages).unwrap();
         assert!(budget > 0);
         assert!(budget <= 2_048);
+    }
+
+    #[test]
+    fn keeps_latest_user_and_system_without_eighteen_message_limit() {
+        let mut history = vec![json!({"role": "system", "content": "Always use British English."})];
+        for i in 0..25 {
+            history.push(json!({"role": "user", "content": format!("Question {i}")}));
+            history.push(json!({"role": "assistant", "content": format!("Answer {i}")}));
+        }
+        history.push(json!({"role": "user", "content": "শেষ প্রশ্ন: explain in Bangla"}));
+        let window = compact_chat_context(history, 32_768).unwrap();
+        assert_eq!(window.omitted_messages, 0);
+        assert_eq!(window.messages.len(), 52);
+        assert!(window.messages.iter().any(|message| message["content"] == "শেষ প্রশ্ন: explain in Bangla"));
+    }
+
+    #[test]
+    fn compacts_older_long_turns_with_explicit_notice() {
+        let mut history = vec![json!({"role": "system", "content": "Preserve safety requirements."})];
+        for i in 0..16 {
+            history.push(json!({"role": "user", "content": format!("{i} {}", "long ".repeat(650))}));
+            history.push(json!({"role": "assistant", "content": format!("Reply {i} {}", "draft ".repeat(650))}));
+        }
+        history.push(json!({"role": "user", "content": "সর্বশেষ প্রশ্ন"}));
+        let result = compact_chat_context(history, 8_192).unwrap();
+        assert!(result.omitted_messages > 0);
+        assert!(result.messages.iter().any(|message| message["content"] == "সর্বশেষ প্রশ্ন"));
+        assert!(result.messages.iter().any(|message| message["content"] == "Preserve safety requirements."));
+        assert!(context_omission_notice(result.omitted_messages).contains("older conversation messages"));
+        assert!(chat_output_budget("chat", 8_192, &result.messages).is_some());
+    }
+
+    #[test]
+    fn refuses_to_silently_cut_latest_large_input() {
+        let messages = vec![json!({"role": "user", "content": "বাংলা".repeat(6_000)})];
+        assert!(matches!(
+            compact_chat_context(messages, 4_096),
+            Err(crate::app_error::AppError::ContextOverflow(_))
+        ));
     }
 
     #[test]
