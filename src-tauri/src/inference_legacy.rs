@@ -244,6 +244,9 @@ pub async fn stream_chat_completion(
         return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
     }
     attach_media_to_latest_user_message(&mut messages, request.media)?;
+    let context = crate::sampling::compact_chat_context(messages, request.context_size)?;
+    let omitted_messages = context.omitted_messages;
+    let messages = context.messages;
     let max_tokens = chat_output_budget(request.request_mode, request.context_size, &messages)
         .ok_or_else(|| {
             AppError::ContextOverflow(
@@ -367,6 +370,12 @@ pub async fn stream_chat_completion(
         generated_chars += footer.chars().count();
         ui_buffer.push_str(&footer);
         flush_buffer.push_str(&footer);
+    }
+    if status == "completed" && !cancellation.is_cancelled() && omitted_messages > 0 {
+        let notice = crate::sampling::context_omission_notice(omitted_messages);
+        generated_chars += notice.chars().count();
+        ui_buffer.push_str(&notice);
+        flush_buffer.push_str(&notice);
     }
     if status == "completed" && !cancellation.is_cancelled() && reached_output_limit {
         // This notice remains in persisted history after a restart and prevents
@@ -1515,21 +1524,6 @@ fn build_context(
         message.status == "completed"
             && matches!(message.role.as_str(), "system" | "user" | "assistant")
     });
-    let max_messages = 18;
-    if messages.len() > max_messages {
-        let split_at = messages.len() - max_messages;
-        let system_messages: Vec<_> = messages
-            .iter()
-            .take(split_at)
-            .filter(|message| message.role == "system")
-            .cloned()
-            .collect();
-        messages = system_messages
-            .into_iter()
-            .chain(messages.into_iter().skip(split_at))
-            .collect();
-    }
-
     let mut prepared = Vec::with_capacity(messages.len());
     for message in messages {
         let (text, images) = if message.role == "user" {
@@ -1542,13 +1536,6 @@ fn build_context(
     let latest_image_turn = prepared
         .iter()
         .rposition(|(message, _, images)| message.role == "user" && !images.is_empty());
-    let estimated_chars: usize = prepared.iter().map(|(_, text, _)| text.len()).sum();
-    if estimated_chars > 24_000 {
-        return Err(AppError::ContextOverflow(
-            "conversation context is too large for the initial 8K target".to_string(),
-        ));
-    }
-
     Ok(prepared
         .into_iter()
         .enumerate()
