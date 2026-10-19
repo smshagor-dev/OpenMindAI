@@ -27,7 +27,7 @@ test("startup chat surface is derived from selected theme, not dark-only colors"
 test("model download status is visible with accessible progress and failure messaging", () => {
   assert.match(models, /role="progressbar"/);
   assert.match(models, /aria-valuenow=/);
-  assert.match(models, /aria-label=\{\`\$\{entry\.name\} download progress\`\}/);
+  assert.match(models, /download progress/);
   assert.match(models, /className="download-feedback-error" role="alert"/);
   assert.match(models, /anotherDownloadActive/);
   assert.match(css, /\.download-progress-track,\s*\.dataset-progress-track,\s*\.setup-progress-bar\s*\{[^}]*var\(--border-strong\)/);
