@@ -2268,6 +2268,22 @@ mod tests {
     }
 
     #[test]
+    fn pre_registered_cancellation_survives_stream_setup() {
+        let active = ActiveGenerations::default();
+        let first = active.start("conversation").unwrap();
+        let stream_token = active.token("conversation").unwrap();
+        assert!(!stream_token.is_cancelled());
+        active.cancel("conversation").unwrap();
+        assert!(first.is_cancelled());
+        assert!(stream_token.is_cancelled());
+        active.finish("conversation");
+        assert!(active.token("conversation").is_err());
+        let next = active.start("conversation").unwrap();
+        assert!(!next.is_cancelled());
+        active.finish("conversation");
+    }
+
+    #[test]
     fn active_generation_cancels() {
         let active = ActiveGenerations::default();
         let token = active.start("c1").unwrap();
