@@ -476,11 +476,12 @@ mod tests {
     async fn dropped_request_cancels_worker_without_releasing_caller_registration() {
         let active = Arc::new(ActiveGenerations::default());
         let cancellation = active.start("conversation").unwrap();
-        let worker_cancellation = cancellation.clone();
+        let worker_cancellation = cancellation.child_token();
+        let native_cancellation = worker_cancellation.clone();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let request = tokio::spawn(async move {
             let _guard = ActiveNativeGeneration {
-                cancellation,
+                cancellation: native_cancellation,
             };
             started_tx.send(()).unwrap();
             std::future::pending::<()>().await;
@@ -490,6 +491,7 @@ mod tests {
         request.abort();
         assert!(request.await.unwrap_err().is_cancelled());
         assert!(worker_cancellation.is_cancelled());
+        assert!(!cancellation.is_cancelled());
         // The parent request still owns the registration and may safely
         // fall back to the llama-server stream after a native failure.
         assert!(!active.is_idle());
