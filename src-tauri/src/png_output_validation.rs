@@ -162,7 +162,7 @@ pub(crate) fn validate_png(path: &Path) -> Result<(), AppError> {
             AppError::ArtifactGenerationFailed(format!("image output was not created: {e}"))
         })?
         .len();
-    if size < 45 || size > MAX_PNG_FILE_BYTES {
+    if !(45..=MAX_PNG_FILE_BYTES).contains(&size) {
         return Err(invalid("file size is outside supported bounds"));
     }
     let file = fs::read(path)?;
