@@ -193,6 +193,8 @@ struct VideoRenderProfile {
     vae_on_cpu: bool,
 }
 
+// Keep the render's independent progress callback alongside its existing inputs.
+#[allow(clippy::too_many_arguments)]
 pub async fn generate_image(
     root: &PortableRootManager,
     client: &Client,
