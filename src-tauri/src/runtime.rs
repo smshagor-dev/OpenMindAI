@@ -652,6 +652,9 @@ pub async fn ensure_model_ready_cancellable(
             .lock()
             .map_err(|_| AppError::internal("runtime lock poisoned"))
     };
+    if cancellation.is_cancelled() {
+        return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
+    }
     let expected = lock()?.resolved_model_path(&config.model_path)?;
     let started = Instant::now();
     let mut launched = false;
@@ -945,6 +948,41 @@ fn http_health_ok(host: &str, port: u16) -> bool {
 mod tests {
     use super::*;
     use crate::hardware::{CpuProfile, MemoryProfile};
+
+    #[tokio::test]
+    async fn cancelling_chat_loading_returns_without_starting_a_server() {
+        let root = PortableRootManager::from_root(
+            std::env::temp_dir().join("openmindai-cancelled-load-test"),
+        );
+        let runtime = Mutex::new(LlamaRuntimeManager::new(root));
+        let config = ModelLaunchConfig {
+            model_path: "missing.gguf".to_string(),
+            backend: BackendKind::Cpu,
+            device: None,
+            gpu_layers: 0,
+            context_size: 4096,
+            threads: 4,
+            batch_size: 256,
+            ubatch_size: 128,
+            flash_attention: false,
+            mmap: true,
+            mlock: false,
+            parallelism: 1,
+            host: "127.0.0.1".to_string(),
+            port: 12345,
+        };
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let result = ensure_model_ready_cancellable(
+            &runtime,
+            &hardware(GpuVendor::Nvidia),
+            &config,
+            &cancelled,
+        )
+        .await;
+        assert!(matches!(result, Err(AppError::InferenceCancelled(_))));
+        assert!(!runtime.lock().unwrap().has_process());
+    }
 
     #[test]
     fn a_different_model_waits_for_load_use_and_claim() {
