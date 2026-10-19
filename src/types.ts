@@ -203,6 +203,17 @@ export interface BackupInfo {
   createdAt: string;
 }
 
+export interface DiffusionRuntimeStatus {
+  state: "missing" | "unsupported" | "ready" | "repairNeeded" | "browserPreview"
+    | "resolving" | "downloading" | "verifying" | "extracting" | "failed";
+  backend: BackendKind | null;
+  version: string | null;
+  detail: string;
+  downloadedBytes: number;
+  totalBytes: number | null;
+  percentage: number | null;
+}
+
 export interface RuntimeInstallStatus {
   state:
     | "idle"
