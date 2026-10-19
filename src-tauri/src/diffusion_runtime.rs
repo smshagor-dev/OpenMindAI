@@ -79,22 +79,32 @@ pub fn diffusion_runtime_status(
 ) -> Result<DiffusionRuntimeStatus, AppError> {
     if let Ok(activity) = RUNTIME_INSTALL_ACTIVITY.lock() {
         if let Some(status) = activity.as_ref() {
-            if matches!(status.state.as_str(), "resolving" | "downloading" | "verifying" | "extracting" | "failed") {
+            if matches!(
+                status.state.as_str(),
+                "resolving" | "downloading" | "verifying" | "extracting" | "failed"
+            ) {
                 return Ok(status.clone());
             }
         }
     }
 
-    let candidates = runtime_asset_candidates(std::env::consts::OS, std::env::consts::ARCH, hardware);
+    let candidates =
+        runtime_asset_candidates(std::env::consts::OS, std::env::consts::ARCH, hardware);
     if candidates.is_empty() {
-        return Ok(runtime_activity("unsupported", format!(
-            "No prebuilt diffusion runtime is available for {}/{}",
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-        )));
+        return Ok(runtime_activity(
+            "unsupported",
+            format!(
+                "No prebuilt diffusion runtime is available for {}/{}",
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+            ),
+        ));
     }
     let Some(manifest) = load_manifest(root)? else {
-        return Ok(runtime_activity("missing", "Image renderer is not installed. Install it here before generating images."));
+        return Ok(runtime_activity(
+            "missing",
+            "Image renderer is not installed. Install it here before generating images.",
+        ));
     };
 
     let preferred = candidates.first().map(|(backend, _)| backend);
@@ -440,7 +450,10 @@ async fn ensure_runtime(
 ) -> Result<DiffusionRuntimeManifest, AppError> {
     // Keep install, validation and replacement serialized with image and video generation.
     let _runtime_install_guard = RUNTIME_INSTALL_LOCK.lock().await;
-    set_runtime_activity(runtime_activity("resolving", "Checking local renderer and release assets…"));
+    set_runtime_activity(runtime_activity(
+        "resolving",
+        "Checking local renderer and release assets…",
+    ));
     let result = ensure_runtime_inner(root, client, hardware).await;
     match &result {
         Ok(manifest) => {
@@ -450,9 +463,10 @@ async fn ensure_runtime(
             set_runtime_activity(status);
         }
         Err(error) => {
-            set_runtime_activity(runtime_activity("failed", format!(
-                "Image renderer setup failed: {error}"
-            )));
+            set_runtime_activity(runtime_activity(
+                "failed",
+                format!("Image renderer setup failed: {error}"),
+            ));
         }
     }
     result
@@ -1254,7 +1268,8 @@ mod tests {
         let report = diffusion_runtime_status(
             &root,
             &hardware(Some(GpuVendor::Amd), Some(8 * 1024_u64.pow(3))),
-        ).unwrap();
+        )
+        .unwrap();
         assert!(matches!(report.state.as_str(), "missing" | "unsupported"));
     }
 
