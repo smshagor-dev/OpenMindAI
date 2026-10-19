@@ -1,0 +1,72 @@
+name: Kokoro Real Voice Inference
+
+on:
+  push:
+    branches:
+      - test/kokoro-real-model-voice-smoke
+    paths:
+      - scripts/kokoro-real-smoke.py
+      - .github/workflows/kokoro-real-voice.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-kokoro-voice:
+    name: Load authentic Kokoro checkpoint and generate real WAV (Linux CPU)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      OPENMINDAI_ROOT: ${{ runner.temp }}/openmind-kokoro-smoke
+      RUST_BACKTRACE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux Tauri libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Cache compiled Rust dependencies only
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Validate real audio QA rejects silence
+        run: python scripts/kokoro-real-smoke.py self-test
+
+      - name: Download authentic revision-pinned Kokoro model, voice and config
+        run: |
+          python scripts/kokoro-real-smoke.py prepare \
+            --root "$OPENMINDAI_ROOT" --download
+
+      - name: Invoke actual OpenMindAI Rust/Candle Kokoro synthesis
+        run: |
+          cargo run --locked --release \
+            --manifest-path src-tauri/Cargo.toml \
+            --example media_smoke -- speak --root "$OPENMINDAI_ROOT"
+
+      - name: Verify generated real 24 kHz PCM16 speech is not silent
+        run: |
+          python scripts/kokoro-real-smoke.py verify-wav \
+            --wav "$OPENMINDAI_ROOT/generated/smoke/speak-smoke.wav" \
+            --evidence "$RUNNER_TEMP/kokoro-smoke-evidence.json"
+
+      - name: Upload only safe inference evidence (never model weights or audio)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kokoro-real-candle-voice-evidence-linux
+          path: ${{ runner.temp }}/kokoro-smoke-evidence.json
+          if-no-files-found: error
+          retention-days: 14
