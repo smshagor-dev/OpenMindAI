@@ -29,9 +29,9 @@ FILES = {
         "format": "pth",
     },
     "config.json": {
-        # A small Git-tracked file read from the exact immutable model commit.
-        # Never substitute main/latest; record its actual hash in evidence.
-        "sha256": None,
+        # SHA-256 measured on immutable revision in successful real inference
+        # run #39274446841. Reject changed config bytes before model loading.
+        "sha256": "5abb01e2403b072bf03d04fde160443e209d7a0dad49a423be15196b9b43c17f",
         "limit": 65_536,
         "role": "config",
         "format": "json",
@@ -180,6 +180,7 @@ def verify_wav(path: Path, evidence: Path) -> dict:
         "model": MODEL_ID,
         "upstreamRevision": REVISION,
         "checkpointSha256": FILES["kokoro-v1_0.pth"]["sha256"],
+        "configSha256": FILES["config.json"]["sha256"],
         "voiceSha256": FILES["voices/af_heart.pt"]["sha256"],
         "outputSha256": sha256(path),
         "durationSeconds": round(seconds, 3),
@@ -197,6 +198,11 @@ def verify_wav(path: Path, evidence: Path) -> dict:
 
 
 def self_test() -> None:
+    # Every remote input is now hash-pinned, not merely revision-pinned.
+    for name, item in FILES.items():
+        checksum = item["sha256"]
+        assert isinstance(checksum, str) and len(checksum) == 64, name
+        assert all(ch in "0123456789abcdef" for ch in checksum), name
     with tempfile.TemporaryDirectory(prefix="kokoro-real-audio-qa-") as tmp:
         file = Path(tmp) / "sample.wav"
         report = Path(tmp) / "evidence.json"
