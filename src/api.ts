@@ -216,6 +216,13 @@ export const api = {
   // A saved installation marker is not evidence that llama-server still exists
   // on the current portable drive.
   runtimeInventory: () => deepRuntimeInventory(),
+  refreshRuntimeInventory: async () => {
+    // The user may have repaired or moved a portable runtime while the app
+    // was open. An explicit refresh must re-read manifests from disk.
+    if (runtimeScanPromise) await runtimeScanPromise.catch(() => undefined);
+    runtimeInventoryCache = null;
+    return deepRuntimeInventory();
+  },
   runtimeStatus: () => legacyApi.runtimeStatus(),
   installRecommendedRuntime: async () => {
     markRuntimeForegroundStarted();
