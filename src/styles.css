@@ -4347,7 +4347,8 @@ button {
 .download-progress-track,
 .dataset-progress-track,
 .setup-progress-bar {
-  min-height: 8px;
+  height: 9px;
+  min-height: 9px;
   border: 1px solid var(--border-strong);
   border-radius: 999px;
   overflow: hidden;
