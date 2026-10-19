@@ -78,6 +78,23 @@ graph. The unignored audit is a **migration readiness check**, not an audit
 of the unchanged production lockfile; production still contains ZIP 7.2.0
 until the reviewed source replacement is actually committed.
 
+## Candidate upstream source provenance
+
+The ZIP 9 probe now compares all files in each Cargo-verified registry source
+tree against the disposable patched copy. It rejects **any unexpected modified,
+added or deleted file**, or any source symlink. The allowed changed paths are
+exactly `Cargo.toml` and `src/models/kokoro/model.rs` for `any-tts`; and
+`Cargo.toml`, `src/npy.rs`, `src/pickle.rs` for `candle-core`.
+
+Each Linux, Windows and macOS CI job uploads a short-lived evidence artifact
+containing a deterministic `zip9-source-provenance.json` and one unified diff
+per patched crate. The report records Cargo.lock's registry package checksum,
+original and patched source-tree SHA-256, source file count, and original and
+patched SHA-256 for each changed file. It does **not** upload unreviewed full
+crate source snapshots, or claim these temporary files are production-vendored
+and audited. The evidence can be inspected when creating reviewed, pinned,
+license-compliant production replacements. CI artifacts are retained 14 days.
+
 A red result is **evidence of a migration blocker**, not permission to
 disable the actual security gate. The probe does not test full speech output,
 ZIP member semantics, Windows/macOS runtime behavior, or package provenance.
