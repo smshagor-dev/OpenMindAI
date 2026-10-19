@@ -56,12 +56,29 @@ enum OutputFormat {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (target, explicit_root) = parse_args()?;
+    let (target, explicit_root, install_model) = parse_args()?;
     let root = match explicit_root {
         Some(path) => PortableRootManager::from_root(path),
         None => PortableRootManager::resolve()?,
     };
+    if install_model {
+        root.ensure_directories()?;
+    }
     root.validate_root()?;
+    if install_model {
+        println!(
+            "[Speak] installing authentic Kokoro model using the application download manager..."
+        );
+        let manager = model_download::ModelDownloadManager::new(root.clone());
+        let status = manager.download_catalog_model(SPEAK_MODEL_ID).await?;
+        if status.state != model_download::DownloadState::Completed {
+            return Err(io::Error::other(
+                "Kokoro Model Download Manager did not complete the model package install",
+            )
+            .into());
+        }
+        println!("[Speak] model package installed through production download manager");
+    }
 
     let output_dir = root.resolve_relative("generated/smoke")?;
     fs::create_dir_all(&output_dir)?;
@@ -93,7 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn parse_args() -> Result<(Target, Option<PathBuf>), Box<dyn std::error::Error>> {
+fn parse_args() -> Result<(Target, Option<PathBuf>, bool), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
     let target = match args.next().as_deref() {
         Some("speak") => Target::Speak,
@@ -114,6 +131,7 @@ fn parse_args() -> Result<(Target, Option<PathBuf>), Box<dyn std::error::Error>>
     };
 
     let mut explicit_root = None;
+    let mut install_model = false;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--root" => {
@@ -121,6 +139,9 @@ fn parse_args() -> Result<(Target, Option<PathBuf>), Box<dyn std::error::Error>>
                     io::Error::new(io::ErrorKind::InvalidInput, "--root requires a path")
                 })?;
                 explicit_root = Some(PathBuf::from(value));
+            }
+            "--install-model" if target == Target::Speak && !install_model => {
+                install_model = true;
             }
             "-h" | "--help" => {
                 print_usage();
@@ -135,12 +156,12 @@ fn parse_args() -> Result<(Target, Option<PathBuf>), Box<dyn std::error::Error>>
             }
         }
     }
-    Ok((target, explicit_root))
+    Ok((target, explicit_root, install_model))
 }
 
 fn print_usage() {
     eprintln!(
-        "Usage: cargo run --manifest-path src-tauri/Cargo.toml --example media_smoke -- <speak|canvas|motion|all> [--root <OpenMindAI Root>]\n\n\
+        "Usage: cargo run --manifest-path src-tauri/Cargo.toml --example media_smoke -- <speak|canvas|motion|all> [--root <OpenMindAI Root>] [--install-model (speak only)]\n\n\
          Without --root, the harness uses OPENMINDAI_ROOT, the saved OpenMindAI installation, or the normal portable-root resolution.\n\
          'motion' can take a long time on low-VRAM hardware; 'all' runs Speak, Canvas, then Motion sequentially."
     );
