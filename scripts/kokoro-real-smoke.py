@@ -155,6 +155,53 @@ def prepare(root: Path, *, download: bool) -> None:
         print(f"{name}: {data['size']} bytes, sha256 {data['sha256']}")
 
 
+
+def verify_production_install(root: Path) -> None:
+    """Verify the *actual* model manager's manifests; never create or repair them."""
+    root = root.resolve(strict=True)
+    model_dir = root / DESTINATION
+    if model_dir.is_symlink() or not model_dir.is_dir():
+        raise ValueError("Kokoro installation directory missing or linked")
+    expected = {
+        name: get_asset(name, model_dir / name, download=False)
+        for name in FILES
+    }
+    primary_path = model_dir / "model-manifest.json"
+    dependency_path = model_dir / "package-manifest.json"
+    for path in (primary_path, dependency_path):
+        if not path.is_file() or path.is_symlink() or path.stat().st_size > 65536:
+            raise ValueError(f"Production model manifest missing/unsafe: {path}")
+    primary = json.loads(primary_path.read_text(encoding="utf-8"))
+    pkg = json.loads(dependency_path.read_text(encoding="utf-8"))
+    model_size, model_sha, _ = expected["kokoro-v1_0.pth"]
+    if (primary.get("repo") != REPO
+            or primary.get("filename") != "kokoro-v1_0.pth"
+            or primary.get("sizeBytes") != model_size
+            or primary.get("sha256") != model_sha
+            or primary.get("actualSha256") != model_sha
+            or primary.get("verification") != "verified"):
+        raise ValueError("Production model downloader did not install a verified checkpoint manifest")
+    if pkg.get("modelId") != MODEL_ID or pkg.get("repo") != REPO:
+        raise ValueError("Production package-manifest identity mismatch")
+    records = pkg.get("files")
+    if not isinstance(records, list) or len(records) != 2:
+        raise ValueError("Production downloader must install exactly the two Kokoro dependencies")
+    by_role = {entry.get("role"): entry for entry in records if isinstance(entry, dict)}
+    if set(by_role) != {"voice", "config"} or len(by_role) != len(records):
+        raise ValueError("Missing/duplicate production voice or config dependency")
+    for name in ("config.json", "voices/af_heart.pt"):
+        entry = by_role[FILES[name]["role"]]
+        size, digest, _ = expected[name]
+        if (entry.get("filename") != name
+                or entry.get("format") != FILES[name]["format"]
+                or entry.get("sizeBytes") != size
+                or entry.get("sha256") != digest
+                or entry.get("actualSha256") != digest
+                or entry.get("verification") != "verified"):
+            raise ValueError(f"Production downloader dependency record invalid: {name}")
+    print("Actual Model Download Manager package and manifests verified against pinned model hashes")
+
+
 def verify_wav(path: Path, evidence: Path) -> dict:
     if not path.is_file() or path.is_symlink():
         raise ValueError(f"Real Kokoro speech output missing: {path}")
@@ -238,6 +285,8 @@ if __name__ == "__main__":
     setup = commands.add_parser("prepare")
     setup.add_argument("--root", type=Path, required=True)
     setup.add_argument("--download", action="store_true")
+    installed = commands.add_parser("verify-install")
+    installed.add_argument("--root", type=Path, required=True)
     quality = commands.add_parser("verify-wav")
     quality.add_argument("--wav", type=Path, required=True)
     quality.add_argument("--evidence", type=Path, required=True)
@@ -248,6 +297,8 @@ if __name__ == "__main__":
             prepare(args.root, download=args.download)
         elif args.command == "verify-wav":
             verify_wav(args.wav, args.evidence)
+        elif args.command == "verify-install":
+            verify_production_install(args.root)
         else:
             self_test()
     except (ValueError, OSError, urllib.error.URLError, json.JSONDecodeError) as error:
