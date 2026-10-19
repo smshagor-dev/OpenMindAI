@@ -85,9 +85,7 @@ pub enum VerificationState {
 /// A missing or malformed SHA must fail closed before any remote file write.
 pub(super) fn pinned_repo_revision(sha: Option<&str>) -> Result<&str, AppError> {
     match sha {
-        Some(value)
-            if value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
-        {
+        Some(value) if value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) => {
             Ok(value)
         }
         _ => Err(AppError::ModelDownloadFailed(
