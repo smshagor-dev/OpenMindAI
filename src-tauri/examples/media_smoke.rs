@@ -215,6 +215,7 @@ async fn smoke_canvas(
         &output,
         false, // Standard smoke test keeps the platform's preferred renderer.
         &|stage| println!("[Canvas] {stage}"),
+        &|step, total| println!("[Canvas] sampling step {step}/{total}"),
     )
     .await?;
     report_output("Canvas", &output, 8, OutputFormat::Png)?;
