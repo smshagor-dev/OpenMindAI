@@ -14,7 +14,7 @@ function themeTokens(selector) {
   assert.notEqual(start, -1, `Theme selector missing: ${selector}`);
   const body = stylesheet.slice(start + selector.length + 2, stylesheet.indexOf("}", start));
   const tokens = new Map();
-  for (const match of body.matchAll(/(--[a-z-]+):\s*(#[0-9a-f]{6});/gi)) {
+  for (const match of body.matchAll(/(--[a-z-]+):\s*([^;]+);/gi)) {
     tokens.set(match[1], match[2]);
   }
   return tokens;
