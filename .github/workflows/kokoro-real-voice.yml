@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - test/kokoro-voice-regression-gate
     paths:
       - .github/workflows/kokoro-real-voice.yml
       - scripts/kokoro-real-smoke.py
