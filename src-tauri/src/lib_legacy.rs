@@ -622,6 +622,13 @@ async fn create_document_artifact(
     Ok(updated)
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageProgressEvent {
+    artifact_id: String,
+    stage: &'static str,
+}
+
 #[tauri::command]
 async fn create_generation_artifact(
     app: AppHandle,
@@ -689,6 +696,17 @@ async fn create_generation_artifact(
 
     app.emit("artifact:started", &artifact)
         .map_err(|error| app_error::AppError::internal(error.to_string()))?;
+    // Stage updates are advisory UI events. A detached window must not fail
+    // the render simply because it could not receive a progress notification.
+    let report_stage = |stage: &'static str| {
+        let _ = app.emit("image:progress", ImageProgressEvent {
+            artifact_id: artifact.id.clone(),
+            stage,
+        });
+    };
+    if kind == "image" {
+        report_stage("preparing");
+    }
 
     let generation_result = if let Some(job) = image_job.as_ref() {
         tokio::select! {
@@ -699,11 +717,13 @@ async fn create_generation_artifact(
                 ))
             }
             result = generate_local_media_artifact(
-                &state, &kind, &prompt, &path, use_cpu.unwrap_or(false)
+                &state, &kind, &prompt, &path, use_cpu.unwrap_or(false), &report_stage
             ) => result,
         }
     } else {
-        generate_local_media_artifact(&state, &kind, &prompt, &path, use_cpu.unwrap_or(false)).await
+        generate_local_media_artifact(
+            &state, &kind, &prompt, &path, use_cpu.unwrap_or(false), &report_stage
+        ).await
     };
     // A cancellation arriving just as inference finishes must not publish a ready image.
     let generation_result = if image_job.as_ref().is_some_and(|job| job.cancellation().is_cancelled()) {
@@ -751,6 +771,7 @@ async fn generate_local_media_artifact(
     prompt: &str,
     path: &std::path::Path,
     use_cpu: bool,
+    on_stage: &(dyn Fn(&'static str) + Send + Sync),
 ) -> Result<(), app_error::AppError> {
     match kind {
         "image" => {
@@ -775,6 +796,7 @@ async fn generate_local_media_artifact(
                 prompt,
                 path,
                 use_cpu,
+                on_stage,
             )
             .await
         }
