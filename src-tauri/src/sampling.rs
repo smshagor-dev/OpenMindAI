@@ -67,7 +67,6 @@ pub fn chat_output_budget(mode: &str, context_size: u32, messages: &[Value]) -> 
     (remaining >= MIN_RESPONSE_TOKENS).then_some(desired.min(remaining))
 }
 
-
 /// Compact a long conversation to fit the model currently loaded in memory.
 /// System instructions and the newest user input are never silently removed.
 /// Older turns are retained from newest to oldest, with short verbatim excerpts
@@ -150,7 +149,11 @@ pub fn compact_chat_context(
             if let Some(content) = messages[*index]["content"].as_str() {
                 let excerpt = content.chars().take(120).collect::<String>();
                 let excerpt = excerpt.replace('\n', " ");
-                note.push_str(&format!("\\n{} excerpt: {}", messages[*index]["role"].as_str().unwrap_or("message"), excerpt));
+                note.push_str(&format!(
+                    "\n{} excerpt: {}",
+                    messages[*index]["role"].as_str().unwrap_or("message"),
+                    excerpt
+                ));
             }
         }
         let note_message = json!({"role": "system", "content": note});
@@ -172,7 +175,7 @@ pub fn compact_chat_context(
 
 pub fn context_omission_notice(count: usize) -> String {
     format!(
-        "\\n\\n---\\n\\n**Context notice:** {} older conversation messages were shortened or omitted to fit the current model. The recent messages and required instructions were retained; repeat an earlier detail if needed.",
+        "\n\n---\n\n**Context notice:** {} older conversation messages were shortened or omitted to fit the current model. The recent messages and required instructions were retained; repeat an earlier detail if needed.",
         count
     )
 }
