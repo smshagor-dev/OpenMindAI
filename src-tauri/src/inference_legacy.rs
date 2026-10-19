@@ -119,6 +119,15 @@ impl ActiveGenerations {
         Ok(token)
     }
 
+    pub fn token(&self, conversation_id: &str) -> Result<CancellationToken, AppError> {
+        self.tokens
+            .lock()
+            .map_err(|_| AppError::internal("generation lock poisoned"))?
+            .get(conversation_id)
+            .cloned()
+            .ok_or_else(|| AppError::InferenceFailed("generation was not registered".to_string()))
+    }
+
     pub fn cancel(&self, conversation_id: &str) -> Result<(), AppError> {
         if let Some(token) = self
             .tokens
@@ -193,7 +202,10 @@ struct InlineDataImage {
 pub async fn stream_chat_completion(
     request: StreamRequest<'_>,
 ) -> Result<InferenceMetrics, AppError> {
-    let cancellation = request.active.start(request.conversation_id)?;
+    let cancellation = request.active.token(request.conversation_id)?;
+    if cancellation.is_cancelled() {
+        return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
+    }
     let started = Instant::now();
     let mut messages = build_context(request.database, request.conversation_id)?;
     if let Some(dataset_context) = request.dataset_context.filter(|value| !value.trim().is_empty()) {
@@ -208,6 +220,9 @@ pub async fn stream_chat_completion(
         request.conversation_id,
         &request.assistant.id,
     ).await?;
+    if cancellation.is_cancelled() {
+        return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
+    }
     attach_media_to_latest_user_message(&mut messages, request.media)?;
     let mut body = json!({
         "model": request.model,
@@ -236,12 +251,18 @@ pub async fn stream_chat_completion(
     let mut first_token_at = None;
     let mut status = "completed";
 
-    while let Some(chunk) = stream.next().await {
-        if cancellation.is_cancelled() {
-            status = "cancelled";
+    loop {
+        let chunk = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                status = "cancelled";
+                break;
+            }
+            chunk = stream.next() => chunk,
+        };
+        let Some(chunk) = chunk else {
             break;
-        }
-
+        };
         let bytes = chunk.map_err(|error| AppError::StreamFailed(error.to_string()))?;
         sse_buffer.push_str(&String::from_utf8_lossy(&bytes));
 
@@ -336,8 +357,6 @@ pub async fn stream_chat_completion(
             },
         )
         .map_err(|error| AppError::StreamFailed(error.to_string()))?;
-    request.active.finish(request.conversation_id);
-
     Ok(InferenceMetrics {
         time_to_first_token_ms: first_token_at,
         generated_chars,
@@ -1418,12 +1437,15 @@ async fn post_completion_with_retry(
     let url = format!("{endpoint}/v1/chat/completions");
     let mut attempt = 0;
     loop {
-        let response = client
-            .post(&url)
-            .json(body)
-            .send()
-            .await
-            .map_err(|error| AppError::InferenceServerUnavailable(error.to_string()))?;
+        let response = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
+            }
+            response = client.post(&url).json(body).send() => {
+                response.map_err(|error| AppError::InferenceServerUnavailable(error.to_string()))?
+            }
+        };
 
         if response.status() == StatusCode::SERVICE_UNAVAILABLE
             && attempt < COMPLETION_RETRY_ATTEMPTS
