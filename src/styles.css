@@ -4214,3 +4214,25 @@ button {
     flex-wrap: wrap;
   }
 }
+
+/* Runtime recovery never replaces the chat workspace. */
+.runtime-recovery-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border, rgba(130, 130, 130, 0.25));
+}
+.runtime-recovery-banner > div:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 240px;
+  flex: 1;
+  font-size: 13px;
+}
+.runtime-recovery-banner strong { font-size: 13px; }
+.runtime-recovery-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.runtime-recovery-actions button { padding: 7px 12px; }
+.runtime-recovery-error { color: var(--danger, #c55454); overflow-wrap: anywhere; }

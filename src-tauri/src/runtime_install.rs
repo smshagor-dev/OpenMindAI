@@ -195,6 +195,7 @@ pub struct RuntimeInstaller {
     client: Client,
     status: Arc<Mutex<RuntimeInstallStatus>>,
     cancel_token: Arc<Mutex<Option<CancellationToken>>>,
+    install_lock: tokio::sync::Mutex<()>,
 }
 
 impl RuntimeInstaller {
@@ -204,6 +205,7 @@ impl RuntimeInstaller {
             client: crate::net::download_client(),
             status: Arc::new(Mutex::new(RuntimeInstallStatus::idle())),
             cancel_token: Arc::new(Mutex::new(None)),
+            install_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -234,6 +236,10 @@ impl RuntimeInstaller {
         &self,
         hardware: &HardwareProfile,
     ) -> Result<RuntimeInstallStatus, AppError> {
+        let _install_guard = self.install_lock.try_lock().map_err(|_| {
+            AppError::RuntimeInstallFailed("runtime install already in progress".to_string())
+        })?;
+        self.set_state(RuntimeInstallState::Resolving, None)?;
         let token = CancellationToken::new();
         *self
             .cancel_token
@@ -273,6 +279,15 @@ impl RuntimeInstaller {
                     return Ok(status);
                 }
                 Err(error) => {
+                    if token.is_cancelled() {
+                        *self.cancel_token.lock().map_err(|_| {
+                            AppError::internal("runtime install cancel lock poisoned")
+                        })? = None;
+                        self.set_state(RuntimeInstallState::Cancelled, None)?;
+                        return Err(AppError::RuntimeInstallFailed(
+                            "runtime install cancelled".to_string(),
+                        ));
+                    }
                     tracing::warn!(?backend, %error, "AI runtime backend failed, trying next");
                     last_error = Some(error);
                 }
@@ -493,7 +508,7 @@ fn install_runtime_archive(
             Ok(())
         } else {
             Err(AppError::RuntimeInstallFailed(
-                "archive did not contain llama-server or llama-cli".to_string(),
+                "archive did not contain llama-server".to_string(),
             ))
         }
     });
@@ -518,7 +533,8 @@ fn install_runtime_archive(
 }
 
 fn has_runtime_binary(dir: &Path) -> bool {
-    find_binary(dir, "llama-server").is_some() || find_binary(dir, "llama-cli").is_some()
+    // A CLI-only package cannot serve Chat and must never be registered as ready.
+    find_binary(dir, "llama-server").is_some()
 }
 
 fn extract_archive(archive_path: &Path, dest_dir: &Path) -> Result<(), AppError> {
@@ -871,9 +887,21 @@ mod tests {
             .unwrap_err()
             .to_string();
 
-        assert!(error.contains("did not contain llama-server or llama-cli"), "{error}");
+        assert!(error.contains("did not contain llama-server"), "{error}");
         assert!(!install.exists());
         assert!(!staging.exists());
+    }
+
+    #[test]
+    fn cli_only_archive_is_not_a_usable_chat_runtime() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("runtime.zip");
+        zip_with(&archive, &[("bin/llama-cli.exe", b"cli")]);
+        let target = temp.path().join("runtimes/llama/cpu/b1");
+        let staged = temp.path().join("staged");
+        assert!(install_runtime_archive(&archive, &staged, &target).is_err());
+        assert!(!target.exists());
+        assert!(!staged.exists());
     }
 
     #[test]

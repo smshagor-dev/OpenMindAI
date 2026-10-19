@@ -663,11 +663,19 @@ impl<'a> RuntimeRegistry<'a> {
             if path.extension().and_then(|value| value.to_str()) != Some("json") {
                 continue;
             }
-            let content = fs::read_to_string(path)?;
-            let manifest =
-                serde_json::from_str::<RuntimeManifest>(content.trim_start_matches('\u{feff}'))
-                    .map_err(|error| AppError::RuntimeStartFailed(error.to_string()))?;
-            manifests.push(manifest);
+            let content = match fs::read_to_string(&path) {
+                Ok(content) => content,
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "skipping unreadable runtime manifest");
+                    continue;
+                }
+            };
+            match serde_json::from_str::<RuntimeManifest>(content.trim_start_matches('\u{feff}')) {
+                Ok(manifest) => manifests.push(manifest),
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "skipping invalid runtime manifest");
+                }
+            }
         }
         manifests.sort_by(|left, right| left.runtime_name.cmp(&right.runtime_name));
         Ok(manifests)
@@ -1036,6 +1044,25 @@ mod tests {
         .unwrap();
         assert!(!validation.usable);
         assert!(!validation.server_exists);
+    }
+
+    #[test]
+    fn invalid_manifest_does_not_hide_other_runtime_installs() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let dir = root.resolve_relative("runtimes/llama/manifests").unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("broken.json"), b"{invalid").unwrap();
+        fs::write(
+            dir.join("usable.json"),
+            serde_json::to_vec(&manifest(BackendKind::Cpu, Some("runtimes/llama/cpu/server")))
+                .unwrap(),
+        )
+        .unwrap();
+        let discovered = RuntimeRegistry::new(&root).discover().unwrap();
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].backend, BackendKind::Cpu);
     }
 
     #[test]
