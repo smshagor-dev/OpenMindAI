@@ -79,7 +79,7 @@ impl ModelLaunchPlanner {
             .and_then(|gpu| gpu.dedicated_vram_bytes)
             .map(safe_dedicated_vram_budget);
         let context_size = choose_context_window(
-            model.context_length.unwrap_or(8_192),
+            model.context_length.unwrap_or(8_192).max(4_096) as u64,
             model.size_bytes.max(0) as u64,
             hardware.memory.available_bytes,
         );
