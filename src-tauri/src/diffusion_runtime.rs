@@ -295,7 +295,7 @@ pub async fn generate_image(
     };
     let output = timeout(
         GENERATION_TIMEOUT,
-        crate::process_ownership::output_owned_with_stderr_lines(command, &observe_line),
+        crate::process_ownership::output_owned_with_progress_lines(command, &observe_line),
     )
     .await
     .map_err(|_| {
@@ -1127,7 +1127,17 @@ fn canonical_file_under_root(
 /// file/model download counters that happen to contain two numbers.
 fn parse_sampling_step(line: &str, expected_total: u32) -> Option<u32> {
     let lower = line.to_ascii_lowercase();
-    if !lower.contains("sampling") && !lower.contains("sample step") && !lower.contains("step ") {
+    // The pinned sd-cli prints actual sampling bars to stdout as
+    // "\r  |====>  | 3/20 - 1.25s/it". Its model-loading progress uses
+    // MB/s or GB/s instead; never mistake those for sampling.
+    let native_sampling_bar = lower.contains('|')
+        && lower.contains(" - ")
+        && (lower.contains("s/it") || lower.contains("it/s"));
+    if !native_sampling_bar
+        && !lower.contains("sampling")
+        && !lower.contains("sample step")
+        && !lower.contains("step ")
+    {
         return None;
     }
     let bytes = lower.as_bytes();
@@ -1371,6 +1381,18 @@ mod tests {
     #[test]
     fn sampling_progress_ignores_unrelated_logs() {
         assert_eq!(parse_sampling_step("Sampling step 3/20", 20), Some(3));
+        assert_eq!(
+            parse_sampling_step("  |====>    | 3/20 - 1.23s/it", 20),
+            Some(3)
+        );
+        assert_eq!(
+            parse_sampling_step("  |=======> | 9/20 - 2.5it/s", 20),
+            Some(9)
+        );
+        assert_eq!(
+            parse_sampling_step("  |====>    | 3/20 - 25.3MB/s", 20),
+            None
+        );
         assert_eq!(parse_sampling_step("sampling: 20/20", 20), Some(20));
         assert_eq!(parse_sampling_step("loading model 3/20", 20), None);
         assert_eq!(parse_sampling_step("sampling: 3/22", 20), None);
