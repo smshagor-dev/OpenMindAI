@@ -15,6 +15,7 @@ import type {
   SetupState,
   StorageLocationCheck,
   RuntimeInstallStatus,
+  DiffusionRuntimeStatus,
   DiagnosticReport,
   RepairSummary,
   BackupInfo,
@@ -278,6 +279,8 @@ export const api = {
   runtimeStatus: () => call<LlamaRuntimeStatus>("get_llama_runtime_status"),
   runtimeInventory: () => call<RuntimeInventory>("get_llama_runtime_inventory"),
   runtimeInstallStatus: () => call<RuntimeInstallStatus>("get_runtime_install_status"),
+  diffusionRuntimeStatus: () => call<DiffusionRuntimeStatus>("get_diffusion_runtime_status"),
+  installDiffusionRuntime: () => call<DiffusionRuntimeStatus>("install_diffusion_runtime"),
   installRecommendedRuntime: () => call<RuntimeInstallStatus>("install_recommended_runtime"),
   cancelRuntimeInstall: () => call<RuntimeInstallStatus>("cancel_runtime_install"),
   startRuntime: () => call<LlamaRuntimeStatus>("start_llama_runtime"),
@@ -599,6 +602,20 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
           : null,
       error: null,
     } as T);
+  }
+  if (command === "get_diffusion_runtime_status") {
+    return Promise.resolve({
+      state: "browserPreview",
+      backend: null,
+      version: null,
+      detail: "Image renderer installation is only available in the desktop application.",
+      downloadedBytes: 0,
+      totalBytes: null,
+      percentage: null,
+    } as T);
+  }
+  if (command === "install_diffusion_runtime") {
+    return Promise.reject(new Error("Install the image renderer from the OpenMindAI desktop app."));
   }
   if (command === "get_llama_runtime_inventory") {
     return Promise.resolve({ runtimes: [], selected: null, serverState: "stopped" } as T);
