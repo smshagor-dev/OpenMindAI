@@ -26,7 +26,7 @@ mod storage;
 mod voice_runtime;
 mod web_provider_config;
 
-use std::{path::PathBuf, sync::Mutex};
+use std::{path::{Path, PathBuf}, sync::Mutex};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -893,12 +893,75 @@ fn open_artifact(artifact_id: String, state: State<AppState>) -> Result<(), app_
         let artifact = ArtifactRepository::new(&db).find(&artifact_id)?;
         state.root.resolve_relative(&artifact.path)?
     };
-    let mut command = std::process::Command::new("cmd");
-    command.args(["/C", "start", "", &path.display().to_string()]);
+    launch_artifact_path(&state.root, &path, false)
+}
+
+/// Restrict shell-open/reveal operations to real files within the current
+/// portable root. Canonicalization prevents a replaced symlink from escaping
+/// that boundary after the artifact path was read from the database.
+fn checked_artifact_path(
+    root: &PortableRootManager,
+    path: &Path,
+) -> Result<PathBuf, app_error::AppError> {
+    let canonical_root = std::fs::canonicalize(root.root())?;
+    let canonical = std::fs::canonicalize(path).map_err(|error| {
+        app_error::AppError::internal(format!("artifact file is unavailable: {error}"))
+    })?;
+    if !canonical.is_file() || !canonical.starts_with(&canonical_root) {
+        return Err(app_error::AppError::internal(
+            "artifact must be an existing file inside OpenMindAI Root",
+        ));
+    }
+    Ok(canonical)
+}
+
+fn artifact_os_command(path: &Path, reveal: bool) -> std::process::Command {
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = std::process::Command::new("explorer");
+        if reveal {
+            command.arg(format!("/select,{}", path.display()));
+        } else {
+            command.arg(path);
+        }
+        command
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = std::process::Command::new("open");
+        if reveal {
+            command.arg("-R");
+        }
+        command.arg(path);
+        command
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let mut command = std::process::Command::new("xdg-open");
+        // xdg-open has no portable reveal/select-file flag; open the containing
+        // directory instead of pretending that file selection is supported.
+        command.arg(if reveal {
+            path.parent().unwrap_or(path)
+        } else {
+            path
+        });
+        command
+    }
+}
+
+fn launch_artifact_path(
+    root: &PortableRootManager,
+    path: &Path,
+    reveal: bool,
+) -> Result<(), app_error::AppError> {
+    let canonical = checked_artifact_path(root, path)?;
+    let mut command = artifact_os_command(&canonical, reveal);
     hide_console_window(&mut command);
     command
         .spawn()
-        .map_err(|error| app_error::AppError::internal(error.to_string()))?;
+        .map_err(|error| app_error::AppError::internal(format!("cannot open artifact: {error}")))?;
     Ok(())
 }
 
@@ -957,11 +1020,7 @@ fn reveal_artifact_in_folder(
         let artifact = ArtifactRepository::new(&db).find(&artifact_id)?;
         state.root.resolve_relative(&artifact.path)?
     };
-    std::process::Command::new("explorer")
-        .arg(format!("/select,{}", path.display()))
-        .spawn()
-        .map_err(|error| app_error::AppError::internal(error.to_string()))?;
-    Ok(())
+    launch_artifact_path(&state.root, &path, true)
 }
 
 /// Waits for the completed hardware scan instead of returning the startup
@@ -2230,6 +2289,48 @@ pub fn run() {
 #[cfg(test)]
 mod milestone2_tests {
     use super::*;
+
+    #[test]
+    fn artifact_open_commands_use_native_platform_handler() {
+        let file = Path::new("image test.png");
+        let open = artifact_os_command(file, false);
+        let reveal = artifact_os_command(file, true);
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(open.get_program(), std::ffi::OsStr::new("explorer"));
+            assert_eq!(reveal.get_program(), std::ffi::OsStr::new("explorer"));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(open.get_program(), std::ffi::OsStr::new("open"));
+            assert_eq!(reveal.get_program(), std::ffi::OsStr::new("open"));
+            let args = reveal.get_args().collect::<Vec<_>>();
+            assert_eq!(args[0], std::ffi::OsStr::new("-R"));
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            assert_eq!(open.get_program(), std::ffi::OsStr::new("xdg-open"));
+            assert_eq!(reveal.get_program(), std::ffi::OsStr::new("xdg-open"));
+            assert_eq!(
+                reveal.get_args().collect::<Vec<_>>(),
+                vec![std::ffi::OsStr::new("")]
+            );
+        }
+    }
+
+    #[test]
+    fn artifact_path_must_exist_inside_portable_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let file = root.resolve_relative("generated/images/test.png").unwrap();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"image-test").unwrap();
+        assert_eq!(checked_artifact_path(&root, &file).unwrap(), file.canonicalize().unwrap());
+        let outside = temp.path().join("outside.png");
+        std::fs::write(&outside, b"other").unwrap();
+        assert!(checked_artifact_path(&root, &outside).is_err());
+    }
 
     #[test]
     fn actual_or_temp_root_persistence_round_trip() {
