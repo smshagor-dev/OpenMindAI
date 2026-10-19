@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Probe ZIP 9 migration against exact, Cargo-verified upstream crate sources.
 
-This intentionally works on disposable copies and NEVER edits the checked-in
-Cargo.toml, Cargo.lock, installed crate cache, or production TTS dependency.
+The registry source and desktop Cargo crate are copied to scratch space;
+resolver changes never write into the checked-in Cargo.toml or Cargo.lock.
 See docs/zip9-upstream-migration.md.
 """
 from __future__ import annotations
@@ -110,6 +110,24 @@ def run(command: list[str], env: dict[str, str] | None = None) -> None:
     subprocess.run(command, check=True, cwd=ROOT, env=env)
 
 
+
+def stage_desktop_crate(source: Path, destination: Path) -> tuple[Path, Path]:
+    """Copy the desktop crate, excluding build outputs, before Cargo resolution.
+
+    Cargo's update subcommand writes Cargo.lock even when using --config patch.
+    A throwaway manifest path prevents interrupts from changing the checked-in
+    lockfile, including SIGKILL and system crashes that bypass finally blocks.
+    """
+    shutil.copytree(
+        source, destination, symlinks=True, ignore=shutil.ignore_patterns("target"),
+    )
+    for name in ("Cargo.toml", "Cargo.lock"):
+        original = source / name
+        staged = destination / name
+        if staged.read_bytes() != original.read_bytes():
+            raise RuntimeError(f"Staged {name} did not match the checked-in input")
+    return destination / "Cargo.toml", destination / "Cargo.lock"
+
 def lock_versions(path: Path, name: str) -> list[str]:
     document = tomllib.loads(path.read_text(encoding="utf-8"))
     return [p["version"] for p in document["package"] if p["name"] == name]
@@ -127,6 +145,22 @@ def self_test() -> None:
         except ValueError:
             continue
         raise AssertionError("Unsupported ZIP dependency syntax must fail closed")
+
+    # Simulate a resolver rewrite in an isolated working copy, including a
+    # local build-output directory that must not be recursively copied.
+    with tempfile.TemporaryDirectory(prefix="openmind-zip9-stage-test-") as temp:
+        base = Path(temp)
+        source = base / "source"
+        source.mkdir()
+        (source / "Cargo.toml").write_text('[package]\\nname = "test"\\n')
+        (source / "Cargo.lock").write_text("original lock")
+        (source / "target").mkdir()
+        (source / "target" / "cache").write_text("do not copy")
+        manifest, lock = stage_desktop_crate(source, base / "staged")
+        assert manifest.read_bytes() == (source / "Cargo.toml").read_bytes()
+        assert not (base / "staged" / "target").exists()
+        lock.write_text("modified by simulated cargo update")
+        assert (source / "Cargo.lock").read_text() == "original lock"
     print("ZIP 9 probe self-test passed")
 
 
@@ -150,6 +184,9 @@ def main() -> None:
     run(["cargo", "fetch", "--locked", "--manifest-path", str(MANIFEST)])
     with tempfile.TemporaryDirectory(prefix="openmind-zip9-probe-") as temp:
         overlay = Path(temp)
+        scratch_manifest, scratch_lock = stage_desktop_crate(
+            ROOT / "src-tauri", overlay / "src-tauri",
+        )
         patches = []
         for crate, version in TARGETS.items():
             src = registry_source(crate, version, cargo_home)
@@ -176,39 +213,42 @@ def main() -> None:
             'zip = "=9.0.4"\n',
             encoding="utf-8",
         )
-        # The production Cargo manifests and lockfile still remain untouched
-        # apart from the temporary Cargo resolver probe guarded by finally.
-        original = MANIFEST.read_text(encoding="utf-8")
-        scratch_manifest = MANIFEST
-        scratch_lock = LOCK
+
+        # No Cargo update/check below refers to the checked-in manifest or lock.
+        # Reuse the CI cache directory, rather than copying gigabytes of target.
+        testing_env = os.environ.copy()
+        testing_env["CARGO_TARGET_DIR"] = str(ROOT / "src-tauri" / "target")
+        # Snapshot both inputs to detect unexpected external modifications.
+        original_manifest = MANIFEST.read_bytes()
+        original_lock = LOCK.read_bytes()
         try:
-            # Cargo patch CLI config allows isolated source overrides; the
-            # temporarily updated lockfile is restored in finally even on fail.
-            original_lock = scratch_lock.read_bytes()
-            try:
-                run(["cargo", *patches, "update", "--manifest-path", str(MANIFEST), "-p", "any-tts", "-p", "candle-core"])
-                versions = lock_versions(LOCK, "zip")
-                if any(v.startswith(("7.", "8.")) for v in versions):
-                    raise RuntimeError(f"Legacy zip versions still resolved: {versions}")
-                run(["cargo", *patches, "check", "--manifest-path", str(MANIFEST), "--lib"])
-                testing_env = os.environ.copy()
-                testing_env["CARGO_TARGET_DIR"] = str(ROOT / "src-tauri" / "target")
-                run([
-                    "cargo", "test", "--manifest-path", str(trial / "Cargo.toml"),
-                    "--test", "zip9_reader_regressions", "--", "--nocapture",
-                ], env=testing_env)
-                test_zip_versions = lock_versions(trial / "Cargo.lock", "zip")
-                if any(v.startswith(("7.", "8.")) for v in test_zip_versions):
-                    raise RuntimeError(
-                        f"Standalone ZIP 9 reader harness unexpectedly links old ZIP: {test_zip_versions}"
-                    )
-                print("ZIP 9 compilation and synthetic NPZ/PTH regression probe PASSED.")
-                print("Real pretrained model and platform-specific TTS validation are still required.")
-            finally:
-                scratch_lock.write_bytes(original_lock)
+            run([
+                "cargo", *patches, "update", "--manifest-path",
+                str(scratch_manifest), "-p", "any-tts", "-p", "candle-core",
+            ], env=testing_env)
+            versions = lock_versions(scratch_lock, "zip")
+            if any(v.startswith(("7.", "8.")) for v in versions):
+                raise RuntimeError(f"Legacy zip versions still resolved: {versions}")
+            run([
+                "cargo", *patches, "check", "--manifest-path",
+                str(scratch_manifest), "--lib",
+            ], env=testing_env)
+            run([
+                "cargo", "test", "--manifest-path", str(trial / "Cargo.toml"),
+                "--test", "zip9_reader_regressions", "--", "--nocapture",
+            ], env=testing_env)
+            test_zip_versions = lock_versions(trial / "Cargo.lock", "zip")
+            if any(v.startswith(("7.", "8.")) for v in test_zip_versions):
+                raise RuntimeError(
+                    f"Standalone ZIP 9 reader harness unexpectedly links old ZIP: {test_zip_versions}"
+                )
+            print("ZIP 9 compilation and synthetic NPZ/PTH regression probe PASSED.")
+            print("Real pretrained model and platform-specific TTS validation are still required.")
         finally:
-            if scratch_manifest.read_text(encoding="utf-8") != original:
-                raise RuntimeError("Unexpected source manifest mutation in ZIP 9 probe")
+            if MANIFEST.read_bytes() != original_manifest or LOCK.read_bytes() != original_lock:
+                raise RuntimeError(
+                    "Checked-in Cargo inputs unexpectedly changed while running the isolated probe"
+                )
 
 
 if __name__ == "__main__":
