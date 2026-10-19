@@ -40,6 +40,9 @@ jobs:
       - name: Model catalog
         run: npm run check:models
 
+      - name: Image generation routing
+        run: npm run test:image
+
       - name: Theme contrast and appearance regression
         run: npm run check:theme
 

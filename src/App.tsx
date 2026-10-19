@@ -55,7 +55,7 @@ import {
 } from "./lib/chat";
 import { checkForAppUpdate } from "./lib/appUpdate";
 import { formatError } from "./lib/format";
-import { imageRendererPrompt } from "./lib/imageGeneration";
+import { imageRendererPrompt, persistDirectImageRequest, plainImageRequest } from "./lib/imageGeneration";
 
 type View = "chat" | "work" | "settings" | "tools" | "projects";
 
@@ -577,17 +577,17 @@ export function App() {
         }
       }
 
-      const assistant = await api.sendChatMessage(
-        conversationId,
-        messageContent,
-        inferredMode,
-        inferenceMedia,
-      );
+      // A local diffusion renderer does not require a llama.cpp chat runtime.
+      // Persist the user and an associated assistant turn for artifact history.
+      const assistant =
+        inferredMode === "image"
+          ? await persistDirectImageRequest(conversationId, messageContent, api)
+          : await api.sendChatMessage(conversationId, messageContent, inferredMode, inferenceMedia);
       const generationKind = generationKindForMode(inferredMode);
       if (generationKind) {
         const generationPrompt =
           generationKind === "image"
-            ? imageRendererPrompt(assistant.content, messageContent)
+            ? plainImageRequest(messageContent)
             : assistant.content.trim() || content;
         const artifact = await api.createGenerationArtifact(
           conversationId,

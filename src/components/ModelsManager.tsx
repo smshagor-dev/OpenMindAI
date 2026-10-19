@@ -578,6 +578,7 @@ function catalogAvailabilityLabel(item: ModelCatalogStatus, status: DownloadStat
   if (status?.state === "pausedInterrupted") return "Paused";
   if (status?.state === "failed") return "Download failed";
   if (status?.state === "cancelled") return "Cancelled";
+  if (item.entry.id === "flux1-schnell") return "Renderer integration pending";
   if (item.installed) return "Ready";
   if (!item.downloadSupported) return "Manual license/access";
   if (item.compatible) return "Available";
@@ -585,6 +586,7 @@ function catalogAvailabilityLabel(item: ModelCatalogStatus, status: DownloadStat
 }
 
 function systemFitLabel(item: ModelCatalogStatus) {
+  if (item.entry.id === "flux1-schnell") return "FLUX rendering is not available in this version";
   if (item.installed) return "Ready";
   if (!item.downloadSupported) {
     return item.compatible
