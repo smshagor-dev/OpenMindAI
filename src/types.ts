@@ -333,6 +333,8 @@ export type ImageRenderStage = "preparing" | "rendering" | "validating";
 export interface ImageRenderProgress {
   artifactId: string;
   stage: ImageRenderStage;
+  step?: number | null;
+  totalSteps?: number | null;
 }
 
 
