@@ -33,20 +33,28 @@ fail-closed Cargo manifest transformation. The GitHub Actions workflow
    expose any ZIP 9 API errors. It restores the original production lockfile
    even if a step fails.
 
-The isolated probe also inserts `scripts/zip9-reader-regressions.rs` into the
-patched Candle source tree, then runs its Rust tests. The tests validate:
+The isolated probe copies `scripts/zip9-reader-regressions.rs` into a
+standalone temporary Cargo test harness linked to the patched Candle source.
+The test suite validates:
 
 - ZIP 9 NPZ eager and lazy read/write round-trips with a concrete `f32` tensor;
 - Candle's PyTorch PTH ZIP filename handling and pickle parser on a small
   protocol-2 empty dictionary archive (`data.pkl`);
+- loading a **nonempty** three-element `f32` tensor from the separate
+  `archive/data/0` storage inside a PyTorch-format ZIP checkpoint, checking
+  both parsed tensor metadata and the exact reconstructed values;
+- rejecting a checkpoint that has valid tensor metadata but omits its required
+  storage member, rather than silently returning invented weights;
 - rejection of non-ZIP input by eager/lazy NPZ and PTH metadata readers.
 
-These fixtures are deterministic, generated locally and require no model
-download. **The synthetic PTH fixture has no tensor storages** and therefore
-does not establish full pretrained PyTorch checkpoint fidelity, voice output
-or behavior under malicious archive entry metadata. Keep the real Kokoro
-load-and-synthesize tests and cross-platform ZIP 9 review as separate release
-gates.
+The nonempty tensor's `data.pkl` bytes were generated with PyTorch's
+`torch.save(..., pickle_protocol=2)`; its corresponding little-endian storage
+and ZIP structure are reconstructed in the Rust test without a Python or model
+download dependency. These small deterministic fixtures verify a concrete
+storage-loading path, **not** representative model size, the full range of
+PyTorch checkpoint formats, Kokoro speech output, or hostile ZIP metadata
+handling. Real Kokoro load-and-synthesize and Windows/macOS/Linux checks are
+still separate release gates.
 
 A red result is **evidence of a migration blocker**, not permission to
 disable the actual security gate. The probe does not test full speech output,

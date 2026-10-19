@@ -87,3 +87,83 @@ fn zip9_npz_and_pth_readers_reject_non_zip_bytes() -> Result<(), Box<dyn Error>>
     assert!(read_pth_tensor_info(archive.path(), false, None).is_err());
     Ok(())
 }
+
+
+// data.pkl from a tiny PyTorch 2.x checkpoint generated with:
+//
+// torch.save({"weight": torch.tensor([1.0, 2.5, -3.0],
+//                                   dtype=torch.float32)},
+//            file, pickle_protocol=2)
+//
+// Unlike the minimal empty dictionary test above, this pickle describes a
+// tensor whose f32 storage lives in a separate archive/data/0 ZIP entry.
+// The archive is rebuilt here without a Python or PyTorch CI dependency.
+const TORCH_TENSOR_PICKLE_HEX: &str = concat!(
+    "80027d71005806000000776569676874710163746f7263682e5f7574696c730a",
+    "5f72656275696c645f74656e736f725f76320a71022828580700000073746f",
+    "72616765710363746f7263680a466c6f617453746f726167650a7104580100",
+    "0000307105580300000063707571064b03747107514b004b038571084b0185",
+    "71098963636f6c6c656374696f6e730a4f726465726564446963740a710a29",
+    "52710b74710c52710d732e"
+);
+
+fn decode_fixture_hex(s: &str) -> Vec<u8> {
+    assert_eq!(s.len() % 2, 0, "hex fixture must contain complete bytes");
+    s.as_bytes()
+        .chunks_exact(2)
+        .map(|part| u8::from_str_radix(std::str::from_utf8(part).unwrap(), 16).unwrap())
+        .collect()
+}
+
+fn write_pytorch_tensor_archive(path: &Path, include_storage: bool) -> Result<(), Box<dyn Error>> {
+    let mut writer = zip::ZipWriter::new(File::create(path)?);
+    fn add(writer: &mut zip::ZipWriter<File>, name: &str, data: &[u8])
+        -> Result<(), Box<dyn Error>>
+    {
+        writer.start_file(
+            name,
+            zip::write::FileOptions::<()>::default()
+                .compression_method(zip::CompressionMethod::Stored),
+        )?;
+        writer.write_all(data)?;
+        Ok(())
+    }
+    add(&mut writer, "archive/data.pkl", &decode_fixture_hex(TORCH_TENSOR_PICKLE_HEX))?;
+    add(&mut writer, "archive/byteorder", b"little")?;
+    add(&mut writer, "archive/version", b"3\n")?;
+    if include_storage {
+        // This little-endian byte sequence is the actual 3-element f32 storage.
+        let mut data = Vec::new();
+        for value in [1.0_f32, 2.5, -3.0] {
+            data.extend_from_slice(&value.to_le_bytes());
+        }
+        add(&mut writer, "archive/data/0", &data)?;
+    }
+    writer.finish()?;
+    Ok(())
+}
+
+#[test]
+fn zip9_pth_reads_real_nonempty_torch_storage_layout() -> Result<(), Box<dyn Error>> {
+    let archive = ScratchFile::new("pth");
+    write_pytorch_tensor_archive(archive.path(), true)?;
+
+    let metadata = read_pth_tensor_info(archive.path(), false, None)?;
+    assert_eq!(metadata.len(), 1, "expected the saved PyTorch weight tensor");
+
+    let tensors = candle_core::pickle::read_all(archive.path())?;
+    assert_eq!(tensors.len(), 1);
+    assert_eq!(tensors[0].0, "weight");
+    assert_eq!(tensors[0].1.to_vec1::<f32>()?, vec![1.0, 2.5, -3.0]);
+    Ok(())
+}
+
+#[test]
+fn zip9_pth_rejects_missing_tensor_storage() -> Result<(), Box<dyn Error>> {
+    let archive = ScratchFile::new("pth");
+    write_pytorch_tensor_archive(archive.path(), false)?;
+    // A valid data.pkl does not make the checkpoint valid when data/0 is
+    // missing; tensor loaders must never invent or silently zero the weights.
+    assert!(candle_core::pickle::read_all(archive.path()).is_err());
+    Ok(())
+}
