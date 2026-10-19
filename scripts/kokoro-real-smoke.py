@@ -192,12 +192,18 @@ def verify_production_install(root: Path) -> None:
     for name in ("config.json", "voices/af_heart.pt"):
         entry = by_role[FILES[name]["role"]]
         size, digest, _ = expected[name]
+        recorded_upstream_hash = entry.get("sha256")
+        # Small Hugging Face Git blobs (e.g. config.json) have no LFS
+        # sha256 in the production API response. In that case the
+        # downloader correctly records "unverified", but we independently
+        # verify the *actual bytes* against the fixed-release SHA-256 above.
+        expected_state = "verified" if recorded_upstream_hash else "unverified"
         if (entry.get("filename") != name
                 or entry.get("format") != FILES[name]["format"]
                 or entry.get("sizeBytes") != size
-                or entry.get("sha256") != digest
+                or recorded_upstream_hash not in (None, digest)
                 or entry.get("actualSha256") != digest
-                or entry.get("verification") != "verified"):
+                or entry.get("verification") != expected_state):
             raise ValueError(f"Production downloader dependency record invalid: {name}")
     print("Actual Model Download Manager package and manifests verified against pinned model hashes")
 
