@@ -77,6 +77,7 @@ export function ChatView(props: {
   onOpenArtifact: (artifact: Artifact) => void;
   onRevealArtifact: (artifact: Artifact) => void;
   onRetryArtifact: (artifact: Artifact, useCpu?: boolean) => void;
+  onCancelImageArtifact: (artifact: Artifact) => void;
   onPreview: (target: PreviewTarget) => void;
 }) {
   const latestMessageRef = useRef<globalThis.HTMLDivElement | null>(null);
@@ -206,6 +207,7 @@ export function ChatView(props: {
               onOpenArtifact={props.onOpenArtifact}
               onRevealArtifact={props.onRevealArtifact}
               onRetryArtifact={props.onRetryArtifact}
+              onCancelImageArtifact={props.onCancelImageArtifact}
               onPreview={props.onPreview}
               onEditUser={message.role === "user" ? (content) => props.editUserMessage(message.id, content) : undefined}
             />
