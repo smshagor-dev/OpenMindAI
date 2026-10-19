@@ -92,7 +92,7 @@ test("persist error marks the generated assistant turn failed", async () => {
 });
 
 test("browser preview cannot report phantom generated image artifacts", () => {
-  const source = readFileSync(new URL("../src/api_legacy.ts", import.meta.url), "utf8");
+  const source = readFileSync(new globalThis.URL("../src/api_legacy.ts", import.meta.url), "utf8");
   assert.match(source, /status: command === "create_generation_artifact" \? "failed" : "ready"/);
   assert.match(source, /no image was generated in browser preview/);
 });
