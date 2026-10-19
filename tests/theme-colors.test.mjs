@@ -91,8 +91,10 @@ test("secondary UI surfaces use selected app palette instead of dark-only fallba
 test("appearance choice applies during boot and stays in sync with app settings", () => {
   const index = read("index.html");
   const app = read("src/App.tsx");
-  assert.match(index, /document\.documentElement\.dataset\.theme = theme/);
-  assert.match(index, /openmindai:theme/);
+  const boot = read("public/theme-init.js");
+  assert.match(index, /src="\/theme-init\.js"/);
+  assert.match(boot, /document\.documentElement\.dataset\.theme = theme/);
+  assert.match(boot, /openmindai:theme/);
   assert.match(app, /localStorage\.setItem\("openmindai:theme", preferences\.theme\)/);
   assert.match(app, /onSystemThemeChange/);
 });
