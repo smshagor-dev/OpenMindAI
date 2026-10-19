@@ -581,95 +581,52 @@ fn child_still_running(pid: u32) -> bool {
     process_ownership::identity(pid).is_some()
 }
 
-/// Loads `config` into the runtime behind `runtime` and waits until it is healthy, holding
-/// the lock only for short launch/probe steps so status queries and the other runtime are
-/// never blocked by a slow load. If another model is mid-load, waits for that load to finish
-/// before switching, so concurrent callers never kill each other's loads. Blocking: call
-/// from synchronous code or `spawn_blocking`.
+/// Loads a model on a synchronous caller. The manager lock is held only
+/// for launch/probe steps, never while waiting for the model to be ready.
+/// Async callers must use `ensure_model_ready_cancellable` instead.
 pub fn ensure_model_ready(
     runtime: &Mutex<LlamaRuntimeManager>,
     hardware: &HardwareProfile,
     config: &ModelLaunchConfig,
 ) -> Result<(LlamaRuntimeStatus, ModelLease), AppError> {
-    let lock = || {
-        runtime
-            .lock()
-            .map_err(|_| AppError::internal("runtime lock poisoned"))
-    };
-    let expected = lock()?.resolved_model_path(&config.model_path)?;
-    let started = Instant::now();
-    let mut launched = false;
-    loop {
-        {
-            let mut manager = lock()?;
-            if !launched {
-                match manager.launch_model_server(hardware, config)? {
-                    ModelLaunch::Resident(status) => return Ok((*status, manager.lease())),
-                    ModelLaunch::Loading => launched = true,
-                    ModelLaunch::Busy => {}
-                }
-            }
-            if launched {
-                match manager.probe_model_server(&expected) {
-                    ModelProbe::Ready(_) => {
-                        let lease = manager.lease();
-                        return Ok((manager.active_status(), lease));
-                    }
-                    ModelProbe::Failed(reason) => return Err(AppError::ModelLoadFailed(reason)),
-                    ModelProbe::Loading => {}
-                }
-            }
-        }
-        if started.elapsed() >= MODEL_LOAD_TIMEOUT {
-            if launched {
-                let mut manager = lock()?;
-                if manager.loaded_model_path() == Some(expected.as_str()) {
-                    let _ = manager.stop();
-                }
-            }
-            return Err(AppError::ModelLoadFailed(format!(
-                "the model did not finish loading within {} seconds",
-                MODEL_LOAD_TIMEOUT.as_secs()
-            )));
-        }
-        thread::sleep(Duration::from_millis(250));
-    }
+    ensure_model_ready_checked(runtime, hardware, config, None)
 }
 
-
-/** Wait for a chat model without blocking an async worker. The registration
- * belongs to the calling chat request, which can cancel even before
- * the engine has produced its first token.
- */
-pub async fn ensure_model_ready_cancellable(
+/// Shared readiness flow for background startup and foreground chat. When
+/// cancellation is present, the worker stops its polling without terminating a
+/// model server another conversation may be about to reuse.
+fn ensure_model_ready_checked(
     runtime: &Mutex<LlamaRuntimeManager>,
     hardware: &HardwareProfile,
     config: &ModelLaunchConfig,
-    cancellation: &CancellationToken,
+    cancellation: Option<&CancellationToken>,
 ) -> Result<(LlamaRuntimeStatus, ModelLease), AppError> {
+    let check_cancelled = || {
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            Err(AppError::InferenceCancelled("generation cancelled".to_string()))
+        } else {
+            Ok(())
+        }
+    };
+    check_cancelled()?;
     let lock = || {
         runtime
             .lock()
             .map_err(|_| AppError::internal("runtime lock poisoned"))
     };
-    if cancellation.is_cancelled() {
-        return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
-    }
     let expected = lock()?.resolved_model_path(&config.model_path)?;
     let started = Instant::now();
     let mut launched = false;
+
     loop {
-        if cancellation.is_cancelled() {
-            return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
-        }
+        check_cancelled()?;
         {
             let mut manager = lock()?;
+            check_cancelled()?;
             if !launched {
                 match manager.launch_model_server(hardware, config)? {
                     ModelLaunch::Resident(status) => {
-                        if cancellation.is_cancelled() {
-                            return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
-                        }
+                        check_cancelled()?;
                         return Ok((*status, manager.lease()));
                     }
                     ModelLaunch::Loading => launched = true,
@@ -677,22 +634,22 @@ pub async fn ensure_model_ready_cancellable(
                 }
             }
             if launched {
+                check_cancelled()?;
                 match manager.probe_model_server(&expected) {
                     ModelProbe::Ready(_) => {
-                        if cancellation.is_cancelled() {
-                            return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
-                        }
-                        let lease = manager.lease();
-                        return Ok((manager.active_status(), lease));
+                        check_cancelled()?;
+                        return Ok((manager.active_status(), manager.lease()));
                     }
                     ModelProbe::Failed(reason) => return Err(AppError::ModelLoadFailed(reason)),
                     ModelProbe::Loading => {}
                 }
             }
         }
+        check_cancelled()?;
         if started.elapsed() >= MODEL_LOAD_TIMEOUT {
             if launched {
                 let mut manager = lock()?;
+                check_cancelled()?;
                 if manager.loaded_model_path() == Some(expected.as_str()) {
                     let _ = manager.stop();
                 }
@@ -702,12 +659,42 @@ pub async fn ensure_model_ready_cancellable(
                 MODEL_LOAD_TIMEOUT.as_secs()
             )));
         }
-        tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => {
-                return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
-            }
-            _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+        // The synchronous version is only used by blocking startup calls.
+        // Async callers execute this loop inside spawn_blocking and can Stop
+        // immediately, even if the worker is probing localhost.
+        thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// All blocking disk inventory, process creation, server health probes and
+/// readiness polling run in a dedicated blocking worker. Cancel can return
+/// promptly even if that worker is currently waiting on the runtime mutex.
+pub async fn ensure_model_ready_cancellable(
+    runtime: &Arc<Mutex<LlamaRuntimeManager>>,
+    hardware: &HardwareProfile,
+    config: &ModelLaunchConfig,
+    cancellation: &CancellationToken,
+) -> Result<(LlamaRuntimeStatus, ModelLease), AppError> {
+    if cancellation.is_cancelled() {
+        return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
+    }
+
+    let shared = Arc::clone(runtime);
+    let hardware = hardware.clone();
+    let config = config.clone();
+    let worker_cancellation = cancellation.clone();
+    let worker = tokio::task::spawn_blocking(move || {
+        ensure_model_ready_checked(&shared, &hardware, &config, Some(&worker_cancellation))
+    });
+
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => {
+            Err(AppError::InferenceCancelled("generation cancelled".to_string()))
+        }
+        result = worker => {
+            result
+                .map_err(|error| AppError::internal(format!("model readiness worker failed: {error}")))?
         }
     }
 }
@@ -954,7 +941,7 @@ mod tests {
         let root = PortableRootManager::from_root(
             std::env::temp_dir().join("openmindai-cancelled-load-test"),
         );
-        let runtime = Mutex::new(LlamaRuntimeManager::new(root));
+        let runtime = Arc::new(Mutex::new(LlamaRuntimeManager::new(root)));
         let config = ModelLaunchConfig {
             model_path: "missing.gguf".to_string(),
             backend: BackendKind::Cpu,
@@ -982,6 +969,54 @@ mod tests {
         .await;
         assert!(matches!(result, Err(AppError::InferenceCancelled(_))));
         assert!(!runtime.lock().unwrap().has_process());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn chat_cancellation_remains_responsive_while_runtime_mutex_is_busy() {
+        use tokio::time::{timeout, Duration};
+
+        let root = PortableRootManager::from_root(
+            std::env::temp_dir().join("openmindai-chat-readiness-responsiveness"),
+        );
+        let runtime = Arc::new(Mutex::new(LlamaRuntimeManager::new(root)));
+        // Simulate a second operation holding the runtime mutex while a chat
+        // is waiting to begin loading its model.
+        let held = runtime.lock().expect("runtime lock");
+        let cancelled = CancellationToken::new();
+        let to_stop = cancelled.clone();
+        let config = ModelLaunchConfig {
+            model_path: "unused.gguf".to_string(),
+            backend: BackendKind::Cpu,
+            device: None,
+            gpu_layers: 0,
+            context_size: 4096,
+            threads: 4,
+            batch_size: 256,
+            ubatch_size: 128,
+            flash_attention: false,
+            mmap: true,
+            mlock: false,
+            parallelism: 1,
+            host: "127.0.0.1".to_string(),
+            port: 12345,
+        };
+        let stop = async move {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            to_stop.cancel();
+        };
+        let load = ensure_model_ready_cancellable(
+            &runtime,
+            &hardware(GpuVendor::Nvidia),
+            &config,
+            &cancelled,
+        );
+        let (result, ()) = timeout(Duration::from_secs(2), async {
+            tokio::join!(load, stop)
+        })
+        .await
+        .expect("the async caller blocked on the runtime mutex");
+        assert!(matches!(result, Err(AppError::InferenceCancelled(_))));
+        drop(held);
     }
 
     #[test]
