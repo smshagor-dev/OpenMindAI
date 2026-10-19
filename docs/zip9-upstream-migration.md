@@ -114,6 +114,19 @@ the original upstream license files, and `review/` provenance JSON plus
 minimal unified diffs. Every vendored source tree must match its reviewed
 patched-tree SHA-256 before the candidate can be built.
 
+**Artifact integrity check (required).** Earlier uploaded candidates omitted
+hidden registry metadata by default. An inspection of the Linux artifact from
+PR #312 found 86 / 89 `any-tts` files and 104 / 106 `candle-core`
+files; neither reconstructed source tree matched its recorded SHA-256.
+These artifacts **must not be promoted** even though their pre-upload
+build and audit jobs succeeded. The workflow now explicitly enables hidden
+files for candidate uploads, downloads each uploaded artifact again, and
+independently checks its full source-file count, patched source-tree and
+individual patched-file SHA-256, allowed patch list, exact path-pinned
+Cargo.toml and ZIP 9-only candidate lockfile. The verifier's negative test
+removes hidden metadata and requires rejection. Any mismatch fails the CI
+job; passing before-upload tests alone is insufficient.
+
 The workflow now generates the same **source-pinned candidate separately on
 Linux, Windows and macOS**. Each runner re-resolves with the candidate's own
 manifest patches (without CLI overrides), requires only ZIP 9.0.4, runs
