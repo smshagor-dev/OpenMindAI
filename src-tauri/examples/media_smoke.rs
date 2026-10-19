@@ -66,7 +66,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     root.validate_root()?;
     if install_model {
-        println!("[Speak] installing authentic Kokoro model using the application download manager...");
+        println!(
+            "[Speak] installing authentic Kokoro model using the application download manager..."
+        );
         let manager = model_download::ModelDownloadManager::new(root.clone());
         let status = manager.download_catalog_model(SPEAK_MODEL_ID).await?;
         if status.state != model_download::DownloadState::Completed {
