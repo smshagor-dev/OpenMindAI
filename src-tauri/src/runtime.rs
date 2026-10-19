@@ -170,6 +170,7 @@ pub struct LlamaRuntimeManager {
     endpoint: Option<String>,
     state: ServerState,
     loaded_model_path: Option<String>,
+    loaded_context_size: Option<u32>,
     active_runtime: Option<RuntimeValidation>,
     load_started: Option<Instant>,
     leases: Arc<AtomicUsize>,
@@ -184,6 +185,7 @@ impl LlamaRuntimeManager {
             endpoint: None,
             state: ServerState::Stopped,
             loaded_model_path: None,
+            loaded_context_size: None,
             active_runtime: None,
             load_started: None,
             leases: Arc::new(AtomicUsize::new(0)),
@@ -347,7 +349,11 @@ impl LlamaRuntimeManager {
             .as_ref()
             .is_some_and(|runtime| runtime.manifest.backend == selected_backend);
 
-        if child_alive && same_model && same_backend {
+        // Reuse the resident server only when its actual KV context matches
+        // the new memory-aware launch plan. Available RAM can change after
+        // startup, and the request budget must not assume an unallocated window.
+        let same_context = self.loaded_context_size == Some(config.context_size);
+        if child_alive && same_model && same_backend && same_context {
             // True hot-chat path: reuse the resident model and its KV prompt
             // cache. No runtime probing, process restart or model reload.
             if self.state == ServerState::Ready {
@@ -461,6 +467,7 @@ impl LlamaRuntimeManager {
         self.child = Some(child);
         self.endpoint = Some(format!("http://{}:{}", config.host, config.port));
         self.loaded_model_path = Some(model_path_string);
+        self.loaded_context_size = Some(config.context_size);
         self.active_runtime = Some(selected);
         self.load_started = Some(Instant::now());
         self.leases = Arc::new(AtomicUsize::new(0));
@@ -571,6 +578,7 @@ impl LlamaRuntimeManager {
         }
         self.endpoint = None;
         self.loaded_model_path = None;
+        self.loaded_context_size = None;
         self.active_runtime = None;
         self.state = ServerState::Stopped;
         Ok(())
