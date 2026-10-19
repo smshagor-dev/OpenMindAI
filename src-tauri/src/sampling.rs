@@ -17,10 +17,56 @@
 //!   parallel planning workers).
 //! - [`SamplingProfile::DETERMINISTIC`]: greedy decoding for extraction (OCR).
 
-/// Response budget for one Core chat turn.
-pub const CORE_CHAT_MAX_TOKENS: u32 = 768;
-
 use serde_json::{json, Map, Value};
+
+// The engine is launched with a bounded context window. Longer writing tasks
+// need more output room than a short chat reply, but must leave enough space
+// for the prompt and the model's chat template.
+const CHAT_CONTEXT_RESERVE_TOKENS: u32 = 512;
+const MIN_RESPONSE_TOKENS: u32 = 256;
+const CHAT_OUTPUT_TOKENS: u32 = 2_048;
+const LONG_OUTPUT_TOKENS: u32 = 4_096;
+const SEARCH_OUTPUT_TOKENS: u32 = 3_072;
+
+/// Estimate the input budget without scanning image base64 bytes as prose.
+/// This is intentionally conservative; it does not replace the model tokenizer.
+fn estimated_prompt_tokens(messages: &[Value]) -> u32 {
+    let mut tokens: u64 = 128;
+    for message in messages {
+        tokens = tokens.saturating_add(32);
+        let content = &message["content"];
+        if let Some(text) = content.as_str() {
+            tokens = tokens.saturating_add((text.len() as u64).div_ceil(3));
+        } else if let Some(parts) = content.as_array() {
+            for part in parts {
+                if let Some(text) = part["text"].as_str() {
+                    tokens = tokens.saturating_add((text.len() as u64).div_ceil(3));
+                } else if part["type"] == "image_url" {
+                    // Vision models expand a compressed image into visual tokens.
+                    tokens = tokens.saturating_add(2_048);
+                } else {
+                    tokens = tokens.saturating_add(256);
+                }
+            }
+        }
+    }
+    tokens.min(u64::from(u32::MAX)) as u32
+}
+
+/// Pick the largest useful response budget that still fits the loaded
+/// llama-server context. None means the prompt leaves insufficient headroom.
+pub fn chat_output_budget(mode: &str, context_size: u32, messages: &[Value]) -> Option<u32> {
+    let desired = match mode.trim().to_ascii_lowercase().as_str() {
+        "document" | "pdf" | "research" | "thinking" => LONG_OUTPUT_TOKENS,
+        "search" => SEARCH_OUTPUT_TOKENS,
+        _ => CHAT_OUTPUT_TOKENS,
+    };
+    let remaining = context_size.saturating_sub(
+        estimated_prompt_tokens(messages).saturating_add(CHAT_CONTEXT_RESERVE_TOKENS),
+    );
+    (remaining >= MIN_RESPONSE_TOKENS).then_some(desired.min(remaining))
+}
+
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SamplingProfile {
@@ -129,6 +175,40 @@ impl SamplingProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_budget_grows_for_writing_but_respects_context() {
+        let messages = vec![json!({"role": "user", "content": "Write a short report"})];
+        assert_eq!(chat_output_budget("chat", 8_192, &messages), Some(2_048));
+        assert_eq!(chat_output_budget("document", 8_192, &messages), Some(4_096));
+        assert_eq!(chat_output_budget("pdf", 8_192, &messages), Some(4_096));
+        assert_eq!(chat_output_budget("research", 8_192, &messages), Some(4_096));
+        assert_eq!(chat_output_budget("thinking", 8_192, &messages), Some(4_096));
+        assert_eq!(chat_output_budget("search", 8_192, &messages), Some(3_072));
+        assert!(chat_output_budget("document", 4_096, &messages).unwrap() < 4_096);
+    }
+
+    #[test]
+    fn output_budget_shrinks_for_large_prompts_and_rejects_overflow() {
+        let large = vec![json!({"role": "user", "content": "a".repeat(16_000)})];
+        let budget = chat_output_budget("document", 8_192, &large).unwrap();
+        assert!(budget < 4_096);
+        assert!(budget >= 256);
+
+        let full = vec![json!({"role": "user", "content": "a".repeat(24_000)})];
+        assert_eq!(chat_output_budget("document", 8_192, &full), None);
+    }
+
+    #[test]
+    fn image_payloads_are_bounded_by_visual_token_estimate() {
+        let messages = vec![json!({"role": "user", "content": [
+            {"type": "text", "text": "Review this photo"},
+            {"type": "image_url", "image_url": {"url": format!("data:image/png;base64,{}", "A".repeat(100_000))}}
+        ]})];
+        let budget = chat_output_budget("vision", 8_192, &messages).unwrap();
+        assert!(budget > 0);
+        assert!(budget <= 2_048);
+    }
 
     #[test]
     fn only_core_chat_uses_repetition_penalties() {
