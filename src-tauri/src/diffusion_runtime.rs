@@ -18,6 +18,9 @@ use tokio::{process::Command, time::timeout};
 use uuid::Uuid;
 use zip::ZipArchive;
 
+#[path = "png_output_validation.rs"]
+mod png_output_validation;
+
 use crate::{
     app_error::AppError,
     hardware::{BackendKind, GpuVendor, HardwareProfile},
@@ -42,7 +45,7 @@ const MAX_PROMPT_CHARS: usize = 4_000;
 static RUNTIME_INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const GENERATION_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 const VIDEO_GENERATION_TIMEOUT: Duration = Duration::from_secs(90 * 60);
-const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+
 const WEBM_SIGNATURE: &[u8; 4] = b"\x1a\x45\xdf\xa3";
 
 #[cfg(target_os = "windows")]
@@ -205,7 +208,7 @@ pub async fn generate_image(
         )));
     }
 
-    validate_png(output_path)?;
+    png_output_validation::validate_png(output_path)?;
     tracing::info!(path = %output_path.display(), "local diffusion image generated");
     Ok(())
 }
@@ -914,26 +917,6 @@ fn validate_webm(path: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
-fn validate_png(path: &Path) -> Result<(), AppError> {
-    let metadata = fs::metadata(path).map_err(|error| {
-        AppError::ArtifactGenerationFailed(format!("image output was not created: {error}"))
-    })?;
-    if metadata.len() < 1024 {
-        return Err(AppError::ArtifactGenerationFailed(
-            "image output is implausibly small".to_string(),
-        ));
-    }
-    let mut file = fs::File::open(path)?;
-    let mut signature = [0_u8; 8];
-    file.read_exact(&mut signature)?;
-    if &signature != PNG_SIGNATURE {
-        return Err(AppError::ArtifactGenerationFailed(
-            "image runtime did not produce a valid PNG".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 fn canonical_file_under_root(
     root: &PortableRootManager,
     path: &Path,
@@ -1164,17 +1147,11 @@ mod tests {
     }
 
     #[test]
-    fn validates_real_png_signature_and_rejects_text() {
+    fn rejects_non_png_image_output() {
         let temp = tempfile::tempdir().unwrap();
-        let good = temp.path().join("good.png");
-        let mut png = PNG_SIGNATURE.to_vec();
-        png.resize(2048, 0);
-        fs::write(&good, png).unwrap();
-        validate_png(&good).unwrap();
-
         let bad = temp.path().join("bad.png");
         fs::write(&bad, vec![b'x'; 2048]).unwrap();
-        assert!(validate_png(&bad).is_err());
+        assert!(png_output_validation::validate_png(&bad).is_err());
     }
 
     #[test]
