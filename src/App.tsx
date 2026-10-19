@@ -151,7 +151,7 @@ export function App() {
       api.hardware(),
       api.storage(),
       api.models(),
-      api.runtimeInventory(),
+      api.refreshRuntimeInventory(),
       api.runtimeStatus(),
       api.performance(),
       api.preferences(),
