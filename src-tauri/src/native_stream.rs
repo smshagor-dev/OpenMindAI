@@ -17,8 +17,6 @@ use crate::{
 const UI_STREAM_CHUNK_BYTES: usize = 32;
 const DB_STREAM_FLUSH_BYTES: usize = 2_048;
 const TOKEN_CHANNEL_CAPACITY: usize = 64;
-const MAX_CONTEXT_MESSAGES: usize = 18;
-const MAX_CONTEXT_CHARS: usize = 24_000;
 
 pub struct NativeStreamRequest<'a> {
     pub app: &'a AppHandle,
@@ -96,8 +94,9 @@ async fn next_token(
 pub async fn stream_native_completion(
     request: NativeStreamRequest<'_>,
 ) -> Result<InferenceMetrics, NativeStreamError> {
-    let messages = build_text_context(request.database, request.conversation_id)
-        .map_err(NativeStreamError::before_output)?;
+    let (messages, omitted_messages) =
+        build_text_context(request.database, request.conversation_id, request.config.n_ctx)
+            .map_err(NativeStreamError::before_output)?;
     let inference_request = InferenceRequest::from_messages(messages).with_config(request.config);
     inference_request.validate().map_err(|error| {
         NativeStreamError::before_output(AppError::InferenceFailed(error.to_string()))
@@ -251,6 +250,16 @@ pub async fn stream_native_completion(
 
     match worker_result {
         Ok(()) => {
+            if omitted_messages > 0 {
+                let notice = crate::sampling::context_omission_notice(omitted_messages);
+                generated_chars += notice.chars().count();
+                flush_buffer.push_str(&notice);
+                ui_buffer.push_str(&notice);
+                emit_stream_chunk(&request, &mut ui_buffer)
+                    .map_err(NativeStreamError::after_output)?;
+                flush(request.database, &request.assistant.id, &mut flush_buffer)
+                    .map_err(NativeStreamError::after_output)?;
+            }
             finalize(&request, "completed")?;
             Ok(InferenceMetrics {
                 time_to_first_token_ms: first_token_at,
@@ -271,7 +280,8 @@ pub async fn stream_native_completion(
 fn build_text_context(
     database: &Mutex<Database>,
     conversation_id: &str,
-) -> Result<Vec<ChatMessage>, AppError> {
+    context_size: u32,
+) -> Result<(Vec<ChatMessage>, usize), AppError> {
     let db = database
         .lock()
         .map_err(|_| AppError::internal("database lock poisoned"))?;
@@ -281,27 +291,6 @@ fn build_text_context(
         message.status == "completed"
             && matches!(message.role.as_str(), "system" | "user" | "assistant")
     });
-
-    if messages.len() > MAX_CONTEXT_MESSAGES {
-        let split_at = messages.len() - MAX_CONTEXT_MESSAGES;
-        let system_messages: Vec<_> = messages
-            .iter()
-            .take(split_at)
-            .filter(|message| message.role == "system")
-            .cloned()
-            .collect();
-        messages = system_messages
-            .into_iter()
-            .chain(messages.into_iter().skip(split_at))
-            .collect();
-    }
-
-    let estimated_chars: usize = messages.iter().map(|message| message.content.len()).sum();
-    if estimated_chars > MAX_CONTEXT_CHARS {
-        return Err(AppError::ContextOverflow(
-            "conversation context is too large for the initial 8K target".to_string(),
-        ));
-    }
 
     let mut prepared = Vec::with_capacity(messages.len());
     for message in messages {
@@ -313,14 +302,25 @@ fn build_text_context(
         if message.content.trim().is_empty() {
             continue;
         }
-        prepared.push(ChatMessage::new(message.role, message.content));
+        prepared.push(serde_json::json!({
+            "role": message.role,
+            "content": message.content,
+        }));
     }
     if prepared.is_empty() {
         return Err(AppError::InferenceFailed(
             "conversation has no completed text context".to_string(),
         ));
     }
-    Ok(prepared)
+
+    let window = crate::sampling::compact_chat_context(prepared, context_size)?;
+    let messages = window.messages.into_iter().filter_map(|message| {
+        Some(ChatMessage::new(
+            message["role"].as_str()?,
+            message["content"].as_str()?,
+        ))
+    }).collect::<Vec<_>>();
+    Ok((messages, window.omitted_messages))
 }
 
 /// Native chat uses the same model-context output limits as llama-server.
@@ -331,7 +331,7 @@ pub(crate) fn native_chat_output_budget(
     mode: &str,
     context_size: u32,
 ) -> Result<u32, AppError> {
-    let messages = build_text_context(database, conversation_id)?;
+    let (messages, _) = build_text_context(database, conversation_id, context_size)?;
     let prepared = messages
         .into_iter()
         .map(|message| {
