@@ -475,10 +475,10 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
       kind: artifactKind,
       sizeBytes: content.length || prompt.length,
       pageCount: null,
-      status: command === "create_generation_artifact" && kind !== "image" ? "failed" : "ready",
+      status: command === "create_generation_artifact" ? "failed" : "ready",
       error:
-        command === "create_generation_artifact" && kind !== "image"
-          ? "Local media runtime connector is not available in browser preview."
+        command === "create_generation_artifact"
+          ? "Local media rendering requires the OpenMindAI desktop app; no image was generated in browser preview."
           : null,
       createdAt: now,
       updatedAt: now,
