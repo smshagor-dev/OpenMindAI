@@ -3,7 +3,7 @@
 // An actual ZIP 9-only production migration must never inherit ZIP 7 ignores.
 import assert from "node:assert/strict";
 import { appendFileSync, existsSync, lstatSync, readFileSync, realpathSync, readdirSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
