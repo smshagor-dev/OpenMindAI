@@ -199,6 +199,62 @@ def write_patch_evidence(directory: Path, reports: list[dict], patches: dict[str
         with (directory / name).open("x", encoding="utf-8", newline="\n") as out:
             out.write(contents)
 
+
+def candidate_manifest(original: str) -> str:
+    """Use path-pinned ZIP 9 sources instead of per-invocation Cargo flags."""
+    if re.search(r"(?m)^\s*\[patch\.crates-io\]\s*$", original):
+        raise RuntimeError("Refusing to append a second [patch.crates-io] section")
+    return (
+        original.rstrip() + "\n\n[patch.crates-io]\n"
+        'any-tts = { path = "../vendor/any-tts-0.1.3" }\n'
+        'candle-core = { path = "../vendor/candle-core-0.10.2" }\n'
+    )
+
+
+def stage_production_candidate(
+    directory: Path, source_crate: Path, patched_sources: dict[str, Path],
+    reports: list[dict], evidence_patches: dict[str, str],
+) -> tuple[Path, Path]:
+    """Materialize a testable source-and-lockfile candidate; not a release.
+
+    All ZIP patches must already have passed source_patch_evidence verification.
+    Never overwrite another candidate, and keep the production checkout intact.
+    """
+    if directory.exists():
+        raise RuntimeError(f"Refusing to overwrite existing ZIP 9 candidate: {directory}")
+    if set(patched_sources) != set(TARGETS):
+        raise RuntimeError("ZIP 9 production candidate lacks a reviewed patched dependency")
+    directory.mkdir(parents=True)
+    for name in sorted(patched_sources):
+        src = patched_sources[name]
+        version = TARGETS[name]
+        shutil.copytree(src, directory / "vendor" / f"{name}-{version}")
+    dest_crate = directory / "src-tauri"
+    shutil.copytree(
+        source_crate, dest_crate, symlinks=True,
+        ignore=shutil.ignore_patterns("target"),
+    )
+    manifest = dest_crate / "Cargo.toml"
+    manifest.write_text(candidate_manifest(manifest.read_text(encoding="utf-8")), encoding="utf-8")
+    write_patch_evidence(directory / "review", reports, evidence_patches)
+    (directory / "README.txt").write_text(
+        "ZIP 9 MIGRATION CANDIDATE -- NOT A RELEASE\n"
+        "Contains exact Cargo.lock-pinned any-tts 0.1.3 and candle-core 0.10.2\n"
+        "registry sources with reviewed ZIP 9 adapter edits, along with a\n"
+        "staged src-tauri source tree and path-patched Cargo.toml/Cargo.lock.\n"
+        "Review review/zip9-source-provenance.json, exact *.patch diffs and\n"
+        "each crate's bundled license and authorship before production use.\n"
+        "The candidate is validated by cargo update/check and an unignored\n"
+        "cargo audit when available; real Kokoro voice output, platform\n"
+        "installers, runtime assets and source licensing must still be checked.\n"
+        "This directory is disposable. Do not overwrite the app by copying it\n"
+        "blindly; first review the source, install vendor sources and commit\n"
+        "a deliberately verified production Cargo.toml and Cargo.lock.\n",
+        encoding="utf-8",
+    )
+    return manifest, dest_crate / "Cargo.lock"
+
+
 def registry_source(crate: str, version: str, cargo_home: Path) -> Path:
     paths = sorted((cargo_home / "registry" / "src").glob(f"*/{crate}-{version}/Cargo.toml"))
     verified = []
@@ -287,6 +343,17 @@ def self_test() -> None:
     else:
         raise AssertionError("Unreviewed crate overrides must fail closed")
 
+    try:
+        candidate_manifest("[patch.crates-io]\nexisting = \"1\"\n")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("Existing Cargo source overrides must fail closed")
+    manifest_example = candidate_manifest('[package]\nname = "fixture"\n')
+    assert manifest_example.count("[patch.crates-io]") == 1
+    assert '../vendor/any-tts-0.1.3' in manifest_example
+    assert '../vendor/candle-core-0.10.2' in manifest_example
+
     # Simulate a resolver rewrite in an isolated working copy, including a
     # local build-output directory that must not be recursively copied.
     with tempfile.TemporaryDirectory(prefix="openmind-zip9-stage-test-") as temp:
@@ -351,6 +418,7 @@ def main() -> None:
     )
     parser.add_argument("--cargo-home", type=Path)
     parser.add_argument("--evidence-dir", type=Path, help="Output deterministic patched source provenance and diffs")
+    parser.add_argument("--candidate-dir", type=Path, help="Write a reviewable, isolated ZIP 9 production candidate")
     args = parser.parse_args()
     if args.self_test:
         self_test()
@@ -373,6 +441,7 @@ def main() -> None:
         patches = []
         reports: list[dict] = []
         evidence_patches: dict[str, str] = {}
+        patched_sources: dict[str, Path] = {}
         for crate, version in TARGETS.items():
             src = registry_source(crate, version, cargo_home)
             dst = overlay / f"{crate}-{version}"
@@ -383,6 +452,7 @@ def main() -> None:
             report, diff = source_patch_evidence(crate, version, src, dst, LOCK)
             reports.append(report)
             evidence_patches[crate] = diff
+            patched_sources[crate] = dst
             patches.extend(["--config", cargo_patch_override(crate, dst)])
             print(f"Locally substituted {crate}@{version} zip requirement with {ZIP_TARGET}")
         evidence_dir = args.evidence_dir or (
@@ -436,6 +506,27 @@ def main() -> None:
                 "--test", "zip9_reader_regressions", "--", "--nocapture",
             ], env=testing_env)
             require_patched_zip_only(trial / "Cargo.lock")
+            if args.candidate_dir is not None:
+                candidate_manifest_path, candidate_lock_path = stage_production_candidate(
+                    args.candidate_dir, overlay / "src-tauri", patched_sources,
+                    reports, evidence_patches,
+                )
+                # The candidate must resolve and compile using only the manifest's
+                # portable [patch.crates-io] entries -- no CLI source overrides.
+                run([
+                    "cargo", "update", "--manifest-path", str(candidate_manifest_path),
+                    "-p", "any-tts", "-p", "candle-core",
+                ], env=testing_env)
+                require_patched_zip_only(candidate_lock_path)
+                run([
+                    "cargo", "check", "--locked", "--manifest-path",
+                    str(candidate_manifest_path), "--lib",
+                ], env=testing_env)
+                if args.audit:
+                    run([
+                        "cargo", "audit", "--file", str(candidate_lock_path),
+                    ], env=testing_env)
+                print(f"Validated ZIP 9 source-pinned production candidate: {args.candidate_dir}")
             print("ZIP 9 compilation and synthetic NPZ/PTH regression probe PASSED.")
             if args.audit:
                 print("Unignored RustSec audit of the temporary ZIP 9 lockfile PASSED.")

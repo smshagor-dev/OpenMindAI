@@ -99,6 +99,33 @@ A red result is **evidence of a migration blocker**, not permission to
 disable the actual security gate. The probe does not test full speech output,
 ZIP member semantics, Windows/macOS runtime behavior, or package provenance.
 
+## Source-pinned production replacement candidate
+
+The Linux compatibility workflow also runs:
+
+```sh
+python scripts/probe-zip9-upgrade.py --audit --candidate-dir /tmp/zip9-production-candidate
+```
+
+The candidate directory contains a staged `src-tauri` source tree and
+`Cargo.lock`, a `Cargo.toml` with **portable** `[patch.crates-io]` path
+overrides to the two exact patched source directories under `vendor/`,
+the original upstream license files, and `review/` provenance JSON plus
+minimal unified diffs. Cargo must independently re-resolve the candidate
+using the **manifest's own patch entries**, compile with `--locked` and
+pass a second, unignored RustSec audit of its candidate lockfile. The
+artifact is uploaded as `zip9-source-pinned-candidate-linux` for seven
+days. If those checks fail, the workflow fails and no validated candidate
+is claimed.
+
+The artifact is **not deployed or merged into production**. Its paths and
+upstream license terms require review before promoting `vendor/` and the
+corresponding manifest/lockfile. The final migration must run real Kokoro
+model and voice inference tests, plus full Windows/macOS/Linux Rust, UI,
+installer, update and security CI using the *committed* dependencies,
+then demonstrate an **unignored production** cargo audit. Until then ZIP
+7.2.0 remains in the production graph and issue #258 remains open.
+
 ## Conditions for the real fix
 
 - Adapt all ZIP 9 API changes in **reviewed**, license-compliant upstream forks
