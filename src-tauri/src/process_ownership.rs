@@ -82,6 +82,77 @@ pub async fn output_owned(
     child.wait_with_output().await
 }
 
+const MAX_RENDERER_LOG_BYTES: usize = 32 * 1024;
+const MAX_RENDERER_LINE_BYTES: usize = 2048;
+
+/// Collect bounded diagnostic output while forwarding complete stderr
+/// updates. Dropping this future cancels a kill-on-drop renderer child.
+pub async fn output_owned_with_stderr_lines(
+    mut command: tokio::process::Command,
+    on_line: &(dyn Fn(&str) + Send + Sync),
+) -> io::Result<std::process::Output> {
+    let mut child = command.spawn()?;
+    adopt_tokio_child(&child);
+    let stdout = child.stdout.take().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "renderer stdout must be piped")
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "renderer stderr must be piped")
+    })?;
+    let (status, stdout, stderr) = tokio::try_join!(
+        child.wait(),
+        capture_renderer_stream(stdout, None),
+        capture_renderer_stream(stderr, Some(on_line)),
+    )?;
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+async fn capture_renderer_stream<R: tokio::io::AsyncRead + Unpin>(
+    mut reader: R,
+    on_line: Option<&(dyn Fn(&str) + Send + Sync)>,
+) -> io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+
+    let mut captured = Vec::new();
+    let mut partial_line = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    loop {
+        let count = reader.read(&mut chunk).await?;
+        if count == 0 {
+            break;
+        }
+        captured.extend_from_slice(&chunk[..count]);
+        if captured.len() > MAX_RENDERER_LOG_BYTES {
+            captured.drain(..captured.len() - MAX_RENDERER_LOG_BYTES);
+        }
+        if let Some(callback) = on_line {
+            for &byte in &chunk[..count] {
+                if byte == b'\r' || byte == b'\n' {
+                    if !partial_line.is_empty() {
+                        callback(&String::from_utf8_lossy(&partial_line));
+                        partial_line.clear();
+                    }
+                } else if partial_line.len() < MAX_RENDERER_LINE_BYTES {
+                    partial_line.push(byte);
+                } else {
+                    partial_line.clear();
+                }
+            }
+        }
+    }
+    if let Some(callback) = on_line {
+        if !partial_line.is_empty() {
+            callback(&String::from_utf8_lossy(&partial_line));
+        }
+    }
+    Ok(captured)
+}
+
+
 /// Identity of a running process, or `None` if it does not exist or cannot be inspected.
 pub fn identity(pid: u32) -> Option<ProcessIdentity> {
     platform::identity(pid)
