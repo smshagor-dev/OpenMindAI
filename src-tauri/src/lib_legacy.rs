@@ -26,7 +26,10 @@ mod storage;
 mod voice_runtime;
 mod web_provider_config;
 
-use std::{path::{Path, PathBuf}, sync::Mutex};
+use std::{
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -2292,7 +2295,7 @@ mod milestone2_tests {
 
     #[test]
     fn artifact_open_commands_use_native_platform_handler() {
-        let file = Path::new("image test.png");
+        let file = Path::new("folder/image test.png");
         let open = artifact_os_command(file, false);
         let reveal = artifact_os_command(file, true);
         #[cfg(target_os = "windows")]
@@ -2313,7 +2316,7 @@ mod milestone2_tests {
             assert_eq!(reveal.get_program(), std::ffi::OsStr::new("xdg-open"));
             assert_eq!(
                 reveal.get_args().collect::<Vec<_>>(),
-                vec![std::ffi::OsStr::new("")]
+                vec![std::ffi::OsStr::new("folder")]
             );
         }
     }
@@ -2326,7 +2329,10 @@ mod milestone2_tests {
         let file = root.resolve_relative("generated/images/test.png").unwrap();
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, b"image-test").unwrap();
-        assert_eq!(checked_artifact_path(&root, &file).unwrap(), file.canonicalize().unwrap());
+        assert_eq!(
+            checked_artifact_path(&root, &file).unwrap(),
+            file.canonicalize().unwrap()
+        );
         let outside = temp.path().join("outside.png");
         std::fs::write(&outside, b"other").unwrap();
         assert!(checked_artifact_path(&root, &outside).is_err());
