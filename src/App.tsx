@@ -1072,6 +1072,15 @@ export function App() {
     [activeId, createArtifact, messages, preferences?.openArtifactsAfterGeneration, showError],
   );
 
+  const cancelImageArtifact = useCallback(
+    (artifact: Artifact) => {
+      void api.cancelImageGeneration(artifact.id).then((cancelled) => {
+        if (!cancelled) showError("Image generation has already finished.");
+      }).catch(showError);
+    },
+    [showError],
+  );
+
   const openArtifactHandler = useCallback(
     (artifact: Artifact) => {
       void api.openArtifact(artifact.id).catch(showError);
@@ -1321,6 +1330,7 @@ export function App() {
             onOpenArtifact={openArtifactHandler}
             onRevealArtifact={revealArtifactHandler}
             onRetryArtifact={retryArtifact}
+            onCancelImageArtifact={cancelImageArtifact}
             onPreview={setPreviewTarget}
           />
         ) : view === "tools" ? (
@@ -1375,6 +1385,7 @@ export function App() {
               onOpenArtifact={openArtifactHandler}
               onRevealArtifact={revealArtifactHandler}
               onRetryArtifact={retryArtifact}
+              onCancelImageArtifact={cancelImageArtifact}
               onPreview={setPreviewTarget}
             />
           ) : (
