@@ -130,7 +130,7 @@ pub async fn install_diffusion_runtime(
     client: &Client,
     hardware: &HardwareProfile,
 ) -> Result<DiffusionRuntimeStatus, AppError> {
-    ensure_runtime(root, client, hardware).await?;
+    ensure_runtime(root, client, hardware, false).await?;
     diffusion_runtime_status(root, hardware)
 }
 
@@ -200,6 +200,7 @@ pub async fn generate_image(
     model_path: &Path,
     prompt: &str,
     output_path: &Path,
+    use_cpu: bool,
 ) -> Result<(), AppError> {
     let prompt = prompt.trim();
     if prompt.is_empty() {
@@ -222,7 +223,7 @@ pub async fn generate_image(
         AppError::ArtifactGenerationFailed(format!("image output path rejected: {error}"))
     })?;
 
-    let runtime = ensure_runtime(root, client, hardware).await?;
+    let runtime = ensure_runtime(root, client, hardware, use_cpu).await?;
     let cli_path = root.resolve_relative(&runtime.cli_path)?;
     let profile = render_profile(hardware, &runtime.backend);
 
@@ -350,7 +351,7 @@ pub async fn generate_video(
         AppError::ArtifactGenerationFailed(format!("video output path rejected: {error}"))
     })?;
 
-    let runtime = ensure_runtime(root, client, hardware).await?;
+    let runtime = ensure_runtime(root, client, hardware, false).await?;
     let cli_path = root.resolve_relative(&runtime.cli_path)?;
     let profile = video_render_profile(hardware, &runtime.backend);
     if output_path.exists() {
@@ -450,6 +451,7 @@ async fn ensure_runtime(
     root: &PortableRootManager,
     client: &Client,
     hardware: &HardwareProfile,
+    use_cpu: bool,
 ) -> Result<DiffusionRuntimeManifest, AppError> {
     // Keep install, validation and replacement serialized with image and video generation.
     let _runtime_install_guard = RUNTIME_INSTALL_LOCK.lock().await;
@@ -457,7 +459,7 @@ async fn ensure_runtime(
         "resolving",
         "Checking local renderer and release assets…",
     ));
-    let result = ensure_runtime_inner(root, client, hardware).await;
+    let result = ensure_runtime_inner(root, client, hardware, use_cpu).await;
     match &result {
         Ok(manifest) => {
             let mut status = runtime_activity("ready", "Image renderer is installed and verified.");
@@ -479,9 +481,21 @@ async fn ensure_runtime_inner(
     root: &PortableRootManager,
     client: &Client,
     hardware: &HardwareProfile,
+    use_cpu: bool,
 ) -> Result<DiffusionRuntimeManifest, AppError> {
-    let candidates =
-        runtime_asset_candidates(std::env::consts::OS, std::env::consts::ARCH, hardware);
+    let candidates = runtime_candidates_for_request(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        hardware,
+        use_cpu,
+    );
+    if use_cpu && candidates.is_empty() {
+        return Err(AppError::RuntimeInstallFailed(format!(
+            "CPU image rendering is not supported by this runtime on {}/{}; use the normal image retry",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )));
+    }
     let preferred_backend = candidates.first().map(|(backend, _)| backend);
 
     if let Some(manifest) = load_manifest(root)? {
@@ -888,6 +902,23 @@ fn write_manifest(
     Ok(())
 }
 
+fn runtime_candidates_for_request(
+    os: &str,
+    arch: &str,
+    hardware: &HardwareProfile,
+    use_cpu: bool,
+) -> Vec<(BackendKind, &'static str)> {
+    let candidates = runtime_asset_candidates(os, arch, hardware);
+    if use_cpu {
+        candidates
+            .into_iter()
+            .filter(|(backend, _)| *backend == BackendKind::Cpu)
+            .collect()
+    } else {
+        candidates
+    }
+}
+
 fn runtime_asset_candidates(
     os: &str,
     arch: &str,
@@ -1254,6 +1285,25 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(report.state.as_str(), "missing" | "unsupported"));
+    }
+
+    #[test]
+    fn cpu_retry_selects_only_cpu_binary_on_supported_platforms() {
+        let gpu = hardware(Some(GpuVendor::Nvidia), Some(12 * 1024_u64.pow(3)));
+        let windows = runtime_candidates_for_request("windows", "x86_64", &gpu, true);
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].0, BackendKind::Cpu);
+        let linux = runtime_candidates_for_request("linux", "x86_64", &gpu, true);
+        assert_eq!(linux.len(), 1);
+        assert_eq!(linux[0].0, BackendKind::Cpu);
+        assert!(runtime_candidates_for_request("macos", "aarch64", &gpu, true).is_empty());
+    }
+
+    #[test]
+    fn normal_image_render_keeps_gpu_preference() {
+        let gpu = hardware(Some(GpuVendor::Nvidia), Some(12 * 1024_u64.pow(3)));
+        let automatic = runtime_candidates_for_request("windows", "x86_64", &gpu, false);
+        assert_eq!(automatic[0].0, BackendKind::Cuda);
     }
 
     #[test]
