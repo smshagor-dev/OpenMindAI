@@ -11,15 +11,15 @@ jobs:
   offline-evaluation:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - name: Unit tests
         run: python -m unittest discover -s tests -p test_web_research_evaluation.py -v
       - name: Evaluate deterministic fixture
         run: python scripts/evaluate-web-research.py tests/fixtures/web-research-evaluation.json --output web-research-report.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: web-research-evaluation
           path: web-research-report.json

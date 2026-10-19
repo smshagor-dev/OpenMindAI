@@ -40,7 +40,7 @@ jobs:
           workspaces: src-tauri
 
       - name: Setup Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -71,7 +71,7 @@ jobs:
         run: python scripts/verify-zip9-candidate.py --self-test
 
       - name: Upload complete ZIP 9 source-pinned candidate
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: zip9-source-pinned-candidate-${{ matrix.os }}
           path: ${{ runner.temp }}/zip9-production-candidate/
@@ -80,7 +80,7 @@ jobs:
           retention-days: 7
 
       - name: Download ZIP 9 candidate as a consumer
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: zip9-source-pinned-candidate-${{ matrix.os }}
           path: ${{ runner.temp }}/zip9-candidate-roundtrip/
@@ -92,7 +92,7 @@ jobs:
 
       - name: Upload ZIP 9 candidate source provenance and exact patches
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: zip9-source-evidence-${{ matrix.os }}
           path: ${{ runner.temp }}/zip9-source-evidence/
