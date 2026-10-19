@@ -1587,6 +1587,8 @@ async fn run_streaming_completion(
             sampling: sampling::SamplingProfile::for_chat_model(
                 model.family.as_deref().unwrap_or(""),
             ),
+            request_mode: mode,
+            context_size: plan.config.context_size,
         })
         .await
     }
