@@ -269,17 +269,30 @@ export function App() {
   useEffect(() => {
     document.documentElement.dataset.compactSidebar = String(preferences?.compactSidebar ?? false);
     if (!preferences) return;
+
+    try {
+      window.localStorage.setItem("openmindai:theme", preferences.theme);
+    } catch {
+      // A storage restriction must not prevent selecting a theme.
+    }
+
+    const apply = (theme: "dark" | "light") => {
+      document.documentElement.dataset.theme = theme;
+      document
+        .querySelector('meta[name="theme-color"]')
+        ?.setAttribute("content", theme === "light" ? "#f1f1f1" : "#090909");
+    };
+
     if (preferences.theme !== "system") {
-      document.documentElement.dataset.theme = preferences.theme;
+      apply(preferences.theme);
       return;
     }
+
     const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => {
-      document.documentElement.dataset.theme = media.matches ? "dark" : "light";
-    };
-    apply();
-    media.addEventListener("change", apply);
-    return () => media.removeEventListener("change", apply);
+    const onSystemThemeChange = () => apply(media.matches ? "dark" : "light");
+    onSystemThemeChange();
+    media.addEventListener("change", onSystemThemeChange);
+    return () => media.removeEventListener("change", onSystemThemeChange);
   }, [preferences]);
 
   useEffect(() => {
