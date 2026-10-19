@@ -1074,8 +1074,7 @@ mod tests {
         };
         sample_runtime_zip(&archive, &[(cli, b"test-runtime")]);
         let install = root.resolve_relative("runtimes/diffusion/test-ok").unwrap();
-        let extracted =
-            extract_runtime_archive_bounded(&root, &archive, &install, 8, 64).unwrap();
+        let extracted = extract_runtime_archive_bounded(&root, &archive, &install, 8, 64).unwrap();
         assert_eq!(fs::read(extracted).unwrap(), b"test-runtime");
     }
 
@@ -1091,7 +1090,9 @@ mod tests {
             "sd-cli"
         };
         sample_runtime_zip(&archive, &[(cli, b"much-more-data-than-allowed")]);
-        let install = root.resolve_relative("runtimes/diffusion/test-large").unwrap();
+        let install = root
+            .resolve_relative("runtimes/diffusion/test-large")
+            .unwrap();
         let result = extract_runtime_archive_bounded(&root, &archive, &install, 8, 4);
         assert!(result.is_err());
         assert!(!install.exists());
@@ -1109,7 +1110,9 @@ mod tests {
             "sd-cli"
         };
         sample_runtime_zip(&archive, &[(cli, b"data"), ("extra.txt", b"x")]);
-        let install = root.resolve_relative("runtimes/diffusion/test-many").unwrap();
+        let install = root
+            .resolve_relative("runtimes/diffusion/test-many")
+            .unwrap();
         let result = extract_runtime_archive_bounded(&root, &archive, &install, 1, 64);
         assert!(result.is_err());
         assert!(!install.exists());
