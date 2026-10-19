@@ -1366,6 +1366,22 @@ async fn get_llama_runtime_inventory(
 }
 
 #[tauri::command]
+fn get_diffusion_runtime_status(
+    state: State<AppState>,
+) -> Result<diffusion_runtime::DiffusionRuntimeStatus, app_error::AppError> {
+    let hardware = HardwareProfiler::for_inference(&state.hardware);
+    diffusion_runtime::diffusion_runtime_status(&state.root, &hardware)
+}
+
+#[tauri::command]
+async fn install_diffusion_runtime(
+    state: State<'_, AppState>,
+) -> Result<diffusion_runtime::DiffusionRuntimeStatus, app_error::AppError> {
+    let hardware = HardwareProfiler::for_inference(&state.hardware);
+    diffusion_runtime::install_diffusion_runtime(&state.root, &state.http, &hardware).await
+}
+
+#[tauri::command]
 fn get_runtime_install_status(
     state: State<AppState>,
 ) -> Result<RuntimeInstallStatus, app_error::AppError> {
@@ -2251,6 +2267,8 @@ pub fn run() {
             read_recent_logs,
             get_llama_runtime_status,
             get_llama_runtime_inventory,
+            get_diffusion_runtime_status,
+            install_diffusion_runtime,
             get_runtime_install_status,
             install_recommended_runtime,
             cancel_runtime_install,
