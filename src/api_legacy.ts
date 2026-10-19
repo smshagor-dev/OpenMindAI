@@ -410,6 +410,21 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
     } as T);
   }
   if (command === "list_messages") return Promise.resolve([] as T);
+  if (command === "add_user_message" || command === "create_streaming_assistant_message") {
+    return Promise.resolve({
+      id: crypto.randomUUID(),
+      conversationId: (args?.conversationId as string) ?? "",
+      role: command === "add_user_message" ? "user" : "assistant",
+      content: command === "add_user_message" ? ((args?.content as string) ?? "") : "",
+      status: command === "add_user_message" ? "completed" : "streaming",
+      modelId: null,
+      createdAt: now,
+      updatedAt: now,
+    } as T);
+  }
+  if (command === "append_message_chunk" || command === "complete_message") {
+    return Promise.resolve(undefined as T);
+  }
   if (command === "set_conversation_model") {
     return Promise.resolve({
       id: (args?.id as string) ?? crypto.randomUUID(),
