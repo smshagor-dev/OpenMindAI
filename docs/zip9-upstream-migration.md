@@ -43,8 +43,17 @@ passed with 24,000 Hz, mono, 16-bit PCM, **3.65 seconds** and
 **RMS 0.0485709**. The workflow uploads only safe JSON evidence; it
 does not commit third-party weights or the generated audio.
 
-Real voice output on Linux is proven; different CPU/GPU platforms and
-additional voices still require their own smoke coverage.
+Real voice output on Linux is proven. A new **Windows/macOS CPU inference**
+matrix now also downloads exactly the same SHA-256-pinned checkpoint, config,
+and voice and uses the real `media_smoke speak` Rust/Candle example; it does
+not merely call `cargo check` or generate a synthetic WAV. A failure on
+either platform fails the workflow. Artifacts contain only JSON evidence,
+including the host OS and CPU architecture, never the model assets or WAV.
+These jobs are considered **pending until their first run passes**; adding
+the workflow alone does not establish Windows/macOS runtime compatibility.
+
+Additional voices, hardware acceleration and installer-driven model setup
+still require their own smoke coverage.
 
 ## Ongoing real-voice regression coverage
 
