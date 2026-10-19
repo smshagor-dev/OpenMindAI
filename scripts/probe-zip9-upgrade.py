@@ -146,6 +146,15 @@ def lock_versions(path: Path, name: str) -> list[str]:
     return [p["version"] for p in document["package"] if p["name"] == name]
 
 
+def require_patched_zip_only(path: Path) -> None:
+    """Reject missing, duplicated or unexpected ZIP versions in the resolved lock."""
+    versions = lock_versions(path, "zip")
+    if versions != [ZIP_TARGET]:
+        raise RuntimeError(
+            f"Expected only zip {ZIP_TARGET} in migrated Cargo.lock, found {versions}"
+        )
+
+
 def self_test() -> None:
     a = '[package]\nversion = "7.2.0"\n[dependencies.zip]\nversion = "7.2.0"\ndefault-features = false\n'
     b = '[dependencies]\nzip = { version = "7.2", default-features = false }\nother = "7.2"\n'
@@ -187,12 +196,34 @@ def self_test() -> None:
         assert not (base / "staged" / "target").exists()
         lock.write_text("modified by simulated cargo update")
         assert (source / "Cargo.lock").read_text() == "original lock"
+
+        migrated_lock = base / "migrated.lock"
+        migrated_lock.write_text(
+            '[[package]]\nname = "zip"\nversion = "9.0.4"\n',
+            encoding="utf-8",
+        )
+        require_patched_zip_only(migrated_lock)
+        for bad_version in ("7.2.0", "8.6.0", "9.0.3"):
+            migrated_lock.write_text(
+                '[[package]]\nname = "zip"\nversion = "' + bad_version + '"\n',
+                encoding="utf-8",
+            )
+            try:
+                require_patched_zip_only(migrated_lock)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError(f"Unpatched ZIP {bad_version} passed validation")
     print("ZIP 9 probe self-test passed")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument(
+        "--audit", action="store_true",
+        help="Run unignored cargo audit on the temporary resolved lockfile",
+    )
     parser.add_argument("--cargo-home", type=Path)
     args = parser.parse_args()
     if args.self_test:
@@ -252,9 +283,12 @@ def main() -> None:
                 "cargo", *patches, "update", "--manifest-path",
                 str(scratch_manifest), "-p", "any-tts", "-p", "candle-core",
             ], env=testing_env)
-            versions = lock_versions(scratch_lock, "zip")
-            if any(v.startswith(("7.", "8.")) for v in versions):
-                raise RuntimeError(f"Legacy zip versions still resolved: {versions}")
+            require_patched_zip_only(scratch_lock)
+            if args.audit:
+                # The audit uses the temporary ZIP 9-patched dependency graph.
+                # Do not suppress RustSec advisories or audit production's
+                # known-vulnerable lockfile under this flag.
+                run(["cargo", "audit", "--file", str(scratch_lock)], env=testing_env)
             run([
                 "cargo", *patches, "check", "--manifest-path",
                 str(scratch_manifest), "--lib",
@@ -263,12 +297,10 @@ def main() -> None:
                 "cargo", "test", "--manifest-path", str(trial / "Cargo.toml"),
                 "--test", "zip9_reader_regressions", "--", "--nocapture",
             ], env=testing_env)
-            test_zip_versions = lock_versions(trial / "Cargo.lock", "zip")
-            if any(v.startswith(("7.", "8.")) for v in test_zip_versions):
-                raise RuntimeError(
-                    f"Standalone ZIP 9 reader harness unexpectedly links old ZIP: {test_zip_versions}"
-                )
+            require_patched_zip_only(trial / "Cargo.lock")
             print("ZIP 9 compilation and synthetic NPZ/PTH regression probe PASSED.")
+            if args.audit:
+                print("Unignored RustSec audit of the temporary ZIP 9 lockfile PASSED.")
             print("Real pretrained model and platform-specific TTS validation are still required.")
         finally:
             if MANIFEST.read_bytes() != original_manifest or LOCK.read_bytes() != original_lock:

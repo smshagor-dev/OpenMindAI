@@ -68,6 +68,16 @@ Windows backslash escapes. Its Cargo writes remain confined to the temporary
 staged crate, and the matrix deliberately keeps platform failures separate
 (`fail-fast: false`) so all three operating systems provide evidence.
 
+The Linux matrix job also runs `cargo audit --file` against the **temporary,
+fully resolved ZIP 9 migration lockfile** with **no `--ignore` flags**.
+The probe fails if the temporary lockfile contains anything other than exactly
+`zip 9.0.4` or if cargo-audit reports any known advisory. The Windows and
+macOS matrix jobs retain the patched-source compilation and reader regression
+checks, while Linux additionally validates the full temporary RustSec advisory
+graph. The unignored audit is a **migration readiness check**, not an audit
+of the unchanged production lockfile; production still contains ZIP 7.2.0
+until the reviewed source replacement is actually committed.
+
 A red result is **evidence of a migration blocker**, not permission to
 disable the actual security gate. The probe does not test full speech output,
 ZIP member semantics, Windows/macOS runtime behavior, or package provenance.
