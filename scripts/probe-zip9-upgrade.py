@@ -152,7 +152,7 @@ def self_test() -> None:
         base = Path(temp)
         source = base / "source"
         source.mkdir()
-        (source / "Cargo.toml").write_text('[package]\\nname = "test"\\n')
+        (source / "Cargo.toml").write_text('[package]\nname = "test"\n')
         (source / "Cargo.lock").write_text("original lock")
         (source / "target").mkdir()
         (source / "target" / "cache").write_text("do not copy")
