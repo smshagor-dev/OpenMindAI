@@ -28,7 +28,7 @@ use crate::{
     app_error::AppError,
     chat::{ChatRepository, Message},
     database::Database,
-    sampling::{SamplingProfile, CORE_CHAT_MAX_TOKENS},
+    sampling::{chat_output_budget, SamplingProfile},
     settings::SettingsRepository,
 };
 
@@ -165,6 +165,10 @@ pub struct StreamRequest<'a> {
     pub dataset_context: Option<&'a str>,
     /// Chosen for the conversation's model family; see `SamplingProfile::for_chat_model`.
     pub sampling: SamplingProfile,
+    /// Original chat intent, used for the response budget (not merely inference style).
+    pub request_mode: &'a str,
+    /// Context size actually given to the local llama-server.
+    pub context_size: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,11 +244,18 @@ pub async fn stream_chat_completion(
         return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
     }
     attach_media_to_latest_user_message(&mut messages, request.media)?;
+    let max_tokens = chat_output_budget(request.request_mode, request.context_size, &messages)
+        .ok_or_else(|| {
+            AppError::ContextOverflow(
+                "The chat history and attachments leave too little room for a reply. Shorten the input or start a new conversation."
+                    .to_string(),
+            )
+        })?;
     let mut body = json!({
         "model": request.model,
         "messages": messages,
         "stream": true,
-        "max_tokens": CORE_CHAT_MAX_TOKENS,
+        "max_tokens": max_tokens,
         // Keep llama-server's KV prompt cache enabled so the shared prefix of
         // an ongoing conversation can be reused instead of fully prefilling
         // it on every turn.
@@ -266,6 +277,7 @@ pub async fn stream_chat_completion(
     let mut generated_chars = 0;
     let mut first_token_at = None;
     let mut status = "completed";
+    let mut reached_output_limit = false;
 
     loop {
         let chunk = match next_stream_chunk(&mut stream, &cancellation).await {
@@ -290,7 +302,11 @@ pub async fn stream_chat_completion(
                 if data == "[DONE]" {
                     continue;
                 }
-                if let Some(token) = parse_openai_delta(data)? {
+                let delta = parse_openai_delta(data)?;
+                if delta.finish_reason.as_deref() == Some("length") {
+                    reached_output_limit = true;
+                }
+                if let Some(token) = delta.content {
                     if token.is_empty() {
                         continue;
                     }
@@ -351,6 +367,14 @@ pub async fn stream_chat_completion(
         generated_chars += footer.chars().count();
         ui_buffer.push_str(&footer);
         flush_buffer.push_str(&footer);
+    }
+    if status == "completed" && !cancellation.is_cancelled() && reached_output_limit {
+        // This notice remains in persisted history after a restart and prevents
+        // a partial document/report from silently appearing complete on export.
+        let notice = "\n\n---\n\n**The model reached its response length limit.** This answer may be incomplete. Ask to continue from where it stopped.";
+        generated_chars += notice.chars().count();
+        ui_buffer.push_str(notice);
+        flush_buffer.push_str(notice);
     }
     if !ui_buffer.is_empty() {
         emit_stream_chunk(&request, &mut ui_buffer)?;
@@ -1647,13 +1671,23 @@ fn validate_inline_data_image_url(url: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn parse_openai_delta(data: &str) -> Result<Option<String>, AppError> {
+struct CompletionDelta {
+    content: Option<String>,
+    finish_reason: Option<String>,
+}
+
+fn parse_openai_delta(data: &str) -> Result<CompletionDelta, AppError> {
     let value: serde_json::Value =
         serde_json::from_str(data).map_err(|error| AppError::StreamFailed(error.to_string()))?;
-    Ok(value["choices"]
-        .get(0)
-        .and_then(|choice| choice["delta"]["content"].as_str())
-        .map(ToString::to_string))
+    let choice = value["choices"].get(0);
+    Ok(CompletionDelta {
+        content: choice
+            .and_then(|item| item["delta"]["content"].as_str())
+            .map(ToString::to_string),
+        finish_reason: choice
+            .and_then(|item| item["finish_reason"].as_str())
+            .map(ToString::to_string),
+    })
 }
 
 fn flush(
@@ -2276,8 +2310,20 @@ mod tests {
 
     #[test]
     fn parses_streaming_delta() {
-        let data = r#"{"choices":[{"delta":{"content":"hello"}}]}"#;
-        assert_eq!(parse_openai_delta(data).unwrap(), Some("hello".to_string()));
+        let data = r#"{"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}"#;
+        let frame = parse_openai_delta(data).unwrap();
+        assert_eq!(frame.content.as_deref(), Some("hello"));
+        assert_eq!(frame.finish_reason, None);
+
+        let limited = r#"{"choices":[{"delta":{},"finish_reason":"length"}]}"#;
+        let frame = parse_openai_delta(limited).unwrap();
+        assert_eq!(frame.content, None);
+        assert_eq!(frame.finish_reason.as_deref(), Some("length"));
+        let finished = r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#;
+        assert_eq!(
+            parse_openai_delta(finished).unwrap().finish_reason.as_deref(),
+            Some("stop")
+        );
     }
 
     #[tokio::test]
