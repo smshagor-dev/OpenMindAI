@@ -45,46 +45,22 @@ jobs:
         with:
           tool: cargo-audit
 
-      - name: Validate production ZIP audit mode
-        id: zip_mode
+      - name: Verify ZIP 9-only production dependency graph
         run: |
           node scripts/check-zip-audit-mode.mjs --self-test
           node scripts/check-zip-audit-mode.mjs
 
-      - name: Check temporary legacy ZIP exception scope
-        if: steps.zip_mode.outputs.mode == 'legacy'
-        run: node scripts/check-transitive-zip-audit.mjs
-
-      - name: Inspect pinned legacy ZIP consumer sources
-        if: steps.zip_mode.outputs.mode == 'legacy'
-        run: |
-          cargo metadata --locked --manifest-path src-tauri/Cargo.toml --format-version 1 > "$RUNNER_TEMP/openmind-cargo-metadata.json"
-          node scripts/check-upstream-zip-source.mjs "$RUNNER_TEMP/openmind-cargo-metadata.json"
-
-      - name: Verify exact audited production ZIP 9 source tree and licenses
-        if: steps.zip_mode.outputs.mode == 'remediated'
+      - name: Verify exact vendored ZIP 9 sources and third-party notices
         run: |
           python3 scripts/verify-zip9-vendor.py --self-test
           python3 scripts/verify-zip9-vendor.py
 
-      - name: Inspect pinned migrated ZIP 9 vendor sources
-        if: steps.zip_mode.outputs.mode == 'remediated'
+      - name: Inspect committed path-pinned ZIP 9 dependencies
         run: |
           cargo metadata --locked --manifest-path src-tauri/Cargo.toml --format-version 1 > "$RUNNER_TEMP/openmind-cargo-metadata.json"
           node scripts/check-zip-audit-mode.mjs --metadata "$RUNNER_TEMP/openmind-cargo-metadata.json"
 
-      - name: Cargo audit (temporary, scoped ZIP 7 exceptions)
-        if: steps.zip_mode.outputs.mode == 'legacy'
-        # This branch only runs while the exact vulnerable registry crates and
-        # ZIP 7.2.0 remain. Unknown ZIP versions fail the mode guard above.
-        run: |
-          cargo audit --file src-tauri/Cargo.lock \
-            --ignore RUSTSEC-2026-0367 \
-            --ignore RUSTSEC-2026-0368 \
-            --ignore RUSTSEC-2026-0369
-
-      - name: Cargo audit (migrated production graph, no exceptions)
-        if: steps.zip_mode.outputs.mode == 'remediated'
+      - name: Cargo audit (production, no advisory exceptions)
         run: cargo audit --file src-tauri/Cargo.lock
 
   codeql:

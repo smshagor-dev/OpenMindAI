@@ -1,14 +1,13 @@
 #!/usr/bin/env node
-// Fail-closed selector for the production Cargo dependency audit.
-// An actual ZIP 9-only production migration must never inherit ZIP 7 ignores.
+// Fail-closed verifier for the ZIP 9-only production dependency graph.
+// Legacy ZIP versions are always a failing build; there are no audit ignores.
 import assert from "node:assert/strict";
-import { appendFileSync, existsSync, lstatSync, readFileSync, realpathSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const EXPECTED = new Map([["any-tts", "0.1.3"], ["candle-core", "0.10.2"]]);
-const VULNERABLE_ZIP = "7.2.0";
 const PATCHED_ZIP = "9.0.4";
 const LOCK_PATH = join(ROOT, "src-tauri", "Cargo.lock");
 const MANIFEST_PATH = join(ROOT, "src-tauri", "Cargo.toml");
@@ -62,24 +61,13 @@ function classify(packages, manifest) {
   if (updater.some((p) => p.deps.some((dep) => dep === "zip" || dep.startsWith("zip "))))
     die("Updater unexpectedly depends on ZIP");
   const zips = packages.filter((p) => p.name === "zip").map((p) => p.version);
-  if (!zips.includes(PATCHED_ZIP)) die("Production Cargo.lock lacks patched zip 9.0.4");
-  if (zips.some((v) => v !== PATCHED_ZIP && v !== VULNERABLE_ZIP))
-    die("Unreviewed ZIP version in production Cargo.lock: " + zips.join(", "));
+  if (zips.length !== 1 || zips[0] !== PATCHED_ZIP)
+    die("Production Cargo.lock must contain exclusively one zip@" + PATCHED_ZIP +
+      " (found " + zips.join(", ") + ")");
   for (const [name, version] of EXPECTED) {
     const matches = packages.filter((p) => p.name === name && p.version === version);
     if (matches.length !== 1) die("Expected exactly one " + name + "@" + version);
   }
-  if (zips.includes(VULNERABLE_ZIP)) {
-    if (zips.length !== 2) die("Unexpected duplicate ZIP packages in legacy mode");
-    if (patchedSourcePaths(manifest)) die("Mixed local ZIP 9 source patches with vulnerable ZIP 7");
-    for (const name of EXPECTED.keys()) {
-      const p = packages.find((item) => item.name === name);
-      if (!p.source?.startsWith("registry+"))
-        die("Legacy ZIP exception requires registry-pinned " + name);
-    }
-    return "legacy";
-  }
-  if (zips.length !== 1) die("ZIP 9 production migration must have exactly one ZIP crate");
   const paths = patchedSourcePaths(manifest);
   if (!paths || paths.size !== EXPECTED.size) die("Missing/unexpected path-pinned vendor patches");
   for (const [name, version] of EXPECTED) {
@@ -145,7 +133,7 @@ function selfTest() {
   const legacy = readPackages(patchedCore + registry("zip", "7.2.0") +
     registry("zip", "9.0.4") +
     registry("any-tts", "0.1.3") + registry("candle-core", "0.10.2"));
-  assert.equal(classify(legacy, manifest), "legacy");
+  assert.throws(() => classify(legacy, manifest));
   const patch = '\n[patch.crates-io]\n' +
     'any-tts = { path = "../vendor/any-tts-0.1.3" }\n' +
     'candle-core = { path = "../vendor/candle-core-0.10.2" }\n';
@@ -154,7 +142,7 @@ function selfTest() {
     '[[package]]\nname = "candle-core"\nversion = "0.10.2"\n');
   assert.equal(classify(upgraded, manifest + patch), "remediated");
   for (const [pkgs, toml] of [
-    [legacy, manifest + patch], [upgraded, manifest],
+    [legacy, manifest], [legacy, manifest + patch], [upgraded, manifest],
     [upgraded, manifest + patch.replace("any-tts-0.1.3", "outside")],
     [upgraded.concat([{ name: "zip", version: "8.6.0" }]), manifest + patch],
     [upgraded.concat([{ name: "zip", version: "7.2.0" }]), manifest + patch],
@@ -162,7 +150,7 @@ function selfTest() {
     [upgraded, manifest.replace("default-features = false", "default-features = true") + patch],
     [upgraded.filter((p) => p.name !== "rustls"), manifest + patch],
   ]) assert.throws(() => classify(pkgs, toml));
-  console.log("Production ZIP audit mode selector self-tests PASSED");
+  console.log("ZIP 9-only production dependency guard self-tests PASSED");
 }
 
 try {
@@ -172,15 +160,12 @@ try {
     const packages = readPackages(readFileSync(LOCK_PATH, "utf8"));
     const mode = classify(packages, readFileSync(MANIFEST_PATH, "utf8"));
     if (process.argv.includes("--metadata")) {
-      if (mode !== "remediated") die("Local patched source inspection requires remediated mode");
       const index = process.argv.indexOf("--metadata");
       const path = process.argv[index + 1];
       if (!path) die("--metadata requires a Cargo metadata JSON path");
       inspectMigratedMetadata(readFileSync(path, "utf8"));
     } else {
-      if (process.env.GITHUB_OUTPUT)
-        appendFileSync(process.env.GITHUB_OUTPUT, "mode=" + mode + "\n");
-      console.log("Production ZIP audit mode: " + mode);
+      console.log("Verified production ZIP graph: " + mode + ", no legacy advisory ignores");
     }
   }
 } catch (error) {
