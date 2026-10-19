@@ -85,9 +85,9 @@ pub async fn output_owned(
 const MAX_RENDERER_LOG_BYTES: usize = 32 * 1024;
 const MAX_RENDERER_LINE_BYTES: usize = 2048;
 
-/// Collect bounded diagnostic output while forwarding complete stderr
+/// Collect bounded diagnostic output while forwarding complete progress
 /// updates. Dropping this future cancels a kill-on-drop renderer child.
-pub async fn output_owned_with_stderr_lines(
+pub async fn output_owned_with_progress_lines(
     mut command: tokio::process::Command,
     on_line: &(dyn Fn(&str) + Send + Sync),
 ) -> io::Result<std::process::Output> {
@@ -101,7 +101,7 @@ pub async fn output_owned_with_stderr_lines(
     })?;
     let (status, stdout, stderr) = tokio::try_join!(
         child.wait(),
-        capture_renderer_stream(stdout, None),
+        capture_renderer_stream(stdout, Some(on_line)),
         capture_renderer_stream(stderr, Some(on_line)),
     )?;
     Ok(std::process::Output {
