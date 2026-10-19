@@ -40,6 +40,9 @@ jobs:
       - name: Model catalog
         run: npm run check:models
 
+      - name: Theme contrast and appearance regression
+        run: npm run check:theme
+
       - name: Lint
         run: npm run lint
 
