@@ -32,7 +32,14 @@ const RELEASE_URL: &str =
 const RUNTIME_ROOT: &str = "runtimes/diffusion/stable-diffusion.cpp";
 const MANIFEST_PATH: &str = "runtimes/diffusion/stable-diffusion.cpp/manifest.json";
 const SAFE_SPACE_MARGIN: u64 = 256 * 1024 * 1024;
+// Runtime downloads are untrusted ZIP input even when GitHub reports an asset hash.
+const MAX_RUNTIME_ARCHIVE_ENTRIES: usize = 4_096;
+const MAX_RUNTIME_EXPANDED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_RUNTIME_ENTRY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_PROMPT_CHARS: usize = 4_000;
+
+// Avoid parallel downloads/extraction and manifest races within one app process.
+static RUNTIME_INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const GENERATION_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 const VIDEO_GENERATION_TIMEOUT: Duration = Duration::from_secs(90 * 60);
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
@@ -350,6 +357,9 @@ async fn ensure_runtime(
     client: &Client,
     hardware: &HardwareProfile,
 ) -> Result<DiffusionRuntimeManifest, AppError> {
+    // The mutex covers reuse checks as well as download/extraction so concurrent
+    // image and video requests cannot replace the runtime beneath each other.
+    let _runtime_install_guard = RUNTIME_INSTALL_LOCK.lock().await;
     let candidates =
         runtime_asset_candidates(std::env::consts::OS, std::env::consts::ARCH, hardware);
     let preferred_backend = candidates.first().map(|(backend, _)| backend);
@@ -513,6 +523,22 @@ fn extract_runtime_archive(
     archive_path: &Path,
     install_dir: &Path,
 ) -> Result<PathBuf, AppError> {
+    extract_runtime_archive_bounded(
+        root,
+        archive_path,
+        install_dir,
+        MAX_RUNTIME_ARCHIVE_ENTRIES,
+        MAX_RUNTIME_EXPANDED_BYTES,
+    )
+}
+
+fn extract_runtime_archive_bounded(
+    root: &PortableRootManager,
+    archive_path: &Path,
+    install_dir: &Path,
+    max_entries: usize,
+    max_expanded_bytes: u64,
+) -> Result<PathBuf, AppError> {
     let staging = root.resolve_relative(format!("temp/runtime-extract/{}", Uuid::new_v4()))?;
     fs::create_dir_all(&staging)?;
     ensure_contained(root.root(), &staging)?;
@@ -521,13 +547,28 @@ fn extract_runtime_archive(
         let file = fs::File::open(archive_path)?;
         let mut archive = ZipArchive::new(file)
             .map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?;
+        if archive.len() > max_entries {
+            return Err(AppError::RuntimeInstallFailed(format!(
+                "diffusion runtime archive has {} entries; limit is {max_entries}",
+                archive.len()
+            )));
+        }
+
+        let mut expanded_bytes = 0_u64;
         for index in 0..archive.len() {
             let mut entry = archive
                 .by_index(index)
                 .map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?;
+            // UNIX symlink entries must not be written as ordinary files. Reject
+            // links rather than following archive paths outside the staging root.
+            if entry.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o120000) {
+                return Err(AppError::RuntimeInstallFailed(
+                    "diffusion runtime archive contains a symbolic link".to_string(),
+                ));
+            }
             let enclosed = entry.enclosed_name().ok_or_else(|| {
                 AppError::RuntimeInstallFailed(
-                    "runtime archive contains an unsafe path".to_string(),
+                    "diffusion runtime archive contains an unsafe path".to_string(),
                 )
             })?;
             let destination = staging.join(enclosed);
@@ -535,11 +576,29 @@ fn extract_runtime_archive(
                 fs::create_dir_all(&destination)?;
                 continue;
             }
+
+            // Declared lengths provide an early rejection; bounded copying below
+            // also protects against incorrect metadata or runaway decompression.
+            let declared = entry.size();
+            let remaining = max_expanded_bytes.saturating_sub(expanded_bytes);
+            if declared > MAX_RUNTIME_ENTRY_BYTES || declared > remaining {
+                return Err(AppError::RuntimeInstallFailed(
+                    "diffusion runtime archive exceeds extraction byte limits".to_string(),
+                ));
+            }
             if let Some(parent) = destination.parent() {
                 fs::create_dir_all(parent)?;
             }
             let mut output = fs::File::create(&destination)?;
-            std::io::copy(&mut entry, &mut output)?;
+            let copy_limit = MAX_RUNTIME_ENTRY_BYTES.min(remaining);
+            let written = std::io::copy(&mut entry.take(copy_limit.saturating_add(1)), &mut output)?;
+            if written > copy_limit || written != declared {
+                return Err(AppError::RuntimeInstallFailed(
+                    "diffusion runtime archive contains an oversized or truncated entry"
+                        .to_string(),
+                ));
+            }
+            expanded_bytes = expanded_bytes.saturating_add(written);
             output.flush()?;
             #[cfg(unix)]
             if let Some(mode) = entry.unix_mode() {
@@ -575,7 +634,6 @@ fn extract_runtime_archive(
     fs::rename(&staging, install_dir)?;
     Ok(install_dir.join(relative_cli))
 }
-
 fn find_cli_binary(root: &Path) -> Option<PathBuf> {
     let expected = if cfg!(target_os = "windows") {
         "sd-cli.exe"
@@ -984,6 +1042,59 @@ mod tests {
             },
             detection_complete: true,
         }
+    }
+
+    fn sample_runtime_zip(path: &Path, files: &[(&str, &[u8])]) {
+        let archive = fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(archive);
+        for (name, bytes) in files {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn extracts_valid_runtime_archive_within_limits() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let archive = root.resolve_relative("temp/runtime-ok.zip").unwrap();
+        let cli = if cfg!(windows) { "bin/sd-cli.exe" } else { "bin/sd-cli" };
+        sample_runtime_zip(&archive, &[(cli, b"test-runtime")]);
+        let install = root.resolve_relative("runtimes/diffusion/test-ok").unwrap();
+        let extracted =
+            extract_runtime_archive_bounded(&root, &archive, &install, 8, 64).unwrap();
+        assert_eq!(fs::read(extracted).unwrap(), b"test-runtime");
+    }
+
+    #[test]
+    fn rejects_archive_exceeding_expanded_byte_budget_without_installing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let archive = root.resolve_relative("temp/runtime-large.zip").unwrap();
+        let cli = if cfg!(windows) { "sd-cli.exe" } else { "sd-cli" };
+        sample_runtime_zip(&archive, &[(cli, b"much-more-data-than-allowed")]);
+        let install = root.resolve_relative("runtimes/diffusion/test-large").unwrap();
+        let result = extract_runtime_archive_bounded(&root, &archive, &install, 8, 4);
+        assert!(result.is_err());
+        assert!(!install.exists());
+    }
+
+    #[test]
+    fn rejects_archive_with_too_many_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let archive = root.resolve_relative("temp/runtime-many.zip").unwrap();
+        let cli = if cfg!(windows) { "sd-cli.exe" } else { "sd-cli" };
+        sample_runtime_zip(&archive, &[(cli, b"data"), ("extra.txt", b"x")]);
+        let install = root.resolve_relative("runtimes/diffusion/test-many").unwrap();
+        let result = extract_runtime_archive_bounded(&root, &archive, &install, 1, 64);
+        assert!(result.is_err());
+        assert!(!install.exists());
     }
 
     #[test]
