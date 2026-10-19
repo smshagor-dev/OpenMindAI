@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import os
+import platform
 from pathlib import Path
 import shutil
 import struct
@@ -179,6 +180,8 @@ def verify_wav(path: Path, evidence: Path) -> dict:
     report = {
         "model": MODEL_ID,
         "upstreamRevision": REVISION,
+        "runnerOs": platform.system(),
+        "runnerArchitecture": platform.machine(),
         "checkpointSha256": FILES["kokoro-v1_0.pth"]["sha256"],
         "configSha256": FILES["config.json"]["sha256"],
         "voiceSha256": FILES["voices/af_heart.pt"]["sha256"],
@@ -213,6 +216,7 @@ def self_test() -> None:
             output.writeframes(b"\x20\x03" * 24_000)
         verified = verify_wav(file, report)
         assert verified["samples"] == SAMPLE_RATE
+        assert verified["runnerOs"] == platform.system()
         assert json.loads(report.read_text())["sampleRate"] == SAMPLE_RATE
         with wave.open(str(file), "wb") as output:
             output.setnchannels(1)
