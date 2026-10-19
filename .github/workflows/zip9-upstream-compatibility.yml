@@ -52,17 +52,27 @@ jobs:
         with:
           tool: cargo-audit
 
-      - name: Run unignored RustSec audit and ZIP 9 compatibility (Linux)
+      - name: Build source-pinned ZIP 9 migration candidate and run unignored audit (Linux)
         if: runner.os == 'Linux'
         env:
           ZIP9_EVIDENCE_DIR: ${{ runner.temp }}/zip9-source-evidence
-        run: python scripts/probe-zip9-upgrade.py --audit
+          ZIP9_CANDIDATE_DIR: ${{ runner.temp }}/zip9-production-candidate
+        run: python scripts/probe-zip9-upgrade.py --audit --candidate-dir "$ZIP9_CANDIDATE_DIR"
 
       - name: Test ephemeral upstream ZIP 9 compatibility (Windows/macOS)
         if: runner.os != 'Linux'
         env:
           ZIP9_EVIDENCE_DIR: ${{ runner.temp }}/zip9-source-evidence
         run: python scripts/probe-zip9-upgrade.py
+
+      - name: Upload validated source-pinned ZIP 9 production candidate (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: zip9-source-pinned-candidate-linux
+          path: ${{ runner.temp }}/zip9-production-candidate/
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Upload ZIP 9 candidate source provenance and exact patches
         if: always()
