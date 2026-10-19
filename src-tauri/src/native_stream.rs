@@ -334,10 +334,12 @@ pub(crate) fn native_chat_output_budget(
     let messages = build_text_context(database, conversation_id)?;
     let prepared = messages
         .into_iter()
-        .map(|message| serde_json::json!({
-            "role": message.role,
-            "content": message.content,
-        }))
+        .map(|message| {
+            serde_json::json!({
+                "role": message.role,
+                "content": message.content,
+            })
+        })
         .collect::<Vec<_>>();
     crate::sampling::chat_output_budget(mode, context_size, &prepared).ok_or_else(|| {
         AppError::ContextOverflow(
