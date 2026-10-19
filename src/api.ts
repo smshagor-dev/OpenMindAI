@@ -367,11 +367,12 @@ export const api = {
     messageId: string | null,
     kind: "image" | "video" | "voice",
     prompt: string,
+    useCpu = false,
   ): Promise<Artifact> => {
     if (kind === "voice" && isTauri && (await messageUsesSoundscape(conversationId, messageId))) {
       return createSoundscapeArtifact(conversationId, messageId, prompt);
     }
-    return legacyApi.createGenerationArtifact(conversationId, messageId, kind, prompt);
+    return legacyApi.createGenerationArtifact(conversationId, messageId, kind, prompt, useCpu);
   },
   googleWorkspaceStatus: () => connectedInvoke<GoogleWorkspaceStatus>("google_workspace_status"),
   connectGoogleWorkspace: () => connectedInvoke<GoogleWorkspaceStatus>("connect_google_workspace"),
