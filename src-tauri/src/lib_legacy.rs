@@ -28,7 +28,7 @@ mod web_provider_config;
 
 use std::{
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 #[cfg(target_os = "windows")]
@@ -79,7 +79,7 @@ struct AppState {
     // profile name was chosen (see `run()`).
     active_database_path: PathBuf,
     database: Mutex<Database>,
-    runtime: Mutex<LlamaRuntimeManager>,
+    runtime: Arc<Mutex<LlamaRuntimeManager>>,
     // Second llama-server for the coding agent when Agent Setup places it in a dedicated
     // runtime (see agent_runtime::decide_placement). Idle unless that placement is chosen.
     agent_runtime: Mutex<LlamaRuntimeManager>,
@@ -2252,7 +2252,7 @@ pub fn run() {
             hardware,
             active_database_path: database_path,
             database: Mutex::new(database),
-            runtime: Mutex::new(runtime),
+            runtime: Arc::new(Mutex::new(runtime)),
             agent_runtime: Mutex::new(agent_runtime),
             agent_startup: agent_runtime::AgentStartup::default(),
             downloads,
@@ -2370,7 +2370,7 @@ pub fn run() {
             tauri::async_runtime::block_on(coding_lsp::shutdown_pooled_sessions());
             coding_agent_gateway::remove_descriptor();
             let state = app_handle.state::<AppState>();
-            for runtime in [&state.agent_runtime, &state.runtime] {
+            for runtime in [&state.agent_runtime, state.runtime.as_ref()] {
                 if let Ok(mut runtime) = runtime.lock() {
                     let _ = runtime.stop();
                 }
