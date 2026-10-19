@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+const read = (path) => readFileSync(new globalThis.URL(`../${path}`, import.meta.url), "utf8");
 const stylesheet = read("src/styles.css");
 const codeStyles = read("src/coding-workspace.css");
 const startupStyles = read("src/startup.css");
