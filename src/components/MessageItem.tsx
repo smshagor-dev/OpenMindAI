@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { CheckCheck, Copy, Download, Eye, Pencil, RefreshCw, RotateCcw } from "lucide-react";
-import type { Artifact, ArtifactKind, ImageRenderStage, Message } from "../types";
+import type { Artifact, ArtifactKind, ImageRenderProgress, Message } from "../types";
 import {
   highlightCode,
   normalizeLanguage,
@@ -37,7 +37,7 @@ export function MessageItem(props: {
   onRevealArtifact: (artifact: Artifact) => void;
   onRetryArtifact: (artifact: Artifact, useCpu?: boolean) => void;
   onCancelImageArtifact: (artifact: Artifact) => void;
-  imageProgressByArtifact: Record<string, ImageRenderStage>;
+  imageProgressByArtifact: Record<string, ImageRenderProgress>;
   onPreview: (target: PreviewTarget) => void;
   onEditUser?: (content: string) => void;
 }) {
@@ -140,7 +140,7 @@ export function MessageItem(props: {
               onReveal={props.onRevealArtifact}
               onRetry={props.onRetryArtifact}
               onCancel={props.onCancelImageArtifact}
-              imageStage={props.imageProgressByArtifact[artifact.id]}
+              imageProgress={props.imageProgressByArtifact[artifact.id]}
             />
           ))}
         </div>
