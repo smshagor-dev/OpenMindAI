@@ -146,6 +146,34 @@ installer, update and security CI using the *committed* dependencies,
 then demonstrate an **unignored production** cargo audit. Until then ZIP
 7.2.0 remains in the production graph and issue #258 remains open.
 
+## Production security gate during the final dependency switch
+
+Production Security CI now has an explicit, **fail-closed** ZIP dependency
+mode selector (`scripts/check-zip-audit-mode.mjs`). In the current **legacy**
+mode, Cargo.lock must contain only ZIP 7.2.0 and 9.0.4, the old
+`any-tts 0.1.3` and `candle-core 0.10.2` must still be exact registry
+packages, and the existing restricted, expiring RustSec exceptions and
+registry-source extraction inspection continue unchanged.
+
+Once production `Cargo.toml` actually contains exact path-pinned reviewed
+`vendor/any-tts-0.1.3` and `vendor/candle-core-0.10.2` sources, and the
+**committed** production Cargo.lock contains **only ZIP 9.0.4**, Security CI
+automatically selects **remediated** mode. It verifies exact local package
+identities and source paths through `cargo metadata --locked`, inspects the
+vendored Rust sources for forbidden archive extraction calls, and runs:
+
+```sh
+cargo audit --file src-tauri/Cargo.lock
+```
+
+**No advisory ignores** are passed in remediated mode. Partial transitions,
+unreviewed ZIP versions, missing local source patches, or a mixed graph fail
+closed rather than silently selecting a permissive audit. This conditional
+gate does **not** itself promote the vendor artifacts, change the production
+lockfile, prove model authenticity, or resolve the three existing advisories
+until the source replacement is actually committed. The temporary legacy
+exceptions must be deleted when the migration and final tests are complete.
+
 ## Conditions for the real fix
 
 - Adapt all ZIP 9 API changes in **reviewed**, license-compliant upstream forks
