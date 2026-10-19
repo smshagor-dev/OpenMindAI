@@ -27,11 +27,15 @@ fail-closed Cargo manifest transformation. The GitHub Actions workflow
    `candle-core@0.10.2` packages (Cargo verifies their registry checksums).
 2. Copies their sources to an **ephemeral directory**, changing only their ZIP
    version requirements to patched ZIP 9.0.4.
-3. Uses Cargo's temporary `[patch.crates-io]` CLI overrides and re-resolves an
-   ephemeral lockfile; fails if **any ZIP 7 or ZIP 8** remains.
-4. Compiles the OpenMindAI desktop Rust library with these substitutes to
-   expose any ZIP 9 API errors. It restores the original production lockfile
-   even if a step fails.
+3. Copies the desktop crate (excluding `target/`) into the disposable
+   directory **before** Cargo resolution. Cargo's `update` command is run only
+   against that copied manifest/lockfile, with temporary `[patch.crates-io]`
+   CLI overrides; fails if **any ZIP 7 or ZIP 8** remains.
+4. Compiles the copied desktop Rust library with these substitutes to expose
+   ZIP 9 API errors. Build artifacts can reuse the existing Cargo target cache,
+   but the checked-in `src-tauri/Cargo.toml` and `Cargo.lock` are never given
+   to a writing Cargo command. This remains safe when interrupted by SIGKILL:
+   it does not depend on a `finally` block restoring the production lockfile.
 
 The isolated probe copies `scripts/zip9-reader-regressions.rs` into a
 standalone temporary Cargo test harness linked to the patched Candle source.
