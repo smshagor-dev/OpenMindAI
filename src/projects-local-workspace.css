@@ -420,14 +420,9 @@
 }
 
 .local-terminal {
-  border-top: 1px solid var(--border);
-  background: #080808;
-  color: #f4f4f4;
-}
-
-:root[data-theme="light"] .local-terminal {
-  background: #111318;
-  color: #f4f4f4;
+  border-top: 1px solid var(--terminal-border);
+  background: var(--terminal-bg);
+  color: var(--terminal-text);
 }
 
 .local-terminal.locked {
@@ -442,7 +437,7 @@
   gap: 12px;
   min-height: 52px;
   padding: 9px 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid var(--terminal-border);
 }
 
 .local-terminal-heading > div {
@@ -459,7 +454,7 @@
 
 .local-terminal-heading small {
   max-width: 700px;
-  color: #9aa0aa;
+  color: var(--terminal-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -473,8 +468,8 @@
   gap: 5px !important;
   padding: 5px 8px;
   border-radius: 999px;
-  background: rgba(47, 191, 113, 0.12);
-  color: #65d99a;
+  background: color-mix(in srgb, var(--terminal-success) 12%, var(--terminal-bg));
+  color: var(--terminal-success);
   font-size: 10px;
 }
 
@@ -498,12 +493,12 @@
 }
 
 .terminal-command-line {
-  color: #d8dee9;
+  color: var(--terminal-text);
   margin-bottom: 5px;
 }
 
 .terminal-command-line span {
-  color: #65d99a;
+  color: var(--terminal-success);
 }
 
 .terminal-result pre {
@@ -514,12 +509,12 @@
 }
 
 .terminal-result .terminal-stderr {
-  color: #ff9f8f;
+  color: var(--terminal-error);
 }
 
 .terminal-result small,
 .terminal-empty {
-  color: #7f8794;
+  color: var(--terminal-muted);
 }
 
 .local-terminal-input {
@@ -528,20 +523,20 @@
   align-items: center;
   gap: 8px;
   padding: 10px 14px 13px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid var(--terminal-border);
 }
 
 .local-terminal-input > span {
-  color: #65d99a;
+  color: var(--terminal-success);
   font-family: monospace;
 }
 
 .local-terminal-input input {
   height: 36px;
   padding: 0 10px;
-  border-color: rgba(255, 255, 255, 0.1);
-  background: #0f1115;
-  color: #f4f4f4;
+  border-color: var(--terminal-border);
+  background: var(--terminal-input-bg);
+  color: var(--terminal-text);
   font-family: "SFMono-Regular", Consolas, monospace;
 }
 
@@ -549,8 +544,8 @@
   min-height: 36px;
   padding: 0 12px;
   border-radius: 8px;
-  background: #20242c;
-  color: #f4f4f4;
+  background: var(--terminal-button-bg);
+  color: var(--terminal-text);
 }
 
 .local-terminal-locked-copy {
