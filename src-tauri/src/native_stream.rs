@@ -67,16 +67,15 @@ impl NativeStreamError {
 
 // Release the conversation on every exit, including DB/event errors and a
 // dropped request future. Cancelling also stops a worker whose consumer left.
-struct ActiveNativeGeneration<'a> {
-    active: &'a ActiveGenerations,
-    conversation_id: &'a str,
+struct ActiveNativeGeneration {
     cancellation: CancellationToken,
 }
 
-impl Drop for ActiveNativeGeneration<'_> {
+impl Drop for ActiveNativeGeneration {
     fn drop(&mut self) {
+        // Only stop this native attempt. The caller owns the conversation
+        // registration, which must survive a fallback to llama-server.
         self.cancellation.cancel();
-        self.active.finish(self.conversation_id);
     }
 }
 
@@ -106,11 +105,10 @@ pub async fn stream_native_completion(
 
     let cancellation = request
         .active
-        .start(request.conversation_id)
-        .map_err(NativeStreamError::before_output)?;
+        .token(request.conversation_id)
+        .map_err(NativeStreamError::before_output)?
+        .child_token();
     let _active_generation = ActiveNativeGeneration {
-        active: request.active,
-        conversation_id: request.conversation_id,
         cancellation: cancellation.clone(),
     };
     let started = Instant::now();
@@ -475,16 +473,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dropped_request_releases_conversation_and_cancels_worker() {
+    async fn dropped_request_cancels_worker_without_releasing_caller_registration() {
         let active = Arc::new(ActiveGenerations::default());
         let cancellation = active.start("conversation").unwrap();
         let worker_cancellation = cancellation.clone();
-        let task_active = Arc::clone(&active);
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let request = tokio::spawn(async move {
             let _guard = ActiveNativeGeneration {
-                active: &task_active,
-                conversation_id: "conversation",
                 cancellation,
             };
             started_tx.send(()).unwrap();
@@ -495,6 +490,11 @@ mod tests {
         request.abort();
         assert!(request.await.unwrap_err().is_cancelled());
         assert!(worker_cancellation.is_cancelled());
+        // The parent request still owns the registration and may safely
+        // fall back to the llama-server stream after a native failure.
+        assert!(!active.is_idle());
+        assert!(active.token("conversation").is_ok());
+        active.finish("conversation");
         assert!(active.is_idle());
         assert!(active.start("conversation").is_ok());
     }
