@@ -1,14 +1,10 @@
 import { useEffect, useState } from "react";
-import type { Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { api } from "../api";
 import type { AppPreferences, ModelCatalogReport } from "../types";
 import { SaveBar, SelectRow, ToggleRow } from "./SettingsDialog";
-import { checkForAppUpdate } from "../lib/appUpdate";
-import { formatBytes, formatError } from "../lib/format";
-import { notifyUser } from "../lib/notify";
-
-type DownloadState = "idle" | "downloading" | "ready" | "failed";
+import { appUpdateCoordinator } from "../lib/appUpdate";
+import { formatBytes } from "../lib/format";
 
 export function UpdatesPanel(props: {
   preferenceDraft: AppPreferences;
@@ -17,61 +13,31 @@ export function UpdatesPanel(props: {
   onSave: () => void;
 }) {
   const [appUpdateResult, setAppUpdateResult] = useState<string | null>(null);
-  const [appUpdateChecking, setAppUpdateChecking] = useState(false);
-  const [pendingUpdate, setPendingUpdate] = useState<Update | null>(null);
-  const [downloadState, setDownloadState] = useState<DownloadState>("idle");
-  const [downloadedBytes, setDownloadedBytes] = useState(0);
-  const [totalBytes, setTotalBytes] = useState<number | null>(null);
-  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [updateSnapshot, setUpdateSnapshot] = useState(appUpdateCoordinator.getSnapshot);
   const [modelReport, setModelReport] = useState<ModelCatalogReport | null>(null);
   const [modelChecking, setModelChecking] = useState(false);
 
-  // The `Update` object holds a backend resource handle -- release it
-  // whenever it's replaced by a fresh check or the panel unmounts.
-  useEffect(() => {
-    return () => void pendingUpdate?.close();
-  }, [pendingUpdate]);
+  // Automatic and manual installs publish the same progress and ready state.
+  useEffect(() => appUpdateCoordinator.subscribe(setUpdateSnapshot), []);
 
   const checkAppUpdate = async () => {
-    setAppUpdateChecking(true);
     setAppUpdateResult(null);
-    try {
-      const update = await checkForAppUpdate();
-      setPendingUpdate((current) => {
-        void current?.close();
-        return update;
-      });
-      setDownloadState("idle");
-      setDownloadError(null);
-      setAppUpdateResult(update ? `OpenMindAI v${update.version} is available.` : "You're up to date.");
-    } catch {
-      // Update checks must never surface a scary raw error — a stale
-      // "checked, nothing found" style state is the honest quiet fallback.
-      setAppUpdateResult("Couldn't check for updates right now.");
-    } finally {
-      setAppUpdateChecking(false);
-    }
+    const result = await appUpdateCoordinator.check();
+    setAppUpdateResult(
+      result.state === "failed"
+        ? "Couldn't check for updates right now."
+        : result.version
+          ? `OpenMindAI v${result.version} is available.`
+          : "You're up to date.",
+    );
   };
 
   const downloadAndInstall = async () => {
-    if (!pendingUpdate) return;
-    setDownloadState("downloading");
-    setDownloadError(null);
-    setDownloadedBytes(0);
-    setTotalBytes(null);
     try {
-      await pendingUpdate.downloadAndInstall((event) => {
-        if (event.event === "Started") {
-          setTotalBytes(event.data.contentLength ?? null);
-        } else if (event.event === "Progress") {
-          setDownloadedBytes((current) => current + event.data.chunkLength);
-        }
-      });
-      setDownloadState("ready");
-      void notifyUser("OpenMindAI is ready to update", "Restart OpenMindAI to finish installing the update.");
-    } catch (caught) {
-      setDownloadState("failed");
-      setDownloadError(formatError(caught));
+      await appUpdateCoordinator.downloadAndInstall();
+    } catch {
+      // The shared coordinator publishes the failure and a fresh check
+      // acquires a new installer resource before a version-specific retry.
     }
   };
 
@@ -123,39 +89,39 @@ export function UpdatesPanel(props: {
             type="button"
             className="ghost-button"
             onClick={() => void checkAppUpdate()}
-            disabled={appUpdateChecking}
+            disabled={updateSnapshot.state === "checking" || updateSnapshot.state === "downloading"}
           >
-            {appUpdateChecking ? "Checking…" : "Check for Updates Now"}
+            {updateSnapshot.state === "checking" ? "Checking…" : "Check for Updates Now"}
           </button>
         </div>
         {appUpdateResult ? <p className="muted">{appUpdateResult}</p> : null}
 
-        {pendingUpdate && downloadState === "idle" ? (
+        {updateSnapshot.version && (updateSnapshot.state === "available" || updateSnapshot.state === "failed") ? (
           <div className="button-row">
             <button type="button" className="primary-button" onClick={() => void downloadAndInstall()}>
-              Download &amp; Install Update
+              {updateSnapshot.state === "failed" ? "Retry Download & Install" : "Download & Install Update"}
             </button>
           </div>
         ) : null}
 
-        {downloadState === "downloading" ? (
+        {updateSnapshot.state === "downloading" ? (
           <div className="setup-progress">
             <div className="setup-progress-bar">
               <div
                 className="setup-progress-fill"
                 style={{
-                  width: `${totalBytes ? Math.min(100, Math.max(0, (downloadedBytes / totalBytes) * 100)) : 0}%`,
+                  width: `${updateSnapshot.totalBytes ? Math.min(100, Math.max(0, (updateSnapshot.downloadedBytes / updateSnapshot.totalBytes) * 100)) : 0}%`,
                 }}
               />
             </div>
             <p className="muted">
-              {formatBytes(downloadedBytes)}
-              {totalBytes ? ` / ${formatBytes(totalBytes)}` : ""}
+              {formatBytes(updateSnapshot.downloadedBytes)}
+              {updateSnapshot.totalBytes ? ` / ${formatBytes(updateSnapshot.totalBytes)}` : ""}
             </p>
           </div>
         ) : null}
 
-        {downloadState === "ready" ? (
+        {updateSnapshot.state === "ready" ? (
           <div className="button-row">
             <p className="muted">Update downloaded. Restart OpenMindAI to finish installing it.</p>
             <button type="button" className="primary-button" onClick={() => void relaunch()}>
@@ -164,7 +130,7 @@ export function UpdatesPanel(props: {
           </div>
         ) : null}
 
-        {downloadError ? <p className="setup-warning">{downloadError}</p> : null}
+        {updateSnapshot.error ? <p className="setup-warning">{updateSnapshot.error}</p> : null}
       </div>
 
       <div className="maintenance-block">
