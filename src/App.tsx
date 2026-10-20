@@ -1052,7 +1052,7 @@ export function App() {
             ? imageRendererPrompt(source.content, precedingUser.content)
             : source.content;
         void api
-           .createGenerationArtifact(
+          .createGenerationArtifact(
             activeId,
             artifact.messageId,
             generationKind,
