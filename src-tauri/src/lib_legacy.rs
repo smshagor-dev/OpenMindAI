@@ -627,6 +627,8 @@ async fn create_document_artifact(
 struct ImageProgressEvent {
     artifact_id: String,
     stage: &'static str,
+    step: Option<u32>,
+    total_steps: Option<u32>,
 }
 
 #[tauri::command]
@@ -702,6 +704,16 @@ async fn create_generation_artifact(
         let _ = app.emit("image:progress", ImageProgressEvent {
             artifact_id: artifact.id.clone(),
             stage,
+            step: None,
+            total_steps: None,
+        });
+    };
+    let report_step = |step: u32, total_steps: u32| {
+        let _ = app.emit("image:progress", ImageProgressEvent {
+            artifact_id: artifact.id.clone(),
+            stage: "rendering",
+            step: Some(step),
+            total_steps: Some(total_steps),
         });
     };
     if kind == "image" {
@@ -717,12 +729,12 @@ async fn create_generation_artifact(
                 ))
             }
             result = generate_local_media_artifact(
-                &state, &kind, &prompt, &path, use_cpu.unwrap_or(false), &report_stage
+                &state, &kind, &prompt, &path, use_cpu.unwrap_or(false), &report_stage, &report_step
             ) => result,
         }
     } else {
         generate_local_media_artifact(
-            &state, &kind, &prompt, &path, use_cpu.unwrap_or(false), &report_stage
+            &state, &kind, &prompt, &path, use_cpu.unwrap_or(false), &report_stage, &report_step
         ).await
     };
     // A cancellation arriving just as inference finishes must not publish a ready image.
@@ -772,6 +784,7 @@ async fn generate_local_media_artifact(
     path: &std::path::Path,
     use_cpu: bool,
     on_stage: &(dyn Fn(&'static str) + Send + Sync),
+    on_step: &(dyn Fn(u32, u32) + Send + Sync),
 ) -> Result<(), app_error::AppError> {
     match kind {
         "image" => {
@@ -797,6 +810,7 @@ async fn generate_local_media_artifact(
                 path,
                 use_cpu,
                 on_stage,
+                on_step,
             )
             .await
         }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { FileCode, FileText, FileType, Folder, Image, Loader2, RefreshCw, Video, Volume2 } from "lucide-react";
-import type { Artifact, ImageRenderStage } from "../types";
+import type { Artifact, ImageRenderProgress, ImageRenderStage } from "../types";
 import { formatBytes } from "../lib/format";
 import { renderMarkdown } from "../lib/markdown";
 import { artifactMediaDataUrl } from "../lib/media";
@@ -47,7 +47,7 @@ export function ArtifactCard(props: {
   onReveal: (artifact: Artifact) => void;
   onRetry: (artifact: Artifact, useCpu?: boolean) => void;
   onCancel: (artifact: Artifact) => void;
-  imageStage?: ImageRenderStage;
+  imageProgress?: ImageRenderProgress;
 }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [mediaUrl, setMediaUrl] = useState<string | null>(null);
@@ -113,13 +113,23 @@ export function ArtifactCard(props: {
               : artifact.kind === "docx"
                 ? "Creating document..."
                 : artifact.kind === "image"
-                  ? IMAGE_STAGE_LABELS[props.imageStage ?? "preparing"]
+                  ? IMAGE_STAGE_LABELS[props.imageProgress?.stage ?? "preparing"]
                   : artifact.kind === "audio"
                     ? "Generating audio..."
                     : artifact.kind === "video"
                       ? "Generating video..."
                       : "Generating..."}
             {artifact.kind === "image" && elapsedLabel ? ` · ${elapsedLabel} elapsed` : ""}
+          </span>
+        ) : null}
+        {artifact.status === "generating" &&
+        artifact.kind === "image" &&
+        props.imageProgress?.stage === "rendering" &&
+        props.imageProgress.step != null &&
+        props.imageProgress.totalSteps != null &&
+        props.imageProgress.totalSteps > 0 ? (
+          <span className="artifact-status" role="status">
+            Sampling step {props.imageProgress.step} of {props.imageProgress.totalSteps}
           </span>
         ) : null}
         {artifact.status === "failed" ? (

@@ -82,6 +82,76 @@ pub async fn output_owned(
     child.wait_with_output().await
 }
 
+const MAX_RENDERER_LOG_BYTES: usize = 32 * 1024;
+const MAX_RENDERER_LINE_BYTES: usize = 2048;
+
+/// Collect bounded diagnostic output while forwarding complete progress
+/// updates. Dropping this future cancels a kill-on-drop renderer child.
+pub async fn output_owned_with_progress_lines(
+    mut command: tokio::process::Command,
+    on_line: &(dyn Fn(&str) + Send + Sync),
+) -> io::Result<std::process::Output> {
+    let mut child = command.spawn()?;
+    adopt_tokio_child(&child);
+    let stdout = child.stdout.take().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "renderer stdout must be piped")
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "renderer stderr must be piped")
+    })?;
+    let (status, stdout, stderr) = tokio::try_join!(
+        child.wait(),
+        capture_renderer_stream(stdout, Some(on_line)),
+        capture_renderer_stream(stderr, Some(on_line)),
+    )?;
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+async fn capture_renderer_stream<R: tokio::io::AsyncRead + Unpin>(
+    mut reader: R,
+    on_line: Option<&(dyn Fn(&str) + Send + Sync)>,
+) -> io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+
+    let mut captured = Vec::new();
+    let mut partial_line = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    loop {
+        let count = reader.read(&mut chunk).await?;
+        if count == 0 {
+            break;
+        }
+        captured.extend_from_slice(&chunk[..count]);
+        if captured.len() > MAX_RENDERER_LOG_BYTES {
+            captured.drain(..captured.len() - MAX_RENDERER_LOG_BYTES);
+        }
+        if let Some(callback) = on_line {
+            for &byte in &chunk[..count] {
+                if byte == b'\r' || byte == b'\n' {
+                    if !partial_line.is_empty() {
+                        callback(&String::from_utf8_lossy(&partial_line));
+                        partial_line.clear();
+                    }
+                } else if partial_line.len() < MAX_RENDERER_LINE_BYTES {
+                    partial_line.push(byte);
+                } else {
+                    partial_line.clear();
+                }
+            }
+        }
+    }
+    if let Some(callback) = on_line {
+        if !partial_line.is_empty() {
+            callback(&String::from_utf8_lossy(&partial_line));
+        }
+    }
+    Ok(captured)
+}
+
 /// Identity of a running process, or `None` if it does not exist or cannot be inspected.
 pub fn identity(pid: u32) -> Option<ProcessIdentity> {
     platform::identity(pid)
@@ -712,5 +782,49 @@ mod tests {
         assert!(read_records(&registry).is_empty());
         child.kill().unwrap();
         let _ = child.wait();
+    }
+}
+
+#[cfg(test)]
+mod renderer_output_tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn renderer_lines_handle_carriage_returns_and_split_writes() {
+        let (mut writer, reader) = tokio::io::duplex(128);
+        let write_task = tokio::spawn(async move {
+            writer
+                .write_all(b"Sampling step 1/12\rSampling step ")
+                .await
+                .unwrap();
+            writer.write_all(b"2/12\ncompleted").await.unwrap();
+        });
+        let lines = Mutex::new(Vec::<String>::new());
+        let callback = |line: &str| lines.lock().unwrap().push(line.to_string());
+        let bytes = capture_renderer_stream(reader, Some(&callback))
+            .await
+            .unwrap();
+        write_task.await.unwrap();
+        assert_eq!(bytes, b"Sampling step 1/12\rSampling step 2/12\ncompleted");
+        assert_eq!(
+            *lines.lock().unwrap(),
+            vec!["Sampling step 1/12", "Sampling step 2/12", "completed",]
+        );
+    }
+
+    #[tokio::test]
+    async fn renderer_output_memory_is_bounded() {
+        let (mut writer, reader) = tokio::io::duplex(8192);
+        let write_task = tokio::spawn(async move {
+            writer
+                .write_all(&vec![b'x'; MAX_RENDERER_LOG_BYTES + 1024])
+                .await
+                .unwrap();
+        });
+        let bytes = capture_renderer_stream(reader, None).await.unwrap();
+        write_task.await.unwrap();
+        assert_eq!(bytes.len(), MAX_RENDERER_LOG_BYTES);
+        assert!(bytes.iter().all(|byte| *byte == b'x'));
     }
 }

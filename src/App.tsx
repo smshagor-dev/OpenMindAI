@@ -7,7 +7,6 @@ import type {
   Artifact,
   ArtifactKind,
   ImageRenderProgress,
-  ImageRenderStage,
   Conversation,
   AppPreferences,
   HardwareProfile,
@@ -105,7 +104,7 @@ export function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
-  const [imageProgressByArtifact, setImageProgressByArtifact] = useState<Record<string, ImageRenderStage>>({});
+  const [imageProgressByArtifact, setImageProgressByArtifact] = useState<Record<string, ImageRenderProgress>>({});
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<AttachmentDraft[]>([]);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -471,7 +470,7 @@ export function App() {
       listen<ImageRenderProgress>("image:progress", (event) => {
         setImageProgressByArtifact((current) => ({
           ...current,
-          [event.payload.artifactId]: event.payload.stage,
+          [event.payload.artifactId]: event.payload,
         }));
       }),
     ];

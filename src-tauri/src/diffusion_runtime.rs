@@ -204,6 +204,7 @@ pub async fn generate_image(
     output_path: &Path,
     use_cpu: bool,
     on_stage: &(dyn Fn(&'static str) + Send + Sync),
+    on_step: &(dyn Fn(u32, u32) + Send + Sync),
 ) -> Result<(), AppError> {
     let prompt = prompt.trim();
     if prompt.is_empty() {
@@ -282,9 +283,19 @@ pub async fn generate_image(
         "starting local diffusion image generation"
     );
 
+    let last_reported_step = std::sync::atomic::AtomicU32::new(0);
+    let observe_line = |line: &str| {
+        if let Some(done) = parse_sampling_step(line, profile.steps) {
+            // Status lines can repeat (carriage-return progress output), and
+            // should not send the UI backward or overwhelm the event bus.
+            if done > last_reported_step.fetch_max(done, std::sync::atomic::Ordering::Relaxed) {
+                on_step(done, profile.steps);
+            }
+        }
+    };
     let output = timeout(
         GENERATION_TIMEOUT,
-        crate::process_ownership::output_owned(command),
+        crate::process_ownership::output_owned_with_progress_lines(command, &observe_line),
     )
     .await
     .map_err(|_| {
@@ -1112,6 +1123,62 @@ fn canonical_file_under_root(
     Ok(canonical)
 }
 
+/// Recognise explicit sampler progress, not arbitrary percentages or
+/// file/model download counters that happen to contain two numbers.
+fn parse_sampling_step(line: &str, expected_total: u32) -> Option<u32> {
+    let lower = line.to_ascii_lowercase();
+    // The pinned sd-cli prints actual sampling bars to stdout as
+    // "\r  |====>  | 3/20 - 1.25s/it". Its model-loading progress uses
+    // MB/s or GB/s instead; never mistake those for sampling.
+    let native_sampling_bar = lower.contains('|')
+        && lower.contains(" - ")
+        && (lower.contains("s/it") || lower.contains("it/s"));
+    if !native_sampling_bar
+        && !lower.contains("sampling")
+        && !lower.contains("sample step")
+        && !lower.contains("step ")
+    {
+        return None;
+    }
+    let bytes = lower.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let first_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        let Ok(done) = lower[first_start..i].parse::<u32>() else {
+            continue;
+        };
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() || bytes[i] != b'/' {
+            continue;
+        }
+        i += 1;
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let second_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if second_start < i {
+            if let Ok(total) = lower[second_start..i].parse::<u32>() {
+                if total == expected_total && done > 0 && done <= total {
+                    return Some(done);
+                }
+            }
+        }
+    }
+    None
+}
+
 fn process_error_detail(stdout: &[u8], stderr: &[u8]) -> String {
     let mut combined = String::from_utf8_lossy(stderr).trim().to_string();
     if combined.is_empty() {
@@ -1309,6 +1376,29 @@ mod tests {
         let gpu = hardware(Some(GpuVendor::Nvidia), Some(12 * 1024_u64.pow(3)));
         let automatic = runtime_candidates_for_request("windows", "x86_64", &gpu, false);
         assert_eq!(automatic[0].0, BackendKind::Cuda);
+    }
+
+    #[test]
+    fn sampling_progress_ignores_unrelated_logs() {
+        assert_eq!(parse_sampling_step("Sampling step 3/20", 20), Some(3));
+        assert_eq!(
+            parse_sampling_step("  |====>    | 3/20 - 1.23s/it", 20),
+            Some(3)
+        );
+        assert_eq!(
+            parse_sampling_step("  |=======> | 9/20 - 2.5it/s", 20),
+            Some(9)
+        );
+        assert_eq!(
+            parse_sampling_step("  |====>    | 3/20 - 25.3MB/s", 20),
+            None
+        );
+        assert_eq!(parse_sampling_step("sampling: 20/20", 20), Some(20));
+        assert_eq!(parse_sampling_step("loading model 3/20", 20), None);
+        assert_eq!(parse_sampling_step("sampling: 3/22", 20), None);
+        assert_eq!(parse_sampling_step("sampling: 21/20", 20), None);
+        assert_eq!(parse_sampling_step("sampling: 0/20", 20), None);
+        assert_eq!(parse_sampling_step("Downloading 75%", 20), None);
     }
 
     #[test]
