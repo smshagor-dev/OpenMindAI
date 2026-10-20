@@ -60,7 +60,6 @@ pub(super) fn write_manifest_atomically(path: &Path, bytes: &[u8]) -> Result<(),
     result
 }
 
-
 #[derive(Debug, Deserialize)]
 struct HuggingFaceModel {
     sha: Option<String>,
@@ -773,7 +772,10 @@ mod tests {
         assert_eq!(parsed["version"], "new");
         assert_eq!(parsed["verified"], true);
         let files = fs::read_dir(dir.path()).unwrap().count();
-        assert_eq!(files, 1, "successful replacement must not leave a temp file");
+        assert_eq!(
+            files, 1,
+            "successful replacement must not leave a temp file"
+        );
     }
 
     #[test]
