@@ -717,29 +717,48 @@ async fn create_generation_artifact(
         });
     };
     let generation_result = if let Some(job) = image_job.as_ref() {
-        tokio::select! {
-            biased;
-            _ = job.cancellation().cancelled() => {
-                Err(app_error::AppError::ArtifactGenerationFailed(
-                    "Image generation cancelled by user.".to_string(),
-                ))
-            }
-            result = async {
-                // Only one diffusion image runs at a time to avoid competing
-                // for the same GPU memory. Waiting jobs retain their own Stop
-                // action, and a dropped or cancelled future releases the slot.
-                let _render_slot = match state.image_jobs.try_reserve_renderer() {
-                    Some(permit) => permit,
-                    None => {
-                        report_stage("queued");
-                        state.image_jobs.reserve_renderer().await?
+        let render = async {
+            // Only one diffusion image runs at a time to avoid competing
+            // for the same GPU memory. Waiting jobs retain their own Stop
+            // action, and a dropped or cancelled future releases the slot.
+            let _render_slot = match state.image_jobs.try_reserve_renderer() {
+                Some(permit) => permit,
+                None => {
+                    report_stage("queued");
+                    state.image_jobs.reserve_renderer().await?
+                }
+            };
+            report_stage("preparing");
+            generate_local_media_artifact(
+                &state, &kind, &prompt, &path, use_cpu.unwrap_or(false), &report_stage, &report_step
+            ).await
+        };
+        tokio::pin!(render);
+        // Refresh the DB timestamp while waiting for the renderer or while
+        // rendering. Otherwise an active image older than four hours could be
+        // mistaken for an abandoned job by the Library recovery check.
+        let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(60));
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                biased;
+                _ = job.cancellation().cancelled() => {
+                    break Err(app_error::AppError::ArtifactGenerationFailed(
+                        "Image generation cancelled by user.".to_string(),
+                    ));
+                }
+                result = &mut render => break result,
+                _ = heartbeat.tick() => {
+                    match state.database.lock() {
+                        Ok(db) => {
+                            if let Err(error) = ArtifactRepository::new(&db).touch_generating_image(&artifact.id) {
+                                tracing::warn!(artifact_id = %artifact.id, error = %error, "failed to refresh image job heartbeat");
+                            }
+                        }
+                        Err(_) => tracing::warn!(artifact_id = %artifact.id, "image job heartbeat could not lock database"),
                     }
-                };
-                report_stage("preparing");
-                generate_local_media_artifact(
-                    &state, &kind, &prompt, &path, use_cpu.unwrap_or(false), &report_stage, &report_step
-                ).await
-            } => result,
+                }
+            }
         }
     } else {
         generate_local_media_artifact(
