@@ -57,7 +57,7 @@ export function createUpdateCoordinator(checkForUpdate: () => Promise<UpdateHand
       publish({ state: "checking", error: null });
       try {
         const update = await checkForUpdate();
-        if (installPromise) {
+        if (snapshot.state === "downloading" || snapshot.state === "ready") {
           await update?.close();
           return snapshot;
         }
@@ -91,9 +91,11 @@ export function createUpdateCoordinator(checkForUpdate: () => Promise<UpdateHand
     if (installPromise) return installPromise;
     if (snapshot.state === "ready") return Promise.resolve(snapshot);
 
+    // Start (or reuse) a check before reserving the install flight, so
+    // an absent cached handle can be fetched without racing this guard.
+    const readiness = checkPromise ?? (pending ? null : check());
     installPromise = (async () => {
-      if (checkPromise) await checkPromise;
-      if (!pending) await check();
+      if (readiness) await readiness;
       const update = pending;
       if (!update) {
         const message = "No application update is available to install.";
