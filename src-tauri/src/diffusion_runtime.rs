@@ -217,7 +217,10 @@ impl ImageRenderOptions {
                 "image sampling steps must be between 1 and 50".to_string(),
             ));
         }
-        if self.seed.is_some_and(|seed| !(0..=2_147_483_647).contains(&seed)) {
+        if self
+            .seed
+            .is_some_and(|seed| !(0..=2_147_483_647).contains(&seed))
+        {
             return Err(AppError::ArtifactGenerationFailed(
                 "image seed must be between 0 and 2147483647".to_string(),
             ));
