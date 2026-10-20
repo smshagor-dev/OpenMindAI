@@ -871,21 +871,18 @@ mod tests {
     fn independent_managers_share_one_os_model_install_lock() {
         let temp = tempfile::tempdir().unwrap();
         let shared_root = temp.path().join("OpenMindAI");
-        let first = ModelDownloadManager::new(PortableRootManager::from_root(
-            shared_root.clone(),
-        ));
-        let second = ModelDownloadManager::new(PortableRootManager::from_root(
-            shared_root.clone(),
-        ));
+        let first_root = PortableRootManager::from_root(shared_root.clone());
+        let second_root = PortableRootManager::from_root(shared_root.clone());
+        let first = ModelDownloadManager::new(first_root);
+        let second = ModelDownloadManager::new(second_root);
         let first_lock = first.begin_root_install().unwrap();
         let rejected = second.begin_root_install().unwrap_err().to_string();
         assert!(rejected.contains("another OpenMindAI process"), "{rejected}");
         assert_eq!(second.status().unwrap().state, DownloadState::Queued);
 
         // A separate portable installation must remain usable.
-        let other = ModelDownloadManager::new(PortableRootManager::from_root(
-            temp.path().join("OtherOpenMindAI"),
-        ));
+        let other_root = PortableRootManager::from_root(temp.path().join("OtherOpenMindAI"));
+        let other = ModelDownloadManager::new(other_root);
         let other_lock = other.begin_root_install().unwrap();
         drop(other_lock);
         drop(first_lock);
@@ -903,22 +900,21 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let path = root.join(".openmindai-model-install.lock");
         fs::create_dir(&path).unwrap();
-        let manager = ModelDownloadManager::new(PortableRootManager::from_root(root.clone()));
+        let portable_root = PortableRootManager::from_root(root.clone());
+        let manager = ModelDownloadManager::new(portable_root);
         assert!(manager.begin_root_install().is_err());
         assert!(path.is_dir());
     }
 
-    #[test]
-    fn cross_process_lock_rejection_does_not_replace_download_status() {
+    #[tokio::test]
+    async fn cross_process_lock_rejection_does_not_replace_download_status() {
         let temp = tempfile::tempdir().unwrap();
         let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
         let owner = ModelDownloadManager::new(root.clone());
         let other = ModelDownloadManager::new(root);
         let lock = owner.begin_root_install().unwrap();
         let before = other.status().unwrap();
-        let rejected = tokio::runtime::Runtime::new().unwrap().block_on(async {
-            other.download_catalog_model("kokoro-82m-onnx").await
-        });
+        let rejected = other.download_catalog_model("kokoro-82m-onnx").await;
         assert!(rejected.is_err());
         assert!(rejected.unwrap_err().to_string().contains("another OpenMindAI process"));
         let after = other.status().unwrap();
