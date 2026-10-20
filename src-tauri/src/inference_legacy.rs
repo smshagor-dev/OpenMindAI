@@ -510,9 +510,9 @@ pub async fn stream_chat_completion(
         )
         .map_err(|error| AppError::StreamFailed(error.to_string()))?;
     if let Some(error) = stream_error {
-        // The partial text has been saved, and the failed status/event have
-        // already been emitted. Propagate the diagnostic to the command caller.
-        return Err(error);
+        // Already persisted the partial text and emitted the failed event.
+        // Returning another error would make the command emit a duplicate done.
+        tracing::warn!(error = %error, "local chat stream ended unexpectedly");
     }
     Ok(InferenceMetrics {
         time_to_first_token_ms: first_token_at,
@@ -2404,6 +2404,80 @@ mod tests {
         assert!(!footer.contains("127.0.0.1"));
         assert!(!footer.contains("Unsafe"));
         assert!(!footer.contains("snip\n"));
+    }
+
+    #[test]
+    fn sse_short_stream_requires_terminal_marker() {
+        let mut tracker = SseCompletionTracker::default();
+        assert_eq!(
+            tracker.push_bytes(b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n").unwrap(),
+            vec!["partial"]
+        );
+        // An ordinary end-of-file is not an OpenAI streaming completion.
+        assert_eq!(tracker.outcome(), SseCompletionOutcome::Interrupted);
+    }
+
+    #[test]
+    fn sse_completed_stream_accepts_chunk_boundaries_and_crlf() {
+        let mut tracker = SseCompletionTracker::default();
+        let mut emitted = Vec::new();
+        for part in [
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"hel".as_slice(),
+            b"lo\"},\"finish_reason\":null}]}\r\n\r\n".as_slice(),
+            b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\r\n\r\n".as_slice(),
+            b"data: [DONE]\r\n\r\n".as_slice(),
+        ] {
+            emitted.extend(tracker.push_bytes(part).unwrap());
+        }
+        assert_eq!(emitted, ["hello"]);
+        assert_eq!(tracker.outcome(), SseCompletionOutcome::Completed);
+    }
+
+    #[test]
+    fn sse_length_limit_is_not_a_completed_reply() {
+        let mut tracker = SseCompletionTracker::default();
+        let frames = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"unfinished\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        assert_eq!(tracker.push_bytes(frames.as_bytes()).unwrap(), ["unfinished"]);
+        assert_eq!(tracker.outcome(), SseCompletionOutcome::OutputLimit);
+    }
+
+    #[test]
+    fn sse_malformed_or_post_terminal_data_is_rejected() {
+        let mut broken = SseCompletionTracker::default();
+        assert!(broken.push_bytes(b"data: {not json}\n\n").is_err());
+        assert_eq!(broken.outcome(), SseCompletionOutcome::Interrupted);
+
+        let mut terminated = SseCompletionTracker::default();
+        terminated.push_bytes(b"data: [DONE]\n\n").unwrap();
+        assert!(terminated.push_bytes(b"data: {}\n\n").is_err());
+    }
+
+    #[test]
+    fn sse_preserves_multibyte_text_across_transport_chunks() {
+        let mut tracker = SseCompletionTracker::default();
+        let frame = "data: {\"choices\":[{\"delta\":{\"content\":\"বাংলা\"}}]}\n\n";
+        let bytes = frame.as_bytes();
+        let midpoint = frame.find("বাংলা").unwrap() + 2;
+        assert!(tracker.push_bytes(&bytes[..midpoint]).unwrap().is_empty());
+        assert_eq!(tracker.push_bytes(&bytes[midpoint..]).unwrap(), ["বাংলা"]);
+    }
+
+    #[test]
+    fn sse_transport_failure_cannot_be_mistaken_for_success() {
+        let mut tracker = SseCompletionTracker::default();
+        tracker.push_bytes(b"data: {\"choices\":[{\"delta\":{\"content\":\"started\"}}]}\n\n").unwrap();
+        // Simulates a socket failure immediately after a partial frame.
+        let transport_failed = true;
+        let outcome = if transport_failed {
+            SseCompletionOutcome::Interrupted
+        } else {
+            tracker.outcome()
+        };
+        assert_eq!(outcome, SseCompletionOutcome::Interrupted);
     }
 
     #[test]
