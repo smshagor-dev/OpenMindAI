@@ -980,8 +980,9 @@ export function App() {
   }
 
   async function updatePreferences(next: AppPreferences) {
-    setPreferences(next);
-    setPreferences(await api.savePreferences(next));
+    const saved = await api.savePreferences(next);
+    setPreferences(saved);
+    setPerformance(await api.performance());
   }
 
   async function updateUserProfile(next: UserProfile) {
