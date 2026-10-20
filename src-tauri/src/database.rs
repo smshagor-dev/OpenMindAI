@@ -552,10 +552,13 @@ mod tests {
             database
                 .connection()
                 .execute(
-                    "UPDATE artifacts SET updated_at = ?1 WHERE id IN (?2, ?3)",
-                    params![earlier, stale.id, doc.id],
+                    "UPDATE artifacts SET updated_at = ?1 WHERE id IN (?2, ?3, ?4)",
+                    params![earlier, stale.id, doc.id, recent.id],
                 )
                 .unwrap();
+            // This image was old too, but its running renderer renewed the
+            // lease. Opening the database must not mark it as interrupted.
+            assert!(repo.touch_generating_image(&recent.id).unwrap());
             (stale.id, recent.id, ready.id, doc.id)
         };
 
