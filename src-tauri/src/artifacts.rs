@@ -368,6 +368,68 @@ mod tests {
     }
 
     #[test]
+    fn image_heartbeat_only_refreshes_unfinished_images() {
+        let database = Database::in_memory().unwrap();
+        let conversation = crate::chat::ChatRepository::new(&database)
+            .create_conversation(Some("Image lease"))
+            .unwrap();
+        let repo = ArtifactRepository::new(&database);
+        let running = repo
+            .create(
+                &conversation.id,
+                None,
+                "waiting.png",
+                "generated/images/waiting.png",
+                "image/png",
+                "image",
+                "generating",
+            )
+            .unwrap();
+        let ready = repo
+            .create(
+                &conversation.id,
+                None,
+                "ready.png",
+                "generated/images/ready.png",
+                "image/png",
+                "image",
+                "generating",
+            )
+            .unwrap();
+        let document = repo
+            .create(
+                &conversation.id,
+                None,
+                "report.pdf",
+                "generated/exports/report.pdf",
+                "application/pdf",
+                "pdf",
+                "generating",
+            )
+            .unwrap();
+
+        let earlier = (Utc::now() - chrono::Duration::hours(5)).to_rfc3339();
+        database
+            .connection()
+            .execute(
+                "UPDATE artifacts SET updated_at = ?1
+                 WHERE id IN (?2, ?3, ?4)",
+                rusqlite::params![earlier, running.id, ready.id, document.id],
+            )
+            .unwrap();
+        repo.set_ready(&ready.id, 100, None).unwrap();
+
+        assert!(repo.touch_generating_image(&running.id).unwrap());
+        assert!(!repo.touch_generating_image(&ready.id).unwrap());
+        assert!(!repo.touch_generating_image(&document.id).unwrap());
+        assert!(!repo.touch_generating_image("unknown").unwrap());
+        assert_ne!(repo.find(&running.id).unwrap().updated_at, earlier);
+        assert_eq!(repo.find(&running.id).unwrap().status, "generating");
+        assert_eq!(repo.find(&document.id).unwrap().updated_at, earlier);
+        assert_eq!(repo.find(&ready.id).unwrap().status, "ready");
+    }
+
+    #[test]
     fn find_missing_returns_not_found() {
         let database = Database::in_memory().unwrap();
         let repo = ArtifactRepository::new(&database);
