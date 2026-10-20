@@ -17,9 +17,9 @@ import {
   X,
 } from "lucide-react";
 import type { ReactNode, RefObject } from "react";
-import type { ModelRecord, RuntimeInventory } from "../types";
+import type { ImageGenerationOptions, ModelRecord, RuntimeInventory } from "../types";
 import { formatBytes } from "../lib/format";
-import type { AttachmentDraft } from "../lib/chat";
+import { inferChatMode, type AttachmentDraft } from "../lib/chat";
 import { transcribeAudioBlob } from "../lib/media";
 import { api } from "../api";
 import { ModelSelector } from "./ModelSelector";
@@ -27,6 +27,8 @@ import { ModelSelector } from "./ModelSelector";
 export function Composer(props: {
   prompt: string;
   setPrompt: (value: string) => void;
+  imageOptions: ImageGenerationOptions;
+  setImageOptions: (options: ImageGenerationOptions) => void;
   attachments: AttachmentDraft[];
   enterToSend: boolean;
   streaming: boolean;
@@ -53,6 +55,8 @@ export function Composer(props: {
   const audioPreviewUrlsRef = useRef(new Map<string, string>());
   const attachmentsRef = useRef(props.attachments);
   attachmentsRef.current = props.attachments;
+  const [imageSettingsOpen, setImageSettingsOpen] = useState(false);
+  const isImageRequest = inferChatMode(props.prompt, props.attachments) === "image";
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [micError, setMicError] = useState<string | null>(null);
@@ -255,6 +259,76 @@ export function Composer(props: {
                 </span>
               );
             })}
+          </div>
+        ) : null}
+        {isImageRequest ? (
+          <div className="composer-image-options">
+            <button
+              type="button"
+              className="composer-image-options-toggle"
+              aria-expanded={imageSettingsOpen}
+              onClick={() => setImageSettingsOpen((open) => !open)}
+            >
+              Image settings {imageSettingsOpen ? "−" : "+"}
+            </button>
+            {imageSettingsOpen ? (
+              <div className="composer-image-options-fields">
+                <label>
+                  Steps
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    step={1}
+                    placeholder="Auto"
+                    value={props.imageOptions.steps ?? ""}
+                    onChange={(event) => {
+                      const value = event.currentTarget.value;
+                      props.setImageOptions({
+                        ...props.imageOptions,
+                        steps: value === "" ? null : Number(value),
+                      });
+                    }}
+                  />
+                </label>
+                <label>
+                  Seed
+                  <input
+                    type="number"
+                    min={0}
+                    max={2147483647}
+                    step={1}
+                    placeholder="Default"
+                    value={props.imageOptions.seed ?? ""}
+                    onChange={(event) => {
+                      const value = event.currentTarget.value;
+                      props.setImageOptions({
+                        ...props.imageOptions,
+                        seed: value === "" ? null : Number(value),
+                      });
+                    }}
+                  />
+                </label>
+                <label className="composer-image-negative">
+                  Negative prompt
+                  <input
+                    type="text"
+                    maxLength={4000}
+                    placeholder="What to avoid in the image"
+                    value={props.imageOptions.negativePrompt}
+                    onChange={(event) =>
+                      props.setImageOptions({
+                        ...props.imageOptions,
+                        negativePrompt: event.currentTarget.value,
+                      })
+                    }
+                  />
+                </label>
+                <p className="composer-image-options-note">
+                  Leave seed and steps blank to keep the default renderer settings.
+                </p>
+              </div>
+            ) : null}
           </div>
         ) : null}
         <div className="composer-row">
