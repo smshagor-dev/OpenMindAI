@@ -46,6 +46,9 @@ jobs:
       - name: Theme contrast and appearance regression
         run: npm run check:theme
 
+      - name: Shared application updater regression
+        run: npm run test:updates
+
       - name: Lint
         run: npm run lint
 
