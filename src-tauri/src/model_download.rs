@@ -239,8 +239,8 @@ impl ModelDownloadManager {
         let (final_path, verification) = self
             .download_primary_file(&metadata, &model_dir, package_size, &token)
             .await?;
-        self.write_manifest(&model_dir, &metadata, &final_path, verification)?;
-
+        // Do not advertise a new checkpoint as installed while its voice,
+        // config, or other required package dependencies are still pending.
         if !download.dependencies.is_empty() {
             self.update_status(|status| {
                 status.state = DownloadState::Resolving;
@@ -264,6 +264,7 @@ impl ModelDownloadManager {
         if token.is_cancelled() {
             return Err(AppError::InferenceCancelled("download stopped".to_string()));
         }
+        self.write_manifest(&model_dir, &metadata, &final_path, verification)?;
 
         self.update_status(|status| {
             status.state = DownloadState::Completed;
@@ -496,10 +497,11 @@ impl ModelDownloadManager {
         let mut manifest = metadata.clone();
         manifest.actual_sha256 = Some(sha256_file(model_path)?);
         manifest.verification = verification;
-        fs::write(
-            model_dir.join("model-manifest.json"),
+        model_package::write_manifest_atomically(
+            &model_dir.join("model-manifest.json"),
             serde_json::to_string_pretty(&manifest)
-                .map_err(|error| AppError::internal(error.to_string()))?,
+                .map_err(|error| AppError::internal(error.to_string()))?
+                .as_bytes(),
         )?;
         Ok(())
     }
