@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::ErrorKind,
+    io::{ErrorKind, Write},
     path::{Component, Path, PathBuf},
 };
 
@@ -21,6 +21,45 @@ use crate::{
 
 const PACKAGE_SPACE_MARGIN: u64 = 256 * 1024 * 1024;
 const MAX_PACKAGE_MANIFEST_BYTES: u64 = 64 * 1024;
+
+/**
+ * Publish an individual model metadata file only after its full contents have
+ * been written and synced. A failed write or rename leaves the previous
+ * manifest untouched and removes this attempt's temporary file.
+ *
+ * The temporary file is deliberately on the same filesystem as its final
+ * destination; neither a cross-device copy nor truncation of the live manifest
+ * is acceptable for model packages on removable storage.
+ */
+pub(super) fn write_manifest_atomically(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| AppError::internal("model manifest has no parent directory"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| AppError::internal("model manifest has no file name"))?;
+    let temporary = parent.join(format!(
+        ".{}.{}.tmp",
+        name.to_string_lossy(),
+        uuid::Uuid::new_v4()
+    ));
+    let result = (|| -> Result<(), AppError> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
 
 #[derive(Debug, Deserialize)]
 struct HuggingFaceModel {
@@ -133,10 +172,11 @@ pub async fn ensure_dependencies(
         repo: entry.repo.clone(),
         files,
     };
-    fs::write(
-        model_dir.join("package-manifest.json"),
+    write_manifest_atomically(
+        &model_dir.join("package-manifest.json"),
         serde_json::to_string_pretty(&manifest)
-            .map_err(|error| AppError::internal(error.to_string()))?,
+            .map_err(|error| AppError::internal(error.to_string()))?
+            .as_bytes(),
     )?;
     Ok(())
 }
@@ -720,6 +760,38 @@ mod tests {
         symlink(&unrelated, &part).unwrap();
         assert!(dependency_partial_path(&root, &package, &dependency).is_err());
         assert_eq!(fs::read(&unrelated).unwrap(), b"untouched");
+    }
+
+    #[test]
+    fn atomic_model_manifest_replaces_existing_file_without_partial_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("model-manifest.json");
+        fs::write(&path, br#"{"version":"old"}"#).unwrap();
+        write_manifest_atomically(&path, br#"{"version":"new","verified":true}"#).unwrap();
+        let contents = fs::read(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&contents).unwrap();
+        assert_eq!(parsed["version"], "new");
+        assert_eq!(parsed["verified"], true);
+        let files = fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(files, 1, "successful replacement must not leave a temp file");
+    }
+
+    #[test]
+    fn atomic_model_manifest_failure_preserves_existing_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("package-manifest.json");
+        fs::create_dir(&destination).unwrap();
+        fs::write(destination.join("existing.json"), b"important").unwrap();
+        assert!(write_manifest_atomically(&destination, br#"{"should":"fail"}"#).is_err());
+        assert_eq!(
+            fs::read(destination.join("existing.json")).unwrap(),
+            b"important"
+        );
+        assert_eq!(
+            fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "failed rename should remove its new temporary file"
+        );
     }
 
     #[test]
