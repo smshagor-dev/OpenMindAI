@@ -214,6 +214,7 @@ async fn smoke_canvas(
         "A simple red circle centered on a clean white background, minimal composition.",
         &output,
         false, // Standard smoke test keeps the platform's preferred renderer.
+        &diffusion_runtime::ImageRenderOptions::default(),
         &|stage| println!("[Canvas] {stage}"),
         &|step, total| println!("[Canvas] sampling step {step}/{total}"),
     )
