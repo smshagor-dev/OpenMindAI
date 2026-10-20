@@ -716,10 +716,6 @@ async fn create_generation_artifact(
             total_steps: Some(total_steps),
         });
     };
-    if kind == "image" {
-        report_stage("preparing");
-    }
-
     let generation_result = if let Some(job) = image_job.as_ref() {
         tokio::select! {
             biased;
@@ -728,9 +724,22 @@ async fn create_generation_artifact(
                     "Image generation cancelled by user.".to_string(),
                 ))
             }
-            result = generate_local_media_artifact(
-                &state, &kind, &prompt, &path, use_cpu.unwrap_or(false), &report_stage, &report_step
-            ) => result,
+            result = async {
+                // Only one diffusion image runs at a time to avoid competing
+                // for the same GPU memory. Waiting jobs retain their own Stop
+                // action, and a dropped or cancelled future releases the slot.
+                let _render_slot = match state.image_jobs.try_reserve_renderer() {
+                    Some(permit) => permit,
+                    None => {
+                        report_stage("queued");
+                        state.image_jobs.reserve_renderer().await?
+                    }
+                };
+                report_stage("preparing");
+                generate_local_media_artifact(
+                    &state, &kind, &prompt, &path, use_cpu.unwrap_or(false), &report_stage, &report_step
+                ).await
+            } => result,
         }
     } else {
         generate_local_media_artifact(
