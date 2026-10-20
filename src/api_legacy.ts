@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Artifact,
+  ImageGenerationOptions,
   ArtifactKind,
   Conversation,
   AppPreferences,
@@ -356,7 +357,15 @@ export const api = {
     kind: "image" | "video" | "voice",
     prompt: string,
     useCpu = false,
-  ) => call<Artifact>("create_generation_artifact", { conversationId, messageId, kind, prompt, useCpu }),
+    imageOptions?: ImageGenerationOptions,
+  ) => call<Artifact>("create_generation_artifact", {
+    conversationId,
+    messageId,
+    kind,
+    prompt,
+    useCpu,
+    imageOptions: kind === "image" ? imageOptions : undefined,
+  }),
   listArtifacts: (conversationId: string) => call<Artifact[]>("list_artifacts", { conversationId }),
   listLibraryEntries: () => call<LibraryEntry[]>("list_library_entries"),
   openArtifact: (artifactId: string) => call<void>("open_artifact", { artifactId }),
