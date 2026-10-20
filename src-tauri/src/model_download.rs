@@ -10,6 +10,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sysinfo::Disks;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -130,6 +131,7 @@ pub struct ModelDownloadManager {
     root: PortableRootManager,
     status: Arc<Mutex<DownloadStatus>>,
     cancel_token: Arc<Mutex<Option<CancellationToken>>>,
+    active_download: Arc<Semaphore>,
     client: Client,
     catalog_entry: ModelCatalogEntry,
 }
@@ -142,6 +144,7 @@ impl ModelDownloadManager {
             root,
             status: Arc::new(Mutex::new(DownloadStatus::queued(&catalog_entry))),
             cancel_token: Arc::new(Mutex::new(None)),
+            active_download: Arc::new(Semaphore::new(1)),
             client: crate::net::download_client(),
             catalog_entry,
         }
@@ -163,16 +166,31 @@ impl ModelDownloadManager {
     }
 
     fn stop_download(&self, state: DownloadState) -> Result<DownloadStatus, AppError> {
-        if let Some(token) = self
+        let active_token = self
             .cancel_token
             .lock()
             .map_err(|_| AppError::internal("download cancel lock poisoned"))?
-            .as_ref()
-        {
-            token.cancel();
-        }
+            .clone();
+        let Some(token) = active_token else {
+            // A late pause/cancel after completion must never rewrite the
+            // completed/failed state or interfere with the next download.
+            return self.status();
+        };
+        token.cancel();
         self.set_state(state, None)?;
         self.status()
+    }
+
+    fn begin_download(&self) -> Result<OwnedSemaphorePermit, AppError> {
+        self.active_download
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| {
+                AppError::ModelDownloadFailed(
+                    "another model download is already in progress; finish or cancel it first"
+                        .to_string(),
+                )
+            })
     }
 
     pub async fn download_qwen_q4_k_m(&self) -> Result<DownloadStatus, AppError> {
@@ -181,6 +199,10 @@ impl ModelDownloadManager {
     }
 
     pub async fn download_catalog_model(&self, model_id: &str) -> Result<DownloadStatus, AppError> {
+        // Acquire before changing progress/cancellation state. The owned
+        // permit is shared across clones and held through the final manifest
+        // write; a parallel caller cannot clobber an active install.
+        let _in_flight = self.begin_download()?;
         let entry = entry_by_id(model_id)?;
         tracing::info!(repo = %entry.repo, model_id = %entry.id, "installing AI model package");
         self.update_status(|status| *status = DownloadStatus::queued(&entry))?;
@@ -773,6 +795,48 @@ pub(crate) fn validate_free_space(destination: &Path, required: u64) -> Result<(
 mod tests {
     use super::*;
     use std::{thread, time::Duration};
+
+    #[tokio::test]
+    async fn concurrent_download_is_rejected_without_replacing_progress() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        let manager = ModelDownloadManager::new(root);
+        let other_window = manager.clone();
+
+        // Simulate an install holding the exclusive permit without reaching
+        // the network. A second window must not change the active status.
+        let first = manager.begin_download().unwrap();
+        let before = manager.status().unwrap();
+        let rejected = other_window
+            .download_catalog_model("kokoro-82m-onnx")
+            .await
+            .unwrap_err();
+        assert!(
+            rejected.to_string().contains("already in progress"),
+            "{rejected}"
+        );
+        let after = manager.status().unwrap();
+        assert_eq!(after.model_id, before.model_id);
+        assert_eq!(after.state, before.state);
+        assert!(other_window.begin_download().is_err());
+
+        drop(first);
+        assert!(other_window.begin_download().is_ok());
+    }
+
+    #[test]
+    fn pause_and_cancel_when_idle_do_not_corrupt_download_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        let manager = ModelDownloadManager::new(root);
+        let initial = manager.status().unwrap();
+        assert_eq!(manager.cancel().unwrap().state, initial.state);
+        assert_eq!(manager.pause().unwrap().state, initial.state);
+
+        manager.set_state(DownloadState::Completed, None).unwrap();
+        assert_eq!(manager.cancel().unwrap().state, DownloadState::Completed);
+        assert_eq!(manager.pause().unwrap().state, DownloadState::Completed);
+    }
 
     #[test]
     fn byte_pairs_show_enough_precision_to_differ() {
