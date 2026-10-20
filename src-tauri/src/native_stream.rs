@@ -94,9 +94,12 @@ async fn next_token(
 pub async fn stream_native_completion(
     request: NativeStreamRequest<'_>,
 ) -> Result<InferenceMetrics, NativeStreamError> {
-    let (messages, omitted_messages) =
-        build_text_context(request.database, request.conversation_id, request.config.n_ctx)
-            .map_err(NativeStreamError::before_output)?;
+    let (messages, omitted_messages) = build_text_context(
+        request.database,
+        request.conversation_id,
+        request.config.n_ctx,
+    )
+    .map_err(NativeStreamError::before_output)?;
     let inference_request = InferenceRequest::from_messages(messages).with_config(request.config);
     inference_request.validate().map_err(|error| {
         NativeStreamError::before_output(AppError::InferenceFailed(error.to_string()))
@@ -314,12 +317,16 @@ fn build_text_context(
     }
 
     let window = crate::sampling::compact_chat_context(prepared, context_size)?;
-    let messages = window.messages.into_iter().filter_map(|message| {
-        Some(ChatMessage::new(
-            message["role"].as_str()?,
-            message["content"].as_str()?,
-        ))
-    }).collect::<Vec<_>>();
+    let messages = window
+        .messages
+        .into_iter()
+        .filter_map(|message| {
+            Some(ChatMessage::new(
+                message["role"].as_str()?,
+                message["content"].as_str()?,
+            ))
+        })
+        .collect::<Vec<_>>();
     Ok((messages, window.omitted_messages))
 }
 
