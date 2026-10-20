@@ -90,6 +90,17 @@ impl<'a> ArtifactRepository<'a> {
         Ok(())
     }
 
+    /// Keep an active queued or rendering image fresh for crash recovery.
+    /// This must not modify a finished image or another artifact kind.
+    pub fn touch_generating_image(&self, id: &str) -> Result<bool, AppError> {
+        let updated = self.database.connection().execute(
+            "UPDATE artifacts SET updated_at = ?1
+             WHERE id = ?2 AND kind = 'image' AND status = 'generating'",
+            rusqlite::params![Utc::now().to_rfc3339(), id],
+        )?;
+        Ok(updated != 0)
+    }
+
     pub fn set_failed(&self, id: &str, error: &str) -> Result<(), AppError> {
         self.database.connection().execute(
             "UPDATE artifacts SET status = 'failed', error = ?1, updated_at = ?2 WHERE id = ?3",
