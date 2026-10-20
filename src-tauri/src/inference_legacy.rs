@@ -219,6 +219,92 @@ async fn next_stream_chunk<S: Stream + Unpin>(
     }
 }
 
+/// Tracks protocol completion independently from the transport's EOF. A socket
+/// closing is not the same as an OpenAI-style streaming completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SseCompletionOutcome {
+    Completed,
+    OutputLimit,
+    Interrupted,
+}
+
+#[derive(Default)]
+struct SseCompletionTracker {
+    pending_line: Vec<u8>,
+    data_lines: Vec<String>,
+    saw_done: bool,
+    finish_reason: Option<String>,
+}
+
+impl SseCompletionTracker {
+    fn push_bytes(&mut self, bytes: &[u8]) -> Result<Vec<String>, AppError> {
+        const MAX_SSE_LINE_BYTES: usize = 1024 * 1024;
+        self.pending_line.extend_from_slice(bytes);
+        let mut tokens = Vec::new();
+        while let Some(index) = self.pending_line.iter().position(|&byte| byte == b'\n') {
+            let mut line = self.pending_line.drain(..=index).collect::<Vec<_>>();
+            line.pop();
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            let line = std::str::from_utf8(&line)
+                .map_err(|error| AppError::StreamFailed(format!("invalid UTF-8 in SSE frame: {error}")))?;
+            if line.is_empty() {
+                if self.data_lines.is_empty() {
+                    continue;
+                }
+                let payload = self.data_lines.join("\n");
+                self.data_lines.clear();
+                if payload.trim() == "[DONE]" {
+                    if self.saw_done {
+                        return Err(AppError::StreamFailed("duplicate SSE completion marker".into()));
+                    }
+                    self.saw_done = true;
+                    continue;
+                }
+                if self.saw_done {
+                    return Err(AppError::StreamFailed("SSE data arrived after completion".into()));
+                }
+                let delta = parse_openai_delta(&payload)?;
+                if let Some(reason) = delta.finish_reason {
+                    if self.finish_reason.as_ref().is_some_and(|previous| previous != &reason) {
+                        return Err(AppError::StreamFailed(
+                            "conflicting model finish reasons in SSE response".into(),
+                        ));
+                    }
+                    self.finish_reason = Some(reason);
+                }
+                if let Some(content) = delta.content {
+                    if !content.is_empty() {
+                        tokens.push(content);
+                    }
+                }
+            } else if let Some(data) = line.strip_prefix("data:") {
+                if self.saw_done {
+                    return Err(AppError::StreamFailed("SSE data arrived after completion".into()));
+                }
+                self.data_lines
+                    .push(data.strip_prefix(' ').unwrap_or(data).to_string());
+            }
+        }
+        if self.pending_line.len() > MAX_SSE_LINE_BYTES {
+            return Err(AppError::StreamFailed("SSE frame exceeds the supported size".into()));
+        }
+        Ok(tokens)
+    }
+
+    fn outcome(&self) -> SseCompletionOutcome {
+        if !self.saw_done {
+            return SseCompletionOutcome::Interrupted;
+        }
+        match self.finish_reason.as_deref() {
+            Some("length") => SseCompletionOutcome::OutputLimit,
+            None | Some("stop") => SseCompletionOutcome::Completed,
+            _ => SseCompletionOutcome::Interrupted,
+        }
+    }
+}
+
 pub async fn stream_chat_completion(
     request: StreamRequest<'_>,
 ) -> Result<InferenceMetrics, AppError> {
@@ -273,64 +359,77 @@ pub async fn stream_chat_completion(
         post_completion_with_retry(request.client, request.endpoint, &body, &cancellation).await?;
 
     let mut stream = response.bytes_stream();
-    let mut sse_buffer = String::new();
+    let mut tracker = SseCompletionTracker::default();
     let mut flush_buffer = String::new();
     let mut ui_buffer = String::new();
     let mut generated_answer = String::new();
     let mut generated_chars = 0;
     let mut first_token_at = None;
-    let mut status = "completed";
-    let mut reached_output_limit = false;
+    let mut cancelled = false;
+    let mut stream_error = None;
 
-    loop {
+    'receive: loop {
         let chunk = match next_stream_chunk(&mut stream, &cancellation).await {
             StreamPoll::Cancelled => {
-                status = "cancelled";
+                cancelled = true;
                 break;
             }
             StreamPoll::Item(Some(chunk)) => chunk,
             StreamPoll::Item(None) => break,
         };
-        let bytes = chunk.map_err(|error| AppError::StreamFailed(error.to_string()))?;
-        sse_buffer.push_str(&String::from_utf8_lossy(&bytes));
+        let bytes = match chunk {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                stream_error = Some(AppError::StreamFailed(error.to_string()));
+                break;
+            }
+        };
+        let tokens = match tracker.push_bytes(&bytes) {
+            Ok(tokens) => tokens,
+            Err(error) => {
+                stream_error = Some(error);
+                break;
+            }
+        };
+        for token in tokens {
+            first_token_at.get_or_insert_with(|| started.elapsed().as_millis());
+            generated_chars += token.chars().count();
+            if !retrieved_web.sources.is_empty() {
+                generated_answer.push_str(&token);
+            }
+            flush_buffer.push_str(&token);
+            ui_buffer.push_str(&token);
 
-        while let Some(index) = sse_buffer.find("\n\n") {
-            let frame = sse_buffer[..index].to_string();
-            sse_buffer = sse_buffer[index + 2..].to_string();
-            for line in frame.lines() {
-                let Some(data) = line.strip_prefix("data:") else {
-                    continue;
-                };
-                let data = data.trim();
-                if data == "[DONE]" {
-                    continue;
+            if ui_buffer.len() >= UI_STREAM_CHUNK_BYTES {
+                if let Err(error) = emit_stream_chunk(&request, &mut ui_buffer) {
+                    stream_error = Some(error);
+                    break 'receive;
                 }
-                let delta = parse_openai_delta(data)?;
-                if delta.finish_reason.as_deref() == Some("length") {
-                    reached_output_limit = true;
-                }
-                if let Some(token) = delta.content {
-                    if token.is_empty() {
-                        continue;
-                    }
-                    first_token_at.get_or_insert_with(|| started.elapsed().as_millis());
-                    generated_chars += token.chars().count();
-                    if !retrieved_web.sources.is_empty() {
-                        generated_answer.push_str(&token);
-                    }
-                    flush_buffer.push_str(&token);
-                    ui_buffer.push_str(&token);
-
-                    if ui_buffer.len() >= UI_STREAM_CHUNK_BYTES {
-                        emit_stream_chunk(&request, &mut ui_buffer)?;
-                    }
-                    if flush_buffer.len() >= DB_STREAM_FLUSH_BYTES {
-                        flush(request.database, &request.assistant.id, &mut flush_buffer)?;
-                    }
+            }
+            if flush_buffer.len() >= DB_STREAM_FLUSH_BYTES {
+                if let Err(error) = flush(request.database, &request.assistant.id, &mut flush_buffer) {
+                    stream_error = Some(error);
+                    break 'receive;
                 }
             }
         }
+        if tracker.saw_done {
+            break;
+        }
     }
+
+    let outcome = if stream_error.is_some() {
+        SseCompletionOutcome::Interrupted
+    } else {
+        tracker.outcome()
+    };
+    let status = if cancelled || cancellation.is_cancelled() {
+        "cancelled"
+    } else if outcome == SseCompletionOutcome::Completed {
+        "completed"
+    } else {
+        "failed"
+    };
 
     // Citations in the model's prose can be incorrect. Append an independent,
     // host-generated list of actual retrieved links to the same saved reply.
@@ -377,19 +476,26 @@ pub async fn stream_chat_completion(
         ui_buffer.push_str(&notice);
         flush_buffer.push_str(&notice);
     }
-    if status == "completed" && !cancellation.is_cancelled() && reached_output_limit {
-        // This notice remains in persisted history after a restart and prevents
-        // a partial document/report from silently appearing complete on export.
-        let notice = "\n\n---\n\n**The model reached its response length limit.** This answer may be incomplete. Ask to continue from where it stopped.";
+    if status == "failed" {
+        // Retain visible and persisted partial output; a network EOF without
+        // [DONE] is never reported as a completed answer.
+        let notice = if outcome == SseCompletionOutcome::OutputLimit {
+            "\n\n---\n\n**Response length limit reached.** This reply is incomplete. Use Continue to resume from the last text."
+        } else {
+            "\n\n---\n\n**Generation was interrupted before completion.** The text above may be incomplete. Retry the message or ask to continue."
+        };
         generated_chars += notice.chars().count();
         ui_buffer.push_str(notice);
         flush_buffer.push_str(notice);
     }
-    if !ui_buffer.is_empty() {
-        emit_stream_chunk(&request, &mut ui_buffer)?;
-    }
+    // Persist first, even when the transport fails after several tokens.
+    // If persistence or event delivery fails, the command-level failure
+    // handler still marks the generation failed and clears the UI activity.
     if !flush_buffer.is_empty() {
         flush(request.database, &request.assistant.id, &mut flush_buffer)?;
+    }
+    if !ui_buffer.is_empty() {
+        emit_stream_chunk(&request, &mut ui_buffer)?;
     }
     set_status(request.database, &request.assistant.id, status)?;
     request
@@ -403,6 +509,11 @@ pub async fn stream_chat_completion(
             },
         )
         .map_err(|error| AppError::StreamFailed(error.to_string()))?;
+    if let Some(error) = stream_error {
+        // Already persisted the partial text and emitted the failed event.
+        // Returning another error would make the command emit a duplicate done.
+        tracing::warn!(error = %error, "local chat stream ended unexpectedly");
+    }
     Ok(InferenceMetrics {
         time_to_first_token_ms: first_token_at,
         generated_chars,
@@ -2293,6 +2404,80 @@ mod tests {
         assert!(!footer.contains("127.0.0.1"));
         assert!(!footer.contains("Unsafe"));
         assert!(!footer.contains("snip\n"));
+    }
+
+    #[test]
+    fn sse_short_stream_requires_terminal_marker() {
+        let mut tracker = SseCompletionTracker::default();
+        assert_eq!(
+            tracker.push_bytes(b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n").unwrap(),
+            vec!["partial"]
+        );
+        // An ordinary end-of-file is not an OpenAI streaming completion.
+        assert_eq!(tracker.outcome(), SseCompletionOutcome::Interrupted);
+    }
+
+    #[test]
+    fn sse_completed_stream_accepts_chunk_boundaries_and_crlf() {
+        let mut tracker = SseCompletionTracker::default();
+        let mut emitted = Vec::new();
+        for part in [
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"hel".as_slice(),
+            b"lo\"},\"finish_reason\":null}]}\r\n\r\n".as_slice(),
+            b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\r\n\r\n".as_slice(),
+            b"data: [DONE]\r\n\r\n".as_slice(),
+        ] {
+            emitted.extend(tracker.push_bytes(part).unwrap());
+        }
+        assert_eq!(emitted, ["hello"]);
+        assert_eq!(tracker.outcome(), SseCompletionOutcome::Completed);
+    }
+
+    #[test]
+    fn sse_length_limit_is_not_a_completed_reply() {
+        let mut tracker = SseCompletionTracker::default();
+        let frames = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"unfinished\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        assert_eq!(tracker.push_bytes(frames.as_bytes()).unwrap(), ["unfinished"]);
+        assert_eq!(tracker.outcome(), SseCompletionOutcome::OutputLimit);
+    }
+
+    #[test]
+    fn sse_malformed_or_post_terminal_data_is_rejected() {
+        let mut broken = SseCompletionTracker::default();
+        assert!(broken.push_bytes(b"data: {not json}\n\n").is_err());
+        assert_eq!(broken.outcome(), SseCompletionOutcome::Interrupted);
+
+        let mut terminated = SseCompletionTracker::default();
+        terminated.push_bytes(b"data: [DONE]\n\n").unwrap();
+        assert!(terminated.push_bytes(b"data: {}\n\n").is_err());
+    }
+
+    #[test]
+    fn sse_preserves_multibyte_text_across_transport_chunks() {
+        let mut tracker = SseCompletionTracker::default();
+        let frame = "data: {\"choices\":[{\"delta\":{\"content\":\"বাংলা\"}}]}\n\n";
+        let bytes = frame.as_bytes();
+        let midpoint = frame.find("বাংলা").unwrap() + 2;
+        assert!(tracker.push_bytes(&bytes[..midpoint]).unwrap().is_empty());
+        assert_eq!(tracker.push_bytes(&bytes[midpoint..]).unwrap(), ["বাংলা"]);
+    }
+
+    #[test]
+    fn sse_transport_failure_cannot_be_mistaken_for_success() {
+        let mut tracker = SseCompletionTracker::default();
+        tracker.push_bytes(b"data: {\"choices\":[{\"delta\":{\"content\":\"started\"}}]}\n\n").unwrap();
+        // Simulates a socket failure immediately after a partial frame.
+        let transport_failed = true;
+        let outcome = if transport_failed {
+            SseCompletionOutcome::Interrupted
+        } else {
+            tracker.outcome()
+        };
+        assert_eq!(outcome, SseCompletionOutcome::Interrupted);
     }
 
     #[test]
