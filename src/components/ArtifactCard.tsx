@@ -6,6 +6,7 @@ import { renderMarkdown } from "../lib/markdown";
 import { artifactMediaDataUrl } from "../lib/media";
 
 const IMAGE_STAGE_LABELS: Record<ImageRenderStage, string> = {
+  queued: "Waiting for the current image to finish...",
   preparing: "Preparing image renderer...",
   rendering: "Rendering image...",
   validating: "Checking generated image...",
