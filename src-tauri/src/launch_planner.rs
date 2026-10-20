@@ -41,6 +41,7 @@ pub struct LaunchPlan {
 pub struct ModelLaunchPlanner;
 
 impl ModelLaunchPlanner {
+    #[cfg(test)]
     pub fn plan(model: &ModelRecord, hardware: &HardwareProfile, port: u16) -> LaunchPlan {
         Self::plan_for_preference(model, hardware, "Auto", port)
     }
