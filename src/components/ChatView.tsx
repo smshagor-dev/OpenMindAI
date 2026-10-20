@@ -18,6 +18,7 @@ import type {
   Artifact,
   ArtifactKind,
   ImageRenderProgress,
+  ImageGenerationOptions,
   Conversation,
   Message,
   ModelRecord,
@@ -52,6 +53,8 @@ export function ChatView(props: {
   messages: Message[];
   prompt: string;
   setPrompt: (value: string) => void;
+  imageOptions: ImageGenerationOptions;
+  setImageOptions: (options: ImageGenerationOptions) => void;
   attachments: AttachmentDraft[];
   preferences: AppPreferences | null;
   activity: RealtimeActivity;
@@ -113,6 +116,8 @@ export function ChatView(props: {
     <Composer
       prompt={props.prompt}
       setPrompt={props.setPrompt}
+      imageOptions={props.imageOptions}
+      setImageOptions={props.setImageOptions}
       attachments={props.attachments}
       enterToSend={props.enterToSend}
       streaming={props.streaming}
