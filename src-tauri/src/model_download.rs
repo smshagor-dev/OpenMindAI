@@ -224,12 +224,11 @@ impl ModelDownloadManager {
         match file.try_lock() {
             Ok(()) => Ok(file),
             Err(fs::TryLockError::WouldBlock) => Err(AppError::ModelDownloadFailed(
-                "another OpenMindAI process is installing models in this portable root"
-                    .to_string(),
+                "another OpenMindAI process is installing models in this portable root".to_string(),
             )),
-            Err(fs::TryLockError::Error(error)) => Err(AppError::ModelDownloadFailed(
-                format!("cannot acquire model install lock: {error}"),
-            )),
+            Err(fs::TryLockError::Error(error)) => Err(AppError::ModelDownloadFailed(format!(
+                "cannot acquire model install lock: {error}"
+            ))),
         }
     }
 
@@ -877,7 +876,10 @@ mod tests {
         let second = ModelDownloadManager::new(second_root);
         let first_lock = first.begin_root_install().unwrap();
         let rejected = second.begin_root_install().unwrap_err().to_string();
-        assert!(rejected.contains("another OpenMindAI process"), "{rejected}");
+        assert!(
+            rejected.contains("another OpenMindAI process"),
+            "{rejected}"
+        );
         assert_eq!(second.status().unwrap().state, DownloadState::Queued);
 
         // A separate portable installation must remain usable.
@@ -916,7 +918,10 @@ mod tests {
         let before = other.status().unwrap();
         let rejected = other.download_catalog_model("kokoro-82m-onnx").await;
         assert!(rejected.is_err());
-        assert!(rejected.unwrap_err().to_string().contains("another OpenMindAI process"));
+        assert!(rejected
+            .unwrap_err()
+            .to_string()
+            .contains("another OpenMindAI process"));
         let after = other.status().unwrap();
         assert_eq!(after.model_id, before.model_id);
         assert_eq!(after.state, before.state);
