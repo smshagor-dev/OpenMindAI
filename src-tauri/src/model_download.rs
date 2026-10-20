@@ -80,6 +80,21 @@ pub enum VerificationState {
     Failed,
 }
 
+/// The Hub returns a full Git commit SHA with model metadata. Always
+/// resolve downloads through that immutable snapshot, never /resolve/main/.
+/// A missing or malformed SHA must fail closed before any remote file write.
+pub(super) fn pinned_repo_revision(sha: Option<&str>) -> Result<&str, AppError> {
+    match sha {
+        Some(value) if value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) => {
+            Ok(value)
+        }
+        _ => Err(AppError::ModelDownloadFailed(
+            "Hugging Face model metadata has no valid immutable 40-character commit SHA"
+                .to_string(),
+        )),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HuggingFaceModel {
@@ -236,7 +251,14 @@ impl ModelDownloadManager {
                 status.speed_bytes_per_sec = None;
                 status.error = None;
             })?;
-            model_package::ensure_dependencies(&self.root, &self.client, &entry, &token).await?;
+            model_package::ensure_dependencies(
+                &self.root,
+                &self.client,
+                &entry,
+                metadata.repo_sha.as_deref(),
+                &token,
+            )
+            .await?;
         }
 
         if token.is_cancelled() {
@@ -425,7 +447,8 @@ impl ModelDownloadManager {
                 "official model metadata has an invalid SHA-256".to_string(),
             ));
         }
-        let source_url = format!("https://huggingface.co/{repo}/resolve/main/{filename}");
+        let revision = pinned_repo_revision(model.sha.as_deref())?.to_string();
+        let source_url = format!("https://huggingface.co/{repo}/resolve/{revision}/{filename}");
         let size_bytes = sibling
             .lfs
             .as_ref()
@@ -441,7 +464,7 @@ impl ModelDownloadManager {
 
         Ok(QwenModelManifest {
             repo: repo.clone(),
-            repo_sha: model.sha,
+            repo_sha: Some(revision),
             quantization: quantization.clone(),
             filename,
             size_bytes,
@@ -877,6 +900,23 @@ mod tests {
             "nested/model.gguf"
         );
         assert!(select_sibling(&siblings[..1], &download).is_none());
+    }
+
+    #[test]
+    fn model_download_revision_guard_rejects_missing_and_unsafe_hashes() {
+        let revision = "04393022a04dcb701fd2061b8d5dbe23ac7be751";
+        assert_eq!(pinned_repo_revision(Some(revision)).unwrap(), revision);
+        assert!(pinned_repo_revision(None).is_err());
+        for invalid in [
+            "main",
+            "HEAD",
+            "04393022",
+            "../1234567890123456789012345678901234567890",
+            "z4393022a04dcb701fd2061b8d5dbe23ac7be751",
+            "04393022a04dcb701fd2061b8d5dbe23ac7be75/",
+        ] {
+            assert!(pinned_repo_revision(Some(invalid)).is_err(), "{invalid}");
+        }
     }
 
     #[test]

@@ -24,6 +24,7 @@ const MAX_PACKAGE_MANIFEST_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct HuggingFaceModel {
+    sha: Option<String>,
     siblings: Vec<HuggingFaceSibling>,
 }
 
@@ -75,6 +76,7 @@ pub async fn ensure_dependencies(
     root: &PortableRootManager,
     client: &Client,
     entry: &ModelCatalogEntry,
+    primary_revision: Option<&str>,
     cancellation: &CancellationToken,
 ) -> Result<(), AppError> {
     let Some(download) = entry.download.as_ref() else {
@@ -98,7 +100,14 @@ pub async fn ensure_dependencies(
             return Err(AppError::InferenceCancelled("download stopped".to_string()));
         }
         let repo = dependency.repo.as_deref().unwrap_or(&entry.repo);
-        let model = match fetch_model_metadata(client, repo).await {
+        // Fetch dependencies at the *same snapshot* as their primary model.
+        // Independent dependency repositories use their own metadata commit SHA.
+        let pinned_revision = if repo == entry.repo.as_str() {
+            Some(super::pinned_repo_revision(primary_revision)?)
+        } else {
+            None
+        };
+        let model = match fetch_model_metadata(client, repo, pinned_revision).await {
             Ok(model) => model,
             Err(error) if !dependency.required => {
                 tracing::warn!(role = %dependency.role, %repo, %error, "optional model package repository unavailable");
@@ -132,16 +141,33 @@ pub async fn ensure_dependencies(
     Ok(())
 }
 
-async fn fetch_model_metadata(client: &Client, repo: &str) -> Result<HuggingFaceModel, AppError> {
-    let api_url = format!("https://huggingface.co/api/models/{repo}?blobs=true");
-    crate::net::send_with_retry(|| client.get(&api_url), None)
+async fn fetch_model_metadata(
+    client: &Client,
+    repo: &str,
+    pinned_revision: Option<&str>,
+) -> Result<HuggingFaceModel, AppError> {
+    let api_url = match pinned_revision {
+        Some(revision) => {
+            let revision = super::pinned_repo_revision(Some(revision))?;
+            format!("https://huggingface.co/api/models/{repo}/revision/{revision}?blobs=true")
+        }
+        None => format!("https://huggingface.co/api/models/{repo}?blobs=true"),
+    };
+    let model: HuggingFaceModel = crate::net::send_with_retry(|| client.get(&api_url), None)
         .await
         .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?
         .error_for_status()
         .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?
         .json()
         .await
-        .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))
+        .map_err(|error| AppError::ModelDownloadFailed(error.to_string()))?;
+    let actual_revision = super::pinned_repo_revision(model.sha.as_deref())?;
+    if pinned_revision.is_some_and(|pinned| !pinned.eq_ignore_ascii_case(actual_revision)) {
+        return Err(AppError::ModelDownloadFailed(
+            "Hugging Face dependency metadata changed from its pinned model revision".to_string(),
+        ));
+    }
+    Ok(model)
 }
 
 fn resolve_dependency(
@@ -149,6 +175,7 @@ fn resolve_dependency(
     model: &HuggingFaceModel,
     dependency: &ModelCatalogDependency,
 ) -> Result<ResolvedDependency, AppError> {
+    let revision = super::pinned_repo_revision(model.sha.as_deref())?;
     let sibling = model
         .siblings
         .iter()
@@ -200,7 +227,7 @@ fn resolve_dependency(
         size_bytes,
         sha256: sibling.lfs.as_ref().and_then(|lfs| lfs.sha256.clone()),
         source_url: format!(
-            "https://huggingface.co/{repo}/resolve/main/{}",
+            "https://huggingface.co/{repo}/resolve/{revision}/{}",
             sibling.rfilename
         ),
     })
@@ -707,6 +734,7 @@ mod tests {
         let unsafe_name = "../af_heart.pt";
         let safe_name = "voices/af_heart.pt";
         let model = HuggingFaceModel {
+            sha: Some("04393022a04dcb701fd2061b8d5dbe23ac7be751".to_string()),
             siblings: vec![
                 HuggingFaceSibling {
                     rfilename: unsafe_name.to_string(),
@@ -722,8 +750,13 @@ mod tests {
         };
         let selected = resolve_dependency("hexgrad/Kokoro-82M", &model, &dep).unwrap();
         assert_eq!(selected.filename, safe_name);
+        assert_eq!(
+            selected.source_url,
+            "https://huggingface.co/hexgrad/Kokoro-82M/resolve/04393022a04dcb701fd2061b8d5dbe23ac7be751/voices/af_heart.pt"
+        );
 
         let invalid_only = HuggingFaceModel {
+            sha: Some("04393022a04dcb701fd2061b8d5dbe23ac7be751".to_string()),
             siblings: vec![HuggingFaceSibling {
                 rfilename: unsafe_name.to_string(),
                 size: Some(100),
@@ -731,6 +764,28 @@ mod tests {
             }],
         };
         assert!(resolve_dependency("hexgrad/Kokoro-82M", &invalid_only, &dep).is_err());
+    }
+
+    #[test]
+    fn dependency_resolver_rejects_unpinned_repository_metadata() {
+        let dependency = ModelCatalogDependency {
+            role: "config".to_string(),
+            repo: None,
+            filename_pattern: "config.json".to_string(),
+            format: "json".to_string(),
+            required: true,
+        };
+        let mut model = HuggingFaceModel {
+            sha: None,
+            siblings: vec![HuggingFaceSibling {
+                rfilename: "config.json".to_string(),
+                size: Some(2351),
+                lfs: None,
+            }],
+        };
+        assert!(resolve_dependency("hexgrad/Kokoro-82M", &model, &dependency).is_err());
+        model.sha = Some("main".to_string());
+        assert!(resolve_dependency("hexgrad/Kokoro-82M", &model, &dependency).is_err());
     }
 
     #[test]
