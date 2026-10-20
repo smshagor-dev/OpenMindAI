@@ -1686,7 +1686,7 @@ async fn run_streaming_completion(
                 time_to_first_token_ms = ?metrics.time_to_first_token_ms,
                 generated_chars = metrics.generated_chars,
                 elapsed_ms = metrics.elapsed_ms,
-                "local inference completed"
+                "local inference stream finished"
             );
             Ok(())
         }
