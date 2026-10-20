@@ -185,10 +185,12 @@ impl ModelDownloadManager {
         self.active_download
             .clone()
             .try_acquire_owned()
-            .map_err(|_| AppError::ModelDownloadFailed(
-                "another model download is already in progress; finish or cancel it first"
-                    .to_string(),
-            ))
+            .map_err(|_| {
+                AppError::ModelDownloadFailed(
+                    "another model download is already in progress; finish or cancel it first"
+                        .to_string(),
+                )
+            })
     }
 
     pub async fn download_qwen_q4_k_m(&self) -> Result<DownloadStatus, AppError> {
