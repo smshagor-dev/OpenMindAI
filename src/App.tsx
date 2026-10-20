@@ -54,7 +54,6 @@ import {
   type AttachmentDraft,
   type ChatMode,
 } from "./lib/chat";
-import { checkForAppUpdate } from "./lib/appUpdate";
 import { formatError } from "./lib/format";
 import { imageRendererPrompt, persistDirectImageRequest, plainImageRequest } from "./lib/imageGeneration";
 
@@ -249,33 +248,6 @@ export function App() {
     runtimeAction,
     runtimeStatus?.state,
   ]);
-
-  const updateCheckStartedRef = useRef(false);
-  useEffect(() => {
-    if (!preferences || updateCheckStartedRef.current) return;
-    updateCheckStartedRef.current = true;
-    if (!preferences.autoCheckAppUpdates) return;
-    void checkForAppUpdate()
-      .then(async (update) => {
-        if (!update) return;
-        try {
-          await notifyUser(
-            "OpenMindAI update available",
-            `Version ${update.version} is ready to download.`,
-          );
-          if (preferences.autoDownloadAppUpdates) {
-            await update.downloadAndInstall();
-            await notifyUser(
-              "OpenMindAI is ready to update",
-              "Restart OpenMindAI to finish installing the update.",
-            );
-          }
-        } finally {
-          await update.close();
-        }
-      })
-      .catch(() => undefined);
-  }, [preferences]);
 
   const modelUpdateCheckStartedRef = useRef(false);
   useEffect(() => {
