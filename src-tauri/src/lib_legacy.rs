@@ -51,7 +51,7 @@ use maintenance::{BackupInfo, DiagnosticReport, RepairSummary};
 use model_catalog::ModelCatalogReport;
 use model_download::{DownloadStatus, ModelDownloadManager};
 use model_registry::{ModelLifecycleState, ModelRecord, ModelRegistry};
-use performance::{PerformanceProfile, PerformanceProfileManager};
+use performance::{PerformanceMode, PerformanceProfile, PerformanceProfileManager};
 use portable_root::{
     available_bytes_for_path, load_installation, preview_writable, sanitize_profile_name,
     save_installation, InstallConfig, InstallationStatus, PortableRootInfo, PortableRootManager,
@@ -1147,13 +1147,25 @@ async fn detect_hardware(
     Ok(HardwareProfiler::for_inference(&state.hardware))
 }
 
+fn selected_performance_preference(state: &AppState) -> Result<String, app_error::AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    Ok(SettingsRepository::new(&db)
+        .get_preferences()?
+        .default_performance_profile)
+}
+
 #[tauri::command]
 async fn get_performance_profile(
     state: State<'_, AppState>,
 ) -> Result<PerformanceProfile, app_error::AppError> {
-    Ok(PerformanceProfileManager::auto(&HardwareProfiler::for_inference(
-        &state.hardware,
-    )))
+    let selection = selected_performance_preference(&state)?;
+    Ok(PerformanceProfileManager::select(
+        &HardwareProfiler::for_inference(&state.hardware),
+        &selection,
+    ))
 }
 
 #[tauri::command]
@@ -1274,8 +1286,13 @@ async fn plan_model_launch(
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
     let model = ModelRegistry::new(&db, &state.root).validate_model(&model_id)?;
+    let selection = SettingsRepository::new(&db)
+        .get_preferences()?
+        .default_performance_profile;
     let port = allocate_local_port()?;
-    Ok(ModelLaunchPlanner::plan(&model, &hardware, port))
+    Ok(ModelLaunchPlanner::plan_for_preference(
+        &model, &hardware, &selection, port,
+    ))
 }
 
 #[tauri::command]
@@ -1292,7 +1309,10 @@ async fn activate_model(
         ModelRegistry::new(&db, &state.root).validate_model(&model_id)?
     };
     let hardware = HardwareProfiler::for_inference(&state.hardware);
-    let plan = ModelLaunchPlanner::plan(&model, &hardware, allocate_local_port()?);
+    let selection = selected_performance_preference(&state)?;
+    let plan = ModelLaunchPlanner::plan_for_preference(
+        &model, &hardware, &selection, allocate_local_port()?,
+    );
     let (status, _lease) = runtime::ensure_model_ready(&state.runtime, &hardware, &plan.config)?;
     state.warm_start.mark_runtime_ready(&model.id);
 
@@ -1654,7 +1674,10 @@ async fn run_streaming_completion(
             _ = state.warm_start.wait_if_loading(&model.id) => {}
         }
         let hardware = HardwareProfiler::for_inference(&state.hardware);
-        let plan = ModelLaunchPlanner::plan(model, &hardware, allocate_local_port()?);
+        let selection = selected_performance_preference(state)?;
+        let plan = ModelLaunchPlanner::plan_for_preference(
+            model, &hardware, &selection, allocate_local_port()?,
+        );
         if let Some(replacing) = model_switch_needed(state, &plan.config.model_path)? {
             let _ = app.emit(
                 "runtime:model-loading",
@@ -2118,6 +2141,9 @@ fn save_app_preferences(
     )?;
     if !web_provider_config::valid_preference(&preferences.web_search_preferred_provider) {
         return Err(app_error::AppError::internal("invalid preferred web search provider"));
+    }
+    if PerformanceMode::from_preference(&preferences.default_performance_profile).is_none() {
+        return Err(app_error::AppError::internal("invalid performance profile"));
     }
     let saved = SettingsRepository::new(&db).save_preferences(&preferences)?;
     net::apply_proxy_settings(&saved.network_proxy_mode, &saved.network_proxy_url);
