@@ -217,6 +217,7 @@ impl ModelDownloadManager {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&lock_path)?;
         // A replaced symlink or moved portable root must not cause the
         // downloader to coordinate against a file outside its root.
