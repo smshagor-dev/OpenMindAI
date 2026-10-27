@@ -35,7 +35,7 @@ export function Composer(props: {
   removeAttachment: (id: string) => void;
   sendMessage: () => void;
   stopGeneration: () => void;
-  composerRef: RefObject<HTMLTextAreaElement>;
+  composerRef: RefObject<HTMLTextAreaElement | null>;
   models: ModelRecord[];
   activeModelId: string | null;
   runtime: RuntimeInventory | null;
