@@ -632,6 +632,7 @@ struct ImageProgressEvent {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command arguments are individually deserialized.
 async fn create_generation_artifact(
     app: AppHandle,
     conversation_id: String,
@@ -815,6 +816,7 @@ async fn create_generation_artifact(
     Ok(updated)
 }
 
+#[allow(clippy::too_many_arguments)] // Image generation passes rendering options and progress callback.
 async fn generate_local_media_artifact(
     state: &AppState,
     kind: &str,
