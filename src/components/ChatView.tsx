@@ -64,7 +64,7 @@ export function ChatView(props: {
   regenerate: (assistantMessageId: string) => void;
   retry: (assistantMessageId: string) => void;
   editUserMessage: (messageId: string, content: string) => void;
-  composerRef: RefObject<HTMLTextAreaElement>;
+  composerRef: RefObject<HTMLTextAreaElement | null>;
   streaming: boolean;
   submitting: boolean;
   models: ModelRecord[];
