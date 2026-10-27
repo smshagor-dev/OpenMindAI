@@ -632,6 +632,7 @@ struct ImageProgressEvent {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command arguments are individually deserialized.
 async fn create_generation_artifact(
     app: AppHandle,
     conversation_id: String,
@@ -639,8 +640,18 @@ async fn create_generation_artifact(
     kind: String,
     prompt: String,
     use_cpu: Option<bool>,
+    image_options: Option<diffusion_runtime::ImageRenderOptions>,
     state: State<'_, AppState>,
 ) -> Result<Artifact, app_error::AppError> {
+    if kind != "image" && image_options.is_some() {
+        return Err(app_error::AppError::internal(
+            "image rendering options are only available for images",
+        ));
+    }
+    let image_options = image_options.unwrap_or_default();
+    if kind == "image" {
+        image_options.validate()?;
+    }
     if use_cpu == Some(true) && kind != "image" {
         return Err(app_error::AppError::internal(
             "CPU-only retry is available for images only",
@@ -730,7 +741,7 @@ async fn create_generation_artifact(
             };
             report_stage("preparing");
             generate_local_media_artifact(
-                &state, &kind, &prompt, &path, use_cpu.unwrap_or(false), &report_stage, &report_step
+                &state, &kind, &prompt, &path, use_cpu.unwrap_or(false), &image_options, &report_stage, &report_step
             ).await
         };
         tokio::pin!(render);
@@ -762,7 +773,7 @@ async fn create_generation_artifact(
         }
     } else {
         generate_local_media_artifact(
-            &state, &kind, &prompt, &path, use_cpu.unwrap_or(false), &report_stage, &report_step
+            &state, &kind, &prompt, &path, use_cpu.unwrap_or(false), &image_options, &report_stage, &report_step
         ).await
     };
     // A cancellation arriving just as inference finishes must not publish a ready image.
@@ -805,12 +816,14 @@ async fn create_generation_artifact(
     Ok(updated)
 }
 
+#[allow(clippy::too_many_arguments)] // Image generation passes rendering options and progress callback.
 async fn generate_local_media_artifact(
     state: &AppState,
     kind: &str,
     prompt: &str,
     path: &std::path::Path,
     use_cpu: bool,
+    image_options: &diffusion_runtime::ImageRenderOptions,
     on_stage: &(dyn Fn(&'static str) + Send + Sync),
     on_step: &(dyn Fn(u32, u32) + Send + Sync),
 ) -> Result<(), app_error::AppError> {
@@ -837,6 +850,7 @@ async fn generate_local_media_artifact(
                 prompt,
                 path,
                 use_cpu,
+                image_options,
                 on_stage,
                 on_step,
             )
