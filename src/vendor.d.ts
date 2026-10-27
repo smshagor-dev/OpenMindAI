@@ -45,7 +45,7 @@ declare module "lucide-react" {
   export const FolderOpen: LucideIcon;
   export const FolderPlus: LucideIcon;
   export const Gauge: LucideIcon;
-  export const Github: LucideIcon;
+  export const GitBranch: LucideIcon;
   export const Globe: LucideIcon;
   export const HardDrive: LucideIcon;
   export const Hash: LucideIcon;
