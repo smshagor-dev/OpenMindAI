@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Artifact,
+  ImageGenerationOptions,
   LlamaRuntimeStatus,
   Message,
   RuntimeInventory,
@@ -368,11 +369,12 @@ export const api = {
     kind: "image" | "video" | "voice",
     prompt: string,
     useCpu = false,
+    imageOptions?: ImageGenerationOptions,
   ): Promise<Artifact> => {
     if (kind === "voice" && isTauri && (await messageUsesSoundscape(conversationId, messageId))) {
       return createSoundscapeArtifact(conversationId, messageId, prompt);
     }
-    return legacyApi.createGenerationArtifact(conversationId, messageId, kind, prompt, useCpu);
+    return legacyApi.createGenerationArtifact(conversationId, messageId, kind, prompt, useCpu, imageOptions);
   },
   googleWorkspaceStatus: () => connectedInvoke<GoogleWorkspaceStatus>("google_workspace_status"),
   connectGoogleWorkspace: () => connectedInvoke<GoogleWorkspaceStatus>("connect_google_workspace"),

@@ -193,6 +193,42 @@ struct VideoRenderProfile {
     vae_on_cpu: bool,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageRenderOptions {
+    pub negative_prompt: Option<String>,
+    pub seed: Option<i64>,
+    pub steps: Option<u32>,
+}
+
+impl ImageRenderOptions {
+    pub fn validate(&self) -> Result<(), AppError> {
+        if self
+            .negative_prompt
+            .as_deref()
+            .is_some_and(|text| text.chars().count() > MAX_PROMPT_CHARS)
+        {
+            return Err(AppError::ArtifactGenerationFailed(format!(
+                "negative prompt is too long; maximum is {MAX_PROMPT_CHARS} characters"
+            )));
+        }
+        if self.steps.is_some_and(|steps| !(1..=50).contains(&steps)) {
+            return Err(AppError::ArtifactGenerationFailed(
+                "image sampling steps must be between 1 and 50".to_string(),
+            ));
+        }
+        if self
+            .seed
+            .is_some_and(|seed| !(0..=2_147_483_647).contains(&seed))
+        {
+            return Err(AppError::ArtifactGenerationFailed(
+                "image seed must be between 0 and 2147483647".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 // Keep the render's independent progress callback alongside its existing inputs.
 #[allow(clippy::too_many_arguments)]
 pub async fn generate_image(
@@ -203,9 +239,11 @@ pub async fn generate_image(
     prompt: &str,
     output_path: &Path,
     use_cpu: bool,
+    options: &ImageRenderOptions,
     on_stage: &(dyn Fn(&'static str) + Send + Sync),
     on_step: &(dyn Fn(u32, u32) + Send + Sync),
 ) -> Result<(), AppError> {
+    options.validate()?;
     let prompt = prompt.trim();
     if prompt.is_empty() {
         return Err(AppError::ArtifactGenerationFailed(
@@ -230,7 +268,10 @@ pub async fn generate_image(
     let runtime = ensure_runtime(root, client, hardware, use_cpu).await?;
     on_stage("rendering");
     let cli_path = root.resolve_relative(&runtime.cli_path)?;
-    let profile = render_profile(hardware, &runtime.backend);
+    let mut profile = render_profile(hardware, &runtime.backend);
+    if let Some(steps) = options.steps {
+        profile.steps = steps;
+    }
 
     if output_path.exists() {
         fs::remove_file(output_path)?;
@@ -260,6 +301,14 @@ pub async fn generate_image(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
+    if let Some(negative) = options.negative_prompt.as_deref().map(str::trim) {
+        if !negative.is_empty() {
+            command.arg("--negative-prompt").arg(negative);
+        }
+    }
+    if let Some(seed) = options.seed {
+        command.arg("--seed").arg(seed.to_string());
+    }
     if profile.clip_on_cpu {
         command.arg("--clip-on-cpu");
     }
@@ -1376,6 +1425,36 @@ mod tests {
         let gpu = hardware(Some(GpuVendor::Nvidia), Some(12 * 1024_u64.pow(3)));
         let automatic = runtime_candidates_for_request("windows", "x86_64", &gpu, false);
         assert_eq!(automatic[0].0, BackendKind::Cuda);
+    }
+
+    #[test]
+    fn image_options_validate_requested_seed_steps_and_prompt() {
+        assert!(ImageRenderOptions::default().validate().is_ok());
+        assert!(ImageRenderOptions {
+            seed: Some(42),
+            steps: Some(20),
+            negative_prompt: Some("blurry, low resolution".to_string()),
+        }
+        .validate()
+        .is_ok());
+        assert!(ImageRenderOptions {
+            seed: Some(-1),
+            ..ImageRenderOptions::default()
+        }
+        .validate()
+        .is_err());
+        assert!(ImageRenderOptions {
+            steps: Some(51),
+            ..ImageRenderOptions::default()
+        }
+        .validate()
+        .is_err());
+        assert!(ImageRenderOptions {
+            negative_prompt: Some("x".repeat(MAX_PROMPT_CHARS + 1)),
+            ..ImageRenderOptions::default()
+        }
+        .validate()
+        .is_err());
     }
 
     #[test]

@@ -6,6 +6,7 @@ import { api } from "./api";
 import type {
   Artifact,
   ArtifactKind,
+  ImageGenerationOptions,
   ImageRenderProgress,
   Conversation,
   AppPreferences,
@@ -103,6 +104,11 @@ export function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [imageOptions, setImageOptions] = useState<ImageGenerationOptions>({
+    negativePrompt: "",
+    seed: null,
+    steps: null,
+  });
   const [imageProgressByArtifact, setImageProgressByArtifact] = useState<Record<string, ImageRenderProgress>>({});
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<AttachmentDraft[]>([]);
@@ -580,6 +586,8 @@ export function App() {
           assistant.id,
           generationKind,
           generationPrompt,
+          false,
+          generationKind === "image" ? imageOptions : undefined,
         );
         setArtifacts((items) => upsertArtifactInList(items, artifact));
         if (preferences?.openArtifactsAfterGeneration && artifact.status === "ready") {
@@ -618,6 +626,7 @@ export function App() {
     attachments,
     conversations,
     editingMessageId,
+    imageOptions,
     messages,
     pendingModelId,
     preferences?.autoGenerateTitles,
@@ -1043,7 +1052,14 @@ export function App() {
             ? imageRendererPrompt(source.content, precedingUser.content)
             : source.content;
         void api
-          .createGenerationArtifact(activeId, artifact.messageId, generationKind, generationPrompt, useCpu)
+          .createGenerationArtifact(
+            activeId,
+            artifact.messageId,
+            generationKind,
+            generationPrompt,
+            useCpu,
+            generationKind === "image" ? imageOptions : undefined,
+          )
           .then((next) => {
             setArtifacts((items) => upsertArtifactInList(items, next));
             if (preferences?.openArtifactsAfterGeneration && next.status === "ready") {
@@ -1055,7 +1071,7 @@ export function App() {
       }
       void createArtifact(artifact.messageId, artifact.kind, source.content, artifact.name);
     },
-    [activeId, createArtifact, messages, preferences?.openArtifactsAfterGeneration, showError],
+    [activeId, createArtifact, imageOptions, messages, preferences?.openArtifactsAfterGeneration, showError],
   );
 
   const cancelImageArtifact = useCallback(
@@ -1288,6 +1304,8 @@ export function App() {
             messages={messages}
             prompt={prompt}
             setPrompt={setPrompt}
+            imageOptions={imageOptions}
+            setImageOptions={setImageOptions}
             attachments={attachments}
             preferences={preferences}
             activity={activity}
@@ -1344,6 +1362,8 @@ export function App() {
               messages={messages}
               prompt={prompt}
               setPrompt={setPrompt}
+              imageOptions={imageOptions}
+              setImageOptions={setImageOptions}
               attachments={attachments}
               preferences={preferences}
               activity={activity}

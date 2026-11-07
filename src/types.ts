@@ -330,6 +330,13 @@ export type ArtifactStatus = "generating" | "ready" | "failed";
 
 export type ImageRenderStage = "queued" | "preparing" | "rendering" | "validating";
 
+/** Leave seed and steps unset to use the current hardware-aware renderer defaults. */
+export interface ImageGenerationOptions {
+  negativePrompt: string;
+  seed: number | null;
+  steps: number | null;
+}
+
 export interface ImageRenderProgress {
   artifactId: string;
   stage: ImageRenderStage;
