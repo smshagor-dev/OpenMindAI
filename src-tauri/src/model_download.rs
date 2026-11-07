@@ -193,6 +193,46 @@ impl ModelDownloadManager {
             })
     }
 
+    /// Coordinate independent OpenMindAI processes sharing one portable root.
+    ///
+    /// This file is intentionally persistent: deleting a locked file can let
+    /// another process lock a different inode. The OS releases the advisory
+    /// lock automatically if the process exits or the handle is dropped.
+    fn begin_root_install(&self) -> Result<fs::File, AppError> {
+        let root = self.root.root();
+        fs::create_dir_all(root)?;
+        let lock_path = root.join(".openmindai-model-install.lock");
+        ensure_contained(root, &lock_path)?;
+        match fs::symlink_metadata(&lock_path) {
+            Ok(info) if info.file_type().is_symlink() || !info.file_type().is_file() => {
+                return Err(AppError::ModelDownloadFailed(
+                    "model install lock is not a regular file".to_string(),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        // A replaced symlink or moved portable root must not cause the
+        // downloader to coordinate against a file outside its root.
+        ensure_contained(root, &lock_path)?;
+        match file.try_lock() {
+            Ok(()) => Ok(file),
+            Err(fs::TryLockError::WouldBlock) => Err(AppError::ModelDownloadFailed(
+                "another OpenMindAI process is installing models in this portable root".to_string(),
+            )),
+            Err(fs::TryLockError::Error(error)) => Err(AppError::ModelDownloadFailed(format!(
+                "cannot acquire model install lock: {error}"
+            ))),
+        }
+    }
+
     pub async fn download_qwen_q4_k_m(&self) -> Result<DownloadStatus, AppError> {
         let model_id = self.catalog_entry.id.clone();
         self.download_catalog_model(&model_id).await
@@ -203,6 +243,9 @@ impl ModelDownloadManager {
         // permit is shared across clones and held through the final manifest
         // write; a parallel caller cannot clobber an active install.
         let _in_flight = self.begin_download()?;
+        // Lock the root before changing status, cancellation, or disk files.
+        // Keep both guards alive until the install's final state is recorded.
+        let _root_lock = self.begin_root_install()?;
         let entry = entry_by_id(model_id)?;
         tracing::info!(repo = %entry.repo, model_id = %entry.id, "installing AI model package");
         self.update_status(|status| *status = DownloadStatus::queued(&entry))?;
@@ -822,6 +865,68 @@ mod tests {
 
         drop(first);
         assert!(other_window.begin_download().is_ok());
+    }
+
+    #[test]
+    fn independent_managers_share_one_os_model_install_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let shared_root = temp.path().join("OpenMindAI");
+        let first_root = PortableRootManager::from_root(shared_root.clone());
+        let second_root = PortableRootManager::from_root(shared_root.clone());
+        let first = ModelDownloadManager::new(first_root);
+        let second = ModelDownloadManager::new(second_root);
+        let first_lock = first.begin_root_install().unwrap();
+        let rejected = second.begin_root_install().unwrap_err().to_string();
+        assert!(
+            rejected.contains("another OpenMindAI process"),
+            "{rejected}"
+        );
+        assert_eq!(second.status().unwrap().state, DownloadState::Queued);
+
+        // A separate portable installation must remain usable.
+        let other_root = PortableRootManager::from_root(temp.path().join("OtherOpenMindAI"));
+        let other = ModelDownloadManager::new(other_root);
+        let other_lock = other.begin_root_install().unwrap();
+        drop(other_lock);
+        drop(first_lock);
+
+        // The lock file must stay at its stable path, even after release.
+        assert!(shared_root.join(".openmindai-model-install.lock").is_file());
+        let reacquired = second.begin_root_install().unwrap();
+        drop(reacquired);
+    }
+
+    #[test]
+    fn install_lock_rejects_symlink_or_non_file_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("OpenMindAI");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join(".openmindai-model-install.lock");
+        fs::create_dir(&path).unwrap();
+        let portable_root = PortableRootManager::from_root(root.clone());
+        let manager = ModelDownloadManager::new(portable_root);
+        assert!(manager.begin_root_install().is_err());
+        assert!(path.is_dir());
+    }
+
+    #[tokio::test]
+    async fn cross_process_lock_rejection_does_not_replace_download_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        let owner = ModelDownloadManager::new(root.clone());
+        let other = ModelDownloadManager::new(root);
+        let lock = owner.begin_root_install().unwrap();
+        let before = other.status().unwrap();
+        let rejected = other.download_catalog_model("kokoro-82m-onnx").await;
+        assert!(rejected.is_err());
+        assert!(rejected
+            .unwrap_err()
+            .to_string()
+            .contains("another OpenMindAI process"));
+        let after = other.status().unwrap();
+        assert_eq!(after.model_id, before.model_id);
+        assert_eq!(after.state, before.state);
+        drop(lock);
     }
 
     #[test]
