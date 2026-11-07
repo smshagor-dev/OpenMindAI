@@ -720,7 +720,14 @@ export function SettingsDialog(props: {
               checked={preferenceDraft.localRuntimeAutostart}
               onChange={(value) => setPreference("localRuntimeAutostart", value)}
             />
+            <Info
+              label="Effective profile"
+              value={props.performance?.mode
+                ? props.performance.mode.charAt(0).toUpperCase() + props.performance.mode.slice(1)
+                : "Not loaded"}
+            />
             <Info label="Recommended backend" value={props.performance?.recommendedBackend} />
+            <Info label="CPU threads" value={String(props.performance?.cpuThreads ?? "Not loaded")} />
             <Info
               label="RAM budget"
               value={formatBytes(props.performance?.systemMemoryBudgetBytes)}

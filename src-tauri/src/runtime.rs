@@ -171,6 +171,7 @@ pub struct LlamaRuntimeManager {
     state: ServerState,
     loaded_model_path: Option<String>,
     loaded_context_size: Option<u32>,
+    loaded_config: Option<ModelLaunchConfig>,
     active_runtime: Option<RuntimeValidation>,
     load_started: Option<Instant>,
     leases: Arc<AtomicUsize>,
@@ -186,6 +187,7 @@ impl LlamaRuntimeManager {
             state: ServerState::Stopped,
             loaded_model_path: None,
             loaded_context_size: None,
+            loaded_config: None,
             active_runtime: None,
             load_started: None,
             leases: Arc::new(AtomicUsize::new(0)),
@@ -353,7 +355,11 @@ impl LlamaRuntimeManager {
         // the new memory-aware launch plan. Available RAM can change after
         // startup, and the request budget must not assume an unallocated window.
         let same_context = self.loaded_context_size == Some(config.context_size);
-        if child_alive && same_model && same_backend && same_context {
+        let same_settings = self
+            .loaded_config
+            .as_ref()
+            .is_some_and(|loaded| same_model_launch_settings(loaded, config));
+        if child_alive && same_model && same_backend && same_context && same_settings {
             // True hot-chat path: reuse the resident model and its KV prompt
             // cache. No runtime probing, process restart or model reload.
             if self.state == ServerState::Ready {
@@ -468,6 +474,7 @@ impl LlamaRuntimeManager {
         self.endpoint = Some(format!("http://{}:{}", config.host, config.port));
         self.loaded_model_path = Some(model_path_string);
         self.loaded_context_size = Some(config.context_size);
+        self.loaded_config = Some(config.clone());
         self.active_runtime = Some(selected);
         self.load_started = Some(Instant::now());
         self.leases = Arc::new(AtomicUsize::new(0));
@@ -579,6 +586,7 @@ impl LlamaRuntimeManager {
         self.endpoint = None;
         self.loaded_model_path = None;
         self.loaded_context_size = None;
+        self.loaded_config = None;
         self.active_runtime = None;
         self.state = ServerState::Stopped;
         Ok(())
@@ -939,10 +947,49 @@ fn http_health_ok(host: &str, port: u16) -> bool {
     response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")
 }
 
+// A request allocates a fresh candidate port even when reusing the resident
+// model. Changes to actual server options must still restart the process.
+fn same_model_launch_settings(loaded: &ModelLaunchConfig, requested: &ModelLaunchConfig) -> bool {
+    let mut requested = requested.clone();
+    requested.port = loaded.port;
+    loaded == &requested
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::hardware::{CpuProfile, MemoryProfile};
+
+    #[test]
+    fn model_hot_reuse_ignores_ephemeral_port_but_detects_profile_changes() {
+        let original = ModelLaunchConfig {
+            model_path: "model.gguf".into(),
+            backend: BackendKind::Cpu,
+            device: None,
+            gpu_layers: 0,
+            context_size: 8_192,
+            threads: 6,
+            batch_size: 512,
+            ubatch_size: 256,
+            flash_attention: false,
+            mmap: true,
+            mlock: false,
+            parallelism: 1,
+            host: "127.0.0.1".into(),
+            port: 12345,
+        };
+        let mut requested = original.clone();
+        requested.port = 23456;
+        assert!(same_model_launch_settings(&original, &requested));
+        requested.threads = 2;
+        assert!(!same_model_launch_settings(&original, &requested));
+        requested.threads = original.threads;
+        requested.gpu_layers = 12;
+        assert!(!same_model_launch_settings(&original, &requested));
+        requested.gpu_layers = original.gpu_layers;
+        requested.context_size = 16_384;
+        assert!(!same_model_launch_settings(&original, &requested));
+    }
 
     #[tokio::test]
     async fn cancelling_chat_loading_returns_without_starting_a_server() {
