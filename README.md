@@ -342,9 +342,13 @@ npm run tauri dev
 
 ```bash
 npm run check:version
+npm run test:conversations
+npm run test:drafts
 npm run lint
 npm run build
 ```
+
+The draft regression suite mounts the production React `App` in jsdom with native/API and presentation doubles. It covers delayed failures, navigation, explicit clearing, attachment changes, edit forks, new-chat creation and image-artifact failures. It does not require a model download or a native desktop session.
 
 ### Rust validation
 
@@ -490,6 +494,8 @@ Before opening a pull request, run the same core checks used by CI:
 ```bash
 npm ci
 npm run check:version
+npm run test:conversations
+npm run test:drafts
 npm run lint
 npm run build
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
