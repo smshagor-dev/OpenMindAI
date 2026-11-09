@@ -4,6 +4,7 @@ import type {
   ImageGenerationOptions,
   ArtifactKind,
   Conversation,
+  ForkedConversation,
   AppPreferences,
   DownloadStatus,
   DatasetDownloadStatus,
@@ -112,9 +113,8 @@ function queueMessageDelete(messageId: string) {
       });
     }, 0);
   }
-  // Edit/resend currently awaits every delete call. Resolve immediately so
-  // all branch IDs can be collected in one event-loop turn; send/regenerate
-  // explicitly flush the queue before creating any replacement message.
+  // Collect explicit deletes in one event-loop turn; sends/regenerations flush
+  // them before creating messages. Prompt editing uses a separate fork command.
   return Promise.resolve();
 }
 
@@ -192,6 +192,8 @@ export const api = {
     call<StorageLocationCheck>("check_storage_location", { path }),
   conversations: () => call<Conversation[]>("list_conversations"),
   createConversation: (title?: string) => call<Conversation>("create_conversation", { title }),
+  forkConversationForEdit: (conversationId: string, messageId: string) =>
+    call<ForkedConversation>("fork_conversation_for_edit", { conversationId, messageId }),
   renameConversation: (id: string, title: string) =>
     call<void>("rename_conversation", { id, title }),
   pinConversation: (id: string, pinned: boolean) =>
@@ -314,6 +316,7 @@ export const api = {
   preferences: () => call<AppPreferences>("get_app_preferences"),
   savePreferences: (preferences: AppPreferences) =>
     call<AppPreferences>("save_app_preferences", { preferences }),
+  acknowledgeChatHistoryNotice: () => call<AppPreferences>("acknowledge_chat_history_notice"),
   networkProxyForUrl: (url: string) => call<string | null>("network_proxy_for_url", { url }),
   userProfile: () => call<UserProfile>("get_user_profile"),
   saveUserProfile: (profile: UserProfile) => call<UserProfile>("save_user_profile", { profile }),
@@ -423,6 +426,9 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
       pinned: false,
       activeModelId: null,
     } as T);
+  }
+  if (command === "fork_conversation_for_edit") {
+    return Promise.reject(new Error("Editing earlier messages requires the desktop app. Your original chat is unchanged."));
   }
   if (command === "list_messages") return Promise.resolve([] as T);
   if (command === "add_user_message" || command === "create_streaming_assistant_message") {
@@ -730,7 +736,16 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
       ],
     } as T);
   }
+  if (command === "acknowledge_chat_history_notice") {
+    return browserFallback<T>("get_app_preferences");
+  }
   if (command === "get_app_preferences" || command === "save_app_preferences") {
+    if (
+      command === "save_app_preferences" &&
+      (args?.preferences as { saveChatHistory?: unknown } | undefined)?.saveChatHistory === false
+    ) {
+      return Promise.reject(new Error("This version saves chat history locally. Temporary chats are not supported."));
+    }
     return Promise.resolve({
       theme: "light",
       language: "English",
@@ -743,6 +758,7 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
       defaultPerformanceProfile: "Auto",
       telemetryEnabled: false,
       saveChatHistory: true,
+      chatHistoryNoticeRequired: false,
       localRuntimeAutostart: true,
       confirmBeforeDelete: true,
       webSearchEnabled: true,

@@ -29,7 +29,10 @@ pub struct AppPreferences {
     pub markdown_rendering: bool,
     pub default_performance_profile: String,
     pub telemetry_enabled: bool,
+    /// Compatibility field: this release always persists local chat history.
     pub save_chat_history: bool,
+    /// Remains set until an affected user explicitly acknowledges the correction.
+    pub chat_history_notice_required: bool,
     pub local_runtime_autostart: bool,
     pub confirm_before_delete: bool,
     pub web_search_enabled: bool,
@@ -136,6 +139,7 @@ impl Default for AppPreferences {
             default_performance_profile: "Auto".to_string(),
             telemetry_enabled: false,
             save_chat_history: true,
+            chat_history_notice_required: false,
             local_runtime_autostart: true,
             confirm_before_delete: true,
             web_search_enabled: true,
@@ -180,7 +184,7 @@ impl<'a> SettingsRepository<'a> {
         Self { database }
     }
 
-    pub fn get_preferences(&self) -> Result<AppPreferences, AppError> {
+    fn load_saved_preferences(&self) -> Result<Option<AppPreferences>, AppError> {
         let value: Option<String> = self
             .database
             .connection()
@@ -191,9 +195,32 @@ impl<'a> SettingsRepository<'a> {
             )
             .optional()?;
 
-        match value {
-            Some(value) => {
+        value
+            .map(|value| {
                 serde_json::from_str(&value).map_err(|error| AppError::internal(error.to_string()))
+            })
+            .transpose()
+    }
+
+    pub fn get_preferences(&self) -> Result<AppPreferences, AppError> {
+        match self.load_saved_preferences()? {
+            Some(mut preferences) => {
+                if !preferences.save_chat_history {
+                    // The old flag never stopped persistence. Correct the reported
+                    // state and keep a durable, visible notice; do not delete chats.
+                    preferences.save_chat_history = true;
+                    preferences.chat_history_notice_required = true;
+                    self.database.connection().execute(
+                        "UPDATE app_settings
+                         SET value_json = json_set(value_json,
+                             '$.saveChatHistory', json('true'),
+                             '$.chatHistoryNoticeRequired', json('true')),
+                             updated_at = ?1
+                         WHERE key = ?2",
+                        params![Utc::now().to_rfc3339(), SETTINGS_KEY],
+                    )?;
+                }
+                Ok(preferences)
             }
             None => {
                 let preferences = AppPreferences::default();
@@ -207,8 +234,34 @@ impl<'a> SettingsRepository<'a> {
         &self,
         preferences: &AppPreferences,
     ) -> Result<AppPreferences, AppError> {
-        self.save_json(SETTINGS_KEY, preferences)?;
-        Ok(preferences.clone())
+        if !preferences.save_chat_history {
+            return Err(AppError::internal(
+                "This version saves chat history locally. Temporary chats are not supported; history saving cannot be disabled.",
+            ));
+        }
+        let mut saved = preferences.clone();
+        if let Some(existing) = self.load_saved_preferences()? {
+            // Ordinary preference saves (including older clients) cannot silently
+            // dismiss the notice. Acknowledgment has a separate, narrow operation.
+            saved.chat_history_notice_required |=
+                existing.chat_history_notice_required || !existing.save_chat_history;
+        }
+        self.save_json(SETTINGS_KEY, &saved)?;
+        Ok(saved)
+    }
+
+    pub fn acknowledge_chat_history_notice(&self) -> Result<AppPreferences, AppError> {
+        self.get_preferences()?;
+        // Update only this field atomically, including when another app process
+        // saves unrelated preferences between the read and acknowledgment.
+        self.database.connection().execute(
+            "UPDATE app_settings
+             SET value_json = json_set(value_json, '$.chatHistoryNoticeRequired', json('false')),
+                 updated_at = ?1
+             WHERE key = ?2",
+            params![Utc::now().to_rfc3339(), SETTINGS_KEY],
+        )?;
+        self.get_preferences()
     }
 
     pub fn get_user_profile(&self) -> Result<UserProfile, AppError> {
@@ -306,6 +359,165 @@ mod tests {
         assert_eq!(loaded.update_channel, "Stable");
         assert_eq!(loaded.network_proxy_mode, "direct");
         assert!(loaded.network_proxy_url.is_empty());
+        assert!(loaded.save_chat_history);
+        assert!(!loaded.chat_history_notice_required);
+    }
+
+    fn seed_unsupported_history_setting(database: &Database) {
+        database.connection().execute(
+            "INSERT INTO app_settings (key, value_json, updated_at) VALUES (?1, ?2, ?3)",
+            params![SETTINGS_KEY, r#"{"saveChatHistory":false,"theme":"dark","language":"Bangla","enterToSend":false}"#, Utc::now().to_rfc3339()],
+        ).unwrap();
+    }
+
+    #[test]
+    fn unsupported_history_off_is_rejected_without_changing_saved_preferences() {
+        let database = Database::in_memory().unwrap();
+        let repo = SettingsRepository::new(&database);
+        let original = repo.get_preferences().unwrap();
+        let mut requested = original.clone();
+        requested.save_chat_history = false;
+        requested.language = "should not be saved".into();
+        let error = repo.save_preferences(&requested).unwrap_err().to_string();
+        assert!(error.contains("Temporary chats are not supported"));
+        let actual = repo.get_preferences().unwrap();
+        assert_eq!(
+            serde_json::to_value(actual).unwrap(),
+            serde_json::to_value(original).unwrap()
+        );
+    }
+
+    #[test]
+    fn legacy_off_setting_is_corrected_with_a_durable_notice_and_preserved_data() {
+        use crate::chat::ChatRepository;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("history.db");
+        let conversation_id;
+        {
+            let database = Database::open(path.clone()).unwrap();
+            seed_unsupported_history_setting(&database);
+            let chat = ChatRepository::new(&database);
+            let conversation = chat.create_conversation(Some("Existing chat")).unwrap();
+            conversation_id = conversation.id;
+            chat.add_message(
+                &conversation_id,
+                "user",
+                "fixture text with attachment context",
+                "completed",
+                None,
+            )
+            .unwrap();
+            chat.add_message(
+                &conversation_id,
+                "assistant",
+                "fixture failed response",
+                "failed",
+                None,
+            )
+            .unwrap();
+            let preferences = SettingsRepository::new(&database)
+                .get_preferences()
+                .unwrap();
+            assert!(preferences.save_chat_history);
+            assert!(preferences.chat_history_notice_required);
+            assert_eq!(preferences.language, "Bangla");
+            assert_eq!(preferences.theme, ThemeMode::Dark);
+            assert!(!preferences.enter_to_send);
+            assert_eq!(chat.list_messages(&conversation_id).unwrap().len(), 2);
+        }
+        let reopened = Database::open(path).unwrap();
+        let preferences = SettingsRepository::new(&reopened)
+            .get_preferences()
+            .unwrap();
+        assert!(preferences.save_chat_history);
+        assert!(preferences.chat_history_notice_required);
+        let messages = ChatRepository::new(&reopened)
+            .list_messages(&conversation_id)
+            .unwrap();
+        assert_eq!(messages[0].content, "fixture text with attachment context");
+        assert_eq!(messages[1].status, "failed");
+    }
+
+    #[test]
+    fn ordinary_preference_saves_cannot_acknowledge_the_history_notice() {
+        let database = Database::in_memory().unwrap();
+        seed_unsupported_history_setting(&database);
+        let repo = SettingsRepository::new(&database);
+        let mut preferences = repo.get_preferences().unwrap();
+        preferences.chat_history_notice_required = false;
+        preferences.compact_sidebar = true;
+        assert!(
+            repo.save_preferences(&preferences)
+                .unwrap()
+                .chat_history_notice_required
+        );
+        let loaded = repo.get_preferences().unwrap();
+        assert!(loaded.chat_history_notice_required);
+        assert!(loaded.compact_sidebar);
+    }
+
+    #[test]
+    fn acknowledgment_updates_only_current_notice_and_survives_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("preferences.db");
+        {
+            let database = Database::open(path.clone()).unwrap();
+            seed_unsupported_history_setting(&database);
+            let repo = SettingsRepository::new(&database);
+            let mut latest = repo.get_preferences().unwrap();
+            latest.language = "Russian".into();
+            latest.compact_sidebar = true;
+            repo.save_preferences(&latest).unwrap();
+            database.connection().execute(
+                "UPDATE app_settings SET value_json = json_set(value_json, '$.futurePreference', 'keep-me') WHERE key = ?1",
+                params![SETTINGS_KEY],
+            ).unwrap();
+            let acknowledged = repo.acknowledge_chat_history_notice().unwrap();
+            assert!(!acknowledged.chat_history_notice_required);
+            assert!(acknowledged.save_chat_history);
+            assert_eq!(acknowledged.language, "Russian");
+            assert!(acknowledged.compact_sidebar);
+            let future: String = database.connection().query_row(
+                "SELECT json_extract(value_json, '$.futurePreference') FROM app_settings WHERE key = ?1",
+                params![SETTINGS_KEY],
+                |row| row.get(0),
+            ).unwrap();
+            assert_eq!(future, "keep-me");
+        }
+        let database = Database::open(path).unwrap();
+        let loaded = SettingsRepository::new(&database)
+            .get_preferences()
+            .unwrap();
+        assert!(!loaded.chat_history_notice_required);
+        assert!(loaded.save_chat_history);
+        assert_eq!(loaded.language, "Russian");
+    }
+
+    #[test]
+    fn failed_migration_or_acknowledgment_does_not_hide_the_notice() {
+        let database = Database::in_memory().unwrap();
+        seed_unsupported_history_setting(&database);
+        let repo = SettingsRepository::new(&database);
+        database
+            .connection()
+            .pragma_update(None, "query_only", true)
+            .unwrap();
+        assert!(repo.get_preferences().is_err());
+        database
+            .connection()
+            .pragma_update(None, "query_only", false)
+            .unwrap();
+        assert!(repo.get_preferences().unwrap().chat_history_notice_required);
+        database
+            .connection()
+            .pragma_update(None, "query_only", true)
+            .unwrap();
+        assert!(repo.acknowledge_chat_history_notice().is_err());
+        database
+            .connection()
+            .pragma_update(None, "query_only", false)
+            .unwrap();
+        assert!(repo.get_preferences().unwrap().chat_history_notice_required);
     }
 
     #[test]

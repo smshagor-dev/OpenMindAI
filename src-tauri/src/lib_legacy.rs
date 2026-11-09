@@ -254,6 +254,19 @@ fn create_conversation(
 }
 
 #[tauri::command]
+fn fork_conversation_for_edit(
+    conversation_id: String,
+    message_id: String,
+    state: State<AppState>,
+) -> Result<chat::ForkedConversation, app_error::AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    ChatRepository::new(&db).fork_for_edit(&conversation_id, &message_id)
+}
+
+#[tauri::command]
 fn rename_conversation(
     id: String,
     title: String,
@@ -2141,6 +2154,17 @@ fn get_app_preferences(state: State<AppState>) -> Result<AppPreferences, app_err
 }
 
 #[tauri::command]
+fn acknowledge_chat_history_notice(
+    state: State<AppState>,
+) -> Result<AppPreferences, app_error::AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    SettingsRepository::new(&db).acknowledge_chat_history_notice()
+}
+
+#[tauri::command]
 fn save_app_preferences(
     preferences: AppPreferences,
     state: State<AppState>,
@@ -2437,6 +2461,7 @@ pub fn run() {
             check_storage_location,
             list_conversations,
             create_conversation,
+            fork_conversation_for_edit,
             rename_conversation,
             set_conversation_pinned,
             set_conversation_model,
@@ -2504,6 +2529,7 @@ pub fn run() {
             cancel_generation,
             get_app_preferences,
             save_app_preferences,
+            acknowledge_chat_history_notice,
             get_user_profile,
             save_user_profile,
             get_github_account,

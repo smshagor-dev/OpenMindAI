@@ -56,6 +56,11 @@ export interface Message {
   updatedAt: string;
 }
 
+export interface ForkedConversation {
+  conversation: Conversation;
+  messages: Message[];
+}
+
 export interface HardwareProfile {
   operatingSystem: string;
   architecture: string;
@@ -458,7 +463,9 @@ export interface AppPreferences {
   markdownRendering: boolean;
   defaultPerformanceProfile: string;
   telemetryEnabled: boolean;
-  saveChatHistory: boolean;
+  /** Read-only compatibility state: local history is always saved in this release. */
+  readonly saveChatHistory: boolean;
+  chatHistoryNoticeRequired: boolean;
   localRuntimeAutostart: boolean;
   confirmBeforeDelete: boolean;
   webSearchEnabled: boolean;

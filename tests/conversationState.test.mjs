@@ -393,3 +393,29 @@ test("a new stream clears progress for an older message and retains its own pre-
   other.startStream(start("A"));
   assert.equal(other.run("A").webProgress.messageId, "A-reply");
 });
+
+test("an edit fork transfers request and Stop ownership while another chat remains visible", async () => {
+  const state = selected();
+  state.setMessages("A", [message("A", "original")]);
+  const lease = state.beginRequest("A");
+  state.selectConversation("B");
+  state.setMessages("B", [message("B", "B-history")]);
+  state.assignRequest(lease, "edited");
+  state.startStream(start("edited"));
+  const calls = [];
+  const cancel = async (owner) => {
+    calls.push(owner);
+  };
+  await state.cancelGeneration("A", cancel);
+  await state.cancelActiveGeneration(cancel);
+  await state.cancelGeneration("edited", cancel);
+  assert.deepEqual(calls, ["edited"]);
+  assert.equal(state.isBusy("A"), false);
+  assert.equal(state.getSnapshot().activeId, "B");
+  assert.deepEqual(
+    state.getSnapshot().messages.map((row) => row.id),
+    ["B-history"],
+  );
+  state.finishRequest(lease);
+  assert.equal(state.isBusy("edited"), false);
+});

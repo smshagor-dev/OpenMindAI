@@ -30,6 +30,7 @@ import type {
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { ChatHistoryNotice } from "./components/ChatHistoryNotice";
 import { SetupWizard } from "./components/SetupWizard";
 import { ChatSearch } from "./components/ChatSearch";
 import { ConfirmDialog } from "./components/ConfirmDialog";
@@ -409,12 +410,31 @@ export function App() {
     let conversationId = activeId;
     let conversationForTitle = conversations.find((conversation) => conversation.id === conversationId) ?? null;
     let optimisticUser: Message | null = null;
-    let editedBranchChanged = false;
+    let editForkCreated = false;
     const lease = chatState.beginRequest(conversationId);
     if (!lease) return;
     let requestScope = chatState.scope(conversationId);
     try {
-      if (!conversationId) {
+      if (editTargetId) {
+        if (!conversationId) {
+          throw new Error("Open the original conversation before editing a message.");
+        }
+        const sourceConversationId = conversationId;
+        const fork = await api.forkConversationForEdit(conversationId, editTargetId);
+        conversationId = fork.conversation.id;
+        conversationForTitle = fork.conversation;
+        editForkCreated = true;
+        chatState.assignRequest(lease, conversationId);
+        requestScope = chatState.scope(conversationId);
+        setConversations((items) => [fork.conversation, ...items]);
+        if (chatState.isCurrent(requestView)) {
+          setActiveId(conversationId);
+          requestView = chatState.captureView();
+          setWorkThreadId((current) => current === sourceConversationId ? fork.conversation.id : current);
+          requestScope.setMessages(fork.messages);
+          requestScope.setArtifacts([]);
+        }
+      } else if (!conversationId) {
         const conversation = await api.createConversation();
         conversationId = conversation.id;
         conversationForTitle = conversation;
@@ -437,17 +457,6 @@ export function App() {
             if (chatState.isCurrent(requestView)) setPendingModelId(null);
           }
         }
-      }
-      if (editTargetId) {
-        const targetIndex = messages.findIndex((message) => message.id === editTargetId);
-        if (targetIndex < 0) throw new Error("The message being edited is no longer available. Reload the chat and try again.");
-        const branch = messages.slice(targetIndex);
-        editedBranchChanged = branch.length > 0;
-        for (const message of branch.slice().reverse()) await api.deleteMessage(message.id);
-        requestScope.setMessages((items) => {
-          const index = items.findIndex((message) => message.id === editTargetId);
-          return index >= 0 ? items.slice(0, index) : items;
-        });
       }
       if (chatState.isCurrent(requestView) && draftRevision.current === originalDraftRevision) {
         setPrompt(""); setAttachments([]); setEditingMessageId(null);
@@ -483,14 +492,14 @@ export function App() {
         .map((message) => message.status === "streaming" ? { ...message, status: "failed" } : message));
       if (chatState.isCurrent(requestView) && draftRevision.current === (clearedDraftRevision ?? originalDraftRevision)) {
         setPrompt(draftPrompt); setAttachments(draftAttachments);
-        setEditingMessageId(editedBranchChanged ? null : editTargetId);
+        setEditingMessageId(editForkCreated ? null : editTargetId);
       }
       requestScope.setError(formatError(caught));
       if (conversationId) await refreshMessages(conversationId);
     } finally {
       chatState.finishRequest(lease);
     }
-  }, [activeId, attachments, chatState, conversations, editingMessageId, imageOptions, messages, pendingModelId,
+  }, [activeId, attachments, chatState, conversations, editingMessageId, imageOptions, pendingModelId,
     preferences?.autoGenerateTitles, preferences?.openArtifactsAfterGeneration, prompt, refreshMessages, setActiveId, setAttachments, setPrompt, showError]);
 
   const sendWorkTask = useCallback(async (conversationId: string, content: string) => {
@@ -1101,6 +1110,29 @@ export function App() {
             <TitleBarControls />
           </div>
         </header>
+
+        {editingMessageId && (view === "chat" || view === "work") ? (
+          <div className="chat-edit-notice" role="status">
+            <span>
+              Editing opens a new chat with the earlier text history. Original messages,
+              attachments and generated files stay in the original chat. Reattach files needed for this edit.
+            </span>
+            <button type="button" disabled={submitting} onClick={() => {
+              setEditingMessageId(null);
+              setPrompt("");
+              setAttachments([]);
+            }}>Cancel edit</button>
+          </div>
+        ) : null}
+
+        {preferences?.chatHistoryNoticeRequired ? (
+          <ChatHistoryNotice
+            onAcknowledge={async () => {
+              setPreferences(await api.acknowledgeChatHistoryNotice());
+            }}
+            onOpenPrivacy={() => { setSettingsSection("privacy"); setView("settings"); }}
+          />
+        ) : null}
 
         {error || activeRun.error ? (
           <button className="error-banner" onClick={() => { setError(null); chatScope.setError(null); }}>

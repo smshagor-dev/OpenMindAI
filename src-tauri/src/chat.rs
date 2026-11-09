@@ -30,6 +30,13 @@ pub struct Message {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForkedConversation {
+    pub conversation: Conversation,
+    pub messages: Vec<Message>,
+}
+
 const PROFILE_CONTEXT_MARKER: &str = "[open-mind-ai-profile-context]";
 const PROJECT_CONTEXT_MARKER: &str = "[open-mind-ai-project-context]";
 
@@ -77,6 +84,90 @@ impl<'a> ChatRepository<'a> {
                 map_conversation,
             )
             .map_err(AppError::from)
+    }
+
+    /// Fork the text context before a user turn without changing any source row.
+    /// Generated files/media remain owned by the source conversation, rather
+    /// than sharing artifact paths whose deletion could affect both chats.
+    pub fn fork_for_edit(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+    ) -> Result<ForkedConversation, AppError> {
+        let transaction = self.database.connection().unchecked_transaction()?;
+        let source = self.find_conversation(conversation_id)?;
+        let target: Option<(String, String, i64)> = transaction.query_row(
+            "SELECT role, created_at, rowid FROM messages WHERE id = ?1 AND conversation_id = ?2",
+            params![message_id, conversation_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).optional()?;
+        let Some((role, target_created_at, target_rowid)) = target else {
+            return Err(AppError::internal(
+                "the edited message does not belong to this conversation",
+            ));
+        };
+        if role != "user" {
+            return Err(AppError::internal("only user messages can be edited"));
+        }
+        let busy: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id = ?1 AND status IN ('pending', 'streaming'))",
+            params![conversation_id],
+            |row| row.get(0),
+        )?;
+        if busy {
+            return Err(AppError::internal(
+                "stop the active generation before editing this conversation",
+            ));
+        }
+        let prefix = {
+            let mut statement = transaction.prepare(
+                "SELECT id, conversation_id, role, content, status, model_id, created_at, updated_at
+                 FROM messages WHERE conversation_id = ?1
+                   AND (role = 'system' OR created_at < ?2 OR (created_at = ?2 AND rowid < ?3))
+                 ORDER BY created_at ASC, rowid ASC",
+            )?;
+            let rows = statement.query_map(
+                params![conversation_id, target_created_at, target_rowid],
+                map_message,
+            )?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        let branch_id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        transaction.execute(
+            "INSERT INTO conversations (id, title, created_at, updated_at, pinned, active_model_id)
+             VALUES (?1, ?2, ?3, ?3, 0, ?4)",
+            params![
+                branch_id,
+                format!("{} (edited)", source.title),
+                now,
+                source.active_model_id
+            ],
+        )?;
+        for message in prefix {
+            transaction.execute(
+                "INSERT INTO messages (id, conversation_id, role, content, status, model_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![Uuid::new_v4().to_string(), branch_id, message.role, message.content,
+                    message.status, message.model_id, message.created_at, message.updated_at],
+            )?;
+        }
+        transaction.execute(
+            "INSERT INTO conversation_settings (conversation_id, settings_json, updated_at)
+             SELECT ?1, settings_json, ?2 FROM conversation_settings WHERE conversation_id = ?3",
+            params![branch_id, now, conversation_id],
+        )?;
+        transaction.execute(
+            "INSERT INTO project_conversations (project_id, conversation_id, created_at)
+             SELECT project_id, ?1, ?2 FROM project_conversations WHERE conversation_id = ?3",
+            params![branch_id, now, conversation_id],
+        )?;
+        let fork = ForkedConversation {
+            conversation: self.find_conversation(&branch_id)?,
+            messages: self.list_messages(&branch_id)?,
+        };
+        transaction.commit()?;
+        Ok(fork)
     }
 
     pub fn rename_conversation(&self, id: &str, title: &str) -> Result<(), AppError> {
@@ -132,7 +223,7 @@ impl<'a> ChatRepository<'a> {
             "SELECT id, conversation_id, role, content, status, model_id, created_at, updated_at
              FROM messages
              WHERE conversation_id = ?1
-             ORDER BY created_at ASC",
+             ORDER BY created_at ASC, rowid ASC",
         )?;
         let rows = statement.query_map(params![conversation_id], map_message)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
@@ -269,7 +360,8 @@ impl<'a> ChatRepository<'a> {
             )));
         };
 
-        // Deleting a user turn is the edit/resend branch operation. A single
+        // Explicitly deleting a user turn truncates the following branch. Editing
+        // uses fork_for_edit and never invokes this destructive operation. A single
         // SQL statement removes that turn and every later non-system message,
         // so the conversation cannot be left half-truncated if a process or
         // request fails between individual deletes. Assistant deletion remains
@@ -620,5 +712,314 @@ mod tests {
             repo.delete_conversation("missing").unwrap_err(),
             AppError::Internal(_)
         ));
+    }
+
+    fn edit_fixture(database: &Database) -> (Conversation, Message) {
+        let repo = ChatRepository::new(database);
+        let source = repo.create_conversation(Some("Original chat")).unwrap();
+        repo.upsert_profile_context(&source.id, Some("profile instructions"))
+            .unwrap();
+        repo.add_message(&source.id, "user", "earlier prompt", "completed", None)
+            .unwrap();
+        repo.add_message(&source.id, "assistant", "earlier answer", "completed", None)
+            .unwrap();
+        let target = repo
+            .add_message(
+                &source.id,
+                "user",
+                "original prompt with attachment text",
+                "completed",
+                None,
+            )
+            .unwrap();
+        repo.add_message(
+            &source.id,
+            "assistant",
+            "original answer",
+            "completed",
+            None,
+        )
+        .unwrap();
+        (source, target)
+    }
+
+    fn saved_messages(repo: &ChatRepository<'_>, conversation_id: &str) -> serde_json::Value {
+        serde_json::to_value(repo.list_messages(conversation_id).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn editing_forks_prefix_with_independent_ids_and_preserves_source() {
+        let database = Database::in_memory().unwrap();
+        let (source, target) = edit_fixture(&database);
+        let repo = ChatRepository::new(&database);
+        let now = Utc::now().to_rfc3339();
+        database.connection().execute(
+            "INSERT INTO model_registry (id, name, path, format, created_at, updated_at) VALUES ('edit-model', 'test', 'edit.gguf', 'gguf', ?1, ?1)",
+            params![now],
+        ).unwrap();
+        repo.set_active_model(&source.id, Some("edit-model"))
+            .unwrap();
+        repo.set_pinned(&source.id, true).unwrap();
+        database.connection().execute(
+            "INSERT INTO projects (id, name, instructions, created_at, updated_at) VALUES ('edit-project', 'project', 'instructions', ?1, ?1)",
+            params![now],
+        ).unwrap();
+        database.connection().execute(
+            "INSERT INTO project_conversations (project_id, conversation_id, created_at) VALUES ('edit-project', ?1, ?2)",
+            params![source.id, now],
+        ).unwrap();
+        database.connection().execute(
+            "INSERT INTO conversation_settings (conversation_id, settings_json, updated_at) VALUES (?1, '{\"testSetting\":true}', ?2)",
+            params![source.id, now],
+        ).unwrap();
+        let before = saved_messages(&repo, &source.id);
+        let source_before =
+            serde_json::to_value(repo.find_conversation(&source.id).unwrap()).unwrap();
+        let fork = repo.fork_for_edit(&source.id, &target.id).unwrap();
+        assert_ne!(fork.conversation.id, source.id);
+        assert_eq!(fork.conversation.title, "Original chat (edited)");
+        assert_eq!(
+            fork.conversation.active_model_id.as_deref(),
+            Some("edit-model")
+        );
+        assert!(!fork.conversation.pinned);
+        let text = fork
+            .messages
+            .iter()
+            .filter(|m| m.role != "system")
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(text, ["earlier prompt", "earlier answer"]);
+        let original_ids = repo
+            .list_messages(&source.id)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect::<Vec<_>>();
+        assert!(fork
+            .messages
+            .iter()
+            .all(|m| m.conversation_id == fork.conversation.id && !original_ids.contains(&m.id)));
+        assert!(fork.messages.iter().any(|m| m.role == "system"));
+        let (project, settings): (String, String) = database.connection().query_row(
+            "SELECT p.project_id, s.settings_json FROM project_conversations p JOIN conversation_settings s ON s.conversation_id = p.conversation_id WHERE p.conversation_id = ?1",
+            params![fork.conversation.id], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(project, "edit-project");
+        assert_eq!(settings, r#"{"testSetting":true}"#);
+        assert_eq!(saved_messages(&repo, &source.id), before);
+        assert_eq!(
+            serde_json::to_value(repo.find_conversation(&source.id).unwrap()).unwrap(),
+            source_before
+        );
+    }
+
+    #[test]
+    fn invalid_edit_targets_and_active_generations_do_not_create_branches() {
+        let database = Database::in_memory().unwrap();
+        let (source, target) = edit_fixture(&database);
+        let repo = ChatRepository::new(&database);
+        let other = repo.create_conversation(Some("Other chat")).unwrap();
+        let messages = repo.list_messages(&source.id).unwrap();
+        let assistant = messages.iter().find(|m| m.role == "assistant").unwrap();
+        let before = saved_messages(&repo, &source.id);
+        assert!(repo.fork_for_edit(&other.id, &target.id).is_err());
+        assert!(repo.fork_for_edit(&source.id, "missing").is_err());
+        assert!(repo.fork_for_edit("missing", &target.id).is_err());
+        assert!(repo.fork_for_edit(&source.id, &assistant.id).is_err());
+        for status in ["pending", "streaming"] {
+            repo.set_message_status(&assistant.id, status).unwrap();
+            assert!(repo.fork_for_edit(&source.id, &target.id).is_err());
+        }
+        repo.set_message_status(&assistant.id, "completed").unwrap();
+        assert_eq!(repo.list_conversations().unwrap().len(), 2);
+        // Only the status test's updated_at may change; all original IDs/content remain.
+        let after = saved_messages(&repo, &source.id);
+        assert_eq!(
+            after.as_array().unwrap().len(),
+            before.as_array().unwrap().len()
+        );
+        assert!(messages.iter().all(|m| repo
+            .list_messages(&source.id)
+            .unwrap()
+            .iter()
+            .any(|n| n.id == m.id && n.content == m.content)));
+    }
+
+    #[test]
+    fn edit_fork_rolls_back_partial_prefix_after_database_failure() {
+        let database = Database::in_memory().unwrap();
+        let (source, target) = edit_fixture(&database);
+        let repo = ChatRepository::new(&database);
+        let before = saved_messages(&repo, &source.id);
+        database
+            .connection()
+            .execute_batch(
+                "CREATE TRIGGER reject_fork_assistant BEFORE INSERT ON messages
+             WHEN NEW.role = 'assistant' BEGIN SELECT RAISE(ABORT, 'fixture copy failure'); END;",
+            )
+            .unwrap();
+        assert!(repo.fork_for_edit(&source.id, &target.id).is_err());
+        assert_eq!(repo.list_conversations().unwrap().len(), 1);
+        let count: usize = database
+            .connection()
+            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, before.as_array().unwrap().len());
+        assert_eq!(saved_messages(&repo, &source.id), before);
+    }
+
+    #[test]
+    fn edit_fork_rolls_back_after_project_copy_failure() {
+        let database = Database::in_memory().unwrap();
+        let (source, target) = edit_fixture(&database);
+        let repo = ChatRepository::new(&database);
+        let now = Utc::now().to_rfc3339();
+        database.connection().execute(
+            "INSERT INTO projects (id, name, created_at, updated_at) VALUES ('p', 'project', ?1, ?1)", params![now],
+        ).unwrap();
+        database.connection().execute(
+            "INSERT INTO project_conversations (project_id, conversation_id, created_at) VALUES ('p', ?1, ?2)", params![source.id, now],
+        ).unwrap();
+        database
+            .connection()
+            .execute_batch(
+                "CREATE TRIGGER reject_fork_project BEFORE INSERT ON project_conversations
+             BEGIN SELECT RAISE(ABORT, 'fixture project failure'); END;",
+            )
+            .unwrap();
+        let before = saved_messages(&repo, &source.id);
+        assert!(repo.fork_for_edit(&source.id, &target.id).is_err());
+        assert_eq!(repo.list_conversations().unwrap().len(), 1);
+        let count: usize = database
+            .connection()
+            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, before.as_array().unwrap().len());
+        assert_eq!(saved_messages(&repo, &source.id), before);
+    }
+
+    #[test]
+    fn edit_prefix_uses_visible_order_with_equal_timestamps() {
+        let database = Database::in_memory().unwrap();
+        let (source, target) = edit_fixture(&database);
+        let repo = ChatRepository::new(&database);
+        database.connection().execute(
+            "UPDATE messages SET created_at = '2020-01-01T00:00:00Z' WHERE conversation_id = ?1 AND role != 'system'", params![source.id],
+        ).unwrap();
+        let fork = repo.fork_for_edit(&source.id, &target.id).unwrap();
+        let contents = fork
+            .messages
+            .iter()
+            .filter(|m| m.role != "system")
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(contents, ["earlier prompt", "earlier answer"]);
+    }
+
+    #[test]
+    fn failed_cancelled_and_interrupted_edits_preserve_original_files_after_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("data/database/openmind_ai.db");
+        let generated = temp.path().join("generated/files/original.txt");
+        let media = temp.path().join("data/media/original.png");
+        let index_dir = temp.path().join("data/media-index");
+        std::fs::create_dir_all(generated.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(media.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&index_dir).unwrap();
+        std::fs::write(&generated, b"original artifact bytes").unwrap();
+        std::fs::write(&media, b"original media bytes").unwrap();
+        let (source_id, target_id, before);
+        {
+            let database = Database::open(path.clone()).unwrap();
+            let (source, target) = edit_fixture(&database);
+            source_id = source.id;
+            target_id = target.id;
+            let repo = ChatRepository::new(&database);
+            before = saved_messages(&repo, &source_id);
+            std::fs::write(
+                index_dir.join(format!("{target_id}.json")),
+                b"original media index bytes",
+            )
+            .unwrap();
+            let now = Utc::now().to_rfc3339();
+            database.connection().execute(
+                "INSERT INTO artifacts (id, conversation_id, message_id, name, path, mime_type, kind, status, created_at, updated_at)
+                 VALUES ('original-artifact', ?1, ?2, 'original.txt', 'generated/files/original.txt', 'text/plain', 'text', 'ready', ?3, ?3)",
+                params![source_id, target_id, now],
+            ).unwrap();
+            for outcome in [
+                "startup-failure",
+                "failed",
+                "cancelled",
+                "interrupted",
+                "artifact-failure",
+            ] {
+                let fork = repo.fork_for_edit(&source_id, &target_id).unwrap();
+                if outcome != "startup-failure" {
+                    repo.add_message(
+                        &fork.conversation.id,
+                        "user",
+                        "edited request",
+                        "completed",
+                        None,
+                    )
+                    .unwrap();
+                    let assistant = repo
+                        .add_message(
+                            &fork.conversation.id,
+                            "assistant",
+                            "partial replacement",
+                            "streaming",
+                            None,
+                        )
+                        .unwrap();
+                    if outcome != "interrupted" {
+                        repo.set_message_status(
+                            &assistant.id,
+                            if outcome == "cancelled" {
+                                "cancelled"
+                            } else {
+                                "failed"
+                            },
+                        )
+                        .unwrap();
+                    }
+                    if outcome == "artifact-failure" {
+                        database.connection().execute_batch(
+                            "CREATE TRIGGER reject_new_artifact BEFORE INSERT ON artifacts BEGIN SELECT RAISE(ABORT, 'fixture artifact failure'); END;",
+                        ).unwrap();
+                        assert!(database.connection().execute(
+                            "INSERT INTO artifacts (id, conversation_id, message_id, name, path, mime_type, kind, status, created_at, updated_at)
+                             VALUES ('failed-artifact', ?1, ?2, 'new.txt', 'generated/files/new.txt', 'text/plain', 'text', 'ready', ?3, ?3)",
+                            params![fork.conversation.id, assistant.id, now],
+                        ).is_err());
+                    }
+                }
+                assert_eq!(saved_messages(&repo, &source_id), before);
+            }
+        }
+        let reopened = Database::open(path).unwrap();
+        let repo = ChatRepository::new(&reopened);
+        assert_eq!(saved_messages(&repo, &source_id), before);
+        let (artifact_count, artifact_message): (usize, String) = reopened
+            .connection()
+            .query_row(
+                "SELECT COUNT(*), message_id FROM artifacts WHERE id = 'original-artifact'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(artifact_count, 1);
+        assert_eq!(artifact_message, target_id);
+        assert_eq!(
+            std::fs::read(generated).unwrap(),
+            b"original artifact bytes"
+        );
+        assert_eq!(std::fs::read(media).unwrap(), b"original media bytes");
+        assert_eq!(
+            std::fs::read(index_dir.join(format!("{target_id}.json"))).unwrap(),
+            b"original media index bytes"
+        );
     }
 }
