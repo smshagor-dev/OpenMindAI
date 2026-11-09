@@ -82,6 +82,8 @@ OpenMindAI runs supported open-weight language models locally and stores convers
 
 The chat system supports streamed responses, cancellation, model selection, conversation history, message regeneration, editing, attachments, and local context persistence.
 
+Switching chats keeps an in-flight generation attached to its original conversation. The visible chat shows only its own messages, artifacts, activity, and research progress; delayed history reads cannot replace a newer view. A background generation notice lets you return to its chat or stop that specific generation. The composer’s Stop control targets the visible chat only. New sends, regeneration, and model selection wait while the shared runtime is busy. Optional Socket.IO activity events must include `conversationId` (and may include `detail`); untagged broadcasts are ignored.
+
 ### Thinking, vision, search, and research modes
 
 OpenMindAI can route different requests through specialized local flows. Image attachments can be passed to compatible local vision models, while Web Search and Deep Research modes can retrieve current public web evidence and provide it to the local model as external context.

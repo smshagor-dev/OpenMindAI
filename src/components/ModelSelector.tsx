@@ -7,6 +7,7 @@ export function ModelSelector(props: {
   activeModelId: string | null;
   runtime: RuntimeInventory | null;
   switching: boolean;
+  disabled?: boolean;
   switchError: string | null;
   onSelect: (modelId: string) => void;
 }) {
@@ -36,7 +37,7 @@ export function ModelSelector(props: {
         type="button"
         className="model-selector-trigger"
         onClick={() => setOpen((value) => !value)}
-        disabled={visibleModels.length === 0}
+        disabled={visibleModels.length === 0 || props.disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
       >
@@ -58,6 +59,7 @@ export function ModelSelector(props: {
                 <button
                   type="button"
                   role="option"
+                  disabled={props.disabled}
                   aria-selected={selected}
                   key={model.id}
                   className="model-selector-item"

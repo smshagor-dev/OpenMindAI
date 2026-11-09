@@ -1,6 +1,6 @@
 import { Archive, Check, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type SetStateAction } from "react";
 import { io, type Socket } from "socket.io-client";
 import { api } from "./api";
 import type {
@@ -57,15 +57,9 @@ import {
 } from "./lib/chat";
 import { formatError } from "./lib/format";
 import { imageRendererPrompt, persistDirectImageRequest, plainImageRequest } from "./lib/imageGeneration";
+import { ConversationState } from "./lib/conversationState";
 
 type View = "chat" | "work" | "settings" | "tools" | "projects";
-
-interface RealtimeActivity {
-  typing: boolean;
-  searching: boolean;
-  researching: boolean;
-  detail: string | null;
-}
 
 type RuntimeAction = "start" | "restart" | "stop";
 
@@ -83,6 +77,19 @@ function optimisticRuntimeStatus(
 }
 
 export function App() {
+  const [chatState] = useState(() => new ConversationState());
+  const chatSnapshot = useSyncExternalStore(chatState.subscribe, chatState.getSnapshot, chatState.getSnapshot);
+  const { activeId, messages, artifacts } = chatSnapshot;
+  const setActiveId = chatState.selectConversation;
+  const chatScope = useMemo(() => chatState.scope(activeId), [chatState, activeId]);
+  const { setMessages, setArtifacts } = chatScope;
+  const activeRun = chatState.run(activeId);
+  const streamingId = activeRun.streamingId;
+  const submitting = activeRun.request !== null && streamingId === null;
+  const activity = activeRun.activity;
+  const webProgress = activeRun.webProgress;
+  const backgroundBusy = chatState.anyBusy() && !chatState.isBusy(activeId);
+  const backgroundRuns = [...chatSnapshot.runs.keys()].filter((id) => id !== activeId && chatState.isBusy(id));
   const copyrightYear = new Date().getFullYear();
   const [view, setView] = useState<View>("chat");
   const [root, setRoot] = useState<PortableRootInfo | null>(null);
@@ -101,30 +108,21 @@ export function App() {
   const [preferences, setPreferences] = useState<AppPreferences | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [imageOptions, setImageOptions] = useState<ImageGenerationOptions>({
     negativePrompt: "",
     seed: null,
     steps: null,
   });
   const [imageProgressByArtifact, setImageProgressByArtifact] = useState<Record<string, ImageRenderProgress>>({});
-  const [prompt, setPrompt] = useState("");
-  const [attachments, setAttachments] = useState<AttachmentDraft[]>([]);
+  const [prompt, setPromptState] = useState("");
+  const [attachments, setAttachmentsState] = useState<AttachmentDraft[]>([]);
+  const draftRevision = useRef(0);
+  const setPrompt = useCallback((value: string) => { draftRevision.current += 1; setPromptState(value); }, []);
+  const setAttachments = useCallback((change: SetStateAction<AttachmentDraft[]>) => { draftRevision.current += 1; setAttachmentsState(change); }, []);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
-  const [activity, setActivity] = useState<RealtimeActivity>({
-    typing: false,
-    searching: false,
-    researching: false,
-    detail: null,
-  });
-  const [webProgress, setWebProgress] = useState<WebResearchProgressEvent | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [streamingId, setStreamingId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const stored = Number(window.localStorage.getItem("sidebarWidth"));
@@ -151,7 +149,16 @@ export function App() {
     setError(formatError(caught));
   }, []);
 
+  const refreshMessages = useCallback(async (conversationId: string) => {
+    try {
+      await chatState.loadMessages(conversationId, api.messages);
+    } catch (caught) {
+      chatState.scope(conversationId).setError(formatError(caught));
+    }
+  }, [chatState]);
+
   const refreshApp = useCallback(async () => {
+    const initialView = chatState.captureView();
     const results = await Promise.allSettled([
       api.root(),
       api.conversations(),
@@ -184,7 +191,7 @@ export function App() {
     if (rootInfo) setRoot(rootInfo);
     if (conversationList) {
       setConversations(conversationList);
-      setActiveId((current) =>
+      if (chatState.isCurrent(initialView)) setActiveId((current) =>
         current && conversationList.some((conversation) => conversation.id === current)
           ? current
           : null,
@@ -200,7 +207,7 @@ export function App() {
     if (userProfileInfo) setUserProfile(userProfileInfo);
     if (installationStatusInfo) setInstallationStatus(installationStatusInfo);
     setRefreshedOnce(true);
-  }, [showError]);
+  }, [showError, chatState, setActiveId]);
 
   useEffect(() => {
     void refreshApp();
@@ -301,165 +308,80 @@ export function App() {
   }, [preferences]);
 
   useEffect(() => {
-    if (!preferences?.socketRealtimeEnabled || !preferences.socketUrl.trim()) {
-      setActivity({ typing: false, searching: false, researching: false, detail: null });
-      return;
-    }
-
-    const socket: Socket = io(preferences.socketUrl, {
-      transports: ["websocket"],
-      reconnectionAttempts: 3,
-    });
-
-    socket.on("typing:start", (detail?: string) =>
-      setActivity((current) => ({ ...current, typing: true, detail: detail ?? current.detail })),
-    );
-    socket.on("typing:stop", () =>
-      setActivity((current) => ({ ...current, typing: false, detail: current.detail })),
-    );
-    socket.on("search:start", (detail?: string) =>
-      setActivity((current) => ({ ...current, searching: true, detail: detail ?? "Searching..." })),
-    );
-    socket.on("search:stop", () =>
-      setActivity((current) => ({ ...current, searching: false, detail: current.detail })),
-    );
-    socket.on("research:start", (detail?: string) =>
-      setActivity((current) => ({
-        ...current,
-        researching: true,
-        detail: detail ?? "Researching...",
-      })),
-    );
-    socket.on("research:stop", () =>
-      setActivity((current) => ({ ...current, researching: false, detail: current.detail })),
-    );
-
+    if (!preferences?.socketRealtimeEnabled || !preferences.socketUrl.trim()) return;
+    const socket: Socket = io(preferences.socketUrl, { transports: ["websocket"], reconnectionAttempts: 3 });
+    const owners = new Set<string>();
+    const activityEvent = (field: "typing" | "searching" | "researching", enabled: boolean) =>
+      (payload?: { conversationId?: string; detail?: string }) => {
+        // Untagged legacy broadcasts cannot safely identify their destination chat.
+        if (!payload || typeof payload.conversationId !== "string") return;
+        owners.add(payload.conversationId);
+        chatState.scope(payload.conversationId).setActivity((current) => ({
+          ...current, [field]: enabled, detail: typeof payload.detail === "string" ? payload.detail : current.detail,
+        }));
+      };
+    socket.on("typing:start", activityEvent("typing", true));
+    socket.on("typing:stop", activityEvent("typing", false));
+    socket.on("search:start", activityEvent("searching", true));
+    socket.on("search:stop", activityEvent("searching", false));
+    socket.on("research:start", activityEvent("researching", true));
+    socket.on("research:stop", activityEvent("researching", false));
     return () => {
       socket.disconnect();
+      for (const owner of owners) if (!chatState.isBusy(owner)) {
+        chatState.scope(owner).setActivity({ typing: false, searching: false, researching: false, detail: null });
+      }
     };
-  }, [preferences?.socketRealtimeEnabled, preferences?.socketUrl]);
+  }, [preferences?.socketRealtimeEnabled, preferences?.socketUrl, chatState]);
 
   useEffect(() => {
-    if (!activeId) {
-      setMessages([]);
-      setArtifacts([]);
-      setEditingMessageId(null);
-      return;
-    }
-    api
-      .messages(activeId)
-      .then((items) => setMessages(items.filter((message) => message.role !== "system")))
-      .catch(showError);
-    api.listArtifacts(activeId).then(setArtifacts).catch(showError);
-  }, [activeId, showError]);
+    if (!activeId) { setEditingMessageId(null); return; }
+    void refreshMessages(activeId);
+    void chatState.loadArtifacts(activeId, api.listArtifacts)
+      .catch((caught) => chatState.scope(activeId).setError(formatError(caught)));
+  }, [activeId, chatState, refreshMessages]);
 
   useEffect(() => {
     const unlisteners = [
       listen<StreamStartedEvent>("inference:started", (event) => {
-        setMessages((items) => [
-          ...items.filter(
-            (message) =>
-              message.id !== event.payload.user.id &&
-              message.id !== event.payload.assistant.id &&
-              !(
-                message.id.startsWith("local-") &&
-                message.conversationId === event.payload.conversationId &&
-                message.content === event.payload.user.content
-              ),
-          ),
-          event.payload.user,
-          event.payload.assistant,
-        ]);
-        setStreamingId(event.payload.assistant.id);
-        setWebProgress((current) =>
-          current?.conversationId === event.payload.conversationId &&
-          current.messageId !== event.payload.assistant.id
-            ? null
-            : current,
-        );
-        setSubmitting(false);
-        setActivity((current) => ({
-          ...current,
-          typing: true,
-          detail: current.detail?.startsWith("Loading ") ? null : current.detail,
+        if (!chatState.startStream(event.payload)) return;
+        if (event.payload.assistant.conversationId !== event.payload.conversationId) return;
+        setConversations((items) => items.map((item) => item.id === event.payload.conversationId
+          ? { ...item, activeModelId: event.payload.assistant.modelId } : item));
+      }),
+      listen<{ conversationId: string; modelName: string; replacing: string | null }>("runtime:model-loading", (event) => {
+        const { conversationId, modelName, replacing } = event.payload;
+        chatState.scope(conversationId).setActivity((current) => ({ ...current,
+          detail: `Loading ${modelName}…${replacing ? ` (switching from ${replacing})` : ""} This can take a few minutes.`,
         }));
-        setConversations((items) =>
-          items.map((item) =>
-            item.id === event.payload.conversationId
-              ? { ...item, activeModelId: event.payload.assistant.modelId }
-              : item,
-          ),
-        );
       }),
-      // The shared runtime is switching models (for example from the coding agent back to
-      // Core), which can take minutes; say so instead of looking frozen.
-      listen<{ conversationId: string; modelName: string; replacing: string | null }>(
-        "runtime:model-loading",
-        (event) => {
-          const { modelName, replacing } = event.payload;
-          setActivity((current) => ({
-            ...current,
-            detail: `Loading ${modelName}…${replacing ? ` (switching from ${replacing})` : ""} This can take a few minutes.`,
-          }));
-        },
-      ),
       listen<WebResearchProgressEvent>("web-research:progress", (event) => {
-        setWebProgress(event.payload);
+        chatState.scope(event.payload.conversationId).setWebProgress(event.payload);
       }),
-      listen<StreamChunkEvent>("inference:chunk", (event) => {
-        setMessages((items) =>
-          items.map((message) =>
-            message.id === event.payload.messageId && message.status === "streaming"
-              ? { ...message, content: message.content + event.payload.chunk, status: "streaming" }
-              : message,
-          ),
-        );
-      }),
+      listen<StreamChunkEvent>("inference:chunk", (event) => chatState.streamChunk(event.payload)),
       listen<StreamDoneEvent>("inference:done", (event) => {
-        setMessages((items) =>
-          items.map((message) =>
-            message.id === event.payload.messageId
-              ? { ...message, status: event.payload.status }
-              : message,
-          ),
-        );
-        setStreamingId((current) => (current === event.payload.messageId ? null : current));
-        setWebProgress((current) =>
-          current?.messageId === event.payload.messageId &&
-          current.conversationId === event.payload.conversationId
-            ? null
-            : current,
-        );
-        setSubmitting(false);
-        setActivity((current) => ({ ...current, typing: false, detail: null }));
+        chatState.finishStream(event.payload);
+        if (chatState.run(event.payload.conversationId).request === null) void refreshMessages(event.payload.conversationId);
       }),
-      listen<Artifact>("artifact:started", (event) =>
-        setArtifacts((items) => upsertArtifactInList(items, event.payload)),
-      ),
+      listen<Artifact>("artifact:started", (event) => {
+        chatState.scope(event.payload.conversationId).setArtifacts((items) => upsertArtifactInList(items, event.payload));
+      }),
       listen<Artifact>("artifact:done", (event) => {
-        setArtifacts((items) => upsertArtifactInList(items, event.payload));
+        chatState.scope(event.payload.conversationId).setArtifacts((items) => upsertArtifactInList(items, event.payload));
         setImageProgressByArtifact((current) => {
           if (!(event.payload.id in current)) return current;
-          const next = { ...current };
-          delete next[event.payload.id];
-          return next;
+          const next = { ...current }; delete next[event.payload.id]; return next;
         });
       }),
       listen<ImageRenderProgress>("image:progress", (event) => {
-        setImageProgressByArtifact((current) => ({
-          ...current,
-          [event.payload.artifactId]: event.payload,
-        }));
+        setImageProgressByArtifact((current) => ({ ...current, [event.payload.artifactId]: event.payload }));
       }),
     ];
-    return () => {
-      void Promise.all(unlisteners).then((items) => items.forEach((unlisten) => unlisten()));
-    };
-  }, []);
+    return () => { void Promise.all(unlisteners).then((items) => items.forEach((unlisten) => unlisten())); };
+  }, [chatState, refreshMessages]);
 
   const newConversation = useCallback(() => {
     setActiveId(null);
-    setWebProgress(null);
     setMessages([]);
     setPrompt("");
     setAttachments([]);
@@ -470,223 +392,141 @@ export function App() {
     setPendingModelId(null);
     setModelSwitchError(null);
     window.setTimeout(() => composerRef.current?.focus(), 0);
-  }, []);
+  }, [setActiveId, setAttachments, setMessages, setPrompt]);
 
   const sendMessage = useCallback(async () => {
     const content = prompt.trim();
-    if ((!content && attachments.length === 0) || streamingId || submitting) return;
-
+    if ((!content && attachments.length === 0) || chatState.anyBusy()) return;
     const draftPrompt = prompt;
     const draftAttachments = attachments.slice();
+    const originalDraftRevision = draftRevision.current;
+    let clearedDraftRevision: number | null = null;
+    let requestView = chatState.captureView();
     const editTargetId = editingMessageId;
     const inferredMode = inferChatMode(content, attachments);
     const messageContent = buildMessageContent(content, attachments, inferredMode);
     const inferenceMedia = attachmentMedia(attachments);
     let conversationId = activeId;
-    let conversationForTitle =
-      conversations.find((conversation) => conversation.id === conversationId) ?? null;
+    let conversationForTitle = conversations.find((conversation) => conversation.id === conversationId) ?? null;
     let optimisticUser: Message | null = null;
     let editedBranchChanged = false;
-
-    setSubmitting(true);
-    setWebProgress(null);
+    const lease = chatState.beginRequest(conversationId);
+    if (!lease) return;
+    let requestScope = chatState.scope(conversationId);
     try {
       if (!conversationId) {
         const conversation = await api.createConversation();
         conversationId = conversation.id;
         conversationForTitle = conversation;
+        chatState.assignRequest(lease, conversationId);
+        requestScope = chatState.scope(conversationId);
         setConversations((items) => [conversation, ...items]);
-        setActiveId(conversation.id);
-
+        if (chatState.isCurrent(requestView)) {
+          setActiveId(conversationId);
+          requestView = chatState.captureView();
+        }
         if (pendingModelId) {
-          setModelSwitching(true);
+          if (chatState.isCurrent(requestView)) setModelSwitching(true);
           try {
             await api.activateModel(conversationId, pendingModelId);
-            setConversations((items) =>
-              items.map((item) =>
-                item.id === conversationId ? { ...item, activeModelId: pendingModelId } : item,
-              ),
-            );
+            setConversations((items) => items.map((item) => item.id === conversationId ? { ...item, activeModelId: pendingModelId } : item));
           } catch (caught) {
-            setModelSwitchError(formatError(caught));
+            if (chatState.isCurrent(requestView)) setModelSwitchError(formatError(caught));
           } finally {
             setModelSwitching(false);
-            setPendingModelId(null);
+            if (chatState.isCurrent(requestView)) setPendingModelId(null);
           }
         }
       }
-
       if (editTargetId) {
         const targetIndex = messages.findIndex((message) => message.id === editTargetId);
-        if (targetIndex < 0) {
-          throw new Error(
-            "The message being edited is no longer available. Reload the chat and try again.",
-          );
-        }
+        if (targetIndex < 0) throw new Error("The message being edited is no longer available. Reload the chat and try again.");
         const branch = messages.slice(targetIndex);
         editedBranchChanged = branch.length > 0;
-        for (const message of branch.slice().reverse()) {
-          await api.deleteMessage(message.id);
-        }
-        setMessages((items) => {
+        for (const message of branch.slice().reverse()) await api.deleteMessage(message.id);
+        requestScope.setMessages((items) => {
           const index = items.findIndex((message) => message.id === editTargetId);
           return index >= 0 ? items.slice(0, index) : items;
         });
-        setEditingMessageId(null);
       }
-
-      setPrompt("");
-      setAttachments([]);
+      if (chatState.isCurrent(requestView) && draftRevision.current === originalDraftRevision) {
+        setPrompt(""); setAttachments([]); setEditingMessageId(null);
+        clearedDraftRevision = draftRevision.current;
+      }
       optimisticUser = {
-        id: `local-${crypto.randomUUID()}`,
-        conversationId,
-        role: "user",
-        content: messageContent,
-        status: "completed",
-        modelId: null,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        id: `local-${crypto.randomUUID()}`, conversationId, role: "user", content: messageContent,
+        status: "completed", modelId: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       };
-      setMessages((items) => [...items, optimisticUser as Message]);
-
+      requestScope.setMessages((items) => [...items, optimisticUser as Message]);
       if (preferences?.autoGenerateTitles ?? true) {
-        const generatedTitle = titleFromPrompt(
-          content || attachments[0]?.name || "New conversation",
-        );
-        if (
-          conversationForTitle &&
-          isUntitledConversation(conversationForTitle.title) &&
-          generatedTitle
-        ) {
+        const generatedTitle = titleFromPrompt(content || attachments[0]?.name || "New conversation");
+        if (conversationForTitle && isUntitledConversation(conversationForTitle.title) && generatedTitle) {
           await api.renameConversation(conversationId, generatedTitle);
-          setConversations((items) =>
-            items.map((conversation) =>
-              conversation.id === conversationId
-                ? { ...conversation, title: generatedTitle }
-                : conversation,
-            ),
-          );
+          setConversations((items) => items.map((conversation) => conversation.id === conversationId ? { ...conversation, title: generatedTitle } : conversation));
         }
       }
-
-      // A local diffusion renderer does not require a llama.cpp chat runtime.
-      // Persist the user and an associated assistant turn for artifact history.
-      const assistant =
-        inferredMode === "image"
-          ? await persistDirectImageRequest(conversationId, messageContent, api)
-          : await api.sendChatMessage(conversationId, messageContent, inferredMode, inferenceMedia);
+      const assistant = inferredMode === "image"
+        ? await persistDirectImageRequest(conversationId, messageContent, api)
+        : await api.sendChatMessage(conversationId, messageContent, inferredMode, inferenceMedia);
+      requestScope.setMessages((items) => items.filter((message) => message.id !== optimisticUser?.id));
       const generationKind = generationKindForMode(inferredMode);
       if (generationKind) {
-        const generationPrompt =
-          generationKind === "image"
-            ? plainImageRequest(messageContent)
-            : assistant.content.trim() || content;
-        const artifact = await api.createGenerationArtifact(
-          conversationId,
-          assistant.id,
-          generationKind,
-          generationPrompt,
-          false,
-          generationKind === "image" ? imageOptions : undefined,
-        );
-        setArtifacts((items) => upsertArtifactInList(items, artifact));
-        if (preferences?.openArtifactsAfterGeneration && artifact.status === "ready") {
-          void api.openArtifact(artifact.id).catch(showError);
-        }
+        const generationPrompt = generationKind === "image" ? plainImageRequest(messageContent) : assistant.content.trim() || content;
+        const artifact = await api.createGenerationArtifact(conversationId, assistant.id, generationKind, generationPrompt, false, generationKind === "image" ? imageOptions : undefined);
+        requestScope.setArtifacts((items) => upsertArtifactInList(items, artifact));
+        if (preferences?.openArtifactsAfterGeneration && artifact.status === "ready") void api.openArtifact(artifact.id).catch(showError);
       }
-      setStreamingId(null);
-      await refreshMessages(conversationId, setMessages, showError);
+      await refreshMessages(conversationId);
       setConversations(await api.conversations());
     } catch (caught) {
-      if (optimisticUser) {
-        setMessages((items) =>
-          items
-            .filter((message) => message.id !== optimisticUser?.id)
-            .map((message) =>
-              message.conversationId === conversationId && message.status === "streaming"
-                ? { ...message, status: "failed" }
-                : message,
-            ),
-        );
+      if (optimisticUser) requestScope.setMessages((items) => items.filter((message) => message.id !== optimisticUser?.id)
+        .map((message) => message.status === "streaming" ? { ...message, status: "failed" } : message));
+      if (chatState.isCurrent(requestView) && draftRevision.current === (clearedDraftRevision ?? originalDraftRevision)) {
+        setPrompt(draftPrompt); setAttachments(draftAttachments);
+        setEditingMessageId(editedBranchChanged ? null : editTargetId);
       }
-      setStreamingId(null);
-      setPrompt(draftPrompt);
-      setWebProgress(null);
-      setAttachments(draftAttachments);
-      setEditingMessageId(editedBranchChanged ? null : editTargetId);
-      showError(caught);
-      if (conversationId) {
-        await refreshMessages(conversationId, setMessages, showError);
-      }
+      requestScope.setError(formatError(caught));
+      if (conversationId) await refreshMessages(conversationId);
     } finally {
-      setSubmitting(false);
+      chatState.finishRequest(lease);
     }
-  }, [
-    activeId,
-    attachments,
-    conversations,
-    editingMessageId,
-    imageOptions,
-    messages,
-    pendingModelId,
-    preferences?.autoGenerateTitles,
-    preferences?.openArtifactsAfterGeneration,
-    prompt,
-    showError,
-    streamingId,
-    submitting,
-  ]);
+  }, [activeId, attachments, chatState, conversations, editingMessageId, imageOptions, messages, pendingModelId,
+    preferences?.autoGenerateTitles, preferences?.openArtifactsAfterGeneration, prompt, refreshMessages, setActiveId, setAttachments, setPrompt, showError]);
 
-  const sendWorkTask = useCallback(
-    async (conversationId: string, content: string) => {
-      const task = content.trim();
-      if (!task || streamingId || submitting) return;
-
-      const inferredMode = inferChatMode(task, []);
-      const messageContent = buildMessageContent(task, [], inferredMode);
-      setSubmitting(true);
-      setWebProgress(null);
-      setPrompt("");
-      setAttachments([]);
-      setEditingMessageId(null);
-      setActiveId(conversationId);
-      setWorkThreadId(conversationId);
-
-      try {
-        const generatedTitle = titleFromPrompt(task);
-        if (generatedTitle) {
-          await api.renameConversation(conversationId, generatedTitle);
-          setConversations((items) =>
-            items.map((conversation) =>
-              conversation.id === conversationId
-                ? { ...conversation, title: generatedTitle }
-                : conversation,
-            ),
-          );
-        }
-        await api.sendChatMessage(conversationId, messageContent, inferredMode, []);
-        setStreamingId(null);
-        await refreshMessages(conversationId, setMessages, showError);
-        setConversations(await api.conversations());
-      } catch (caught) {
-        setStreamingId(null);
-        showError(caught);
-        await refreshMessages(conversationId, setMessages, showError);
-      } finally {
-        setSubmitting(false);
-      }
-    },
-    [showError, streamingId, submitting],
-  );
-
-  const stopGeneration = useCallback(async () => {
-    if (!streamingId || !activeId) return;
+  const sendWorkTask = useCallback(async (conversationId: string, content: string) => {
+    const task = content.trim();
+    if (!task) return;
+    const lease = chatState.beginRequest(conversationId);
+    if (!lease) return;
+    const requestScope = chatState.scope(conversationId);
+    const inferredMode = inferChatMode(task, []);
+    const messageContent = buildMessageContent(task, [], inferredMode);
+    setPrompt(""); setAttachments([]); setEditingMessageId(null);
+    setActiveId(conversationId); setWorkThreadId(conversationId);
     try {
-      await api.cancelGeneration(activeId);
+      const generatedTitle = titleFromPrompt(task);
+      if (generatedTitle) {
+        await api.renameConversation(conversationId, generatedTitle);
+        setConversations((items) => items.map((conversation) => conversation.id === conversationId ? { ...conversation, title: generatedTitle } : conversation));
+      }
+      await api.sendChatMessage(conversationId, messageContent, inferredMode, []);
+      await refreshMessages(conversationId);
+      setConversations(await api.conversations());
     } catch (caught) {
-      showError(caught);
-    }
-  }, [activeId, showError, streamingId]);
+      requestScope.setError(formatError(caught));
+      await refreshMessages(conversationId);
+    } finally { chatState.finishRequest(lease); }
+  }, [chatState, refreshMessages, setActiveId, setAttachments, setPrompt]);
+
+  const cancelConversationGeneration = useCallback(async (conversationId: string) => {
+    try { await chatState.cancelGeneration(conversationId, api.cancelGeneration); }
+    catch (caught) { chatState.scope(conversationId).setError(formatError(caught)); }
+  }, [chatState]);
+  const stopGeneration = useCallback(async () => {
+    const owner = chatState.getSnapshot().activeId;
+    try { await chatState.cancelActiveGeneration(api.cancelGeneration); }
+    catch (caught) { chatState.scope(owner).setError(formatError(caught)); }
+  }, [chatState]);
 
   const editUserMessage = useCallback((messageId: string, content: string) => {
     setEditingMessageId(messageId);
@@ -699,7 +539,7 @@ export function App() {
       node.focus();
       node.setSelectionRange(node.value.length, node.value.length);
     }, 0);
-  }, []);
+  }, [setAttachments, setPrompt]);
 
   const startToolPrompt = useCallback((content: string) => {
     setEditingMessageId(null);
@@ -711,40 +551,30 @@ export function App() {
       node.focus();
       node.setSelectionRange(node.value.length, node.value.length);
     }, 0);
-  }, []);
+  }, [setPrompt]);
 
-  const regenerate = useCallback(
-    async (assistantMessageId: string) => {
-      if (!activeId || streamingId || submitting) return;
-      const targetIndex = messages.findIndex((message) => message.id === assistantMessageId);
-      const user =
-        targetIndex > 0
-          ? messages
-              .slice(0, targetIndex)
-              .reverse()
-              .find((message) => message.role === "user")
-          : null;
-      const mode = user ? persistedChatMode(user.content) : "chat";
-      setSubmitting(true);
-      setWebProgress(null);
-      setMessages((items) => items.filter((message) => message.id !== assistantMessageId));
-      try {
-        await api.regenerateMessage(activeId, assistantMessageId, mode);
-        setStreamingId(null);
-        await refreshMessages(activeId, setMessages, showError);
-        await refreshApp();
-      } catch (caught) {
-        showError(caught);
-        await refreshMessages(activeId, setMessages, showError);
-      } finally {
-        setSubmitting(false);
-      }
-    },
-    [activeId, messages, refreshApp, showError, streamingId, submitting],
-  );
+  const regenerate = useCallback(async (assistantMessageId: string) => {
+    if (!activeId) return;
+    const targetIndex = messages.findIndex((message) => message.id === assistantMessageId);
+    const user = targetIndex > 0 ? messages.slice(0, targetIndex).reverse().find((message) => message.role === "user") : null;
+    const mode = user ? persistedChatMode(user.content) : "chat";
+    const lease = chatState.beginRequest(activeId);
+    if (!lease) return;
+    const requestScope = chatState.scope(activeId);
+    requestScope.setMessages((items) => items.filter((message) => message.id !== assistantMessageId));
+    try {
+      await api.regenerateMessage(activeId, assistantMessageId, mode);
+      await refreshMessages(activeId);
+      await refreshApp();
+    } catch (caught) {
+      requestScope.setError(formatError(caught));
+      await refreshMessages(activeId);
+    } finally { chatState.finishRequest(lease); }
+  }, [activeId, chatState, messages, refreshApp, refreshMessages]);
 
   const selectModel = useCallback(
     async (modelId: string) => {
+      if (chatState.anyBusy()) return;
       setModelSwitchError(null);
       if (!activeId) {
         setPendingModelId(modelId);
@@ -762,7 +592,7 @@ export function App() {
         setModelSwitching(false);
       }
     },
-    [activeId],
+    [activeId, chatState],
   );
 
   useEffect(() => {
@@ -846,7 +676,7 @@ export function App() {
   async function archiveConversation(id: string) {
     await api.archiveConversation(id);
     setConversations((items) => items.filter((item) => item.id !== id));
-    if (activeId === id) {
+    if (chatState.getSnapshot().activeId === id) {
       setActiveId(null);
       setMessages([]);
       setEditingMessageId(null);
@@ -866,7 +696,7 @@ export function App() {
   async function performDelete(id: string) {
     await api.deleteConversation(id);
     setConversations((items) => items.filter((item) => item.id !== id));
-    if (activeId === id) {
+    if (chatState.getSnapshot().activeId === id) {
       setActiveId(null);
       setMessages([]);
       setEditingMessageId(null);
@@ -877,6 +707,7 @@ export function App() {
   }
 
   async function duplicateConversation(conversation: Conversation) {
+    const initialView = chatState.captureView();
     const created = await api.createConversation(`${conversation.title} (copy)`);
     const original = await api.messages(conversation.id);
     for (const message of original) {
@@ -893,9 +724,11 @@ export function App() {
       }
     }
     await refreshApp();
-    setActiveId(created.id);
-    setEditingMessageId(null);
-    setView("chat");
+    if (chatState.isCurrent(initialView)) {
+      setActiveId(created.id);
+      setEditingMessageId(null);
+      setView("chat");
+    }
   }
 
   async function createProjectConversation(project: Project) {
@@ -1028,7 +861,7 @@ export function App() {
         showError(caught);
       }
     },
-    [activeId, preferences?.openArtifactsAfterGeneration, showError],
+    [activeId, preferences?.openArtifactsAfterGeneration, setArtifacts, showError],
   );
 
   const retryArtifact = useCallback(
@@ -1072,7 +905,7 @@ export function App() {
       }
       void createArtifact(artifact.messageId, artifact.kind, source.content, artifact.name);
     },
-    [activeId, createArtifact, imageOptions, messages, preferences?.openArtifactsAfterGeneration, showError],
+    [activeId, createArtifact, imageOptions, messages, preferences?.openArtifactsAfterGeneration, setArtifacts, showError],
   );
 
   const cancelImageArtifact = useCallback(
@@ -1269,11 +1102,19 @@ export function App() {
           </div>
         </header>
 
-        {error ? (
-          <button className="error-banner" onClick={() => setError(null)}>
-            {error}
+        {error || activeRun.error ? (
+          <button className="error-banner" onClick={() => { setError(null); chatScope.setError(null); }}>
+            {error ?? activeRun.error}
           </button>
         ) : null}
+
+        {backgroundRuns.map((owner) => (
+          <div className="background-generation-notice" key={owner ?? "new-chat"} role="status">
+            <span>Generation continues in {conversations.find((item) => item.id === owner)?.title ?? "another chat"}.</span>
+            {owner ? <button type="button" onClick={() => { setWorkThreadId(null); setView("chat"); setActiveId(owner); }}>Open chat</button> : null}
+            {owner && chatState.run(owner).streamingId ? <button type="button" onClick={() => void cancelConversationGeneration(owner)}>Stop this generation</button> : null}
+          </div>
+        ))}
 
         {runtime && !runtime.selected ? (
           <div className="runtime-recovery-banner" role="status" aria-live="polite">
@@ -1324,6 +1165,7 @@ export function App() {
             composerRef={composerRef}
             streaming={Boolean(streamingId)}
             submitting={submitting}
+            backgroundBusy={backgroundBusy}
             models={models}
             activeModelId={activeModelId}
             runtime={runtime}
@@ -1382,6 +1224,7 @@ export function App() {
               composerRef={composerRef}
               streaming={Boolean(streamingId)}
               submitting={submitting}
+              backgroundBusy={backgroundBusy}
               models={models}
               activeModelId={activeModelId}
               runtime={runtime}
@@ -1576,18 +1419,7 @@ export function App() {
   );
 }
 
-async function refreshMessages(
-  conversationId: string,
-  setMessages: (value: SetStateAction<Message[]>) => void,
-  showError: (caught: unknown) => void,
-) {
-  try {
-    const items = await api.messages(conversationId);
-    setMessages(items.filter((message) => message.role !== "system"));
-  } catch (caught) {
-    showError(caught);
-  }
-}
+
 
 function upsertArtifactInList(items: Artifact[], next: Artifact) {
   const index = items.findIndex((item) => item.id === next.id);

@@ -49,6 +49,9 @@ jobs:
       - name: Shared application updater regression
         run: npm run test:updates
 
+      - name: Conversation isolation regression
+        run: npm run test:conversations
+
       - name: Lint
         run: npm run lint
 
