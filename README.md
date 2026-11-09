@@ -82,6 +82,8 @@ OpenMindAI runs supported open-weight language models locally and stores convers
 
 The chat system supports streamed responses, cancellation, model selection, conversation history, message regeneration, editing, attachments, and local context persistence.
 
+Switching chats keeps an in-flight generation attached to its original conversation. The visible chat shows only its own messages, artifacts, activity, and research progress; delayed history reads cannot replace a newer view. A background generation notice lets you return to its chat or stop that specific generation. The composer’s Stop control targets the visible chat only. New sends, regeneration, and model selection wait while the shared runtime is busy. Optional Socket.IO activity events must include `conversationId` (and may include `detail`); untagged broadcasts are ignored.
+
 Editing an earlier user prompt opens a separate chat named with an `(edited)` suffix. Its earlier text history, model selection, conversation settings and project membership are copied in one database transaction; the edited turn and later replies are excluded. The original chat remains available even when the new request fails, is cancelled or is interrupted. If the branch cannot be created, no partial branch is saved.
 
 Attachments, generated files and their ownership stay in the original chat. Reattach files required for the edited prompt. The replacement request and any newly generated files belong to the new chat. Retrying a failed replacement continues in that new chat. The separate Regenerate operation is not changed by this edit fix.

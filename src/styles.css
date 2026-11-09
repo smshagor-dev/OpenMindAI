@@ -336,6 +336,30 @@ button {
   text-align: left;
 }
 
+.background-generation-notice {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 24px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.background-generation-notice span { flex: 1 1 240px; }
+.background-generation-notice button {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+
 .conversation-open span {
   overflow: hidden;
   text-overflow: ellipsis;

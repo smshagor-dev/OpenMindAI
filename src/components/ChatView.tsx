@@ -70,6 +70,7 @@ export function ChatView(props: {
   composerRef: RefObject<HTMLTextAreaElement>;
   streaming: boolean;
   submitting: boolean;
+  backgroundBusy?: boolean;
   models: ModelRecord[];
   activeModelId: string | null;
   runtime: RuntimeInventory | null;
@@ -122,6 +123,7 @@ export function ChatView(props: {
       enterToSend={props.enterToSend}
       streaming={props.streaming}
       submitting={props.submitting}
+      backgroundBusy={props.backgroundBusy}
       addFiles={props.addFiles}
       removeAttachment={props.removeAttachment}
       sendMessage={props.sendMessage}
@@ -206,7 +208,7 @@ export function ChatView(props: {
               message={message}
               markdown={props.preferences?.markdownRendering ?? true}
               codeCopyButtons={props.preferences?.codeCopyButtons ?? true}
-              canRegenerate={!props.streaming && !props.submitting}
+              canRegenerate={!props.streaming && !props.submitting && !props.backgroundBusy}
               onRegenerate={() => props.regenerate(message.id)}
               onRetry={() => props.retry(message.id)}
               artifacts={props.artifactsByMessage.get(message.id) ?? []}

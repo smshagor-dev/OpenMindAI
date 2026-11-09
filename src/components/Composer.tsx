@@ -33,6 +33,7 @@ export function Composer(props: {
   enterToSend: boolean;
   streaming: boolean;
   submitting: boolean;
+  backgroundBusy?: boolean;
   addFiles: (files: FileList | null) => void | Promise<void>;
   removeAttachment: (id: string) => void;
   sendMessage: () => void;
@@ -103,7 +104,7 @@ export function Composer(props: {
       stopMicrophone();
       return;
     }
-    if (transcribing || props.streaming || props.submitting) return;
+    if (transcribing || props.streaming || props.submitting || props.backgroundBusy) return;
     setMicError(null);
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       setMicError("Microphone recording is not available in this WebView.");
@@ -205,7 +206,7 @@ export function Composer(props: {
       className="composer"
       onSubmit={(event) => {
         event.preventDefault();
-        if (!canSend || props.streaming || props.submitting || recording || transcribing) return;
+        if (!canSend || props.streaming || props.submitting || props.backgroundBusy || recording || transcribing) return;
         void props.sendMessage();
       }}
     >
@@ -365,6 +366,7 @@ export function Composer(props: {
                 !event.shiftKey &&
                 !props.streaming &&
                 !props.submitting &&
+                !props.backgroundBusy &&
                 !recording &&
                 !transcribing &&
                 canSend
@@ -388,6 +390,7 @@ export function Composer(props: {
               activeModelId={props.activeModelId}
               runtime={props.runtime}
               switching={props.modelSwitching}
+              disabled={props.backgroundBusy || props.streaming || props.submitting}
               switchError={props.modelSwitchError}
               onSelect={props.onSelectModel}
             />
@@ -398,7 +401,7 @@ export function Composer(props: {
                 recording ? "Stop recording" : transcribing ? "Transcribing locally" : "Voice input"
               }
               aria-pressed={recording}
-              disabled={transcribing || props.streaming || props.submitting}
+              disabled={transcribing || props.streaming || props.submitting || props.backgroundBusy}
               onClick={() => void toggleMicrophone()}
             >
               {transcribing ? (
@@ -416,9 +419,9 @@ export function Composer(props: {
             ) : (
               <button
                 type="submit"
-                title={props.submitting ? "Preparing request" : "Send"}
+                title={props.backgroundBusy ? "Generation is running in another chat" : props.submitting ? "Preparing request" : "Send"}
                 className="composer-send"
-                disabled={!canSend || props.submitting || recording || transcribing}
+                disabled={!canSend || props.submitting || props.backgroundBusy || recording || transcribing}
               >
                 <Send size={18} />
               </button>
