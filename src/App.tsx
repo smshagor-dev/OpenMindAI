@@ -487,12 +487,27 @@ export function App() {
     let conversationForTitle =
       conversations.find((conversation) => conversation.id === conversationId) ?? null;
     let optimisticUser: Message | null = null;
-    let editedBranchChanged = false;
+    let editForkCreated = false;
 
     setSubmitting(true);
     setWebProgress(null);
     try {
-      if (!conversationId) {
+      if (editTargetId) {
+        if (!conversationId) {
+          throw new Error("Open the original conversation before editing a message.");
+        }
+        const sourceConversationId = conversationId;
+        const fork = await api.forkConversationForEdit(conversationId, editTargetId);
+        conversationId = fork.conversation.id;
+        conversationForTitle = fork.conversation;
+        editForkCreated = true;
+        setConversations((items) => [fork.conversation, ...items]);
+        setActiveId(conversationId);
+        setWorkThreadId((current) => current === sourceConversationId ? fork.conversation.id : current);
+        setMessages(fork.messages.filter((message) => message.role !== "system"));
+        setArtifacts([]);
+        setEditingMessageId(null);
+      } else if (!conversationId) {
         const conversation = await api.createConversation();
         conversationId = conversation.id;
         conversationForTitle = conversation;
@@ -515,25 +530,6 @@ export function App() {
             setPendingModelId(null);
           }
         }
-      }
-
-      if (editTargetId) {
-        const targetIndex = messages.findIndex((message) => message.id === editTargetId);
-        if (targetIndex < 0) {
-          throw new Error(
-            "The message being edited is no longer available. Reload the chat and try again.",
-          );
-        }
-        const branch = messages.slice(targetIndex);
-        editedBranchChanged = branch.length > 0;
-        for (const message of branch.slice().reverse()) {
-          await api.deleteMessage(message.id);
-        }
-        setMessages((items) => {
-          const index = items.findIndex((message) => message.id === editTargetId);
-          return index >= 0 ? items.slice(0, index) : items;
-        });
-        setEditingMessageId(null);
       }
 
       setPrompt("");
@@ -614,7 +610,7 @@ export function App() {
       setPrompt(draftPrompt);
       setWebProgress(null);
       setAttachments(draftAttachments);
-      setEditingMessageId(editedBranchChanged ? null : editTargetId);
+      setEditingMessageId(editForkCreated ? null : editTargetId);
       showError(caught);
       if (conversationId) {
         await refreshMessages(conversationId, setMessages, showError);
@@ -628,7 +624,6 @@ export function App() {
     conversations,
     editingMessageId,
     imageOptions,
-    messages,
     pendingModelId,
     preferences?.autoGenerateTitles,
     preferences?.openArtifactsAfterGeneration,
@@ -1269,6 +1264,20 @@ export function App() {
             <TitleBarControls />
           </div>
         </header>
+
+        {editingMessageId && (view === "chat" || view === "work") ? (
+          <div className="chat-edit-notice" role="status">
+            <span>
+              Editing opens a new chat with the earlier text history. Original messages,
+              attachments and generated files stay in the original chat. Reattach files needed for this edit.
+            </span>
+            <button type="button" disabled={submitting} onClick={() => {
+              setEditingMessageId(null);
+              setPrompt("");
+              setAttachments([]);
+            }}>Cancel edit</button>
+          </div>
+        ) : null}
 
         {preferences?.chatHistoryNoticeRequired ? (
           <ChatHistoryNotice
