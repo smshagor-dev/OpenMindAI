@@ -396,6 +396,12 @@ Key controls include:
 
 See [`SECURITY.md`](SECURITY.md) and [`.github/workflows/security.yml`](.github/workflows/security.yml).
 
+### Local chat history
+
+This release stores conversations, attachments and generated files on the local device. Privacy settings report that behavior rather than offering an unsupported history-off switch. Temporary chats are not implemented.
+
+The earlier `Save chat history locally` switch did not stop storage. Existing off preferences are corrected to the actual storage state, and affected users see a persistent notice until they explicitly acknowledge it. Ordinary settings saves cannot dismiss that notice. New requests to turn history saving off are rejected with an explanation. This correction does not erase existing chats or files; it does not introduce a non-persistent session mode.
+
 ## Release Pipeline
 
 Tagged releases use the dedicated release workflow in [`.github/workflows/release.yml`](.github/workflows/release.yml).

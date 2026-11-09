@@ -936,6 +936,35 @@ button {
   text-align: left;
 }
 
+.history-storage-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 24px 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.history-storage-notice > div:first-child { flex: 1 1 280px; }
+.history-storage-notice p { margin: 6px 0 0; }
+.history-storage-notice-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.history-storage-notice-actions button {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+.history-storage-notice-actions button:disabled { opacity: 0.6; cursor: wait; }
+.history-storage-notice-error { color: var(--danger-text); }
+
 .composer button {
   justify-content: center;
   width: 36px;
