@@ -111,6 +111,8 @@ The application includes a local model catalog and lifecycle management for:
 
 Large model downloads remain explicit user actions.
 
+Runtime process recovery is platform-specific. Windows uses a kill-on-close Job Object; Linux uses a parent-death signal. macOS isolates runtime process groups and records the process start time, executable path and Darwin process generation. After a crash or forced exit, macOS runtimes may remain alive until the next OpenMindAI launch, when the startup sweep reaps only matching recorded processes whose previous owner is gone. Unrelated processes are not selected by name or port. If an owner or child cannot be inspected, or generation-checked signalling is unavailable or denied, cleanup is skipped and its record is retained for retry. Other operating systems have normal-exit cleanup but no automatic orphan sweep.
+
 ### Hardware-aware execution
 
 OpenMindAI detects CPU, memory, and available graphics hardware and uses that profile when choosing runtime and model launch settings. The goal is graceful compatibility across different machines instead of assuming a single GPU vendor or fixed workstation specification.
@@ -357,6 +359,14 @@ cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml --all-features
 ```
+
+The isolated ownership suite compiles the production process module without Tauri or model dependencies:
+
+```bash
+cargo test --locked --manifest-path tests/process-ownership/Cargo.toml
+```
+
+CI runs it on Windows, Linux and macOS. macOS integration tests launch a stand-in owner and runtime processes, exit or force-kill the owner, then start a fresh recovery process and verify that unrelated processes survive. These tests exercise native process lifecycle handling rather than model inference.
 
 ### Production build
 

@@ -10,7 +10,9 @@
 //! - Linux: long-lived children are spawned from one dedicated thread with
 //!   `PR_SET_PDEATHSIG = SIGKILL`. The death signal follows the spawning *thread*, so
 //!   spawning from tokio's short-lived blocking threads would kill model servers early.
-//! - Other platforms: no OS mechanism; normal-exit cleanup and the startup sweep apply.
+//! - macOS: isolated process groups and identity-checked startup recovery. Unlike the
+//!   Windows/Linux mechanisms, a crash can leave runtimes alive until the next launch.
+//! - Other platforms: normal-exit cleanup only; unknown process identities are never killed.
 //!
 //! Long-lived runtimes are also recorded with their creation time and executable path so a
 //! later start can remove leftovers (for example from a platform without OS ownership)
@@ -31,9 +33,12 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct ProcessIdentity {
     pub pid: u32,
-    /// Platform start time (Windows FILETIME ticks, Linux clock ticks since boot).
+    /// Platform start time (Windows FILETIME ticks, Linux clock ticks, macOS microseconds).
     pub started: u64,
     pub executable: String,
+    /// Darwin's process generation, checked by the kernel when signalling an orphan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub macos_pid_version: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,7 +52,7 @@ struct OwnedRecord {
 pub struct SweepReport {
     /// Leftover runtimes whose owner is gone and whose identity matched exactly.
     pub terminated: Vec<u32>,
-    /// Records kept because their owner is still running (another OpenMindAI instance).
+    /// Records retained for a live/uninspectable owner or a failed termination.
     pub kept: usize,
     /// Records dropped because the process no longer exists or is a different process.
     pub dropped: usize,
@@ -55,7 +60,7 @@ pub struct SweepReport {
 
 static REGISTRY_LOCK: Mutex<()> = Mutex::new(());
 
-/// Spawns `command` so the child cannot outlive this process.
+/// Spawns `command` with the platform's ownership/recovery isolation.
 pub fn spawn_owned(command: Command) -> io::Result<Child> {
     let child = platform::spawn(command)?;
     platform::adopt(&child);
@@ -188,25 +193,69 @@ pub fn forget(registry: &Path, child_pid: u32) {
 /// only terminated when its PID, creation time and executable all match the record and the
 /// recorded owner (PID + creation time) is gone.
 pub fn sweep_stale(registry: &Path) -> SweepReport {
-    sweep_with(registry, identity, platform::terminate_if_identity)
+    sweep_with(
+        registry,
+        identity,
+        process_may_exist,
+        platform::terminate_if_identity,
+    )
+}
+
+fn process_may_exist(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return false;
+        };
+        if pid <= 0 {
+            return false;
+        }
+        // SAFETY: signal 0 only probes existence/permissions; it sends no signal.
+        unsafe {
+            libc::kill(pid, 0) == 0
+                || io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        platform::process_may_exist(pid)
+    }
+    #[cfg(not(any(unix, target_os = "windows")))]
+    {
+        let _ = pid;
+        true
+    }
 }
 
 fn sweep_with(
     registry: &Path,
     lookup: impl Fn(u32) -> Option<ProcessIdentity>,
+    may_exist: impl Fn(u32) -> bool,
     terminate: impl Fn(&ProcessIdentity) -> bool,
 ) -> SweepReport {
     let _guard = REGISTRY_LOCK.lock();
     let mut report = SweepReport::default();
     let mut kept = Vec::new();
     for record in read_records(registry) {
-        if lookup(record.owner.pid).as_ref() == Some(&record.owner) {
+        let owner = lookup(record.owner.pid);
+        if owner.as_ref() == Some(&record.owner) || (owner.is_none() && may_exist(record.owner.pid))
+        {
             report.kept += 1;
             kept.push(record);
             continue;
         }
-        if lookup(record.child.pid).as_ref() == Some(&record.child) && terminate(&record.child) {
-            report.terminated.push(record.child.pid);
+        let child = lookup(record.child.pid);
+        if child.as_ref() == Some(&record.child) {
+            if terminate(&record.child) {
+                report.terminated.push(record.child.pid);
+            } else {
+                // A permission/symbol failure must not discard our only recovery record.
+                report.kept += 1;
+                kept.push(record);
+            }
+        } else if child.is_none() && may_exist(record.child.pid) {
+            report.kept += 1;
+            kept.push(record);
         } else {
             report.dropped += 1;
         }
@@ -258,7 +307,7 @@ mod platform {
     use windows::{
         core::PWSTR,
         Win32::{
-            Foundation::{CloseHandle, FILETIME, HANDLE},
+            Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, FILETIME, HANDLE},
             System::{
                 JobObjects::{
                     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
@@ -334,6 +383,25 @@ mod platform {
         }
     }
 
+    pub fn process_may_exist(pid: u32) -> bool {
+        if pid == 0 {
+            return false;
+        }
+        // SAFETY: this only opens a query handle; failure other than an invalid PID
+        // (notably access denied) is not evidence that an owner is dead.
+        unsafe {
+            match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                Ok(handle) => {
+                    let _ = CloseHandle(handle);
+                    true
+                }
+                Err(error) => {
+                    error.code() != windows::core::HRESULT::from_win32(ERROR_INVALID_PARAMETER.0)
+                }
+            }
+        }
+    }
+
     unsafe fn identity_of(handle: HANDLE, pid: u32) -> Option<ProcessIdentity> {
         let (mut created, mut exited, mut kernel, mut user) = (
             FILETIME::default(),
@@ -358,6 +426,7 @@ mod platform {
             pid,
             started: (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime),
             executable: String::from_utf16_lossy(&buffer[..length as usize]),
+            macos_pid_version: None,
         })
     }
 
@@ -453,6 +522,7 @@ mod platform {
             pid,
             started,
             executable,
+            macos_pid_version: None,
         })
     }
 
@@ -465,7 +535,11 @@ mod platform {
     }
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(target_os = "macos")]
+#[path = "process_ownership/macos.rs"]
+mod platform;
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 mod platform {
     use std::{
         io,
@@ -490,7 +564,10 @@ mod platform {
     }
 }
 
-#[cfg(all(test, any(target_os = "windows", target_os = "linux")))]
+#[cfg(all(
+    test,
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
 mod tests {
     use super::*;
     use std::{
@@ -498,10 +575,10 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
     use std::io::{BufRead, BufReader};
 
     const HELPER_ENV: &str = "OPENMINDAI_OWNERSHIP_HELPER";
+    const REGISTRY_ENV: &str = "OPENMINDAI_OWNERSHIP_REGISTRY";
     const SLEEPER_ENV: &str = "OPENMINDAI_OWNERSHIP_SLEEPER";
 
     /// Re-runs this test binary as a helper process for one ignored test.
@@ -563,6 +640,10 @@ mod tests {
         };
         let core = spawn_owned(sleeper()).unwrap();
         let agent = spawn_owned(sleeper()).unwrap();
+        if let Some(path) = std::env::var_os(REGISTRY_ENV) {
+            record(Path::new(&path), core.id());
+            record(Path::new(&path), agent.id());
+        }
         println!("CHILDREN {} {}", core.id(), agent.id());
         if mode == "exit" {
             std::thread::sleep(Duration::from_millis(500));
@@ -575,12 +656,19 @@ mod tests {
 
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     fn start_owner(mode: &str) -> (Child, Vec<u32>) {
-        let mut parent = self_command("process_ownership::tests::owner_parent")
+        start_owner_with_registry(mode, None)
+    }
+
+    fn start_owner_with_registry(mode: &str, registry: Option<&Path>) -> (Child, Vec<u32>) {
+        let mut command = self_command("process_ownership::tests::owner_parent");
+        command
             .env(HELPER_ENV, mode)
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+            .stderr(Stdio::inherit());
+        if let Some(registry) = registry {
+            command.env(REGISTRY_ENV, registry);
+        }
+        let mut parent = command.spawn().unwrap();
         let stdout = parent.stdout.take().unwrap();
         let line = BufReader::new(stdout)
             .lines()
@@ -662,11 +750,13 @@ mod tests {
             pid: 4242,
             started: 100,
             executable: "C:/runtimes/llama-server.exe".to_string(),
+            macos_pid_version: None,
         };
         let dead_owner = ProcessIdentity {
             pid: 999_991,
             started: 1,
             executable: "openmindai".to_string(),
+            macos_pid_version: None,
         };
         let records = vec![
             // 1. Owner is still running (another instance): never touched.
@@ -680,6 +770,7 @@ mod tests {
                     pid: 5555,
                     started: 7,
                     executable: "C:/runtimes/llama-server.exe".to_string(),
+                    macos_pid_version: None,
                 },
             ),
             // 4. Dead owner, PID reused by a different executable.
@@ -689,6 +780,7 @@ mod tests {
                     pid: 6666,
                     started: 9,
                     executable: "C:/runtimes/llama-server.exe".to_string(),
+                    macos_pid_version: None,
                 },
             ),
             // 5. Dead owner, process already gone.
@@ -698,6 +790,7 @@ mod tests {
                     pid: 7777,
                     started: 3,
                     executable: "C:/runtimes/llama-server.exe".to_string(),
+                    macos_pid_version: None,
                 },
             ),
         ];
@@ -709,20 +802,27 @@ mod tests {
                 pid,
                 started: 8,
                 executable: "C:/runtimes/llama-server.exe".to_string(),
+                macos_pid_version: None,
             }),
             6666 => Some(ProcessIdentity {
                 pid,
                 started: 9,
                 executable: "C:/other-app/llama-server.exe".to_string(),
+                macos_pid_version: None,
             }),
             pid if pid == me.pid => Some(me.clone()),
             _ => None,
         };
         let killed = std::cell::RefCell::new(Vec::new());
-        let report = sweep_with(&registry, world, |identity| {
-            killed.borrow_mut().push(identity.pid);
-            true
-        });
+        let report = sweep_with(
+            &registry,
+            world,
+            |_| false,
+            |identity| {
+                killed.borrow_mut().push(identity.pid);
+                true
+            },
+        );
 
         assert_eq!(*killed.borrow(), vec![4242]);
         assert_eq!(report.terminated, vec![4242]);
@@ -746,6 +846,7 @@ mod tests {
             pid: 999_993,
             started: 1,
             executable: "openmindai".to_string(),
+            macos_pid_version: None,
         };
         write_records(
             &registry,
@@ -782,6 +883,150 @@ mod tests {
         assert!(read_records(&registry).is_empty());
         child.kill().unwrap();
         let _ = child.wait();
+    }
+
+    #[test]
+    fn uninspectable_owners_and_children_are_never_killed_or_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = registry_path(dir.path());
+        let owner = ProcessIdentity {
+            pid: 100,
+            started: 1,
+            executable: "owner".into(),
+            macos_pid_version: None,
+        };
+        let child = ProcessIdentity {
+            pid: 200,
+            started: 2,
+            executable: "runtime".into(),
+            macos_pid_version: None,
+        };
+        let records = vec![record_for(owner, child.clone())];
+        write_records(&registry, &records);
+        let report = sweep_with(
+            &registry,
+            |pid| (pid == 200).then(|| child.clone()),
+            |pid| pid == 100,
+            |_| panic!("unproven owner was treated as dead"),
+        );
+        assert_eq!(report.kept, 1);
+        assert_eq!(read_records(&registry), records);
+        let report = sweep_with(
+            &registry,
+            |_| None,
+            |pid| pid == 200,
+            |_| panic!("uninspectable child was signalled"),
+        );
+        assert_eq!(report.kept, 1);
+        assert_eq!(read_records(&registry), records);
+    }
+
+    #[test]
+    fn failed_termination_is_retained_for_a_later_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = registry_path(dir.path());
+        let owner = ProcessIdentity {
+            pid: 100,
+            started: 1,
+            executable: "owner".into(),
+            macos_pid_version: None,
+        };
+        let child = ProcessIdentity {
+            pid: 200,
+            started: 2,
+            executable: "runtime".into(),
+            macos_pid_version: Some(7),
+        };
+        let records = vec![record_for(owner, child.clone())];
+        write_records(&registry, &records);
+        let lookup = |pid| (pid == 200).then(|| child.clone());
+        assert_eq!(sweep_with(&registry, lookup, |_| false, |_| false).kept, 1);
+        assert_eq!(read_records(&registry), records);
+        assert_eq!(
+            sweep_with(&registry, lookup, |_| false, |_| true).terminated,
+            vec![200]
+        );
+        assert!(read_records(&registry).is_empty());
+    }
+
+    #[test]
+    fn existing_registry_json_without_darwin_generation_remains_readable() {
+        let old: ProcessIdentity =
+            serde_json::from_str(r#"{"pid":42,"started":7,"executable":"old-runtime"}"#).unwrap();
+        assert_eq!(old.macos_pid_version, None);
+        assert!(!serde_json::to_string(&old)
+            .unwrap()
+            .contains("macosPidVersion"));
+    }
+
+    #[test]
+    #[ignore = "helper process for macOS relaunch tests"]
+    fn relaunch_sweep() {
+        if let Some(path) = std::env::var_os(REGISTRY_ENV) {
+            let report = sweep_stale(Path::new(&path));
+            println!("REAPED {:?}", report.terminated);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn verify_macos_relaunch(mode: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = registry_path(dir.path());
+        let mut unrelated = sleeper().spawn().unwrap();
+        let (mut owner, children) = start_owner_with_registry(mode, Some(&registry));
+        let records = read_records(&registry);
+        assert_eq!(records.len(), 2, "Darwin identities were not recorded");
+        for record in &records {
+            assert!(record.owner.macos_pid_version.is_some());
+            assert!(record.child.macos_pid_version.is_some());
+            // SAFETY: getpgid only inspects this test's child process.
+            assert_eq!(
+                unsafe { libc::getpgid(record.child.pid as i32) },
+                record.child.pid as i32
+            );
+        }
+        if mode == "wait" {
+            owner.kill().unwrap();
+        }
+        let _ = owner.wait();
+        // Darwin recovery is on the next launch, not an immediate death signal.
+        assert!(children.iter().all(|pid| alive(*pid)));
+        let output = self_command("process_ownership::tests::relaunch_sweep")
+            .env(REGISTRY_ENV, &registry)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = String::from_utf8(output.stdout).unwrap();
+        for pid in children {
+            assert!(
+                output.contains(&pid.to_string()),
+                "relaunch did not reap {pid}: {output}"
+            );
+            assert!(
+                wait_until_gone(pid, Duration::from_secs(5)),
+                "orphan {pid} survived relaunch"
+            );
+        }
+        assert!(alive(unrelated.id()), "unrelated runtime was killed");
+        assert!(read_records(&registry).is_empty());
+        unrelated.kill().unwrap();
+        let _ = unrelated.wait();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_relaunch_recovers_runtimes_after_force_killed_owner() {
+        verify_macos_relaunch("wait");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_relaunch_recovers_runtimes_after_owner_exits_without_cleanup() {
+        verify_macos_relaunch("exit");
     }
 }
 
