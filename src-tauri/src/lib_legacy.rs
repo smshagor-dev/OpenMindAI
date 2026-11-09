@@ -2141,6 +2141,17 @@ fn get_app_preferences(state: State<AppState>) -> Result<AppPreferences, app_err
 }
 
 #[tauri::command]
+fn acknowledge_chat_history_notice(
+    state: State<AppState>,
+) -> Result<AppPreferences, app_error::AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    SettingsRepository::new(&db).acknowledge_chat_history_notice()
+}
+
+#[tauri::command]
 fn save_app_preferences(
     preferences: AppPreferences,
     state: State<AppState>,
@@ -2504,6 +2515,7 @@ pub fn run() {
             cancel_generation,
             get_app_preferences,
             save_app_preferences,
+            acknowledge_chat_history_notice,
             get_user_profile,
             save_user_profile,
             get_github_account,

@@ -681,11 +681,12 @@ export function SettingsDialog(props: {
 
         {activeSection === "privacy" && preferenceDraft ? (
           <SettingsGroup title="Privacy">
-            <ToggleRow
-              label="Save chat history locally"
-              checked={preferenceDraft.saveChatHistory}
-              onChange={(value) => setPreference("saveChatHistory", value)}
-            />
+            <Info label="Chat history" value="Saved on this device" />
+            <p className="muted">
+              This version stores conversations, attachments and generated files locally.
+              Temporary chats are not available. Changing other privacy settings does not
+              stop local history storage or remove existing conversations.
+            </p>
             <ToggleRow
               label="Telemetry"
               checked={preferenceDraft.telemetryEnabled}

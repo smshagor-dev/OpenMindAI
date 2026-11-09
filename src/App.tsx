@@ -30,6 +30,7 @@ import type {
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { ChatHistoryNotice } from "./components/ChatHistoryNotice";
 import { SetupWizard } from "./components/SetupWizard";
 import { ChatSearch } from "./components/ChatSearch";
 import { ConfirmDialog } from "./components/ConfirmDialog";
@@ -1268,6 +1269,15 @@ export function App() {
             <TitleBarControls />
           </div>
         </header>
+
+        {preferences?.chatHistoryNoticeRequired ? (
+          <ChatHistoryNotice
+            onAcknowledge={async () => {
+              setPreferences(await api.acknowledgeChatHistoryNotice());
+            }}
+            onOpenPrivacy={() => { setSettingsSection("privacy"); setView("settings"); }}
+          />
+        ) : null}
 
         {error ? (
           <button className="error-banner" onClick={() => setError(null)}>
