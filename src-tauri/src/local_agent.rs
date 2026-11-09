@@ -3285,48 +3285,10 @@ fn tool_mutates_workspace(tool: &str) -> bool {
 }
 
 fn terminal_command_may_mutate_workspace(command: &str) -> bool {
-    let command = command.trim().to_ascii_lowercase();
-    if command.is_empty() {
-        return false;
-    }
-    let mutation_markers = [">", "out-file", "set-content", "add-content", "tee "];
-    if mutation_markers
-        .iter()
-        .any(|marker| command.contains(marker))
-    {
-        return true;
-    }
-    let read_only_prefixes = [
-        "pwd",
-        "ls",
-        "dir",
-        "get-childitem",
-        "cat ",
-        "type ",
-        "get-content",
-        "rg ",
-        "grep ",
-        "findstr ",
-        "where ",
-        "which ",
-        "git status",
-        "git diff",
-        "git log",
-        "git show",
-        "git branch --show-current",
-        "node --version",
-        "npm --version",
-        "pnpm --version",
-        "yarn --version",
-        "cargo --version",
-        "rustc --version",
-        "python --version",
-        "python3 --version",
-        "go version",
-    ];
-    !read_only_prefixes
-        .iter()
-        .any(|prefix| command == *prefix || command.starts_with(prefix))
+    // Match the approval policy: a shell string cannot be proven read-only.
+    // Snapshot even inspection-looking commands before execution, so chained
+    // commands and write-capable options cannot skip mutation recovery.
+    !command.trim().is_empty()
 }
 
 fn workspace_has_validation_targets(config: &AgentWorkspaceConfig) -> bool {
@@ -3848,14 +3810,24 @@ mod tests {
 
     #[test]
     fn classifies_terminal_workspace_mutation_conservatively() {
-        assert!(!terminal_command_may_mutate_workspace("git status --short"));
-        assert!(!terminal_command_may_mutate_workspace("rg TODO src"));
+        assert!(!terminal_command_may_mutate_workspace(" \t\r\n"));
+        assert!(terminal_command_may_mutate_workspace("git status --short"));
+        assert!(terminal_command_may_mutate_workspace("rg TODO src"));
         assert!(terminal_command_may_mutate_workspace("npm install"));
         assert!(terminal_command_may_mutate_workspace(
             "python scripts/codegen.py"
         ));
         assert!(terminal_command_may_mutate_workspace(
             "git diff > patch.txt"
+        ));
+        assert!(terminal_command_may_mutate_workspace(
+            "git status; touch fixture.txt"
+        ));
+        assert!(terminal_command_may_mutate_workspace(
+            "git diff --output=fixture.txt"
+        ));
+        assert!(terminal_command_may_mutate_workspace(
+            "dir; Set-Content fixture.txt changed"
         ));
     }
 

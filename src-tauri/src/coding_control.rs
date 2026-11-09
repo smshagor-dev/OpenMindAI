@@ -741,6 +741,50 @@ mod tests {
     }
 
     #[test]
+    fn shell_approval_cannot_be_reused_for_a_changed_action() {
+        let database = Database::in_memory().unwrap();
+        let run_id = seed_run(&database);
+        initialize_run(&database, &run_id, "inspect workspace", "{}").unwrap();
+        let action = json!({
+            "command": "git status --short",
+            "rootId": "workspace",
+            "cwd": "src",
+            "hostExecution": false
+        });
+        let action_json = action.to_string();
+        let (policy, reason) = crate::openagent_security::authorize_tool(
+            "terminal",
+            &action,
+            crate::openagent_security::ApprovalMode::AlwaysAsk,
+        );
+        assert_eq!(
+            policy,
+            crate::openagent_security::PolicyDecision::RequireApproval
+        );
+        let approval =
+            request_approval(&database, &run_id, None, "terminal", &action_json, &reason).unwrap();
+        assert!(!consume_exact_approval(&database, &run_id, "terminal", &action_json).unwrap());
+        decide_approval(&database, &approval.id, "approved").unwrap();
+
+        for (key, value) in [
+            ("command", json!("git status --short; touch fixture.txt")),
+            ("rootId", json!("another-workspace")),
+            ("cwd", json!("another-directory")),
+            ("hostExecution", json!(true)),
+        ] {
+            let mut changed = action.clone();
+            changed[key] = value;
+            assert!(
+                !consume_exact_approval(&database, &run_id, "terminal", &changed.to_string())
+                    .unwrap(),
+                "approval must match {key}"
+            );
+        }
+        assert!(consume_exact_approval(&database, &run_id, "terminal", &action_json).unwrap());
+        assert!(!consume_exact_approval(&database, &run_id, "terminal", &action_json).unwrap());
+    }
+
+    #[test]
     fn replan_is_bounded_and_versioned() {
         let database = Database::in_memory().unwrap();
         let run_id = seed_run(&database);
