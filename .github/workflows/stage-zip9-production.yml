@@ -35,7 +35,7 @@ jobs:
           workspaces: src-tauri
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -62,7 +62,7 @@ jobs:
             --candidate "$RUNNER_TEMP/zip9-production-candidate"
 
       - name: Publish verified candidate for restricted branch staging
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: zip9-production-source-candidate
           path: ${{ runner.temp }}/zip9-production-candidate/
@@ -71,7 +71,7 @@ jobs:
           retention-days: 7
 
       - name: Publish reviewed source patch hashes
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: zip9-production-source-evidence
           path: ${{ runner.temp }}/zip9-promotion-evidence/
@@ -94,12 +94,12 @@ jobs:
           persist-credentials: true
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
       - name: Download immutable validated candidate
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: zip9-production-source-candidate
           path: ${{ runner.temp }}/zip9-candidate-download/

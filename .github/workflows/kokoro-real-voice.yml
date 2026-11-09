@@ -63,7 +63,7 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -100,7 +100,7 @@ jobs:
 
       - name: Upload only safe inference evidence (never model weights or audio)
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kokoro-real-candle-voice-evidence-linux
           path: ${{ runner.temp }}/kokoro-smoke-evidence.json
@@ -126,7 +126,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -167,7 +167,7 @@ jobs:
 
       - name: Upload only evidence, never model files or audio
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kokoro-real-candle-voice-evidence-${{ matrix.os }}
           path: ${{ runner.temp }}/kokoro-smoke-evidence.json
@@ -194,7 +194,7 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
       - name: Install Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -231,7 +231,7 @@ jobs:
 
       - name: Upload only model-install and inference evidence
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kokoro-production-model-manager-speech-evidence
           path: ${{ runner.temp }}/kokoro-model-manager-evidence.json
