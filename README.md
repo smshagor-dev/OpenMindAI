@@ -160,6 +160,8 @@ Filesystem and terminal access are deliberately separated from ordinary chat cap
 
 Attached project folders can be used as scoped workspaces. Broader **Full PC + Terminal** access must be explicitly approved before the project can execute terminal commands through that permission path. Direct local file mutations also use approval checks in the desktop backend.
 
+In **Risk based** and **Always ask** modes, every shell command requires approval of the exact action, including isolated commands that look like inspection. A command prefix cannot establish that the entire shell string is read-only. Structured inspection tools such as file reads, directory listings, text search, Git status and Git diff remain available without a shell approval. **Trusted workspace** mode retains its explicit permission to run shell commands; host-access and sandbox restrictions still apply. Shell commands are treated as potential workspace mutations for recovery checkpoints.
+
 The agent avoids interactive command flows and uses bounded execution, command-length limits, output limits, timeouts, duplicate-action protection, failure budgets, and validation requirements to reduce runaway behavior.
 
 ## Connected Apps
@@ -271,6 +273,8 @@ OpenMindAI separates the desktop application from the user's AI data. The select
 - backups.
 
 This makes it possible to keep a large AI environment on a secondary drive or external SSD and reduces the risk of losing models or history when the desktop application is updated or reinstalled.
+
+Local dataset context validates manifest paths and confines reads to each dataset directory. Unsafe paths, linked external targets, malformed manifests and oversized text files are skipped. See [dataset context boundaries and limits](docs/dataset-context-containment.md).
 
 ### Portable mode
 
@@ -399,6 +403,12 @@ Key controls include:
 - `npm audit`, `cargo audit`, and CodeQL security checks.
 
 See [`SECURITY.md`](SECURITY.md) and [`.github/workflows/security.yml`](.github/workflows/security.yml).
+
+### Local chat history
+
+This release stores conversations, attachments and generated files on the local device. Privacy settings report that behavior rather than offering an unsupported history-off switch. Temporary chats are not implemented.
+
+The earlier `Save chat history locally` switch did not stop storage. Existing off preferences are corrected to the actual storage state, and affected users see a persistent notice until they explicitly acknowledge it. Ordinary settings saves cannot dismiss that notice. New requests to turn history saving off are rejected with an explanation. This correction does not erase existing chats or files; it does not introduce a non-persistent session mode.
 
 ## Release Pipeline
 

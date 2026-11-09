@@ -316,6 +316,7 @@ export const api = {
   preferences: () => call<AppPreferences>("get_app_preferences"),
   savePreferences: (preferences: AppPreferences) =>
     call<AppPreferences>("save_app_preferences", { preferences }),
+  acknowledgeChatHistoryNotice: () => call<AppPreferences>("acknowledge_chat_history_notice"),
   networkProxyForUrl: (url: string) => call<string | null>("network_proxy_for_url", { url }),
   userProfile: () => call<UserProfile>("get_user_profile"),
   saveUserProfile: (profile: UserProfile) => call<UserProfile>("save_user_profile", { profile }),
@@ -735,7 +736,16 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
       ],
     } as T);
   }
+  if (command === "acknowledge_chat_history_notice") {
+    return browserFallback<T>("get_app_preferences");
+  }
   if (command === "get_app_preferences" || command === "save_app_preferences") {
+    if (
+      command === "save_app_preferences" &&
+      (args?.preferences as { saveChatHistory?: unknown } | undefined)?.saveChatHistory === false
+    ) {
+      return Promise.reject(new Error("This version saves chat history locally. Temporary chats are not supported."));
+    }
     return Promise.resolve({
       theme: "light",
       language: "English",
@@ -748,6 +758,7 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
       defaultPerformanceProfile: "Auto",
       telemetryEnabled: false,
       saveChatHistory: true,
+      chatHistoryNoticeRequired: false,
       localRuntimeAutostart: true,
       confirmBeforeDelete: true,
       webSearchEnabled: true,

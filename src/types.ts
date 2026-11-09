@@ -463,7 +463,9 @@ export interface AppPreferences {
   markdownRendering: boolean;
   defaultPerformanceProfile: string;
   telemetryEnabled: boolean;
-  saveChatHistory: boolean;
+  /** Read-only compatibility state: local history is always saved in this release. */
+  readonly saveChatHistory: boolean;
+  chatHistoryNoticeRequired: boolean;
   localRuntimeAutostart: boolean;
   confirmBeforeDelete: boolean;
   webSearchEnabled: boolean;
