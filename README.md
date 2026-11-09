@@ -156,6 +156,8 @@ Filesystem and terminal access are deliberately separated from ordinary chat cap
 
 Attached project folders can be used as scoped workspaces. Broader **Full PC + Terminal** access must be explicitly approved before the project can execute terminal commands through that permission path. Direct local file mutations also use approval checks in the desktop backend.
 
+In **Risk based** and **Always ask** modes, every shell command requires approval of the exact action, including isolated commands that look like inspection. A command prefix cannot establish that the entire shell string is read-only. Structured inspection tools such as file reads, directory listings, text search, Git status and Git diff remain available without a shell approval. **Trusted workspace** mode retains its explicit permission to run shell commands; host-access and sandbox restrictions still apply. Shell commands are treated as potential workspace mutations for recovery checkpoints.
+
 The agent avoids interactive command flows and uses bounded execution, command-length limits, output limits, timeouts, duplicate-action protection, failure budgets, and validation requirements to reduce runaway behavior.
 
 ## Connected Apps
