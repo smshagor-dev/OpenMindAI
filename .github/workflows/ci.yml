@@ -52,6 +52,9 @@ jobs:
       - name: Conversation isolation regression
         run: npm run test:conversations
 
+      - name: Chat draft failure recovery
+        run: npm run test:drafts
+
       - name: Lint
         run: npm run lint
 
