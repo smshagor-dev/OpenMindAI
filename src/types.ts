@@ -56,6 +56,11 @@ export interface Message {
   updatedAt: string;
 }
 
+export interface ForkedConversation {
+  conversation: Conversation;
+  messages: Message[];
+}
+
 export interface HardwareProfile {
   operatingSystem: string;
   architecture: string;
