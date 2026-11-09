@@ -270,6 +270,8 @@ OpenMindAI separates the desktop application from the user's AI data. The select
 
 This makes it possible to keep a large AI environment on a secondary drive or external SSD and reduces the risk of losing models or history when the desktop application is updated or reinstalled.
 
+Local dataset context validates manifest paths and confines reads to each dataset directory. Unsafe paths, linked external targets, malformed manifests and oversized text files are skipped. See [dataset context boundaries and limits](docs/dataset-context-containment.md).
+
 ### Portable mode
 
 When an `openmindai.marker` file is present at the portable root, OpenMindAI can resolve its data location relative to that root. This avoids coupling a portable installation to one fixed Windows drive letter and makes external-drive workflows more reliable.
