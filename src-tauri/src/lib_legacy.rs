@@ -536,8 +536,9 @@ fn create_text_artifact(
     let manager = ArtifactManager::new(&state.root);
     let (path, filename_final, relative) =
         manager.resolve_destination(&kind, filename.as_deref(), &fallback_title)?;
-    std::fs::write(&path, content.as_bytes())?;
-    let size = content.len() as i64;
+    let output = crate::artifact_output::StagedOutput::new(&path);
+    std::fs::write(&output.path, content.as_bytes())?;
+    let size = output.commit(true)?;
 
     let artifacts = ArtifactRepository::new(&db);
     let artifact = artifacts.create(
@@ -599,6 +600,8 @@ async fn create_document_artifact(
         (artifact, path, document_title)
     };
 
+    let output = crate::artifact_output::StagedOutput::new(&path);
+    let path = output.path.clone();
     app.emit("artifact:started", &artifact)
         .map_err(|error| app_error::AppError::internal(error.to_string()))?;
 
@@ -609,16 +612,14 @@ async fn create_document_artifact(
         _ => unreachable!(),
     };
 
+    let generation_result = generation_result.and_then(|pages| output.commit_for(&kind).map(|size| (pages, size)));
     let db = state
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
     let artifacts = ArtifactRepository::new(&db);
     let updated = match generation_result {
-        Ok(page_count) => {
-            let size = std::fs::metadata(&path)
-                .map(|metadata| metadata.len() as i64)
-                .unwrap_or(0);
+        Ok((page_count, size)) => {
             artifacts.set_ready(&artifact.id, size, page_count)?;
             artifacts.find(&artifact.id)?
         }
@@ -720,6 +721,8 @@ async fn create_generation_artifact(
         None
     };
 
+    let output = crate::artifact_output::StagedOutput::new(&path);
+    let path = output.path.clone();
     app.emit("artifact:started", &artifact)
         .map_err(|error| app_error::AppError::internal(error.to_string()))?;
     // Stage updates are advisory UI events. A detached window must not fail
@@ -802,16 +805,14 @@ async fn create_generation_artifact(
         let _ = std::fs::remove_file(&path);
     }
 
+    let generation_result = generation_result.and_then(|()| output.commit_for(artifact_kind));
     let db = state
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
     let artifacts = ArtifactRepository::new(&db);
     let updated = match generation_result {
-        Ok(()) => {
-            let size = std::fs::metadata(&path)
-                .map(|metadata| metadata.len() as i64)
-                .unwrap_or(0);
+        Ok(size) => {
             artifacts.set_ready(&artifact.id, size, None)?;
             artifacts.find(&artifact.id)?
         }

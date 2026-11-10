@@ -62,6 +62,7 @@ mod tauri {
 }
 
 mod agent_runtime;
+mod artifact_output;
 mod coding_agent_gateway;
 mod coding_ast;
 mod coding_control;
