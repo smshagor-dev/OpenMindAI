@@ -44,6 +44,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
   const [editorPath, setEditorPath] = useState<string | null>(null);
   const [editorContent, setEditorContent] = useState("");
   const [editorOriginal, setEditorOriginal] = useState("");
+  const [editorRevision, setEditorRevision] = useState<string | null>(null);
   const [newItemKind, setNewItemKind] = useState<"file" | "directory" | null>(null);
   const [newItemName, setNewItemName] = useState("");
   const [renameTarget, setRenameTarget] = useState<WorkspaceEntry | null>(null);
@@ -125,6 +126,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
     setEditorPath(null);
     setEditorContent("");
     setEditorOriginal("");
+    setEditorRevision(null);
     void loadDirectory(activeRoot.id, "").catch((caught) => setError(formatError(caught)));
   }, [activeRoot?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -167,6 +169,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
     setStatus(next);
     setDetachTarget(null);
     setEditorPath(null);
+    setEditorRevision(null);
   };
 
   const enableFullAccess = async () => {
@@ -207,21 +210,27 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
     setEditorPath(entry.relativePath);
     setEditorContent(file.content);
     setEditorOriginal(file.content);
+    setEditorRevision(file.revisionSha256);
   };
 
   const saveEditor = async () => {
-    if (!activeRoot || !editorPath || !editorDirty) return;
+    if (!activeRoot || !editorPath || !editorDirty || !editorRevision) return;
+    // Remember the actual submitted bytes: editing while Save is in flight
+    // should keep subsequent unsaved changes visibly dirty.
+    const submittedContent = editorContent;
     const saved = await run("save-file", () =>
       localWorkspaceApi.writeFile(
         props.projectId,
         activeRoot.id,
         editorPath,
-        editorContent,
+        submittedContent,
         true,
+        editorRevision,
       ),
     );
     if (!saved) return;
-    setEditorOriginal(editorContent);
+    setEditorOriginal(submittedContent);
+    setEditorRevision(saved.revisionSha256);
     await loadDirectory(activeRoot.id, currentPath).catch(() => undefined);
   };
 
@@ -239,10 +248,11 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
     setNewItemKind(null);
     setNewItemName("");
     await loadDirectory(activeRoot.id, currentPath).catch(() => undefined);
-    if (newItemKind === "file") {
+    if (newItemKind === "file" && "revisionSha256" in created) {
       setEditorPath(path);
       setEditorContent("");
       setEditorOriginal("");
+      setEditorRevision(created.revisionSha256);
     }
   };
 
@@ -284,6 +294,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
       setEditorPath(null);
       setEditorContent("");
       setEditorOriginal("");
+      setEditorRevision(null);
     }
     setDeleteTarget(null);
     await loadDirectory(activeRoot.id, currentPath).catch(() => undefined);
