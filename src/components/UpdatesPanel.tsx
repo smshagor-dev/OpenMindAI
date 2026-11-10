@@ -69,11 +69,9 @@ export function UpdatesPanel(props: {
         checked={props.preferenceDraft.notifyModelUpdates}
         onChange={(value) => props.setPreference("notifyModelUpdates", value)}
       />
-      <ToggleRow
-        label="Automatically download large AI model updates"
-        checked={props.preferenceDraft.autoDownloadModelUpdates}
-        onChange={(value) => props.setPreference("autoDownloadModelUpdates", value)}
-      />
+      <p className="muted">
+        Model downloads need manual confirmation in Settings → Models. Automatic model downloading is not available.
+      </p>
       <SelectRow
         label="Update channel"
         value={props.preferenceDraft.updateChannel}

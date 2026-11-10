@@ -177,34 +177,26 @@ fn install_config_path() -> Option<PathBuf> {
     dirs::config_local_dir().map(|dir| dir.join("OpenMindAI").join(INSTALL_CONFIG_FILE))
 }
 
-/// Reads the saved installation pointer, if one exists and is well-formed.
-/// Returns `None` on any missing/unreadable/corrupt state rather than
-/// erroring — a fresh machine or a corrupt pointer should fall through to
-/// the next resolution strategy, not crash startup.
-pub fn load_installation() -> Option<InstallConfig> {
-    let path = install_config_path()?;
-    let content = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&content).ok()
+/// Read the saved pointer, recovering its backup when necessary. Only a
+/// genuinely absent primary and backup represent a fresh installation.
+pub fn load_installation() -> Result<Option<InstallConfig>, AppError> {
+    let path = install_config_path()
+        .ok_or_else(|| AppError::internal("could not determine local app data directory"))?;
+    crate::installation_file::load(&path)
 }
 
 pub fn save_installation(config: &InstallConfig) -> Result<(), AppError> {
     let path = install_config_path()
         .ok_or_else(|| AppError::internal("could not determine local app data directory"))?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(config)
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    fs::write(path, json)?;
-    Ok(())
+    crate::installation_file::save(&path, config)
 }
 
 /// Computes whether the first-run setup wizard should be shown. Development
 /// roots (env var override or portable marker file) never require setup —
 /// only a production build with neither a saved installation nor a dev
 /// signal falls back needing one.
-pub fn installation_status(manager: &PortableRootManager) -> InstallationStatus {
-    match manager.mode {
+pub fn installation_status(manager: &PortableRootManager) -> Result<InstallationStatus, AppError> {
+    Ok(match manager.mode {
         RootMode::SavedInstallation => InstallationStatus {
             setup_required: false,
             reason: None,
@@ -218,7 +210,7 @@ pub fn installation_status(manager: &PortableRootManager) -> InstallationStatus 
             pending: None,
         },
         RootMode::DevelopmentFallback => {
-            let saved = load_installation();
+            let saved = load_installation()?;
             let has_saved_config = saved.as_ref().is_some_and(|c| c.installation_complete);
             let pending = saved
                 .filter(|config| !config.installation_complete)
@@ -238,7 +230,7 @@ pub fn installation_status(manager: &PortableRootManager) -> InstallationStatus 
                 pending,
             }
         }
-    }
+    })
 }
 
 impl PortableRootManager {
@@ -252,18 +244,14 @@ impl PortableRootManager {
             }
         }
 
-        if let Some(config) = load_installation() {
+        if let Some(config) = load_installation()? {
             if config.installation_complete {
                 let manager = Self {
                     root: PathBuf::from(&config.root),
                     mode: RootMode::SavedInstallation,
                 };
-                if manager.validate_root().is_ok() {
-                    return Ok(manager);
-                }
-                // Saved root is missing/unwritable (e.g. an external drive is
-                // unplugged) — fall through rather than silently picking a
-                // different location.
+                manager.validate_saved_installation(&config.database)?;
+                return Ok(manager);
             }
         }
 
@@ -316,6 +304,40 @@ impl PortableRootManager {
             fs::create_dir_all(self.resolve_relative(relative)?)?;
         }
         self.validate_root()?;
+        Ok(())
+    }
+
+    // Startup must not create directories or a database for an existing install.
+    fn validate_saved_installation(&self, database: &str) -> Result<(), AppError> {
+        let unavailable = || {
+            AppError::RootNotWritable(format!(
+            "Saved installation at {} is unavailable or incomplete. Reconnect the drive and check access to data/database/{}. No fallback data store was opened.",
+            self.root.display(), database
+        ))
+        };
+        let root = fs::canonicalize(&self.root).map_err(|_| unavailable())?;
+        if !root.is_dir()
+            || database.is_empty()
+            || database.contains(['/', '\\', ':'])
+            || database == "."
+            || database == ".."
+        {
+            return Err(unavailable());
+        }
+        let path = root.join("data/database").join(database);
+        let canonical = fs::canonicalize(&path).map_err(|_| unavailable())?;
+        if !canonical.starts_with(&root) || !canonical.is_file() {
+            return Err(unavailable());
+        }
+        fs::File::open(&canonical).map_err(|_| unavailable())?;
+        let probe = root.join(format!(".openmind-startup-{}.tmp", uuid::Uuid::new_v4()));
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+            .map_err(|_| unavailable())?;
+        drop(file);
+        fs::remove_file(probe).map_err(|_| unavailable())?;
         Ok(())
     }
 
@@ -533,6 +555,8 @@ pub(crate) mod tests {
             model_ready: false,
             setup_state: None,
         };
+        fs::create_dir_all(root_dir.join("data/database")).unwrap();
+        fs::write(root_dir.join("data/database/openmindai.db"), b"fixture").unwrap();
         save_installation(&config).unwrap();
 
         let manager = PortableRootManager::resolve().unwrap();
@@ -541,7 +565,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn falls_through_when_saved_root_is_unreachable() {
+    fn refuses_fallback_when_saved_root_is_unreachable() {
         let _guard = ENV_LOCK.lock().unwrap();
         let _restore = EnvRestore::capture();
 
@@ -569,8 +593,66 @@ pub(crate) mod tests {
         };
         save_installation(&config).unwrap();
 
+        let error = PortableRootManager::resolve().unwrap_err().to_string();
+        assert!(error.contains("Reconnect the drive"));
+    }
+
+    #[test]
+    fn missing_drive_and_database_are_not_recreated_and_reconnection_can_retry() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _restore = EnvRestore::capture();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("disconnected-drive/selected-root");
+        let pointer = temp.path().join("install.json");
+        env::set_var("OPENMINDAI_INSTALL_CONFIG", &pointer);
+        let config = InstallConfig {
+            product: "OpenMindAI".into(),
+            app_version: "4.0.0".into(),
+            root: root.display().to_string(),
+            schema_version: CURRENT_SCHEMA_VERSION,
+            installation_complete: true,
+            database: "chosen.db".into(),
+            runtime_ready: true,
+            model_ready: true,
+            setup_state: Some(SetupState::Completed),
+        };
+        save_installation(&config).unwrap();
+        let original = fs::read(&pointer).unwrap();
+        assert!(PortableRootManager::resolve().is_err());
+        assert!(!root.exists());
+        fs::create_dir_all(&root).unwrap();
+        assert!(PortableRootManager::resolve().is_err());
+        assert!(!root.join("data").exists());
+        fs::create_dir_all(root.join("data/database")).unwrap();
+        fs::write(root.join("data/database/chosen.db"), b"existing data").unwrap();
         let manager = PortableRootManager::resolve().unwrap();
-        assert_ne!(manager.mode(), &RootMode::SavedInstallation);
+        assert_eq!(manager.mode(), &RootMode::SavedInstallation);
+        assert_eq!(
+            fs::read(root.join("data/database/chosen.db")).unwrap(),
+            b"existing data"
+        );
+        assert_eq!(fs::read(&pointer).unwrap(), original);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_saved_root_is_rejected_without_writing_a_probe() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        fs::create_dir_all(root.join("data/database")).unwrap();
+        fs::write(root.join("data/database/profile.db"), b"existing").unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o500)).unwrap();
+        let manager = PortableRootManager::from_root(root.clone());
+        let result = manager.validate_saved_installation("profile.db");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        assert_eq!(
+            fs::read(root.join("data/database/profile.db")).unwrap(),
+            b"existing"
+        );
     }
 
     #[test]
@@ -602,6 +684,23 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn corrupt_installation_does_not_resolve_to_a_fresh_root() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _restore = EnvRestore::capture();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("install.json");
+        env::set_var("OPENMINDAI_INSTALL_CONFIG", &path);
+        fs::write(&path, b"{partial").unwrap();
+        let error = PortableRootManager::resolve().unwrap_err().to_string();
+        assert!(error.contains("Restore a valid install.json"));
+        assert!(
+            installation_status(&PortableRootManager::from_root(temp.path().join("unused")))
+                .is_err()
+        );
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
+
+    #[test]
     fn old_install_json_without_setup_state_still_loads() {
         let _guard = ENV_LOCK.lock().unwrap();
         let _restore = EnvRestore::capture();
@@ -624,7 +723,9 @@ pub(crate) mod tests {
         }"#;
         fs::write(&config_path, legacy_json).unwrap();
 
-        let config = load_installation().expect("legacy install.json should still parse");
+        let config = load_installation()
+            .unwrap()
+            .expect("legacy install.json should still parse");
         assert!(config.installation_complete);
         assert_eq!(config.setup_state, None);
     }
@@ -652,7 +753,7 @@ pub(crate) mod tests {
         save_installation(&config).unwrap();
 
         let manager = PortableRootManager::from_root(PathBuf::from("unused"));
-        let status = installation_status(&manager);
+        let status = installation_status(&manager).unwrap();
         assert!(status.setup_required);
         let pending = status.pending.expect("pending setup should be surfaced");
         assert_eq!(pending.root, "D:\\OpenMindAI");
@@ -683,7 +784,7 @@ pub(crate) mod tests {
         save_installation(&config).unwrap();
 
         let manager = PortableRootManager::from_root(PathBuf::from("unused"));
-        let status = installation_status(&manager);
+        let status = installation_status(&manager).unwrap();
         assert!(!status.setup_required);
         assert!(status.pending.is_none());
     }

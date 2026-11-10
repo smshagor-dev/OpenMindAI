@@ -1,0 +1,9 @@
+[package]
+name = "openmind-sandbox-capture-tests"
+version = "0.0.0"
+edition = "2021"
+publish = false
+[dev-dependencies]
+tempfile = "3"
+base64 = "0.22"
+serde_json = "1"

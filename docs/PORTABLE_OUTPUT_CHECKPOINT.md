@@ -7,8 +7,8 @@ Implemented:
   tail components are supported; dangling links fail closed. Internal links can
   still resolve. This is a compatibility/path check, not a race-safe file open.
 - New text artifacts use write_new_relative: cap-std opens the parent beneath a
-  root directory capability, holds that parent handle, then creates a fresh file
-  exclusively. A final link or existing file is not truncated. Failed writes
+  root directory capability, holds that parent handle, then writes/syncs an exclusive temporary file and renames it within that
+  capability after checking the final destination. A final link or existing file is not truncated. Failed writes
   clean up their newly created output through the same confined handle.
 - Actual-open tests cover path replacement after successful validation and root
   pathname replacement after its capability was acquired. Relative internal links

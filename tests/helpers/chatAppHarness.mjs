@@ -103,7 +103,8 @@ export async function createChatAppHarness() {
               notify: "export const notifyUser=async()=>{};",
               chat: `export const attachmentMedia=items=>items.flatMap(item=>item.mediaItems),buildMessageContent=content=>content,
               inferChatMode=()=>globalThis.__chatDraftHarness.mode,isUntitledConversation=()=>false,
-              readAttachment=async file=>file.attachmentDraft,settledValue=result=>result.status==='fulfilled'?result.value:null,
+              attachmentKind=file=>file.attachmentDraft?.kind??file.kind??"text",
+              readAttachment=async file=>{file.reads=(file.reads??0)+1;if(file.gate)await file.gate.promise;if(file.failure)throw file.failure;return file.attachmentDraft;},settledValue=result=>result.status==='fulfilled'?result.value:null,
               titleFromPrompt=content=>content;`,
             };
             if (modules[path]) return { contents: modules[path], loader: "js" };
@@ -175,6 +176,8 @@ export async function createChatAppHarness() {
               return [];
             case "sendChatMessage":
               return fixture.send.promise;
+            case "regenerateMessage":
+              return fixture.regeneration.promise;
             case "createConversation":
               return fixture.create.promise;
             case "forkConversationForEdit":
@@ -212,6 +215,7 @@ export async function createChatAppHarness() {
       fixture = {
         calls: [],
         send: deferred(),
+        regeneration: deferred(),
         create: deferred(),
         fork: deferred(),
         artifact: deferred(),

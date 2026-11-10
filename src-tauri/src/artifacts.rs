@@ -231,14 +231,10 @@ impl<'a> ArtifactManager<'a> {
             stem
         };
 
-        let mut filename = format!("{stem}.{extension}");
-        let mut counter = 1;
-        while dir.join(&filename).exists() {
-            filename = format!("{stem}-{counter}.{extension}");
-            counter += 1;
-        }
-        let path = dir.join(&filename);
-        let relative = format!("{subdir}/{filename}");
+        let (directory, reservation) = crate::artifact_output::reserve_directory(&dir)?;
+        let filename = format!("{stem}.{extension}");
+        let path = directory.join(&filename);
+        let relative = format!("{subdir}/{reservation}/{filename}");
         Ok((path, filename, relative))
     }
 }
@@ -489,14 +485,16 @@ mod tests {
             .resolve_destination("markdown", Some("Project Report!!.md"), "fallback")
             .unwrap();
         assert_eq!(filename1, "Project-Report.md");
-        assert_eq!(relative1, "generated/files/Project-Report.md");
-        fs::write(&path1, b"content").unwrap();
+        assert!(relative1.starts_with("generated/files/"));
+        assert!(relative1.ends_with("/Project-Report.md"));
 
         let (path2, filename2, _) = manager
             .resolve_destination("markdown", Some("Project Report!!.md"), "fallback")
             .unwrap();
-        assert_eq!(filename2, "Project-Report-1.md");
+        assert_eq!(filename2, "Project-Report.md");
         assert_ne!(path1, path2);
+        assert!(!path1.exists());
+        assert!(!path2.exists());
     }
 
     #[test]
@@ -510,6 +508,30 @@ mod tests {
             .resolve_destination("pdf", None, "Quarterly Research Summary")
             .unwrap();
         assert_eq!(filename, "Quarterly-Research-Summary.pdf");
-        assert_eq!(relative, "generated/exports/Quarterly-Research-Summary.pdf");
+        assert!(relative.starts_with("generated/exports/"));
+        assert!(relative.ends_with("/Quarterly-Research-Summary.pdf"));
+    }
+    #[test]
+    fn reserved_text_outputs_publish_through_portable_capabilities() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(dir.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let manager = ArtifactManager::new(&root);
+        let (first, _, relative) = manager
+            .resolve_destination("text", Some("same.txt"), "same")
+            .unwrap();
+        root.write_new_relative(&relative, b"first completed text")
+            .unwrap();
+        assert!(root.write_new_relative(&relative, b"overwrite").is_err());
+        assert_eq!(fs::read(&first).unwrap(), b"first completed text");
+        assert_eq!(fs::read_dir(first.parent().unwrap()).unwrap().count(), 1);
+        let (second, _, relative) = manager
+            .resolve_destination("text", Some("same.txt"), "same")
+            .unwrap();
+        root.write_new_relative(&relative, b"second completed text")
+            .unwrap();
+        assert_ne!(first, second);
+        assert_eq!(fs::read(second).unwrap(), b"second completed text");
+        assert_eq!(fs::read(first).unwrap(), b"first completed text");
     }
 }

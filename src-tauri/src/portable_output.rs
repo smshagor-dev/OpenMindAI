@@ -74,14 +74,30 @@ fn write_new_at(root: &Dir, path: &Path, bytes: &[u8]) -> Result<(), AppError> {
     // Keep the directory handle through creation: replacing its pathname later
     // cannot redirect the write to a new directory or an external symlink.
     let parent = root.open_dir(parent_path)?;
-    let mut options = cap_std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    let mut file = parent.open_with(Path::new(name), &options)?;
-    let result = file.write_all(bytes).and_then(|_| file.sync_all());
-    drop(file);
-    if result.is_err() {
-        let _ = parent.remove_file(Path::new(name));
-    }
+    let temporary = format!(".pending-{}", uuid::Uuid::new_v4());
+    let result = (|| -> std::io::Result<()> {
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        let mut file = parent.open_with(&temporary, &options)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        match parent.symlink_metadata(Path::new(name)) {
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "artifact destination already exists",
+                ))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        parent.rename(&temporary, &parent, Path::new(name))?;
+        #[cfg(unix)]
+        parent.open(".")?.sync_all()?;
+        Ok(())
+    })();
+    let _ = parent.remove_file(&temporary);
     result.map_err(Into::into)
 }
 

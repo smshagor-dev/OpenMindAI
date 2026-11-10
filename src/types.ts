@@ -273,6 +273,7 @@ export interface DatasetDownloadStatus {
   currentFile: string | null;
   destination: string | null;
   error: string | null;
+  verification?: string | null;
 }
 
 export interface LaunchPlan {
@@ -479,6 +480,7 @@ export interface AppPreferences {
   autoCheckAppUpdates: boolean;
   autoDownloadAppUpdates: boolean;
   notifyModelUpdates: boolean;
+  /** Compatibility field; automatic model downloading is not available. */
   autoDownloadModelUpdates: boolean;
   updateChannel: string;
   openagentModelId: string;

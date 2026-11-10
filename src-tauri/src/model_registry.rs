@@ -61,11 +61,16 @@ impl<'a> ModelRegistry<'a> {
     }
 
     pub fn discover_gguf_models(&self) -> Result<Vec<ModelRecord>, AppError> {
-        let mut discovered = Vec::new();
-        scan_directory(&self.root.models_dir(), &mut discovered)?;
-
-        for model_path in discovered {
-            self.register_gguf(&model_path)?;
+        let discovered =
+            crate::model_discovery::scan_models(&self.root.models_dir(), self.root.root())?;
+        for model_path in discovered.files {
+            match self.register_gguf(&model_path) {
+                Ok(()) => {}
+                // A database failure is not an individual bad filesystem entry.
+                Err(error @ AppError::DatabaseInitFailed(_)) => return Err(error),
+                Err(error) => tracing::warn!(path = %model_path.display(), %error,
+                    "skipping model that could not be registered during discovery"),
+            }
         }
 
         self.list_models()
@@ -352,31 +357,6 @@ fn model_manifest_for_path(path: &str) -> Option<QwenModelManifest> {
     })
 }
 
-fn scan_directory(directory: &Path, found: &mut Vec<std::path::PathBuf>) -> Result<(), AppError> {
-    if !directory.exists() {
-        return Ok(());
-    }
-
-    for entry in fs::read_dir(directory)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            scan_directory(&path, found)?;
-        } else if path
-            .extension()
-            .and_then(|value| value.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
-            && !path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .is_some_and(|name| name.to_ascii_lowercase().starts_with("mmproj-"))
-        {
-            found.push(path);
-        }
-    }
-    Ok(())
-}
-
 fn stable_model_id(path: &str) -> String {
     let digest = Sha256::digest(path.as_bytes());
     format!("gguf-{:x}", digest)[0..21].to_string()
@@ -420,6 +400,45 @@ mod tests {
         let registry = ModelRegistry::new(&database, &root);
         assert_eq!(registry.discover_gguf_models().unwrap().len(), 1);
         assert_eq!(registry.discover_gguf_models().unwrap().len(), 1);
+    }
+
+    fn write_sparse_gguf(path: &Path) {
+        use std::io::Write;
+        let mut file = fs::File::create(path).unwrap();
+        file.write_all(b"GGUF").unwrap();
+        file.set_len(33 * 1024 * 1024).unwrap();
+    }
+
+    #[test]
+    fn discovery_skips_invalid_files_and_registers_unrelated_valid_models() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        fs::write(root.models_dir().join("broken.gguf"), b"invalid").unwrap();
+        write_sparse_gguf(&root.models_dir().join("valid.gguf"));
+        let database = Database::in_memory().unwrap();
+        let registry = ModelRegistry::new(&database, &root);
+        let models = registry.discover_gguf_models().unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].path, "models/valid.gguf");
+        assert_eq!(registry.discover_gguf_models().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn discovery_still_reports_database_failures() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        write_sparse_gguf(&root.models_dir().join("valid.gguf"));
+        let database = Database::in_memory().unwrap();
+        database
+            .connection()
+            .pragma_update(None, "query_only", true)
+            .unwrap();
+        let error = ModelRegistry::new(&database, &root)
+            .discover_gguf_models()
+            .unwrap_err();
+        assert!(matches!(error, AppError::DatabaseInitFailed(_)));
     }
 
     #[test]

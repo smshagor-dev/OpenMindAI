@@ -71,6 +71,16 @@ const MIGRATIONS: &[Migration] = &[
         name: "009_coding_workspace_control",
         sql: include_str!("../migrations/009_coding_workspace_control.sql"),
     },
+    Migration {
+        number: 10,
+        name: "010_artifact_path_guards",
+        sql: include_str!("../migrations/010_artifact_path_guards.sql"),
+    },
+    Migration {
+        number: 11,
+        name: "011_message_regeneration",
+        sql: include_str!("../migrations/011_message_regeneration.sql"),
+    },
 ];
 
 pub struct Database {
@@ -90,6 +100,7 @@ impl Database {
         register_artifact_cleanup(&connection, artifact_root)?;
         let mut database = Self { connection };
         database.migrate()?;
+        crate::connected_action_ledger::recover_interrupted(database.connection())?;
         database.recover_interrupted_chat_messages()?;
         database.recover_stale_image_artifacts()?;
         database.recover_interrupted_openagent_runs()?;
