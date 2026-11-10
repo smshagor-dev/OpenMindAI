@@ -49,6 +49,7 @@ export function Composer(props: {
   note?: string;
 }) {
   const textareaRef = props.composerRef;
+  const composingRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -359,10 +360,16 @@ export function Composer(props: {
             ref={textareaRef}
             value={props.prompt}
             onChange={(event) => props.setPrompt(event.target.value)}
+            onCompositionStart={() => { composingRef.current = true; }}
+            onCompositionEnd={() => { composingRef.current = false; }}
+            onBlur={() => { composingRef.current = false; }}
             onKeyDown={(event) => {
               if (
                 props.enterToSend &&
                 event.key === "Enter" &&
+                !composingRef.current &&
+                !event.nativeEvent.isComposing &&
+                event.nativeEvent.keyCode !== 229 &&
                 !event.shiftKey &&
                 !props.streaming &&
                 !props.submitting &&
