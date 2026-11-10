@@ -75,6 +75,7 @@ mod connected_agent;
 mod connector_ecosystem;
 mod connector_input_guard;
 mod connector_stabilization;
+mod database_backup;
 mod dataset_context;
 mod dataset_download;
 mod github_workspace;

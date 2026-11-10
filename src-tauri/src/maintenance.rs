@@ -1,7 +1,6 @@
 use std::fs;
 
 use chrono::Utc;
-use rusqlite::params;
 use serde::Serialize;
 
 use crate::{
@@ -212,15 +211,8 @@ pub fn backup_database(
     database: &Database,
 ) -> Result<BackupInfo, AppError> {
     let backups_dir = root.resolve_relative("backups")?;
-    fs::create_dir_all(&backups_dir)?;
-    let filename = format!("openmindai-{}.db", Utc::now().format("%Y%m%d-%H%M%S"));
-    let dest_path = backups_dir.join(&filename);
-
-    database
-        .connection()
-        .execute("VACUUM INTO ?1", params![dest_path.display().to_string()])?;
-
-    let size_bytes = fs::metadata(&dest_path)?.len();
+    let (filename, size_bytes) =
+        crate::database_backup::create_snapshot(database.connection(), &backups_dir)?;
     Ok(BackupInfo {
         name: filename,
         size_bytes,
