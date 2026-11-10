@@ -82,6 +82,7 @@ mod google_workspace;
 mod isolated_runtime;
 mod local_agent;
 mod local_workspace;
+mod model_discovery;
 mod multimodal;
 #[cfg(feature = "native-cxx-llama")]
 pub mod native_bridge;
