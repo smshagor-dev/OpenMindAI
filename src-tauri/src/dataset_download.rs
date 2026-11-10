@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Component, Path},
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -13,7 +13,7 @@ use url::form_urlencoded;
 
 use crate::{
     app_error::AppError,
-    model_download::{ensure_contained, validate_free_space},
+    model_download::{ensure_contained, sha256_file, validate_free_space},
     portable_root::PortableRootManager,
 };
 
@@ -43,6 +43,7 @@ pub struct DatasetDownloadStatus {
     pub current_file: Option<String>,
     pub destination: Option<String>,
     pub error: Option<String>,
+    pub verification: Option<String>,
 }
 
 impl DatasetDownloadStatus {
@@ -59,6 +60,7 @@ impl DatasetDownloadStatus {
             current_file: None,
             destination: None,
             error: None,
+            verification: None,
         }
     }
 }
@@ -75,6 +77,7 @@ struct OpenMindDatasetTreeEntry {
 #[derive(Debug, Deserialize)]
 struct OpenMindDatasetLfs {
     size: Option<u64>,
+    sha256: Option<String>,
 }
 
 #[derive(Clone)]
@@ -118,6 +121,7 @@ impl DatasetDownloadManager {
                 current_file: Some("Resolving OpenMindAI dataset".to_string()),
                 destination: None,
                 error: None,
+                verification: None,
             };
         })?;
 
@@ -151,6 +155,19 @@ impl DatasetDownloadManager {
             ));
         }
 
+        // Validate published digests before any file is changed.
+        for file in &files {
+            expected_checksum(file)?;
+        }
+        let unchecked = files
+            .iter()
+            .filter(|file| expected_checksum(file).ok().flatten().is_none())
+            .count();
+        let verification = if unchecked == 0 {
+            "All dataset files verified with upstream SHA-256".to_string()
+        } else {
+            format!("{unchecked} dataset files have no upstream checksum; integrity is not cryptographically verified")
+        };
         let total_bytes = files.iter().map(tree_entry_size).sum::<u64>();
         let dataset_dir = self.root.resolve_relative(format!(
             "datasets/openmindai/{}/snapshot/main",
@@ -189,6 +206,7 @@ impl DatasetDownloadManager {
                     &file.path,
                     &final_path,
                     Some(tree_entry_size(file)),
+                    expected_checksum(file)?,
                 )
                 .await?;
             downloaded_bytes = downloaded_bytes.saturating_add(bytes);
@@ -214,6 +232,7 @@ impl DatasetDownloadManager {
             status.percentage = Some(100.0);
             status.speed_bytes_per_sec = None;
             status.current_file = Some("Ready".to_string());
+            status.verification = Some(verification);
             status.error = None;
         })?;
         self.status()
@@ -254,8 +273,9 @@ impl DatasetDownloadManager {
         &self,
         dataset_id: &str,
         relative_path: &str,
-        final_path: &PathBuf,
+        final_path: &Path,
         expected_size: Option<u64>,
+        expected_sha256: Option<&str>,
     ) -> Result<u64, AppError> {
         let url = format!(
             "{}{dataset_id}/resolve/main/{}",
@@ -279,7 +299,7 @@ impl DatasetDownloadManager {
                 "dataset file {relative_path} download failed: {error}"
             ))
         })?;
-        async_fs::rename(&part_path, final_path).await?;
+        install_downloaded_file(&part_path, final_path, expected_sha256)?;
         Ok(downloaded)
     }
 
@@ -299,7 +319,9 @@ impl DatasetDownloadManager {
             "files": files.iter().map(|file| {
                 serde_json::json!({
                     "path": file.path,
-                    "size": tree_entry_size(file)
+                    "size": tree_entry_size(file),
+                    "sha256": expected_checksum(file).ok().flatten(),
+                    "verification": if expected_checksum(file).ok().flatten().is_some() { "sha256-verified" } else { "no-upstream-checksum" }
                 })
             }).collect::<Vec<_>>()
         });
@@ -365,6 +387,47 @@ fn safe_dataset_path(path: &str) -> bool {
         })
 }
 
+fn install_downloaded_file(
+    part: &Path,
+    destination: &Path,
+    expected: Option<&str>,
+) -> Result<(), AppError> {
+    let result = (|| {
+        if let Some(expected) = expected {
+            verify_dataset_checksum(part, expected)?;
+        }
+        fs::rename(part, destination)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(part);
+    }
+    result
+}
+
+fn expected_checksum(entry: &OpenMindDatasetTreeEntry) -> Result<Option<&str>, AppError> {
+    let Some(hash) = entry.lfs.as_ref().and_then(|lfs| lfs.sha256.as_deref()) else {
+        return Ok(None);
+    };
+    if hash.len() != 64 || !hash.bytes().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(AppError::ModelChecksumFailed(format!(
+            "invalid dataset SHA-256 for {}",
+            entry.path
+        )));
+    }
+    Ok(Some(hash))
+}
+
+fn verify_dataset_checksum(path: &Path, expected: &str) -> Result<(), AppError> {
+    let actual = sha256_file(path)?;
+    if !actual.eq_ignore_ascii_case(expected) {
+        return Err(AppError::ModelChecksumFailed(
+            "dataset SHA-256 mismatch; file was not installed".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn tree_entry_size(entry: &OpenMindDatasetTreeEntry) -> u64 {
     entry
         .lfs
@@ -394,4 +457,51 @@ fn encode_path(path: &str) -> String {
         .map(|part| form_urlencoded::byte_serialize(part.as_bytes()).collect::<String>())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dataset_checksums_reject_equal_sized_changed_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("data.part");
+        fs::write(&part, b"original").unwrap();
+        let expected = sha256_file(&part).unwrap();
+        verify_dataset_checksum(&part, &expected.to_ascii_uppercase()).unwrap();
+        fs::write(&part, b"modified").unwrap();
+        assert!(matches!(
+            verify_dataset_checksum(&part, &expected),
+            Err(AppError::ModelChecksumFailed(_))
+        ));
+    }
+
+    #[test]
+    fn malformed_upstream_checksum_cannot_be_silently_treated_as_unverified() {
+        let mut entry: OpenMindDatasetTreeEntry = serde_json::from_value(serde_json::json!({
+            "path": "data.txt", "type": "file", "lfs": { "size": 8, "sha256": "invalid" }
+        }))
+        .unwrap();
+        assert!(expected_checksum(&entry).is_err());
+        entry.lfs.as_mut().unwrap().sha256 = None;
+        assert!(expected_checksum(&entry).unwrap().is_none());
+    }
+    #[test]
+    fn checksum_failure_preserves_existing_dataset_and_removes_failed_partial() {
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("data.part");
+        let destination = dir.path().join("data.txt");
+        fs::write(&destination, b"original").unwrap();
+        let expected = sha256_file(&destination).unwrap();
+        fs::write(&part, b"modified").unwrap();
+        assert!(install_downloaded_file(&part, &destination, Some(&expected)).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"original");
+        assert!(!part.exists());
+        fs::write(&part, b"original").unwrap();
+        let fresh = dir.path().join("fresh.txt");
+        install_downloaded_file(&part, &fresh, Some(&expected)).unwrap();
+        assert_eq!(fs::read(&fresh).unwrap(), b"original");
+        assert!(!part.exists());
+    }
 }

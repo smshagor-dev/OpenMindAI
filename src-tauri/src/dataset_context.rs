@@ -6,6 +6,8 @@ use std::{
 
 use cap_std::{ambient_authority, fs::Dir};
 use serde::Deserialize;
+use unicode_normalization::UnicodeNormalization;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{app_error::AppError, portable_root::PortableRootManager};
 
@@ -194,8 +196,7 @@ fn collect_manifests(
                 .map(|file| file.path.as_str())
                 .collect::<Vec<_>>()
                 .join(" ")
-        )
-        .to_ascii_lowercase();
+        );
         let score = score_text(&haystack, keywords);
         if score > 0 {
             candidates.push(DatasetCandidate {
@@ -225,7 +226,7 @@ fn dataset_snippets(
     let mut scored = files
         .iter()
         .filter(|file| safe_manifest_path(&file.path) && supported_context_file(&file.path))
-        .map(|file| (score_text(&file.path.to_ascii_lowercase(), keywords), file))
+        .map(|file| (score_text(&file.path, keywords), file))
         .collect::<Vec<_>>();
     scored.sort_by_key(|item| std::cmp::Reverse(item.0));
 
@@ -325,11 +326,17 @@ fn supported_context_file(path: &str) -> bool {
 }
 
 fn best_text_window(content: &str, keywords: &[String]) -> String {
-    let lower = content.to_ascii_lowercase();
-    let index = keywords
-        .iter()
-        .filter_map(|keyword| lower.find(keyword))
-        .min()
+    // Search normalized words, but retain offsets in the original UTF-8.
+    // Lowercasing/normalization can change byte length (e.g. İ or decomposed accents).
+    let index = content
+        .unicode_word_indices()
+        .find_map(|(index, word)| {
+            let normalized = normalize_search_text(word);
+            keywords
+                .iter()
+                .any(|keyword| normalized.contains(keyword))
+                .then_some(index)
+        })
         .unwrap_or(0);
     let start = content[..index]
         .char_indices()
@@ -345,11 +352,24 @@ fn best_text_window(content: &str, keywords: &[String]) -> String {
     limit_chars(content[start..end].trim(), MAX_SNIPPET_CHARS)
 }
 
+fn normalize_search_text(text: &str) -> String {
+    text.nfc()
+        .collect::<String>()
+        .to_lowercase()
+        .nfc()
+        .collect()
+}
+
 fn prompt_keywords(prompt: &str) -> Vec<String> {
-    let mut words = prompt
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .map(|word| word.trim().to_ascii_lowercase())
-        .filter(|word| word.len() >= 4 && !STOP_WORDS.contains(&word.as_str()))
+    let normalized = normalize_search_text(prompt);
+    let mut words = normalized
+        .unicode_words()
+        // Retain the existing English noise filter, while permitting short
+        // non-Latin words and individual UAX #29 words in unspaced scripts.
+        .filter(|word| {
+            (!word.is_ascii() || word.chars().count() >= 4) && !STOP_WORDS.contains(word)
+        })
+        .map(str::to_owned)
         .collect::<Vec<_>>();
     words.sort();
     words.dedup();
@@ -358,6 +378,7 @@ fn prompt_keywords(prompt: &str) -> Vec<String> {
 }
 
 fn score_text(text: &str, keywords: &[String]) -> i32 {
+    let text = normalize_search_text(text);
     keywords
         .iter()
         .map(|keyword| if text.contains(keyword) { 4 } else { 0 })
@@ -643,6 +664,69 @@ mod tests {
         assert!(status.success());
         manifest(&dataset, &["junction/alpha.txt".into()]);
         assert!(!context(&root).unwrap().contains("OUTSIDE_MARKER"));
+    }
+    #[test]
+    fn multilingual_prompts_retrieve_local_evidence() {
+        for (prompt, filename, content) in [
+            ("বাংলা কৃষি", "বাংলা-কৃষি.txt", "বাংলা কৃষি INSIDE_MARKER"),
+            (
+                "РУССКАЯ НАУКА",
+                "русская-наука.txt",
+                "Русская наука INSIDE_MARKER",
+            ),
+            (
+                "हिन्दी शिक्षा",
+                "हिन्दी-शिक्षा.txt",
+                "हिन्दी शिक्षा INSIDE_MARKER",
+            ),
+            (
+                "English বাংলা РУССКАЯ",
+                "english-русская.txt",
+                "mixed evidence INSIDE_MARKER",
+            ),
+            ("中文資料", "中文資料.txt", "中文資料 INSIDE_MARKER"),
+            ("cafe\u{301}", "café.txt", "café INSIDE_MARKER"),
+        ] {
+            let (_temp, root, dataset) = fixture();
+            fs::write(dataset.join(filename), content).unwrap();
+            manifest(&dataset, &[filename.into()]);
+            let found = build_dataset_context(&root, prompt, "test model", "test routing").unwrap();
+            assert!(
+                found.unwrap_or_default().contains("INSIDE_MARKER"),
+                "{prompt}"
+            );
+        }
+    }
+
+    #[test]
+    fn normalization_keeps_original_snippet_boundaries_valid() {
+        let prefix = "İ ".repeat(400);
+        let content = format!("{prefix}cafe\u{301} TARGET_MARKER end");
+        let snippet = best_text_window(&content, &prompt_keywords("CAFÉ"));
+        assert!(snippet.contains("TARGET_MARKER"));
+        assert!(snippet.contains("cafe\u{301}"));
+        assert_eq!(prompt_keywords("বাংলা কৃষি"), vec!["কৃষি", "বাংলা"]);
+        assert_eq!(
+            prompt_keywords("please DATA dataset with"),
+            Vec::<String>::new()
+        );
+    }
+    #[test]
+    fn unicode_dataset_id_can_select_an_ascii_named_file() {
+        let (_temp, root, dataset) = fixture();
+        fs::write(dataset.join("notes.txt"), "ЛОКАЛЬНЫЕ ДАННЫЕ ID_MARKER").unwrap();
+        fs::write(
+            dataset.join("openmindai-dataset.json"),
+            serde_json::json!({
+                "datasetId": "Русская-наука", "files": [{"path": "notes.txt", "size": 1}]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(build_dataset_context(&root, "РУССКАЯ", "model", "routing")
+            .unwrap()
+            .unwrap()
+            .contains("ID_MARKER"));
     }
 }
 

@@ -122,7 +122,29 @@ export function App() {
   const attachmentClearVersion = useRef(0);
   const attachmentQueue = useRef<Promise<void>>(Promise.resolve());
   const draftRevision = useRef(0);
-  const setPrompt = useCallback((value: string) => { draftRevision.current += 1; setPromptState(value); }, []);
+  const latestPrompt = useRef("");
+  const discardedDraft = useRef(0);
+  const setPrompt = useCallback((value: string) => {
+    draftRevision.current += 1;
+    if (!value.trim()) discardedDraft.current += 1;
+    latestPrompt.current = value;
+    setPromptState(value);
+  }, []);
+  const createVoiceDraftTarget = useCallback(() => {
+    const view = chatState.captureView();
+    const discard = discardedDraft.current;
+    const isCurrent = () => chatState.isCurrent(view) && discardedDraft.current === discard;
+    return {
+      isCurrent,
+      append: (text: string) => {
+        const transcript = text.trim();
+        if (!transcript || !isCurrent()) return false;
+        const current = latestPrompt.current.trimEnd();
+        setPrompt(current.trim() ? `${current} ${transcript}` : transcript);
+        return true;
+      },
+    };
+  }, [chatState, setPrompt]);
   const setAttachments = useCallback((change: SetStateAction<AttachmentDraft[]>) => {
     const next = typeof change === "function" ? change(attachmentItems.current) : change;
     if (typeof change !== "function" && next.length === 0) attachmentClearVersion.current += 1;
@@ -867,7 +889,6 @@ export function App() {
   }
 
   async function updateUserProfile(next: UserProfile) {
-    setUserProfile(next);
     setUserProfile(await api.saveUserProfile(next));
   }
 
@@ -1208,6 +1229,7 @@ export function App() {
             messages={messages}
             prompt={prompt}
             setPrompt={setPrompt}
+            createVoiceDraftTarget={createVoiceDraftTarget}
             imageOptions={imageOptions}
             setImageOptions={setImageOptions}
             attachments={attachments}
@@ -1267,6 +1289,7 @@ export function App() {
               messages={messages}
               prompt={prompt}
               setPrompt={setPrompt}
+              createVoiceDraftTarget={createVoiceDraftTarget}
               imageOptions={imageOptions}
               setImageOptions={setImageOptions}
               attachments={attachments}

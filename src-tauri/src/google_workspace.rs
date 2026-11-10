@@ -218,6 +218,9 @@ async fn refresh_access_token(
     let value = json_response(response).await?;
     let token: GoogleTokenResponse = serde_json::from_value(value)
         .map_err(|error| connector_error(format!("invalid refresh response: {error}")))?;
+    if let Some(refresh) = token.refresh_token.filter(|token| !token.is_empty()) {
+        bundle.refresh_token = refresh;
+    }
     bundle.access_token = token.access_token;
     bundle.expires_at = Utc::now().timestamp() + token.expires_in;
     bundle.token_type = token.token_type.unwrap_or_else(|| "Bearer".to_string());
@@ -229,6 +232,13 @@ async fn refresh_access_token(
 }
 
 async fn access_token(state: &State<'_, AppState>) -> Result<String, AppError> {
+    crate::oauth_refresh::coordinated(crate::oauth_refresh::Store::GoogleWorkspace, || {
+        access_token_after_lock(state)
+    })
+    .await
+}
+
+async fn access_token_after_lock(state: &State<'_, AppState>) -> Result<String, AppError> {
     let (client_id, client_secret) = client_credentials(state)?;
     let bundle =
         load_tokens()?.ok_or_else(|| connector_error("Google account is not connected"))?;
