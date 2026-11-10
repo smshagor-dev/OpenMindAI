@@ -72,9 +72,14 @@ if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'L
 # unrelated to restricting the DACL.
 $phase = 20
 $acl = Get-Acl -LiteralPath $p
+$phase = 21
 $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+$phase = 22
 $creatorOwner = [System.Security.Principal.WindowsIdentity]::GetCurrent().Owner.Value
-if ($owner -ne $sid.Value -and $owner -ne $creatorOwner) { throw 'Foreign descriptor owner' }
+$phase = 23
+# Privileged built-in owners can override ACLs regardless of DACL grants.
+# They remain outside the unprivileged-account threat boundary.
+if ($owner -ne $sid.Value -and $owner -ne $creatorOwner -and $owner -ne 'S-1-5-32-544' -and $owner -ne 'S-1-5-18') { throw 'Foreign descriptor owner' }
 $phase = 30
 $acl.SetAccessRuleProtection($true, $false)
 foreach ($existing in @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]))) {
@@ -92,7 +97,7 @@ $phase = 50
 $verified = Get-Acl -LiteralPath $p
 $rules = @($verified.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
 if ($verified.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $owner -or -not $verified.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid.Value -or $rules[0].AccessControlType -ne 'Allow' -or $rules[0].FileSystemRights -ne 'FullControl') { throw 'Private ACL verification failed' }
-} catch { [Console]::Error.WriteLine(('ACL phase={0} hr={1} dir={2}' -f $phase, $_.Exception.HResult, $isDir)); exit $phase }
+} catch { [Console]::Error.WriteLine(('ACL phase={0} hr={1} dir={2} owner={3} current={4} default={5} error={6}' -f $phase, $_.Exception.HResult, $isDir, $owner, $sid.Value, $creatorOwner, $_.FullyQualifiedErrorId)); exit $phase }
 "#;
     let windows =
         std::env::var_os("SystemRoot").ok_or_else(|| refused("SystemRoot unavailable"))?;
