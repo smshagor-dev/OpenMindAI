@@ -258,11 +258,7 @@ pub fn list_backups(root: &PortableRootManager) -> Result<Vec<BackupInfo>, AppEr
 pub fn open_folder_in_root(root: &PortableRootManager, relative: &str) -> Result<(), AppError> {
     let path = root.resolve_relative(relative)?;
     fs::create_dir_all(&path)?;
-    std::process::Command::new("explorer")
-        .arg(&path)
-        .spawn()
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(())
+    crate::folder_opener::open_folder(&path)
 }
 
 #[cfg(test)]

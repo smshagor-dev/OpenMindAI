@@ -77,6 +77,7 @@ mod connector_input_guard;
 mod connector_stabilization;
 mod dataset_context;
 mod dataset_download;
+mod folder_opener;
 mod github_workspace;
 mod google_workspace;
 mod isolated_runtime;
