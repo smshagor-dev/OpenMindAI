@@ -96,7 +96,7 @@ pub fn descriptor_path() -> Option<PathBuf> {
 }
 
 /// Writes the descriptor atomically (temp file + rename) so a reader never sees a partial
-/// file. The file lives in the user's local app data, which only that user can read.
+/// file. Owner-only directory/file access is verified before writing any token.
 fn write_descriptor(app: &AppHandle, endpoint: &str) -> Result<(), AppError> {
     let path = descriptor_path()
         .ok_or_else(|| AppError::internal("could not determine local app data directory"))?;
@@ -118,16 +118,7 @@ fn write_descriptor(app: &AppHandle, endpoint: &str) -> Result<(), AppError> {
 }
 
 fn write_atomically(path: &std::path::Path, bytes: &[u8]) -> Result<(), AppError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-    fs::write(&temp, bytes)?;
-    if let Err(error) = fs::rename(&temp, path) {
-        let _ = fs::remove_file(&temp);
-        return Err(error.into());
-    }
-    Ok(())
+    crate::private_descriptor::write_atomically(path, bytes).map_err(Into::into)
 }
 
 /// Removes the descriptor on exit if it still belongs to this process.

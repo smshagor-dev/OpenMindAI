@@ -1,3 +1,4 @@
+mod private_descriptor;
 extern crate tauri as tauri_crate;
 
 #[macro_export]
