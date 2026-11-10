@@ -68,6 +68,8 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
     listedAt.rootId === activeRoot.id && listedAt.path === currentPath &&
     directoryGate.current.isDisplayed(props.projectId, activeRoot.id, currentPath);
   const visibleEntries = listingIsCurrent ? entries : [];
+  const isCurrentListing = () => Boolean(activeRoot &&
+    directoryGate.current.isDisplayed(props.projectId, activeRoot.id, currentPath));
 
   const loadStatus = useCallback(
     () => localWorkspaceApi.status(props.projectId),
@@ -133,6 +135,8 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
     setDirectoryPending(Boolean(activeRoot));
     setRenameTarget(null);
     setDeleteTarget(null);
+    setNewItemKind(null);
+    setNewItemName("");
     if (!activeRoot) {
       setCurrentPath("");
       setLocationInput("");
@@ -174,7 +178,11 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
     const root =
       next.roots.find((item) => sameDisplayPath(item.path, selected)) ??
       next.roots[next.roots.length - 1];
-    if (root) setActiveRootId(root.id);
+    if (root) {
+      directoryGate.current.select(props.projectId, root.id);
+      setListedAt(null);
+      setActiveRootId(root.id);
+    }
   };
 
   const detachFolder = async () => {
@@ -183,6 +191,8 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
       localWorkspaceApi.detachFolder(props.projectId, detachTarget.id),
     );
     if (!next) return;
+    directoryGate.current.select(props.projectId, null);
+    setListedAt(null);
     setStatus(next);
     setDetachTarget(null);
     setEditorPath(null);
@@ -210,7 +220,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
   };
 
   const openEntry = async (entry: WorkspaceEntry) => {
-    if (!activeRoot || !listingIsCurrent || !visibleEntries.includes(entry)) return;
+    if (!activeRoot || !isCurrentListing() || !visibleEntries.includes(entry)) return;
     if (entry.kind === "directory") {
       if (editorDirty && !window.confirm("Discard unsaved editor changes and open this folder?")) return;
       setEditorPath(null);
@@ -245,7 +255,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
   };
 
   const createItem = async () => {
-    if (!activeRoot || !newItemKind || !listingIsCurrent) return;
+    if (!activeRoot || !newItemKind || !isCurrentListing()) return;
     const name = newItemName.trim();
     if (!name) return;
     const path = joinWorkspacePath(currentPath, name);
@@ -266,7 +276,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
   };
 
   const renameItem = async () => {
-    if (!activeRoot || !renameTarget || !listingIsCurrent || !visibleEntries.includes(renameTarget)) return;
+    if (!activeRoot || !renameTarget || !isCurrentListing() || !visibleEntries.includes(renameTarget)) return;
     const nextName = renameValue.trim();
     if (!nextName) return;
     const parent = parentWorkspacePath(renameTarget.relativePath);
@@ -288,7 +298,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
   };
 
   const deleteItem = async () => {
-    if (!activeRoot || !deleteTarget || !listingIsCurrent || !visibleEntries.includes(deleteTarget)) return;
+    if (!activeRoot || !deleteTarget || !isCurrentListing() || !visibleEntries.includes(deleteTarget)) return;
     const removed = await run("delete-path", async () => {
       await localWorkspaceApi.deletePath(
         props.projectId,
@@ -309,7 +319,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
   };
 
   const goToLocation = async () => {
-    if (!activeRoot || !listingIsCurrent) return;
+    if (!activeRoot || !isCurrentListing()) return;
     const raw = locationInput.trim();
     if (!raw) return;
     let path = raw;
@@ -318,7 +328,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
   };
 
   const goUp = async () => {
-    if (!activeRoot || !listingIsCurrent) return;
+    if (!activeRoot || !isCurrentListing()) return;
     if (!currentPath) return;
     const parent = parentWorkspacePath(currentPath);
     await run("navigate", () => loadDirectory(activeRoot.id, parent));
