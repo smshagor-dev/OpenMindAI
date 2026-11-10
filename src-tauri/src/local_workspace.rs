@@ -268,6 +268,10 @@ pub fn list_project_workspace_directory(
     for item in fs::read_dir(&directory)?.take(MAX_DIRECTORY_ENTRIES) {
         let item = item?;
         let item_path = item.path();
+        if item.file_name() == ".openmindai-patch-transactions" {
+            // Internal recovery journals must not be offered as user files.
+            continue;
+        }
         let metadata = fs::symlink_metadata(&item_path)?;
         let file_type = metadata.file_type();
         let kind = if file_type.is_symlink() {
@@ -429,7 +433,20 @@ fn transactional_workspace_save(
     // apply_patch_transaction serializes writes within this process, checks
     // source hashes, journals old bytes, stages synced replacements and rolls
     // back interrupted writes on the next transaction in this directory.
-    crate::coding_patch::apply_patch_transaction(parent, &action)?;
+    if let Err(error) = crate::coding_patch::apply_patch_transaction(parent, &action) {
+        let reason = error.to_string();
+        if reason.contains("stale-file precondition failed") {
+            return Err(AppError::internal(
+                "This file changed on disk since you opened it. Save was cancelled; your editor text is preserved. Copy your edits and reopen the file before resolving the conflict.",
+            ));
+        }
+        if reason.contains("create operation target already exists") {
+            return Err(AppError::internal(
+                "The file already exists. Open it first to obtain its revision before saving.",
+            ));
+        }
+        return Err(error);
+    }
     Ok(workspace_revision(bytes))
 }
 
