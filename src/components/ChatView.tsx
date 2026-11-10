@@ -1,3 +1,4 @@
+import type { VoiceDraftTarget } from "../lib/voiceDraft";
 import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
 import {
@@ -53,6 +54,7 @@ export function ChatView(props: {
   messages: Message[];
   prompt: string;
   setPrompt: (value: string) => void;
+  createVoiceDraftTarget: () => VoiceDraftTarget;
   imageOptions: ImageGenerationOptions;
   setImageOptions: (options: ImageGenerationOptions) => void;
   attachments: AttachmentDraft[];
@@ -117,6 +119,7 @@ export function ChatView(props: {
     <Composer
       prompt={props.prompt}
       setPrompt={props.setPrompt}
+      createVoiceDraftTarget={props.createVoiceDraftTarget}
       imageOptions={props.imageOptions}
       setImageOptions={props.setImageOptions}
       attachments={props.attachments}
