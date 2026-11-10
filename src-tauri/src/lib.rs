@@ -1,3 +1,5 @@
+#[cfg(any(windows, test))]
+mod sandbox_capture;
 extern crate tauri as tauri_crate;
 
 #[macro_export]
