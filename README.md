@@ -94,6 +94,8 @@ OpenMindAI can route different requests through specialized local flows. Image a
 
 Web retrieval is treated as untrusted data rather than executable instruction, and current-source claims should remain grounded in retrieved evidence.
 
+Scanned PDF OCR uses the exact enabled, ready Lens checkpoint declared by its installed catalog package. A different Qwen-VL model is not used as a fallback. The associated package projector is validated and passed explicitly to the runtime; missing or mismatched package metadata prompts validation or reinstallation in Settings → Models.
+
 ### Model and runtime management
 
 The application includes a local model catalog and lifecycle management for:
@@ -108,6 +110,8 @@ The application includes a local model catalog and lifecycle management for:
 - local runtime installation and inventory;
 - runtime start, stop, and health state;
 - model update checks.
+
+Model update notifications are optional. Model downloads require manual confirmation in **Settings → Models**; automatic model downloading is not available. Older saved automatic model download preferences are corrected to disabled without changing notification or application update choices.
 
 Large model downloads remain explicit user actions.
 

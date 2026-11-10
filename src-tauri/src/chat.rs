@@ -254,6 +254,68 @@ impl<'a> ChatRepository<'a> {
         self.find_message(&id)
     }
 
+    /// Create a separate streaming candidate without changing the source reply.
+    pub fn begin_regeneration(
+        &self,
+        conversation_id: &str,
+        target_id: &str,
+        model_id: Option<&str>,
+    ) -> Result<Message, AppError> {
+        let tx = self.database.connection().unchecked_transaction()?;
+        let target = self.find_message(target_id)?;
+        if target.conversation_id != conversation_id || target.role != "assistant" {
+            return Err(AppError::internal(
+                "regeneration target must be an assistant in this conversation",
+            ));
+        }
+        let candidate =
+            self.add_message(conversation_id, "assistant", "", "streaming", model_id)?;
+        tx.execute(
+            "UPDATE messages SET regenerates_message_id = ?1 WHERE id = ?2",
+            params![target_id, candidate.id],
+        )?;
+        let candidate = self.find_message(&candidate.id)?;
+        tx.commit()?;
+        Ok(candidate)
+    }
+
+    /// Exclude the reply being regenerated and later turns from model context,
+    /// while keeping system instructions and all durable history intact.
+    pub fn history_before_regeneration(
+        &self,
+        conversation_id: &str,
+        target_id: &str,
+    ) -> Result<Vec<Message>, AppError> {
+        let messages = self.list_messages(conversation_id)?;
+        let index = messages
+            .iter()
+            .position(|message| message.id == target_id && message.role == "assistant")
+            .ok_or_else(|| {
+                AppError::internal("assistant message not found in this conversation")
+            })?;
+        Ok(messages
+            .into_iter()
+            .enumerate()
+            .filter(|(position, message)| *position < index || message.role == "system")
+            .map(|(_, message)| message)
+            .collect())
+    }
+
+    pub fn messages_for_generation(
+        &self,
+        conversation_id: &str,
+        assistant_id: &str,
+    ) -> Result<Vec<Message>, AppError> {
+        let target: Option<String> = self.database.connection().query_row(
+            "SELECT regenerates_message_id FROM messages WHERE id = ?1 AND conversation_id = ?2 AND role = 'assistant'",
+            params![assistant_id, conversation_id], |row| row.get(0),
+        )?;
+        match target {
+            Some(target) => self.history_before_regeneration(conversation_id, &target),
+            None => self.list_messages(conversation_id),
+        }
+    }
+
     pub fn upsert_profile_context(
         &self,
         conversation_id: &str,
@@ -332,7 +394,10 @@ impl<'a> ChatRepository<'a> {
 
     pub fn set_message_status(&self, message_id: &str, status: &str) -> Result<(), AppError> {
         validate_message_status(status)?;
-        let changed = self.database.connection().execute(
+        // Publishing completion and retiring the source reply are one SQLite
+        // transaction. Any write/constraint failure rolls both operations back.
+        let tx = self.database.connection().unchecked_transaction()?;
+        let changed = tx.execute(
             "UPDATE messages SET status = ?1, updated_at = ?2 WHERE id = ?3",
             params![status, Utc::now().to_rfc3339(), message_id],
         )?;
@@ -341,6 +406,18 @@ impl<'a> ChatRepository<'a> {
                 "message not found: {message_id}"
             )));
         }
+        if status == "completed" {
+            tx.execute(
+                "DELETE FROM messages WHERE id = (
+                    SELECT regenerates_message_id FROM messages
+                    WHERE id = ?1 AND length(trim(content)) > 0
+                 ) AND role = 'assistant' AND conversation_id = (
+                    SELECT conversation_id FROM messages WHERE id = ?1
+                 )",
+                params![message_id],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -1021,5 +1098,238 @@ mod tests {
             std::fs::read(index_dir.join(format!("{target_id}.json"))).unwrap(),
             b"original media index bytes"
         );
+    }
+    #[test]
+    fn regeneration_keeps_original_through_failed_cancelled_and_empty_candidates() {
+        let db = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&db);
+        let chat = repo.create_conversation(Some("Regenerate")).unwrap();
+        repo.add_message(&chat.id, "user", "question", "completed", None)
+            .unwrap();
+        let original = repo
+            .add_message(
+                &chat.id,
+                "assistant",
+                "valuable original",
+                "completed",
+                None,
+            )
+            .unwrap();
+        // Model-selection/startup errors occur before begin_regeneration: no
+        // source row is touched. A later partial stream also cannot retire it.
+        for status in ["failed", "cancelled", "completed"] {
+            let candidate = repo
+                .begin_regeneration(&chat.id, &original.id, None)
+                .unwrap();
+            if status != "completed" {
+                repo.append_message_chunk(&candidate.id, "partial").unwrap();
+            }
+            assert_eq!(
+                repo.find_message(&original.id).unwrap().content,
+                "valuable original"
+            );
+            repo.set_message_status(&candidate.id, status).unwrap();
+            assert_eq!(
+                repo.find_message(&original.id).unwrap().content,
+                "valuable original"
+            );
+            assert_eq!(repo.find_message(&candidate.id).unwrap().status, status);
+        }
+    }
+
+    #[test]
+    fn successful_regeneration_retires_only_its_source_and_keeps_artifacts() {
+        let db = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&db);
+        let chat = repo.create_conversation(Some("Regenerate")).unwrap();
+        repo.add_message(&chat.id, "user", "question", "completed", None)
+            .unwrap();
+        let original = repo
+            .add_message(&chat.id, "assistant", "original", "completed", None)
+            .unwrap();
+        let later = repo
+            .add_message(&chat.id, "user", "later turn", "completed", None)
+            .unwrap();
+        let artifact = crate::artifacts::ArtifactRepository::new(&db)
+            .create(
+                &chat.id,
+                Some(&original.id),
+                "evidence.txt",
+                "generated/files/evidence.txt",
+                "text/plain",
+                "text",
+                "ready",
+            )
+            .unwrap();
+        let candidate = repo
+            .begin_regeneration(&chat.id, &original.id, None)
+            .unwrap();
+        repo.append_message_chunk(&candidate.id, "replacement")
+            .unwrap();
+        repo.set_message_status(&candidate.id, "completed").unwrap();
+        assert!(repo.find_message(&original.id).is_err());
+        assert_eq!(
+            repo.find_message(&candidate.id).unwrap().content,
+            "replacement"
+        );
+        assert_eq!(repo.find_message(&later.id).unwrap().content, "later turn");
+        assert!(crate::artifacts::ArtifactRepository::new(&db)
+            .find(&artifact.id)
+            .is_ok());
+        repo.set_message_status(&candidate.id, "completed").unwrap(); // idempotent
+    }
+
+    #[test]
+    fn regeneration_context_excludes_source_and_later_turns_but_keeps_system_context() {
+        let db = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&db);
+        let chat = repo.create_conversation(None).unwrap();
+        let user = repo
+            .add_message(&chat.id, "user", "question", "completed", None)
+            .unwrap();
+        let original = repo
+            .add_message(&chat.id, "assistant", "do not echo this", "completed", None)
+            .unwrap();
+        repo.add_message(&chat.id, "user", "later question", "completed", None)
+            .unwrap();
+        let system = repo
+            .add_message(&chat.id, "system", "current policy", "completed", None)
+            .unwrap();
+        let candidate = repo
+            .begin_regeneration(&chat.id, &original.id, None)
+            .unwrap();
+        let context = repo
+            .messages_for_generation(&chat.id, &candidate.id)
+            .unwrap();
+        assert_eq!(
+            context.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec![user.id.as_str(), system.id.as_str()]
+        );
+        assert_eq!(repo.list_messages(&chat.id).unwrap().len(), 5);
+        let other = repo.create_conversation(None).unwrap();
+        assert!(repo
+            .begin_regeneration(&other.id, &original.id, None)
+            .is_err());
+        assert!(repo.begin_regeneration(&chat.id, &user.id, None).is_err());
+        assert_eq!(repo.list_messages(&chat.id).unwrap().len(), 5);
+    }
+
+    #[test]
+    fn failed_completion_transaction_preserves_original_and_candidate_status() {
+        let db = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&db);
+        let chat = repo.create_conversation(None).unwrap();
+        let original = repo
+            .add_message(&chat.id, "assistant", "original", "completed", None)
+            .unwrap();
+        let candidate = repo
+            .begin_regeneration(&chat.id, &original.id, None)
+            .unwrap();
+        repo.append_message_chunk(&candidate.id, "replacement")
+            .unwrap();
+        db.connection().execute_batch("CREATE TRIGGER injected_failure BEFORE DELETE ON messages BEGIN SELECT RAISE(ABORT, 'injected storage failure'); END;").unwrap();
+        assert!(repo.set_message_status(&candidate.id, "completed").is_err());
+        assert_eq!(
+            repo.find_message(&candidate.id).unwrap().status,
+            "streaming"
+        );
+        assert_eq!(repo.find_message(&original.id).unwrap().content, "original");
+    }
+
+    #[test]
+    fn interrupted_regeneration_survives_reopening_the_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("openmind_ai.db");
+        let (original_id, candidate_id) = {
+            let db = Database::open(path.clone()).unwrap();
+            let repo = ChatRepository::new(&db);
+            let chat = repo.create_conversation(None).unwrap();
+            let original = repo
+                .add_message(&chat.id, "assistant", "saved original", "completed", None)
+                .unwrap();
+            let candidate = repo
+                .begin_regeneration(&chat.id, &original.id, None)
+                .unwrap();
+            repo.append_message_chunk(&candidate.id, "interrupted partial")
+                .unwrap();
+            (original.id, candidate.id)
+        };
+        let db = Database::open(path).unwrap();
+        let repo = ChatRepository::new(&db);
+        assert_eq!(
+            repo.find_message(&original_id).unwrap().content,
+            "saved original"
+        );
+        assert_eq!(repo.find_message(&candidate_id).unwrap().status, "failed");
+    }
+    #[test]
+    fn failed_candidate_creation_rolls_back_without_touching_the_source() {
+        let db = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&db);
+        let chat = repo.create_conversation(None).unwrap();
+        let original = repo
+            .add_message(&chat.id, "assistant", "original", "completed", None)
+            .unwrap();
+        db.connection().execute_batch("CREATE TRIGGER injected_candidate_failure BEFORE UPDATE OF regenerates_message_id ON messages BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;").unwrap();
+        assert!(repo
+            .begin_regeneration(&chat.id, &original.id, None)
+            .is_err());
+        let messages = repo.list_messages(&chat.id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, original.id);
+        assert_eq!(messages[0].content, "original");
+    }
+
+    #[test]
+    fn original_artifact_file_and_link_survive_cancel_and_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data/database/openmind_ai.db");
+        let output = dir.path().join("generated/files/original.txt");
+        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+        std::fs::write(&output, b"precious original bytes").unwrap();
+        let (original_id, artifact_id) = {
+            let db = Database::open(path.clone()).unwrap();
+            let repo = ChatRepository::new(&db);
+            let chat = repo.create_conversation(None).unwrap();
+            let original = repo
+                .add_message(&chat.id, "assistant", "original", "completed", None)
+                .unwrap();
+            let artifact = crate::artifacts::ArtifactRepository::new(&db)
+                .create(
+                    &chat.id,
+                    Some(&original.id),
+                    "original.txt",
+                    "generated/files/original.txt",
+                    "text/plain",
+                    "text",
+                    "ready",
+                )
+                .unwrap();
+            let cancelled = repo
+                .begin_regeneration(&chat.id, &original.id, None)
+                .unwrap();
+            repo.append_message_chunk(&cancelled.id, "cancelled partial")
+                .unwrap();
+            repo.set_message_status(&cancelled.id, "cancelled").unwrap();
+            let interrupted = repo
+                .begin_regeneration(&chat.id, &original.id, None)
+                .unwrap();
+            repo.append_message_chunk(&interrupted.id, "interrupted partial")
+                .unwrap();
+            (original.id, artifact.id)
+        };
+        let db = Database::open(path).unwrap();
+        let artifact = crate::artifacts::ArtifactRepository::new(&db)
+            .find(&artifact_id)
+            .unwrap();
+        assert_eq!(artifact.message_id.as_deref(), Some(original_id.as_str()));
+        assert_eq!(
+            ChatRepository::new(&db)
+                .find_message(&original_id)
+                .unwrap()
+                .content,
+            "original"
+        );
+        assert_eq!(std::fs::read(output).unwrap(), b"precious original bytes");
     }
 }

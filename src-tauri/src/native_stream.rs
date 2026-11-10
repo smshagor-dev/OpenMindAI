@@ -97,6 +97,7 @@ pub async fn stream_native_completion(
     let (messages, omitted_messages) = build_text_context(
         request.database,
         request.conversation_id,
+        &request.assistant.id,
         request.config.n_ctx,
     )
     .map_err(NativeStreamError::before_output)?;
@@ -283,13 +284,14 @@ pub async fn stream_native_completion(
 fn build_text_context(
     database: &Mutex<Database>,
     conversation_id: &str,
+    assistant_id: &str,
     context_size: u32,
 ) -> Result<(Vec<ChatMessage>, usize), AppError> {
     let db = database
         .lock()
         .map_err(|_| AppError::internal("database lock poisoned"))?;
     let repo = ChatRepository::new(&db);
-    let mut messages = repo.list_messages(conversation_id)?;
+    let mut messages = repo.messages_for_generation(conversation_id, assistant_id)?;
     messages.retain(|message| {
         message.status == "completed"
             && matches!(message.role.as_str(), "system" | "user" | "assistant")
@@ -335,10 +337,11 @@ fn build_text_context(
 pub(crate) fn native_chat_output_budget(
     database: &Mutex<Database>,
     conversation_id: &str,
+    assistant_id: &str,
     mode: &str,
     context_size: u32,
 ) -> Result<u32, AppError> {
-    let (messages, _) = build_text_context(database, conversation_id, context_size)?;
+    let (messages, _) = build_text_context(database, conversation_id, assistant_id, context_size)?;
     let prepared = messages
         .into_iter()
         .map(|message| {
