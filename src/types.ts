@@ -273,6 +273,7 @@ export interface DatasetDownloadStatus {
   currentFile: string | null;
   destination: string | null;
   error: string | null;
+  verification?: string | null;
 }
 
 export interface LaunchPlan {
