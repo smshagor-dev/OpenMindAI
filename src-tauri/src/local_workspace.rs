@@ -259,6 +259,9 @@ pub fn list_project_workspace_directory(
     if !directory.is_dir() {
         return Err(AppError::internal("workspace path is not a directory"));
     }
+    // A crash can leave a prior editor save journaled with its original bytes
+    // staged in this directory. Recover before presenting its file listing.
+    crate::coding_patch::recover_pending_transactions(&directory)?;
 
     let base = selected_root_path(&config, root_id.as_deref()).ok();
     let mut entries = Vec::new();
@@ -310,6 +313,10 @@ pub fn read_project_workspace_file(
     state: State<AppState>,
 ) -> Result<WorkspaceFileContent, AppError> {
     let config = load_project_config(&state, &project_id)?;
+    let tentative_path = resolve_path(&config, root_id.as_deref(), &path, false)?;
+    if let Some(parent) = tentative_path.parent() {
+        crate::coding_patch::recover_pending_transactions(parent)?;
+    }
     let file_path = resolve_path(&config, root_id.as_deref(), &path, true)?;
     let metadata = fs::metadata(&file_path)?;
     if !metadata.is_file() {
@@ -1016,6 +1023,56 @@ fn key_context_files(root: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_save_rejects_stale_or_missing_revisions() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("draft.txt");
+        let empty = workspace_revision(b"");
+        let initial = transactional_workspace_save(&target, b"initial", None).unwrap();
+        assert_eq!(initial, workspace_revision(b"initial"));
+        assert!(transactional_workspace_save(&target, b"unsafe", None).is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "initial");
+
+        fs::write(&target, "external edit").unwrap();
+        assert!(transactional_workspace_save(&target, b"overwrite", Some(&initial)).is_err());
+        assert!(transactional_workspace_save(&target, b"overwrite", Some(&empty)).is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "external edit");
+
+        let fresh = workspace_revision(b"external edit");
+        let updated = transactional_workspace_save(&target, b"new saved data", Some(&fresh))
+            .unwrap();
+        assert_eq!(updated, workspace_revision(b"new saved data"));
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new saved data");
+    }
+
+    #[test]
+    fn workspace_save_keeps_original_on_invalid_revision_and_failed_create() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("notes.txt");
+        fs::write(&target, "keep original").unwrap();
+        assert!(transactional_workspace_save(&target, b"wrong", Some("invalid")).is_err());
+        assert!(transactional_workspace_save(&target, b"wrong", None).is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "keep original");
+        // Trying to replace a directory must not delete it or its children.
+        let directory = temp.path().join("folder");
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("child.txt"), "safe").unwrap();
+        assert!(transactional_workspace_save(&directory, b"destroy", None).is_err());
+        assert_eq!(fs::read_to_string(directory.join("child.txt")).unwrap(), "safe");
+    }
+
+    #[test]
+    fn workspace_save_preserves_existing_permissions() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("permissions.txt");
+        fs::write(&target, "first").unwrap();
+        let original = fs::metadata(&target).unwrap().permissions();
+        let token = workspace_revision(b"first");
+        transactional_workspace_save(&target, b"second", Some(&token)).unwrap();
+        assert_eq!(fs::metadata(&target).unwrap().permissions().readonly(), original.readonly());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "second");
+    }
 
     #[test]
     fn truncation_is_unicode_safe() {
