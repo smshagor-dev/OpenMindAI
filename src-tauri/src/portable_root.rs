@@ -1,6 +1,9 @@
+#[path = "portable_output.rs"]
+mod portable_output;
+
 use std::{
     env, fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 use serde::{Deserialize, Serialize};
@@ -347,15 +350,17 @@ impl PortableRootManager {
     }
 
     pub fn resolve_relative(&self, relative: impl AsRef<Path>) -> Result<PathBuf, AppError> {
-        let relative = relative.as_ref();
-        if relative.is_absolute()
-            || relative
-                .components()
-                .any(|c| matches!(c, Component::ParentDir))
-        {
-            return Err(AppError::internal("path traversal rejected"));
-        }
-        Ok(self.root.join(relative))
+        portable_output::resolve(&self.root, relative.as_ref())
+    }
+
+    /// Create a fresh text output through directory capabilities. Existing
+    /// files are never truncated, and actual opens stay beneath the root.
+    pub fn write_new_relative(
+        &self,
+        relative: impl AsRef<Path>,
+        bytes: &[u8],
+    ) -> Result<(), AppError> {
+        portable_output::write_new(&self.root, relative.as_ref(), bytes)
     }
 
     pub fn database_path(&self) -> PathBuf {

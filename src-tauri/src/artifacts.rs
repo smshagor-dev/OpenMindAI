@@ -511,4 +511,27 @@ mod tests {
         assert!(relative.starts_with("generated/exports/"));
         assert!(relative.ends_with("/Quarterly-Research-Summary.pdf"));
     }
+    #[test]
+    fn reserved_text_outputs_publish_through_portable_capabilities() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(dir.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let manager = ArtifactManager::new(&root);
+        let (first, _, relative) = manager
+            .resolve_destination("text", Some("same.txt"), "same")
+            .unwrap();
+        root.write_new_relative(&relative, b"first completed text")
+            .unwrap();
+        assert!(root.write_new_relative(&relative, b"overwrite").is_err());
+        assert_eq!(fs::read(&first).unwrap(), b"first completed text");
+        assert_eq!(fs::read_dir(first.parent().unwrap()).unwrap().count(), 1);
+        let (second, _, relative) = manager
+            .resolve_destination("text", Some("same.txt"), "same")
+            .unwrap();
+        root.write_new_relative(&relative, b"second completed text")
+            .unwrap();
+        assert_ne!(first, second);
+        assert_eq!(fs::read(second).unwrap(), b"second completed text");
+        assert_eq!(fs::read(first).unwrap(), b"first completed text");
+    }
 }
