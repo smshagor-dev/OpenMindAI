@@ -184,7 +184,7 @@ pub async fn send_project_agent_message(
     content: String,
     state: State<'_, AppState>,
 ) -> Result<Message, AppError> {
-    run_agent_message(&app, &state, &conversation_id, &content, None, None).await
+    run_agent_message(&app, &state, &conversation_id, &content, None, None, None).await
 }
 
 #[tauri::command]
@@ -205,18 +205,25 @@ pub async fn regenerate_project_agent_message(
             .iter()
             .position(|message| message.id == assistant_message_id)
             .ok_or_else(|| AppError::internal("assistant message not found"))?;
-        let user = messages[..target_index]
+        messages[..target_index]
             .iter()
             .rev()
             .find(|message| message.role == "user")
             .cloned()
-            .ok_or_else(|| AppError::internal("no user message found for regeneration"))?;
-        repo.delete_message(&assistant_message_id)?;
-        user
+            .ok_or_else(|| AppError::internal("no user message found for regeneration"))?
     };
 
     let content = user.content.clone();
-    run_agent_message(&app, &state, &conversation_id, &content, Some(user), None).await
+    run_agent_message(
+        &app,
+        &state,
+        &conversation_id,
+        &content,
+        Some(user),
+        None,
+        Some(&assistant_message_id),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -240,7 +247,16 @@ pub async fn resume_coding_run(
             "only interrupted or failed coding runs can be resumed",
         ));
     }
-    run_agent_message(&app, &state, &conversation_id, &goal, None, Some(run_id)).await
+    run_agent_message(
+        &app,
+        &state,
+        &conversation_id,
+        &goal,
+        None,
+        Some(run_id),
+        None,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -355,7 +371,7 @@ pub fn restore_openagent_checkpoint(
     }
 }
 
-#[allow(unused_assignments)]
+#[allow(unused_assignments, clippy::too_many_arguments)]
 async fn run_agent_message(
     app: &AppHandle,
     state: &State<'_, AppState>,
@@ -363,6 +379,7 @@ async fn run_agent_message(
     content: &str,
     existing_user: Option<Message>,
     resume_parent: Option<String>,
+    regeneration_target: Option<&str>,
 ) -> Result<Message, AppError> {
     if content.trim().is_empty() {
         return Err(AppError::internal("OpenAgent request cannot be empty"));
@@ -386,7 +403,8 @@ async fn run_agent_message(
     let runtime_budget_minutes = preferences.coding_runtime_budget_minutes;
     let ci_repair_limit = usize::from(preferences.coding_ci_repair_limit.clamp(1, 5));
 
-    let mut agent_context = load_agent_context(state, conversation_id, content)?;
+    let mut agent_context =
+        load_agent_context(state, conversation_id, content, regeneration_target)?;
     if let Some(parent) = resume_parent.as_deref() {
         let seed = {
             let db = state
@@ -446,14 +464,20 @@ async fn run_agent_message(
     .0 as usize;
 
     let cancellation = state.active_generations.start(conversation_id)?;
-    let (user, assistant) =
-        match create_agent_messages(state, conversation_id, content, &model.id, existing_user) {
-            Ok(messages) => messages,
-            Err(error) => {
-                state.active_generations.finish(conversation_id);
-                return Err(error);
-            }
-        };
+    let (user, assistant) = match create_agent_messages(
+        state,
+        conversation_id,
+        content,
+        &model.id,
+        existing_user,
+        regeneration_target,
+    ) {
+        Ok(messages) => messages,
+        Err(error) => {
+            state.active_generations.finish(conversation_id);
+            return Err(error);
+        }
+    };
     let run_id = {
         let db = state
             .database
@@ -1625,6 +1649,7 @@ fn load_agent_context(
     state: &State<'_, AppState>,
     conversation_id: &str,
     goal: &str,
+    regeneration_target: Option<&str>,
 ) -> Result<AgentContext, AppError> {
     let db = state
         .database
@@ -1636,7 +1661,8 @@ fn load_agent_context(
     let workspace = load_workspace_config(&db, &project.id)?;
     let workspace_context = local_workspace::workspace_context_for_project(&db, &project.id)?
         .unwrap_or_else(|| "No workspace snapshot is available yet.".to_string());
-    let conversation_context = recent_conversation_context(&db, conversation_id)?;
+    let conversation_context =
+        recent_conversation_context(&db, conversation_id, regeneration_target)?;
     let workers = usize::from(
         SettingsRepository::new(&db)
             .get_preferences()?
@@ -1697,8 +1723,13 @@ fn refresh_agent_workspace_context(
 fn recent_conversation_context(
     database: &Database,
     conversation_id: &str,
+    regeneration_target: Option<&str>,
 ) -> Result<String, AppError> {
-    let messages = ChatRepository::new(database).list_messages(conversation_id)?;
+    let repo = ChatRepository::new(database);
+    let messages = match regeneration_target {
+        Some(target) => repo.history_before_regeneration(conversation_id, target)?,
+        None => repo.list_messages(conversation_id)?,
+    };
     let mut recent = messages
         .into_iter()
         .filter(|message| message.role == "user" || message.role == "assistant")
@@ -1726,6 +1757,7 @@ fn create_agent_messages(
     content: &str,
     model_id: &str,
     existing_user: Option<Message>,
+    regeneration_target: Option<&str>,
 ) -> Result<(Message, Message), AppError> {
     let db = state
         .database
@@ -1736,13 +1768,16 @@ fn create_agent_messages(
         Some(user) => user,
         None => repo.add_message(conversation_id, "user", content, "completed", None)?,
     };
-    let assistant = repo.add_message(
-        conversation_id,
-        "assistant",
-        "",
-        "streaming",
-        Some(model_id),
-    )?;
+    let assistant = match regeneration_target {
+        Some(target) => repo.begin_regeneration(conversation_id, target, Some(model_id))?,
+        None => repo.add_message(
+            conversation_id,
+            "assistant",
+            "",
+            "streaming",
+            Some(model_id),
+        )?,
+    };
     Ok((user, assistant))
 }
 

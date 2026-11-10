@@ -1932,7 +1932,6 @@ async fn regenerate_message(
             ));
         }
 
-        repo.delete_message(&assistant_message_id)?;
         user
     };
     let routing = resolve_conversation_model(&state, &conversation_id, &mode, &user.content)?;
@@ -1952,11 +1951,9 @@ async fn regenerate_message(
             .database
             .lock()
             .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-        ChatRepository::new(&db).add_message(
+        ChatRepository::new(&db).begin_regeneration(
             &conversation_id,
-            "assistant",
-            "",
-            "streaming",
+            &assistant_message_id,
             Some(&model.id),
         )?
     };

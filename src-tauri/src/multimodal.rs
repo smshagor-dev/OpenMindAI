@@ -198,13 +198,6 @@ pub(crate) async fn regenerate_multimodal_message(
 
     let generation =
         crate::ChatGenerationGuard::start(&state.active_generations, &conversation_id)?;
-    {
-        let db = state
-            .database
-            .lock()
-            .map_err(|_| AppError::internal("database lock poisoned"))?;
-        ChatRepository::new(&db).delete_message(&assistant_message_id)?;
-    }
 
     let mode = "vision";
     let routing = crate::resolve_conversation_model(&state, &conversation_id, mode, &user.content)?;
@@ -221,11 +214,9 @@ pub(crate) async fn regenerate_multimodal_message(
             .database
             .lock()
             .map_err(|_| AppError::internal("database lock poisoned"))?;
-        ChatRepository::new(&db).add_message(
+        ChatRepository::new(&db).begin_regeneration(
             &conversation_id,
-            "assistant",
-            "",
-            "streaming",
+            &assistant_message_id,
             Some(&model.id),
         )?
     };

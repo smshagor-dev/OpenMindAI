@@ -602,7 +602,6 @@ export function App() {
     const lease = chatState.beginRequest(activeId);
     if (!lease) return;
     const requestScope = chatState.scope(activeId);
-    requestScope.setMessages((items) => items.filter((message) => message.id !== assistantMessageId));
     try {
       await api.regenerateMessage(activeId, assistantMessageId, mode);
       await refreshMessages(activeId);

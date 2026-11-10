@@ -58,6 +58,8 @@ jobs:
       - name: Chat draft failure recovery
         run: npm run test:drafts
 
+      - name: Regeneration history preservation
+        run: npm run test:regeneration
       - name: Model action failure recovery
         run: npm run test:model-actions
       - name: Concurrent attachment ingestion
