@@ -534,9 +534,9 @@ fn create_text_artifact(
         .unwrap_or_else(|_| "artifact".to_string());
 
     let manager = ArtifactManager::new(&state.root);
-    let (path, filename_final, relative) =
+    let (_path, filename_final, relative) =
         manager.resolve_destination(&kind, filename.as_deref(), &fallback_title)?;
-    std::fs::write(&path, content.as_bytes())?;
+    state.root.write_new_relative(&relative, content.as_bytes())?;
     let size = content.len() as i64;
 
     let artifacts = ArtifactRepository::new(&db);
