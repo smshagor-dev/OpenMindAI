@@ -21,14 +21,19 @@
 use std::{
     fmt,
     net::IpAddr,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Mutex, OnceLock, RwLock},
     time::{Duration, Instant},
 };
 
 use futures_util::StreamExt;
 use reqwest::{header, Client, ClientBuilder, Proxy, RequestBuilder, Response, StatusCode};
-use tokio::{fs as async_fs, io::AsyncWriteExt};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use tokio::{
+    fs as async_fs,
+    io::{AsyncReadExt, AsyncWriteExt},
+};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -249,8 +254,117 @@ pub struct DownloadProgress {
     pub bytes_per_sec: f64,
 }
 
+// The sidecar is only a resume hint. Missing, interrupted or unrecognized
+// metadata causes a full transfer, never an unvalidated append. Hash the source
+// URL so signed URLs and credentials are not persisted in the sidecar.
+#[derive(Debug, Serialize, Deserialize)]
+struct ResumeMetadata {
+    source: String,
+    validator: ResumeValidator,
+    total: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+enum ResumeValidator {
+    ETag(String),
+    LastModified(String),
+}
+
+impl ResumeValidator {
+    fn value(&self) -> &str {
+        match self {
+            Self::ETag(value) | Self::LastModified(value) => value,
+        }
+    }
+
+    fn from_headers(headers: &header::HeaderMap) -> Option<Self> {
+        if let Some(tag) = headers
+            .get(header::ETAG)
+            .and_then(|value| value.to_str().ok())
+        {
+            if tag.len() <= 1024 && tag.starts_with('"') && tag.ends_with('"') {
+                return Some(Self::ETag(tag.to_string()));
+            }
+        }
+        // RFC 9110: a date validator must be strong enough for If-Range.
+        // Require the origin Date to be at least 60 seconds newer than the
+        // modification date; otherwise fall back to a complete transfer.
+        let modified = headers.get(header::LAST_MODIFIED)?.to_str().ok()?;
+        let date = headers.get(header::DATE)?.to_str().ok()?;
+        let age = chrono::DateTime::parse_from_rfc2822(date).ok()?
+            - chrono::DateTime::parse_from_rfc2822(modified).ok()?;
+        (age.num_seconds() >= 60).then(|| Self::LastModified(modified.to_string()))
+    }
+
+    fn matches(&self, headers: &header::HeaderMap) -> bool {
+        let name = match self {
+            Self::ETag(_) => header::ETAG,
+            Self::LastModified(_) => header::LAST_MODIFIED,
+        };
+        headers.get(name).and_then(|value| value.to_str().ok()) == Some(self.value())
+    }
+}
+
+fn resume_metadata_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".resume.json");
+    PathBuf::from(name)
+}
+
+async fn read_resume_metadata(path: &Path, url: &str) -> Option<ResumeMetadata> {
+    let file = async_fs::File::open(resume_metadata_path(path))
+        .await
+        .ok()?;
+    let mut bytes = Vec::new();
+    file.take(8193).read_to_end(&mut bytes).await.ok()?;
+    if bytes.len() > 8192 {
+        return None;
+    }
+    let metadata: ResumeMetadata = serde_json::from_slice(&bytes).ok()?;
+    // Revalidate the serialized header before passing it back to reqwest.
+    if metadata.source != format!("{:x}", Sha256::digest(url.as_bytes()))
+        || header::HeaderValue::from_str(metadata.validator.value()).is_err()
+    {
+        return None;
+    }
+    Some(metadata)
+}
+
+// Return (last byte, total size); all arithmetic is checked before writing.
+fn validated_content_range(
+    headers: &header::HeaderMap,
+    start: u64,
+    expected_total: Option<u64>,
+) -> Option<(u64, u64)> {
+    let value = headers.get(header::CONTENT_RANGE)?.to_str().ok()?;
+    let (span, total) = value.strip_prefix("bytes ")?.split_once('/')?;
+    let (first, last) = span.split_once('-')?;
+    let number = |value: &str| {
+        (!value.is_empty() && value.bytes().all(|ch| ch.is_ascii_digit()))
+            .then(|| value.parse::<u64>().ok())
+            .flatten()
+    };
+    let (first, last, total) = (number(first)?, number(last)?, number(total)?);
+    if first != start
+        || last < first
+        || last >= total
+        || expected_total.is_some_and(|expected| expected != total)
+    {
+        return None;
+    }
+    let length = last.checked_sub(first)?.checked_add(1)?;
+    if headers
+        .get(header::CONTENT_LENGTH)
+        .is_some_and(|value| value.to_str().ok().and_then(number) != Some(length))
+    {
+        return None;
+    }
+    Some((last, total))
+}
+
 /// Downloads `url` into `path`, appending to bytes already there with an HTTP
-/// range request. Dropped connections, stalls and transient server errors are
+/// range request only when a saved representation validator matches. Legacy or
+/// unverifiable partials restart from zero. Dropped connections and transient errors are
 /// resumed from the last byte written; it gives up after [`MAX_ATTEMPTS`]
 /// consecutive attempts that make no progress. Returns the final file size.
 /// Checksum verification and moving the file into place stay with the caller.
@@ -279,14 +393,32 @@ pub async fn download_resumable(
             if existing > expected {
                 async_fs::remove_file(path).await.ok();
                 existing = 0;
-            } else if expected > 0 && existing == expected {
-                return Ok(existing);
             }
         }
 
-        let mut request = client.get(url);
+        let metadata = if existing > 0 {
+            read_resume_metadata(path, url).await
+        } else {
+            None
+        };
+        let can_resume = metadata.as_ref().is_some_and(|metadata| {
+            !metadata.total.is_some_and(|total| existing >= total)
+                && !expected_size
+                    .zip(metadata.total)
+                    .is_some_and(|(expected, total)| expected != total)
+        });
+        if existing > 0 && !can_resume {
+            tracing::warn!("partial download has no usable representation validator; restarting");
+            existing = 0;
+        }
+        let mut request = client.get(url).header(header::ACCEPT_ENCODING, "identity");
         if existing > 0 {
-            request = request.header(header::RANGE, format!("bytes={existing}-"));
+            request = request
+                .header(header::RANGE, format!("bytes={existing}-"))
+                .header(
+                    header::IF_RANGE,
+                    metadata.as_ref().unwrap().validator.value(),
+                );
         }
         let response = match request.send().await {
             Ok(response) => response,
@@ -318,10 +450,45 @@ pub async fn download_resumable(
             return Err(NetError::Status(status));
         }
 
-        let resumed = existing > 0 && status == StatusCode::PARTIAL_CONTENT;
-        if !resumed {
-            existing = 0;
+        if response
+            .headers()
+            .get(header::CONTENT_ENCODING)
+            .is_some_and(|value| value != "identity")
+        {
+            return Err(NetError::Size(
+                "encoded download cannot be checked by byte range".into(),
+            ));
         }
+        let resumed = existing > 0 && status == StatusCode::PARTIAL_CONTENT;
+        let (response_end, total) = if status == StatusCode::PARTIAL_CONTENT {
+            let prior = metadata.as_ref().filter(|_| resumed);
+            let known_total = expected_size.or(prior.and_then(|metadata| metadata.total));
+            let range = validated_content_range(response.headers(), existing, known_total);
+            if !resumed || !prior.unwrap().validator.matches(response.headers()) || range.is_none()
+            {
+                // Do not alter the partial file for an invalid response. The
+                // caller can retry later; no corrupt result can be installed.
+                return Err(NetError::Size(
+                    "invalid Content-Range or changed download validator".into(),
+                ));
+            }
+            let (last, total) = range.unwrap();
+            (Some(last + 1), Some(total))
+        } else if status == StatusCode::OK {
+            existing = 0; // A server ignoring Range/If-Range must replace, never append.
+            let length = response.content_length();
+            if expected_size
+                .zip(length)
+                .is_some_and(|(expected, actual)| expected != actual)
+            {
+                return Err(NetError::Size(
+                    "download Content-Length differs from expected size".into(),
+                ));
+            }
+            (length, expected_size.or(length))
+        } else {
+            return Err(NetError::Status(status));
+        };
         let mut file = async_fs::OpenOptions::new()
             .create(true)
             .append(resumed)
@@ -329,6 +496,36 @@ pub async fn download_resumable(
             .truncate(!resumed)
             .open(path)
             .await?;
+        {
+            let sidecar = resume_metadata_path(path);
+            let validator = if resumed {
+                metadata.as_ref().map(|metadata| metadata.validator.clone())
+            } else {
+                ResumeValidator::from_headers(response.headers())
+            };
+            if let Some(validator) = validator {
+                let metadata = ResumeMetadata {
+                    source: format!("{:x}", Sha256::digest(url.as_bytes())),
+                    validator,
+                    total,
+                };
+                // An interrupted JSON write is safe: parsing fails and the next
+                // attempt restarts. Persist before writing any new body bytes.
+                async_fs::write(
+                    sidecar,
+                    serde_json::to_vec(&metadata)
+                        .map_err(|error| NetError::Size(error.to_string()))?,
+                )
+                .await?;
+            } else {
+                match async_fs::remove_file(sidecar).await {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+                tracing::warn!("download has no strong validator; interrupted transfers will restart; checksums remain the caller's responsibility");
+            }
+        }
         let mut downloaded = existing;
         let report = |downloaded: u64, session_bytes: u64| DownloadProgress {
             downloaded,
@@ -357,29 +554,32 @@ pub async fn download_resumable(
                     break;
                 }
             };
-            file.write_all(&chunk).await?;
-            downloaded += chunk.len() as u64;
-            session_bytes += chunk.len() as u64;
-            if let Some(expected) = expected_size {
-                if downloaded > expected {
-                    drop(file);
-                    async_fs::remove_file(path).await.ok();
-                    return Err(NetError::Size(format!(
-                        "download exceeded the expected size of {expected} bytes"
-                    )));
-                }
+            let next_size = downloaded
+                .checked_add(chunk.len() as u64)
+                .ok_or_else(|| NetError::Size("download size overflow".into()))?;
+            if response_end.is_some_and(|end| next_size > end)
+                || total.is_some_and(|total| next_size > total)
+            {
+                return Err(NetError::Size(
+                    "download body exceeded its declared byte range or size".into(),
+                ));
             }
+            file.write_all(&chunk).await?;
+            downloaded = next_size;
+            session_bytes += chunk.len() as u64;
             on_progress(report(downloaded, session_bytes));
         }
         file.flush().await?;
         drop(file);
 
-        let incomplete = expected_size.is_some_and(|expected| downloaded < expected);
+        let incomplete = total.is_some_and(|total| downloaded < total)
+            || response_end.is_some_and(|end| downloaded < end);
         if stream_error.is_none() && !incomplete {
+            async_fs::remove_file(resume_metadata_path(path)).await.ok();
             return Ok(downloaded);
         }
         // A connection that delivered new bytes starts a fresh run of attempts.
-        failures = if downloaded > existing {
+        failures = if resumed && downloaded > existing {
             1
         } else {
             failures + 1
@@ -831,16 +1031,17 @@ mod tests {
                 let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
                 if round == 0 {
                     let header = format!(
-                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n",
+                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\netag: \"v1\"\r\n\r\n",
                         served.len()
                     );
                     socket.write_all(header.as_bytes()).await.unwrap();
                     socket.write_all(&served[..2048]).await.unwrap();
                 } else {
                     assert!(request.contains("range: bytes=2048-"), "{request}");
+                    assert!(request.contains("if-range: \"v1\""), "{request}");
                     let rest = &served[2048..];
                     let header = format!(
-                        "HTTP/1.1 206 Partial Content\r\ncontent-length: {}\r\ncontent-range: bytes 2048-4095/4096\r\n\r\n",
+                        "HTTP/1.1 206 Partial Content\r\ncontent-length: {}\r\ncontent-range: bytes 2048-4095/4096\r\netag: \"v1\"\r\n\r\n",
                         rest.len()
                     );
                     socket.write_all(header.as_bytes()).await.unwrap();
@@ -869,5 +1070,212 @@ mod tests {
         assert_eq!(last, Some(body.len() as u64));
         assert_eq!(std::fs::read(&path).unwrap(), body);
         std::fs::remove_dir_all(dir).ok();
+    }
+    async fn resume_fixture(
+        replies: Vec<String>,
+        seed: &[u8],
+        validator: Option<ResumeValidator>,
+        expected: Option<u64>,
+    ) -> (Result<u64, NetError>, Vec<u8>, Vec<String>) {
+        use tokio::{io::AsyncReadExt, net::TcpListener};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/file", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for reply in replies {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut bytes = [0; 1024];
+                    let n = socket.read(&mut bytes).await.unwrap();
+                    assert!(n > 0);
+                    request.extend_from_slice(&bytes[..n]);
+                    if request.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                requests.push(String::from_utf8(request).unwrap().to_ascii_lowercase());
+                socket.write_all(reply.as_bytes()).await.unwrap();
+            }
+            requests
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.part");
+        std::fs::write(&path, seed).unwrap();
+        if let Some(validator) = validator {
+            std::fs::write(
+                resume_metadata_path(&path),
+                serde_json::to_vec(&ResumeMetadata {
+                    source: format!("{:x}", Sha256::digest(url.as_bytes())),
+                    validator,
+                    total: Some(10),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let result = download_resumable(
+            &Client::builder().no_proxy().build().unwrap(),
+            &url,
+            &path,
+            expected,
+            None,
+            |_| {},
+        )
+        .await;
+        if result.is_ok() {
+            assert!(!resume_metadata_path(&path).exists());
+        }
+        let requests = tokio::time::timeout(Duration::from_secs(10), server)
+            .await
+            .unwrap()
+            .unwrap();
+        (result, std::fs::read(path).unwrap_or_default(), requests)
+    }
+
+    fn v1() -> Option<ResumeValidator> {
+        Some(ResumeValidator::ETag("\"v1\"".into()))
+    }
+
+    #[tokio::test]
+    async fn wrong_range_or_validator_never_changes_the_partial_file() {
+        for (range, length, tag) in [
+            ("bytes 3-8/10", "6", "\"v1\""),
+            ("bytes 4-10/10", "6", "\"v1\""),
+            ("bytes 4-3/10", "6", "\"v1\""),
+            ("bytes 4-9/11", "6", "\"v1\""),
+            ("bytes 4-9/*", "6", "\"v1\""),
+            ("bytes 4-9/10", "5", "\"v1\""),
+            ("items 4-9/10", "6", "\"v1\""),
+            ("bytes +4-9/10", "6", "\"v1\""),
+            ("bytes 4-9/10", "6", "\"v2\""),
+            ("bytes 4-9/10", "6", "W/\"v1\""),
+            ("bytes 4-9/10", "6", ""),
+            ("", "6", "\"v1\""),
+        ] {
+            let reply = format!("HTTP/1.1 206 Partial Content\r\nContent-Range: {range}\r\nContent-Length: {length}\r\nETag: {tag}\r\nConnection: close\r\n\r\nEFGHIJ");
+            let (result, bytes, requests) =
+                resume_fixture(vec![reply], b"abcd", v1(), Some(10)).await;
+            assert!(
+                matches!(result, Err(NetError::Size(_))),
+                "{range}, {tag}: {result:?}"
+            );
+            assert_eq!(bytes, b"abcd");
+            assert!(requests[0].contains("if-range: \"v1\""));
+        }
+    }
+
+    #[tokio::test]
+    async fn persisted_validator_resumes_unknown_size_and_tracks_short_ranges() {
+        let (result, bytes, requests) = resume_fixture(vec![
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 4-6/10\r\nContent-Length: 3\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nEFG".into(),
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 7-9/10\r\nContent-Length: 3\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nHIJ".into(),
+        ], b"abcd", v1(), None).await;
+        assert_eq!(result.unwrap(), 10);
+        assert_eq!(bytes, b"abcdEFGHIJ");
+        assert!(requests[1].contains("range: bytes=7-"));
+    }
+
+    #[tokio::test]
+    async fn changed_representation_or_ignored_range_replaces_instead_of_appending() {
+        let reply = "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nETag: \"v2\"\r\nConnection: close\r\n\r\n0123456789";
+        let (result, bytes, requests) =
+            resume_fixture(vec![reply.into()], b"abcd", v1(), Some(10)).await;
+        assert_eq!(result.unwrap(), 10);
+        assert_eq!(bytes, b"0123456789");
+        assert!(requests[0].contains("range: bytes=4-"));
+    }
+
+    #[tokio::test]
+    async fn legacy_partial_and_size_only_complete_file_require_a_full_response() {
+        for seed in [b"abcd".as_slice(), b"badbadbad!".as_slice()] {
+            let reply =
+                "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n0123456789";
+            let (result, bytes, requests) =
+                resume_fixture(vec![reply.into()], seed, None, Some(10)).await;
+            assert_eq!(result.unwrap(), 10);
+            assert_eq!(bytes, b"0123456789");
+            assert!(!requests[0].contains("range:"));
+            assert!(requests[0].contains("accept-encoding: identity"));
+        }
+    }
+
+    #[tokio::test]
+    async fn weak_validator_restarts_an_interrupted_transfer_without_mixing_versions() {
+        let (result, bytes, requests) = resume_fixture(vec![
+            "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nETag: W/\"v1\"\r\nConnection: close\r\n\r\nabcd".into(),
+            "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nETag: \"v2\"\r\nConnection: close\r\n\r\n0123456789".into(),
+        ], b"", None, Some(10)).await;
+        assert_eq!(result.unwrap(), 10);
+        assert_eq!(bytes, b"0123456789");
+        assert!(!requests[1].contains("range:"));
+    }
+
+    #[tokio::test]
+    async fn overlong_chunked_range_is_rejected_before_it_can_be_appended() {
+        let reply = "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 4-9/10\r\nTransfer-Encoding: chunked\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n7\r\nEFGHIJK\r\n0\r\n\r\n";
+        let (result, bytes, _) = resume_fixture(vec![reply.into()], b"abcd", v1(), Some(10)).await;
+        assert!(matches!(result, Err(NetError::Size(_))));
+        assert_eq!(bytes, b"abcd");
+    }
+
+    #[test]
+    fn last_modified_is_only_usable_with_a_strong_date_validator() {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(
+            header::LAST_MODIFIED,
+            "Sun, 06 Nov 1994 08:49:37 GMT".parse().unwrap(),
+        );
+        headers.insert(
+            header::DATE,
+            "Sun, 06 Nov 1994 08:49:38 GMT".parse().unwrap(),
+        );
+        assert!(ResumeValidator::from_headers(&headers).is_none());
+        headers.insert(
+            header::DATE,
+            "Sun, 06 Nov 1994 08:50:37 GMT".parse().unwrap(),
+        );
+        assert!(matches!(
+            ResumeValidator::from_headers(&headers),
+            Some(ResumeValidator::LastModified(_))
+        ));
+    }
+    #[tokio::test]
+    async fn last_modified_resume_and_416_restart_are_safe() {
+        let modified = "Sun, 06 Nov 1994 08:49:37 GMT";
+        let (result, bytes, requests) = resume_fixture(vec![format!(
+            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 4-9/10\r\nContent-Length: 6\r\nLast-Modified: {modified}\r\nConnection: close\r\n\r\nEFGHIJ"
+        )], b"abcd", Some(ResumeValidator::LastModified(modified.into())), Some(10)).await;
+        assert_eq!(result.unwrap(), 10);
+        assert_eq!(bytes, b"abcdEFGHIJ");
+        assert!(requests[0].contains("if-range: sun, 06 nov 1994 08:49:37 gmt"));
+        let (result, bytes, requests) = resume_fixture(vec![
+            "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into(),
+            "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n0123456789".into(),
+        ], b"abcd", v1(), Some(10)).await;
+        assert_eq!(result.unwrap(), 10);
+        assert_eq!(bytes, b"0123456789");
+        assert!(!requests[1].contains("range:"));
+    }
+
+    #[tokio::test]
+    async fn bad_or_oversized_resume_metadata_is_not_trusted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data.part");
+        for bytes in [
+            b"{interrupted".to_vec(),
+            vec![b' '; 8193],
+            serde_json::to_vec(&ResumeMetadata {
+                source: "wrong source".into(),
+                validator: ResumeValidator::ETag("\"v1\"".into()),
+                total: Some(10),
+            })
+            .unwrap(),
+        ] {
+            std::fs::write(resume_metadata_path(&path), bytes).unwrap();
+            assert!(read_resume_metadata(&path, "http://localhost/file")
+                .await
+                .is_none());
+        }
     }
 }

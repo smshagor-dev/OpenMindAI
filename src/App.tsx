@@ -118,7 +118,29 @@ export function App() {
   const [prompt, setPromptState] = useState("");
   const [attachments, setAttachmentsState] = useState<AttachmentDraft[]>([]);
   const draftRevision = useRef(0);
-  const setPrompt = useCallback((value: string) => { draftRevision.current += 1; setPromptState(value); }, []);
+  const latestPrompt = useRef("");
+  const discardedDraft = useRef(0);
+  const setPrompt = useCallback((value: string) => {
+    draftRevision.current += 1;
+    if (!value.trim()) discardedDraft.current += 1;
+    latestPrompt.current = value;
+    setPromptState(value);
+  }, []);
+  const createVoiceDraftTarget = useCallback(() => {
+    const view = chatState.captureView();
+    const discard = discardedDraft.current;
+    const isCurrent = () => chatState.isCurrent(view) && discardedDraft.current === discard;
+    return {
+      isCurrent,
+      append: (text: string) => {
+        const transcript = text.trim();
+        if (!transcript || !isCurrent()) return false;
+        const current = latestPrompt.current.trimEnd();
+        setPrompt(current.trim() ? `${current} ${transcript}` : transcript);
+        return true;
+      },
+    };
+  }, [chatState, setPrompt]);
   const setAttachments = useCallback((change: SetStateAction<AttachmentDraft[]>) => { draftRevision.current += 1; setAttachmentsState(change); }, []);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -1177,6 +1199,7 @@ export function App() {
             messages={messages}
             prompt={prompt}
             setPrompt={setPrompt}
+            createVoiceDraftTarget={createVoiceDraftTarget}
             imageOptions={imageOptions}
             setImageOptions={setImageOptions}
             attachments={attachments}
@@ -1236,6 +1259,7 @@ export function App() {
               messages={messages}
               prompt={prompt}
               setPrompt={setPrompt}
+              createVoiceDraftTarget={createVoiceDraftTarget}
               imageOptions={imageOptions}
               setImageOptions={setImageOptions}
               attachments={attachments}
