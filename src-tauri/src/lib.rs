@@ -79,6 +79,7 @@ mod dataset_context;
 mod dataset_download;
 mod github_workspace;
 mod google_workspace;
+mod installation_file;
 mod isolated_runtime;
 mod local_agent;
 mod local_workspace;
