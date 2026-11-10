@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Component, Path},
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -8,12 +8,15 @@ use std::{
 use chrono::Utc;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
-use tokio::fs as async_fs;
+use tokio::{
+    fs as async_fs,
+    sync::{OwnedSemaphorePermit, Semaphore},
+};
 use url::form_urlencoded;
 
 use crate::{
     app_error::AppError,
-    model_download::{ensure_contained, validate_free_space},
+    model_download::{ensure_contained, sha256_file, validate_free_space},
     portable_root::PortableRootManager,
 };
 
@@ -43,6 +46,7 @@ pub struct DatasetDownloadStatus {
     pub current_file: Option<String>,
     pub destination: Option<String>,
     pub error: Option<String>,
+    pub verification: Option<String>,
 }
 
 impl DatasetDownloadStatus {
@@ -59,6 +63,7 @@ impl DatasetDownloadStatus {
             current_file: None,
             destination: None,
             error: None,
+            verification: None,
         }
     }
 }
@@ -75,6 +80,7 @@ struct OpenMindDatasetTreeEntry {
 #[derive(Debug, Deserialize)]
 struct OpenMindDatasetLfs {
     size: Option<u64>,
+    sha256: Option<String>,
 }
 
 #[derive(Clone)]
@@ -82,6 +88,9 @@ pub struct DatasetDownloadManager {
     root: PortableRootManager,
     status: Arc<Mutex<DatasetDownloadStatus>>,
     client: Client,
+    active_download: Arc<Semaphore>,
+    api_base: String,
+    resolve_base: String,
 }
 
 impl DatasetDownloadManager {
@@ -90,6 +99,9 @@ impl DatasetDownloadManager {
             root,
             status: Arc::new(Mutex::new(DatasetDownloadStatus::queued())),
             client: crate::net::download_client(),
+            active_download: Arc::new(Semaphore::new(1)),
+            api_base: openmind_dataset_api_base(),
+            resolve_base: openmind_dataset_resolve_base(),
         }
     }
 
@@ -100,11 +112,68 @@ impl DatasetDownloadManager {
             .map_err(|_| AppError::internal("dataset download status lock poisoned"))
     }
 
+    fn begin_download(&self) -> Result<OwnedSemaphorePermit, AppError> {
+        self.active_download
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| {
+                AppError::ModelDownloadFailed(
+                    "another dataset download is already in progress; wait for it to finish".into(),
+                )
+            })
+    }
+
+    /// Coordinate independent OpenMindAI processes sharing one portable root.
+    ///
+    /// This file is intentionally persistent: deleting a locked file can let
+    /// another process lock a different inode. The OS releases the advisory
+    /// lock automatically if the process exits or the handle is dropped.
+    fn begin_root_install(&self) -> Result<fs::File, AppError> {
+        let root = self.root.root();
+        fs::create_dir_all(root)?;
+        let lock_path = root.join(".openmindai-dataset-install.lock");
+        ensure_contained(root, &lock_path)?;
+        match fs::symlink_metadata(&lock_path) {
+            Ok(info) if info.file_type().is_symlink() || !info.file_type().is_file() => {
+                return Err(AppError::ModelDownloadFailed(
+                    "dataset install lock is not a regular file".to_string(),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        // A replaced symlink or moved portable root must not cause the
+        // downloader to coordinate against a file outside its root.
+        ensure_contained(root, &lock_path)?;
+        match file.try_lock() {
+            Ok(()) => Ok(file),
+            Err(fs::TryLockError::WouldBlock) => Err(AppError::ModelDownloadFailed(
+                "another OpenMindAI process is installing datasets in this portable root"
+                    .to_string(),
+            )),
+            Err(fs::TryLockError::Error(error)) => Err(AppError::ModelDownloadFailed(format!(
+                "cannot acquire dataset install lock: {error}"
+            ))),
+        }
+    }
+
     pub async fn download_dataset(
         &self,
         dataset_id: &str,
     ) -> Result<DatasetDownloadStatus, AppError> {
         validate_dataset_id(dataset_id)?;
+        // Both guards precede any shared status, network or partial-file
+        // mutation and live through completion/error handling. Dropping an
+        // interrupted future also releases them automatically.
+        let _in_flight = self.begin_download()?;
+        let _root_lock = self.begin_root_install()?;
         self.update_status(|status| {
             *status = DatasetDownloadStatus {
                 dataset_id: dataset_id.to_string(),
@@ -118,6 +187,7 @@ impl DatasetDownloadManager {
                 current_file: Some("Resolving OpenMindAI dataset".to_string()),
                 destination: None,
                 error: None,
+                verification: None,
             };
         })?;
 
@@ -151,6 +221,19 @@ impl DatasetDownloadManager {
             ));
         }
 
+        // Validate published digests before any file is changed.
+        for file in &files {
+            expected_checksum(file)?;
+        }
+        let unchecked = files
+            .iter()
+            .filter(|file| expected_checksum(file).ok().flatten().is_none())
+            .count();
+        let verification = if unchecked == 0 {
+            "All dataset files verified with upstream SHA-256".to_string()
+        } else {
+            format!("{unchecked} dataset files have no upstream checksum; integrity is not cryptographically verified")
+        };
         let total_bytes = files.iter().map(tree_entry_size).sum::<u64>();
         let dataset_dir = self.root.resolve_relative(format!(
             "datasets/openmindai/{}/snapshot/main",
@@ -189,6 +272,7 @@ impl DatasetDownloadManager {
                     &file.path,
                     &final_path,
                     Some(tree_entry_size(file)),
+                    expected_checksum(file)?,
                 )
                 .await?;
             downloaded_bytes = downloaded_bytes.saturating_add(bytes);
@@ -214,6 +298,7 @@ impl DatasetDownloadManager {
             status.percentage = Some(100.0);
             status.speed_bytes_per_sec = None;
             status.current_file = Some("Ready".to_string());
+            status.verification = Some(verification);
             status.error = None;
         })?;
         self.status()
@@ -223,10 +308,7 @@ impl DatasetDownloadManager {
         &self,
         dataset_id: &str,
     ) -> Result<Vec<OpenMindDatasetTreeEntry>, AppError> {
-        let url = format!(
-            "{}{dataset_id}/tree/main?recursive=1",
-            openmind_dataset_api_base()
-        );
+        let url = format!("{}{dataset_id}/tree/main?recursive=1", self.api_base);
         let response = crate::net::send_with_retry(|| self.client.get(&url), None)
             .await
             .map_err(|error| {
@@ -254,12 +336,13 @@ impl DatasetDownloadManager {
         &self,
         dataset_id: &str,
         relative_path: &str,
-        final_path: &PathBuf,
+        final_path: &Path,
         expected_size: Option<u64>,
+        expected_sha256: Option<&str>,
     ) -> Result<u64, AppError> {
         let url = format!(
             "{}{dataset_id}/resolve/main/{}",
-            openmind_dataset_resolve_base(),
+            self.resolve_base,
             encode_path(relative_path)
         );
         let part_path = final_path.with_extension("openmindai-part");
@@ -279,7 +362,7 @@ impl DatasetDownloadManager {
                 "dataset file {relative_path} download failed: {error}"
             ))
         })?;
-        async_fs::rename(&part_path, final_path).await?;
+        install_downloaded_file(&part_path, final_path, expected_sha256)?;
         Ok(downloaded)
     }
 
@@ -299,7 +382,9 @@ impl DatasetDownloadManager {
             "files": files.iter().map(|file| {
                 serde_json::json!({
                     "path": file.path,
-                    "size": tree_entry_size(file)
+                    "size": tree_entry_size(file),
+                    "sha256": expected_checksum(file).ok().flatten(),
+                    "verification": if expected_checksum(file).ok().flatten().is_some() { "sha256-verified" } else { "no-upstream-checksum" }
                 })
             }).collect::<Vec<_>>()
         });
@@ -365,6 +450,47 @@ fn safe_dataset_path(path: &str) -> bool {
         })
 }
 
+fn install_downloaded_file(
+    part: &Path,
+    destination: &Path,
+    expected: Option<&str>,
+) -> Result<(), AppError> {
+    let result = (|| {
+        if let Some(expected) = expected {
+            verify_dataset_checksum(part, expected)?;
+        }
+        fs::rename(part, destination)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(part);
+    }
+    result
+}
+
+fn expected_checksum(entry: &OpenMindDatasetTreeEntry) -> Result<Option<&str>, AppError> {
+    let Some(hash) = entry.lfs.as_ref().and_then(|lfs| lfs.sha256.as_deref()) else {
+        return Ok(None);
+    };
+    if hash.len() != 64 || !hash.bytes().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(AppError::ModelChecksumFailed(format!(
+            "invalid dataset SHA-256 for {}",
+            entry.path
+        )));
+    }
+    Ok(Some(hash))
+}
+
+fn verify_dataset_checksum(path: &Path, expected: &str) -> Result<(), AppError> {
+    let actual = sha256_file(path)?;
+    if !actual.eq_ignore_ascii_case(expected) {
+        return Err(AppError::ModelChecksumFailed(
+            "dataset SHA-256 mismatch; file was not installed".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn tree_entry_size(entry: &OpenMindDatasetTreeEntry) -> u64 {
     entry
         .lfs
@@ -394,4 +520,223 @@ fn encode_path(path: &str) -> String {
         .map(|part| form_urlencoded::byte_serialize(part.as_bytes()).collect::<String>())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+        sync::oneshot,
+    };
+
+    async fn fixture(
+        root: &Path,
+        fail: bool,
+    ) -> (
+        DatasetDownloadManager,
+        oneshot::Receiver<()>,
+        oneshot::Sender<()>,
+        tokio::task::JoinHandle<Vec<String>>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let mut manager =
+            DatasetDownloadManager::new(PortableRootManager::from_root(root.to_path_buf()));
+        manager.client = Client::builder().no_proxy().build().unwrap();
+        manager.api_base = format!("{base}/api/datasets/");
+        manager.resolve_base = format!("{base}/datasets/");
+        let (seen_tx, seen_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            let mut seen_tx = Some(seen_tx);
+            let mut release_rx = Some(release_rx);
+            for round in 0..if fail { 1 } else { 2 } {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut buffer = [0; 1024];
+                    let n = socket.read(&mut buffer).await.unwrap();
+                    assert!(n > 0);
+                    request.extend_from_slice(&buffer[..n]);
+                    if request.ends_with(b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                requests.push(String::from_utf8(request).unwrap());
+                if round == 0 {
+                    seen_tx.take().unwrap().send(()).unwrap();
+                    release_rx.take().unwrap().await.unwrap();
+                }
+                let body = if fail {
+                    "missing"
+                } else if round == 0 {
+                    r#"[{"path":"data.txt","type":"file","size":4}]"#
+                } else {
+                    "data"
+                };
+                let status = if fail { "404 Not Found" } else { "200 OK" };
+                socket.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            }
+            requests
+        });
+        (manager, seen_rx, release_tx, server)
+    }
+
+    #[tokio::test]
+    async fn same_and_different_dataset_requests_cannot_replace_active_status_or_partial() {
+        let dir = tempfile::tempdir().unwrap();
+        let dataset_dir = dir
+            .path()
+            .join("datasets/openmindai/owner_first/snapshot/main");
+        fs::create_dir_all(&dataset_dir).unwrap();
+        let part = dataset_dir.join("data.openmindai-part");
+        fs::write(&part, b"existing partial").unwrap();
+        let (manager, seen, release, server) = fixture(dir.path(), false).await;
+        let owner = manager.clone();
+        let first = tokio::spawn(async move { owner.download_dataset("owner/first").await });
+        seen.await.unwrap();
+        let before = serde_json::to_value(manager.status().unwrap()).unwrap();
+        for id in ["owner/first", "owner/second"] {
+            let error = manager.clone().download_dataset(id).await.unwrap_err();
+            assert!(error.to_string().contains("already in progress"));
+            assert_eq!(
+                serde_json::to_value(manager.status().unwrap()).unwrap(),
+                before
+            );
+            assert_eq!(fs::read(&part).unwrap(), b"existing partial");
+        }
+        release.send(()).unwrap();
+        let status = first.await.unwrap().unwrap();
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].starts_with("GET /api/datasets/owner/first/tree/main?recursive=1 "));
+        assert!(requests[1].starts_with("GET /datasets/owner/first/resolve/main/data.txt "));
+        assert_eq!(status.dataset_id, "owner/first");
+        assert_eq!(status.state, DatasetDownloadState::Completed);
+        assert_eq!(status.downloaded_bytes, 4);
+        assert_eq!(fs::read(dataset_dir.join("data.txt")).unwrap(), b"data");
+        assert!(!part.exists());
+        assert!(manager.begin_download().is_ok());
+        assert!(manager.begin_root_install().is_ok());
+    }
+
+    #[tokio::test]
+    async fn failure_and_aborted_future_release_both_guards_without_foreign_status() {
+        for abort in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let (manager, seen, release, server) = fixture(dir.path(), true).await;
+            let owner = manager.clone();
+            let first = tokio::spawn(async move { owner.download_dataset("owner/first").await });
+            seen.await.unwrap();
+            assert!(manager.download_dataset("owner/second").await.is_err());
+            assert_eq!(manager.status().unwrap().dataset_id, "owner/first");
+            if abort {
+                first.abort();
+                assert!(first.await.unwrap_err().is_cancelled());
+                server.abort();
+            } else {
+                release.send(()).unwrap();
+                assert!(first.await.unwrap().is_err());
+                server.await.unwrap();
+                let status = manager.status().unwrap();
+                assert_eq!(status.dataset_id, "owner/first");
+                assert_eq!(status.state, DatasetDownloadState::Failed);
+                assert!(status.error.unwrap().contains("404"));
+            }
+            assert!(manager.begin_download().is_ok());
+            assert!(manager.begin_root_install().is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn independent_managers_share_root_lock_without_altering_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(dir.path().to_path_buf());
+        let first = DatasetDownloadManager::new(root.clone());
+        let second = DatasetDownloadManager::new(root);
+        let lock = first.begin_root_install().unwrap();
+        for id in ["owner/first", "owner/second"] {
+            let before = serde_json::to_value(second.status().unwrap()).unwrap();
+            let error = second.download_dataset(id).await.unwrap_err();
+            assert!(error.to_string().contains("another OpenMindAI process"));
+            assert_eq!(
+                serde_json::to_value(second.status().unwrap()).unwrap(),
+                before
+            );
+        }
+        let other_dir = tempfile::tempdir().unwrap();
+        let other = DatasetDownloadManager::new(PortableRootManager::from_root(
+            other_dir.path().to_path_buf(),
+        ));
+        assert!(other.begin_root_install().is_ok());
+        drop(lock);
+        assert!(dir
+            .path()
+            .join(".openmindai-dataset-install.lock")
+            .is_file());
+        assert!(second.begin_root_install().is_ok());
+    }
+
+    #[test]
+    fn root_install_lock_rejects_non_file_and_linked_destinations() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".openmindai-dataset-install.lock");
+        let manager =
+            DatasetDownloadManager::new(PortableRootManager::from_root(dir.path().to_path_buf()));
+        fs::create_dir(&path).unwrap();
+        assert!(manager.begin_root_install().is_err());
+        fs::remove_dir(&path).unwrap();
+        #[cfg(unix)]
+        {
+            let outside = tempfile::NamedTempFile::new().unwrap();
+            std::os::unix::fs::symlink(outside.path(), &path).unwrap();
+            assert!(manager.begin_root_install().is_err());
+            assert_eq!(outside.as_file().metadata().unwrap().len(), 0);
+        }
+    }
+
+    #[test]
+    fn dataset_checksums_reject_equal_sized_changed_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("data.part");
+        fs::write(&part, b"original").unwrap();
+        let expected = sha256_file(&part).unwrap();
+        verify_dataset_checksum(&part, &expected.to_ascii_uppercase()).unwrap();
+        fs::write(&part, b"modified").unwrap();
+        assert!(matches!(
+            verify_dataset_checksum(&part, &expected),
+            Err(AppError::ModelChecksumFailed(_))
+        ));
+    }
+
+    #[test]
+    fn malformed_upstream_checksum_cannot_be_silently_treated_as_unverified() {
+        let mut entry: OpenMindDatasetTreeEntry = serde_json::from_value(serde_json::json!({
+            "path": "data.txt", "type": "file", "lfs": { "size": 8, "sha256": "invalid" }
+        }))
+        .unwrap();
+        assert!(expected_checksum(&entry).is_err());
+        entry.lfs.as_mut().unwrap().sha256 = None;
+        assert!(expected_checksum(&entry).unwrap().is_none());
+    }
+    #[test]
+    fn checksum_failure_preserves_existing_dataset_and_removes_failed_partial() {
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("data.part");
+        let destination = dir.path().join("data.txt");
+        fs::write(&destination, b"original").unwrap();
+        let expected = sha256_file(&destination).unwrap();
+        fs::write(&part, b"modified").unwrap();
+        assert!(install_downloaded_file(&part, &destination, Some(&expected)).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"original");
+        assert!(!part.exists());
+        fs::write(&part, b"original").unwrap();
+        let fresh = dir.path().join("fresh.txt");
+        install_downloaded_file(&part, &fresh, Some(&expected)).unwrap();
+        assert_eq!(fs::read(&fresh).unwrap(), b"original");
+        assert!(!part.exists());
+    }
 }

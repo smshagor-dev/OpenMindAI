@@ -116,7 +116,7 @@ fn native_eligible(request: &StreamRequest<'_>) -> Result<bool, AppError> {
         .lock()
         .map_err(|_| AppError::internal("database lock poisoned"))?;
     let latest_user = ChatRepository::new(&db)
-        .list_messages(request.conversation_id)?
+        .messages_for_generation(request.conversation_id, &request.assistant.id)?
         .into_iter()
         .rev()
         .find(|message| message.role == "user" && message.status == "completed");
@@ -199,6 +199,7 @@ fn prepare_native_request(request: &StreamRequest<'_>) -> Result<PreparedNativeR
     let max_tokens = crate::native_stream::native_chat_output_budget(
         request.database,
         request.conversation_id,
+        &request.assistant.id,
         request.request_mode,
         plan.config.context_size,
     )?;

@@ -75,6 +75,9 @@ export function SettingsDialog(props: {
   const [preferenceDraft, setPreferenceDraft] = useState<AppPreferences | null>(props.preferences);
   const [profileDraft, setProfileDraft] = useState<UserProfile | null>(props.userProfile);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const saving = useRef(false);
+  const draftVersion = useRef(0);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [networkError, setNetworkError] = useState<string | null>(null);
   const [webConnectivity, setWebConnectivity] = useState("Not checked");
@@ -143,11 +146,15 @@ export function SettingsDialog(props: {
 
   const setPreference = <K extends keyof AppPreferences>(key: K, value: AppPreferences[K]) => {
     setPreferenceDraft((current) => (current ? { ...current, [key]: value } : current));
-    setSaveState("idle");
+    draftVersion.current += 1;
+    setSaveError(null);
+    if (!saving.current) setSaveState("idle");
   };
   const setProfile = <K extends keyof UserProfile>(key: K, value: UserProfile[K]) => {
     setProfileDraft((current) => (current ? { ...current, [key]: value } : current));
-    setSaveState("idle");
+    draftVersion.current += 1;
+    setSaveError(null);
+    if (!saving.current) setSaveState("idle");
   };
   const uploadAvatar = async (file: File) => {
     setAvatarError(null);
@@ -162,11 +169,25 @@ export function SettingsDialog(props: {
       setAvatarError("Could not read that image. Try a different file.");
     }
   };
+  const runSave = async (action: () => void | Promise<void>) => {
+    if (saving.current) return;
+    saving.current = true;
+    const version = draftVersion.current;
+    setSaveError(null);
+    setSaveState("saving");
+    try {
+      await action();
+      setSaveState(draftVersion.current === version ? "saved" : "idle");
+    } catch (error) {
+      setSaveError(formatError(error));
+      setSaveState("idle");
+    } finally {
+      saving.current = false;
+    }
+  };
   const savePreferences = async () => {
     if (!preferenceDraft) return;
-    setSaveState("saving");
-    await props.updatePreferences(preferenceDraft);
-    setSaveState("saved");
+    await runSave(() => props.updatePreferences(preferenceDraft));
   };
   const saveNetwork = async () => {
     if (!preferenceDraft) return;
@@ -175,18 +196,11 @@ export function SettingsDialog(props: {
       setNetworkError("Enter a proxy address, for example 127.0.0.1:8080.");
       return;
     }
-    try {
-      await savePreferences();
-    } catch (error) {
-      setSaveState("idle");
-      setNetworkError(formatError(error));
-    }
+    await savePreferences();
   };
   const saveProfile = async () => {
     if (!profileDraft) return;
-    setSaveState("saving");
-    await props.updateUserProfile(profileDraft);
-    setSaveState("saved");
+    await runSave(() => props.updateUserProfile(profileDraft));
   };
   const sections = [
     { id: "general", label: "General", icon: Settings },
@@ -230,6 +244,7 @@ export function SettingsDialog(props: {
         })}
       </nav>
       <section className="settings-content">
+        {saveError ? <p className="setup-warning" role="alert">{saveError}</p> : null}
         {activeSection === "general" && preferenceDraft ? (
           <SettingsGroup title="General">
             <SelectRow

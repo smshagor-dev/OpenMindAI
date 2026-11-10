@@ -313,7 +313,7 @@ pub async fn stream_chat_completion(
         return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
     }
     let started = Instant::now();
-    let mut messages = build_context(request.database, request.conversation_id)?;
+    let mut messages = build_context(request.database, request.conversation_id, &request.assistant.id)?;
     if let Some(dataset_context) = request.dataset_context.filter(|value| !value.trim().is_empty()) {
         messages.push(json!({ "role": "system", "content": dataset_context }));
     }
@@ -1625,12 +1625,13 @@ async fn post_completion_with_retry(
 fn build_context(
     database: &Mutex<Database>,
     conversation_id: &str,
+    assistant_id: &str,
 ) -> Result<Vec<serde_json::Value>, AppError> {
     let db = database
         .lock()
         .map_err(|_| AppError::internal("database lock poisoned"))?;
     let repo = ChatRepository::new(&db);
-    let mut messages = repo.list_messages(conversation_id)?;
+    let mut messages = repo.messages_for_generation(conversation_id, assistant_id)?;
     messages.retain(|message| {
         message.status == "completed"
             && matches!(message.role.as_str(), "system" | "user" | "assistant")
