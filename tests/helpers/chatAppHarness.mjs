@@ -175,6 +175,8 @@ export async function createChatAppHarness() {
               return [];
             case "sendChatMessage":
               return fixture.send.promise;
+            case "regenerateMessage":
+              return fixture.regeneration.promise;
             case "createConversation":
               return fixture.create.promise;
             case "forkConversationForEdit":
@@ -212,6 +214,7 @@ export async function createChatAppHarness() {
       fixture = {
         calls: [],
         send: deferred(),
+        regeneration: deferred(),
         create: deferred(),
         fork: deferred(),
         artifact: deferred(),

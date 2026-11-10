@@ -55,6 +55,9 @@ jobs:
       - name: Chat draft failure recovery
         run: npm run test:drafts
 
+      - name: Regeneration history preservation
+        run: npm run test:regeneration
+
       - name: Lint
         run: npm run lint
 
