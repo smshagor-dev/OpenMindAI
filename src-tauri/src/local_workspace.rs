@@ -268,7 +268,7 @@ pub fn list_project_workspace_directory(
     for item in fs::read_dir(&directory)?.take(MAX_DIRECTORY_ENTRIES) {
         let item = item?;
         let item_path = item.path();
-        if item.file_name() == ".openmindai-patch-transactions" {
+        if item.file_name() == std::ffi::OsStr::new(".openmindai-patch-transactions") {
             // Internal recovery journals must not be offered as user files.
             continue;
         }
@@ -1085,10 +1085,36 @@ mod tests {
         let target = temp.path().join("permissions.txt");
         fs::write(&target, "first").unwrap();
         let original = fs::metadata(&target).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o750)).unwrap();
+        }
         let token = workspace_revision(b"first");
         transactional_workspace_save(&target, b"second", Some(&token)).unwrap();
-        assert_eq!(fs::metadata(&target).unwrap().permissions().readonly(), original.readonly());
+        let after = fs::metadata(&target).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(after.mode() & 0o777, 0o750);
+        }
+        #[cfg(not(unix))]
+        assert_eq!(after.readonly(), original.readonly());
+        #[cfg(unix)]
+        let _ = original;
         assert_eq!(fs::read_to_string(&target).unwrap(), "second");
+    }
+
+    #[test]
+    fn workspace_save_failure_before_staging_leaves_original_intact() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("existing.txt");
+        fs::write(&target, "protected content").unwrap();
+        // An unsafe transaction-store entry must abort before moving the target.
+        fs::write(temp.path().join(".openmindai-patch-transactions"), "not a folder").unwrap();
+        let token = workspace_revision(b"protected content");
+        assert!(transactional_workspace_save(&target, b"new content", Some(&token)).is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "protected content");
     }
 
     #[test]
