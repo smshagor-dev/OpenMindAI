@@ -67,32 +67,37 @@ $isDir = $env:OPENMINDAI_PRIVATE_DIRECTORY -eq '1'
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $item = Get-Item -LiteralPath $p -Force
 if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Linked descriptor path' }
-# Ownership may be inherited from an administrator/system-created config
-# directory. Request ownership for this account, and verify the final owner;
-# the OS must authorize the repair before any token is written.
+# Modify only the existing access section. Constructing a fresh descriptor
+# with SetOwner also requests ownership/group writes and can require privileges
+# unrelated to restricting the DACL.
+$phase = 20
+$acl = Get-Acl -LiteralPath $p
+$owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+$creatorOwner = [System.Security.Principal.WindowsIdentity]::GetCurrent().Owner.Value
+if ($owner -ne $sid.Value -and $owner -ne $creatorOwner) { throw 'Foreign descriptor owner' }
 $phase = 30
+$acl.SetAccessRuleProtection($true, $false)
+foreach ($existing in @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]))) {
+  $acl.RemoveAccessRuleSpecific($existing)
+}
 if ($isDir) {
-  $acl = [System.Security.AccessControl.DirectorySecurity]::new()
   $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
 } else {
-  $acl = [System.Security.AccessControl.FileSecurity]::new()
   $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'Allow')
 }
-$acl.SetOwner($sid)
-$acl.SetAccessRuleProtection($true, $false)
 $acl.AddAccessRule($rule)
 $phase = 40
 Set-Acl -LiteralPath $p -AclObject $acl
 $phase = 50
 $verified = Get-Acl -LiteralPath $p
 $rules = @($verified.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
-if ($verified.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value -or -not $verified.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid.Value -or $rules[0].AccessControlType -ne 'Allow' -or $rules[0].FileSystemRights -ne 'FullControl') { throw 'Private ACL verification failed' }
-} catch { exit $phase }
+if ($verified.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $owner -or -not $verified.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid.Value -or $rules[0].AccessControlType -ne 'Allow' -or $rules[0].FileSystemRights -ne 'FullControl') { throw 'Private ACL verification failed' }
+} catch { [Console]::Error.WriteLine(('ACL phase={0} hr={1} dir={2}' -f $phase, $_.Exception.HResult, $isDir)); exit $phase }
 "#;
     let windows =
         std::env::var_os("SystemRoot").ok_or_else(|| refused("SystemRoot unavailable"))?;
     let powershell = Path::new(&windows).join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    let status = Command::new(powershell)
+    let output = Command::new(powershell)
         .args([
             "-NoLogo",
             "-NoProfile",
@@ -107,12 +112,16 @@ if ($verified.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne
         )
         .creation_flags(0x08000000)
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()?;
-    if !status.success() {
+        .stderr(std::process::Stdio::piped())
+        .output()?;
+    if !output.status.success() {
+        let diagnostics = String::from_utf8_lossy(&output.stderr);
+        let code = diagnostics
+            .lines()
+            .find(|line| line.starts_with("ACL phase="))
+            .unwrap_or("ACL enforcement failed");
         return Err(refused(&format!(
-            "could not enforce owner-only descriptor ACL (phase {})",
-            status.code().unwrap_or(-1)
+            "could not enforce owner-only descriptor ACL: {code}"
         )));
     }
     regular_owned_path(path, directory)
@@ -160,8 +169,19 @@ pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let mut file = options.open(&temp)?;
-        protect(&temp, false)?;
+        let file = options.open(&temp)?;
+        #[cfg(windows)]
+        let mut file = {
+            drop(file);
+            protect(&temp, false)?;
+            regular_owned_path(&temp, false)?;
+            fs::OpenOptions::new().write(true).open(&temp)?
+        };
+        #[cfg(not(windows))]
+        let mut file = {
+            protect(&temp, false)?;
+            file
+        };
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
