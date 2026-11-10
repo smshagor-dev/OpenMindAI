@@ -46,6 +46,7 @@ import { ProjectsWorkspace } from "./components/ProjectsWorkspace";
 import { WorkWorkspace } from "./components/WorkWorkspace";
 import { notifyUser } from "./lib/notify";
 import {
+  attachmentKind,
   attachmentMedia,
   buildMessageContent,
   inferChatMode,
@@ -117,9 +118,40 @@ export function App() {
   const [imageProgressByArtifact, setImageProgressByArtifact] = useState<Record<string, ImageRenderProgress>>({});
   const [prompt, setPromptState] = useState("");
   const [attachments, setAttachmentsState] = useState<AttachmentDraft[]>([]);
+  const attachmentItems = useRef<AttachmentDraft[]>([]);
+  const attachmentClearVersion = useRef(0);
+  const attachmentQueue = useRef<Promise<void>>(Promise.resolve());
   const draftRevision = useRef(0);
-  const setPrompt = useCallback((value: string) => { draftRevision.current += 1; setPromptState(value); }, []);
-  const setAttachments = useCallback((change: SetStateAction<AttachmentDraft[]>) => { draftRevision.current += 1; setAttachmentsState(change); }, []);
+  const latestPrompt = useRef("");
+  const discardedDraft = useRef(0);
+  const setPrompt = useCallback((value: string) => {
+    draftRevision.current += 1;
+    if (!value.trim()) discardedDraft.current += 1;
+    latestPrompt.current = value;
+    setPromptState(value);
+  }, []);
+  const createVoiceDraftTarget = useCallback(() => {
+    const view = chatState.captureView();
+    const discard = discardedDraft.current;
+    const isCurrent = () => chatState.isCurrent(view) && discardedDraft.current === discard;
+    return {
+      isCurrent,
+      append: (text: string) => {
+        const transcript = text.trim();
+        if (!transcript || !isCurrent()) return false;
+        const current = latestPrompt.current.trimEnd();
+        setPrompt(current.trim() ? `${current} ${transcript}` : transcript);
+        return true;
+      },
+    };
+  }, [chatState, setPrompt]);
+  const setAttachments = useCallback((change: SetStateAction<AttachmentDraft[]>) => {
+    const next = typeof change === "function" ? change(attachmentItems.current) : change;
+    if (typeof change !== "function" && next.length === 0) attachmentClearVersion.current += 1;
+    attachmentItems.current = next;
+    draftRevision.current += 1;
+    setAttachmentsState(next);
+  }, []);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -648,38 +680,58 @@ export function App() {
 
   async function addFiles(files: FileList | null) {
     if (!files) return;
-    const results = await Promise.allSettled(Array.from(files).map(readAttachment));
-    const loaded = results.flatMap((result) =>
-      result.status === "fulfilled" ? [result.value] : [],
-    );
-    const failures = results.flatMap((result) =>
-      result.status === "rejected" ? [formatError(result.reason)] : [],
-    );
-
-    const accepted: AttachmentDraft[] = [];
-    let imageCount = attachments.filter((item) => item.kind === "image").length;
-    for (const attachment of loaded) {
-      if (attachments.length + accepted.length >= 8) {
-        failures.push("A chat can contain at most 8 attachments at once.");
-        continue;
+    const selection = Array.from(files);
+    const view = chatState.captureView();
+    const clearVersion = attachmentClearVersion.current;
+    const isCurrent = () => chatState.isCurrent(view) && attachmentClearVersion.current === clearVersion;
+    const ingest = async () => {
+      const failures = new Set<string>();
+      let added = false;
+      for (const file of selection) {
+        if (!isCurrent()) return;
+        const items = attachmentItems.current;
+        if (items.length >= 8) {
+          failures.add("A chat can contain at most 8 attachments at once.");
+          continue;
+        }
+        const kind = attachmentKind(file);
+        if (kind === "binary") {
+          failures.add("This file type cannot be read by local chat. Attach text/code, PDF, image, audio, or video files.");
+          continue;
+        }
+        if (kind === "image" && items.filter(item => item.kind === "image").length >= 4) {
+          failures.add("Local vision supports at most 4 images in one request.");
+          continue;
+        }
+        try {
+          const attachment = await readAttachment(file);
+          if (!isCurrent()) return;
+          // Re-check after decoding: files may have been removed/restored meanwhile.
+          const current = attachmentItems.current;
+          if (current.length >= 8) {
+            failures.add("A chat can contain at most 8 attachments at once.");
+          } else if (attachment.kind === "image" && current.filter(item => item.kind === "image").length >= 4) {
+            failures.add("Local vision supports at most 4 images in one request.");
+          } else {
+            setAttachments(items => [...items, attachment]);
+            added = true;
+          }
+        } catch (error) {
+          if (!isCurrent()) return;
+          failures.add(formatError(error));
+        }
       }
-      if (attachment.kind === "image" && imageCount >= 4) {
-        failures.push("Local vision supports at most 4 images in one request.");
-        continue;
+      if (!isCurrent()) return;
+      if (added) {
+        setEditingMessageId(null);
+        setView("chat");
+        composerRef.current?.focus();
       }
-      accepted.push(attachment);
-      if (attachment.kind === "image") imageCount += 1;
-    }
-
-    if (accepted.length > 0) {
-      setAttachments((items) => [...items, ...accepted]);
-      setEditingMessageId(null);
-      setView("chat");
-      composerRef.current?.focus();
-    }
-    if (failures.length > 0) {
-      showError(new Error(Array.from(new Set(failures)).join(" ")));
-    }
+      if (failures.size) showError(new Error([...failures].join(" ")));
+    };
+    const pending = attachmentQueue.current.then(ingest, ingest);
+    attachmentQueue.current = pending.catch(() => {});
+    await pending;
   }
 
   async function archiveConversation(id: string) {
@@ -837,7 +889,6 @@ export function App() {
   }
 
   async function updateUserProfile(next: UserProfile) {
-    setUserProfile(next);
     setUserProfile(await api.saveUserProfile(next));
   }
 
@@ -1178,6 +1229,7 @@ export function App() {
             messages={messages}
             prompt={prompt}
             setPrompt={setPrompt}
+            createVoiceDraftTarget={createVoiceDraftTarget}
             imageOptions={imageOptions}
             setImageOptions={setImageOptions}
             attachments={attachments}
@@ -1237,6 +1289,7 @@ export function App() {
               messages={messages}
               prompt={prompt}
               setPrompt={setPrompt}
+              createVoiceDraftTarget={createVoiceDraftTarget}
               imageOptions={imageOptions}
               setImageOptions={setImageOptions}
               attachments={attachments}
