@@ -2370,6 +2370,10 @@ fn clear_google_credentials(state: State<AppState>) -> Result<(), app_error::App
     GoogleRepository::new(&db).clear()
 }
 
+fn application_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
+
 fn show_installation_error(error: app_error::AppError) {
     use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
     let message = error.to_string();
@@ -2387,7 +2391,7 @@ fn show_installation_error(error: app_error::AppError) {
                 .show(move |_| handle.exit(1));
             Ok(())
         })
-        .run(tauri::generate_context!());
+        .run(application_context());
     if let Err(error) = result {
         eprintln!("Could not display installation recovery error: {error}");
     }
@@ -2577,7 +2581,7 @@ pub fn run() {
             save_google_credentials,
             clear_google_credentials
         ])
-        .build(tauri::generate_context!())
+        .build(application_context())
         .expect("error while building OpenMindAI");
 
     app.run(|app_handle, event| {
