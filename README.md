@@ -109,6 +109,8 @@ The application includes a local model catalog and lifecycle management for:
 - runtime start, stop, and health state;
 - model update checks.
 
+Model update notifications are optional. Model downloads require manual confirmation in **Settings → Models**; automatic model downloading is not available. Older saved automatic model download preferences are corrected to disabled without changing notification or application update choices.
+
 Large model downloads remain explicit user actions.
 
 Runtime process recovery is platform-specific. Windows uses a kill-on-close Job Object; Linux uses a parent-death signal. macOS isolates runtime process groups and records the process start time, executable path and Darwin process generation. After a crash or forced exit, macOS runtimes may remain alive until the next OpenMindAI launch, when the startup sweep reaps only matching recorded processes whose previous owner is gone. Unrelated processes are not selected by name or port. If an owner or child cannot be inspected, or generation-checked signalling is unavailable or denied, cleanup is skipped and its record is retained for retry. Other operating systems have normal-exit cleanup but no automatic orphan sweep.

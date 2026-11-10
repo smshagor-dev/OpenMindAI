@@ -47,6 +47,7 @@ pub struct AppPreferences {
     pub auto_check_app_updates: bool,
     pub auto_download_app_updates: bool,
     pub notify_model_updates: bool,
+    /// Compatibility field. Model downloads require manual confirmation.
     pub auto_download_model_updates: bool,
     pub update_channel: String,
     pub openagent_model_id: String,
@@ -220,6 +221,18 @@ impl<'a> SettingsRepository<'a> {
                         params![Utc::now().to_rfc3339(), SETTINGS_KEY],
                     )?;
                 }
+                if preferences.auto_download_model_updates {
+                    // No scheduler implements this legacy preference. Update only
+                    // this field so notification choices and future fields survive.
+                    self.database.connection().execute(
+                        "UPDATE app_settings
+                         SET value_json = json_set(value_json, '$.autoDownloadModelUpdates', json('false')),
+                             updated_at = ?1
+                         WHERE key = ?2",
+                        params![Utc::now().to_rfc3339(), SETTINGS_KEY],
+                    )?;
+                    preferences.auto_download_model_updates = false;
+                }
                 Ok(preferences)
             }
             None => {
@@ -234,6 +247,11 @@ impl<'a> SettingsRepository<'a> {
         &self,
         preferences: &AppPreferences,
     ) -> Result<AppPreferences, AppError> {
+        if preferences.auto_download_model_updates {
+            return Err(AppError::ModelUnsupported(
+                "Automatic model downloading is not available. Confirm model downloads manually in Settings → Models.".into(),
+            ));
+        }
         if !preferences.save_chat_history {
             return Err(AppError::internal(
                 "This version saves chat history locally. Temporary chats are not supported; history saving cannot be disabled.",
@@ -518,6 +536,111 @@ mod tests {
             .pragma_update(None, "query_only", false)
             .unwrap();
         assert!(repo.get_preferences().unwrap().chat_history_notice_required);
+    }
+
+    #[test]
+    fn automatic_model_download_requests_are_rejected_without_partial_saves() {
+        let database = Database::in_memory().unwrap();
+        let repo = SettingsRepository::new(&database);
+        let original = repo.get_preferences().unwrap();
+        let mut requested = original.clone();
+        requested.auto_download_model_updates = true;
+        requested.notify_model_updates = false;
+        requested.language = "must not be saved".into();
+        let error = repo.save_preferences(&requested).unwrap_err();
+        assert!(matches!(error, AppError::ModelUnsupported(_)));
+        assert!(error.to_string().contains("Settings → Models"));
+        assert_eq!(
+            serde_json::to_value(repo.get_preferences().unwrap()).unwrap(),
+            serde_json::to_value(original).unwrap()
+        );
+    }
+
+    #[test]
+    fn legacy_model_download_flag_is_corrected_once_and_survives_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("model-updates.db");
+        {
+            let database = Database::open(path.clone()).unwrap();
+            database.connection().execute(
+                "INSERT INTO app_settings (key, value_json, updated_at) VALUES (?1, ?2, 'legacy')",
+                params![SETTINGS_KEY, r#"{"autoDownloadModelUpdates":true,"notifyModelUpdates":false,"autoDownloadAppUpdates":true,"chatHistoryNoticeRequired":true,"futurePreference":"keep-me"}"#],
+            ).unwrap();
+            let repo = SettingsRepository::new(&database);
+            let loaded = repo.get_preferences().unwrap();
+            assert!(!loaded.auto_download_model_updates);
+            assert!(!loaded.notify_model_updates);
+            assert!(loaded.auto_download_app_updates);
+            assert!(loaded.chat_history_notice_required);
+            let persisted: String = database
+                .connection()
+                .query_row(
+                    "SELECT value_json FROM app_settings WHERE key = ?1",
+                    params![SETTINGS_KEY],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_str(&persisted).unwrap();
+            assert_eq!(json["autoDownloadModelUpdates"], false);
+            assert_eq!(json["futurePreference"], "keep-me");
+            // A second read must not perform a needless write.
+            database
+                .connection()
+                .pragma_update(None, "query_only", true)
+                .unwrap();
+            assert!(!repo.get_preferences().unwrap().auto_download_model_updates);
+        }
+        let database = Database::open(path).unwrap();
+        let loaded = SettingsRepository::new(&database)
+            .get_preferences()
+            .unwrap();
+        assert!(!loaded.auto_download_model_updates);
+        assert!(!loaded.notify_model_updates);
+        assert!(loaded.auto_download_app_updates);
+    }
+
+    #[test]
+    fn model_notification_and_app_download_choices_remain_independent() {
+        let database = Database::in_memory().unwrap();
+        let repo = SettingsRepository::new(&database);
+        let mut preferences = repo.get_preferences().unwrap();
+        for notify in [false, true] {
+            preferences.notify_model_updates = notify;
+            preferences.auto_download_app_updates = !notify;
+            repo.save_preferences(&preferences).unwrap();
+            let loaded = repo.get_preferences().unwrap();
+            assert_eq!(loaded.notify_model_updates, notify);
+            assert_eq!(loaded.auto_download_app_updates, !notify);
+            assert!(!loaded.auto_download_model_updates);
+        }
+    }
+
+    #[test]
+    fn failed_legacy_model_flag_correction_is_reported_and_can_retry() {
+        let database = Database::in_memory().unwrap();
+        database
+            .connection()
+            .execute(
+                "INSERT INTO app_settings (key, value_json, updated_at) VALUES (?1, ?2, 'legacy')",
+                params![SETTINGS_KEY, r#"{"autoDownloadModelUpdates":true}"#],
+            )
+            .unwrap();
+        let repo = SettingsRepository::new(&database);
+        database
+            .connection()
+            .pragma_update(None, "query_only", true)
+            .unwrap();
+        assert!(repo.get_preferences().is_err());
+        let raw: bool = database.connection().query_row(
+            "SELECT json_extract(value_json, '$.autoDownloadModelUpdates') FROM app_settings WHERE key = ?1",
+            params![SETTINGS_KEY], |row| row.get(0),
+        ).unwrap();
+        assert!(raw);
+        database
+            .connection()
+            .pragma_update(None, "query_only", false)
+            .unwrap();
+        assert!(!repo.get_preferences().unwrap().auto_download_model_updates);
     }
 
     #[test]
