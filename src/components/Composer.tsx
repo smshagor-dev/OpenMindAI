@@ -254,6 +254,7 @@ export function Composer(props: {
                   )}
                   <span>{attachment.name}</span>
                   <small>{attachment.kind}</small>
+                  {attachment.warning ? <small role="status" title={attachment.warning} aria-label={attachment.warning}>PDF text only · OCR incomplete</small> : null}
                   <small>{formatBytes(attachment.size)}</small>
                   {audioPreview ? (
                     <audio
