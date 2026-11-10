@@ -55,6 +55,9 @@ jobs:
       - name: Chat draft failure recovery
         run: npm run test:drafts
 
+      - name: Voice draft ownership
+        run: npm run test:voice-drafts
+
       - name: Lint
         run: npm run lint
 
