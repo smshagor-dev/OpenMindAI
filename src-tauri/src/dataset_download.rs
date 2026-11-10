@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Component, Path},
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -273,7 +273,7 @@ impl DatasetDownloadManager {
         &self,
         dataset_id: &str,
         relative_path: &str,
-        final_path: &PathBuf,
+        final_path: &Path,
         expected_size: Option<u64>,
         expected_sha256: Option<&str>,
     ) -> Result<u64, AppError> {
