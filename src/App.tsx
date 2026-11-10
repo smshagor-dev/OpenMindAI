@@ -859,7 +859,6 @@ export function App() {
   }
 
   async function updateUserProfile(next: UserProfile) {
-    setUserProfile(next);
     setUserProfile(await api.saveUserProfile(next));
   }
 
