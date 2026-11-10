@@ -55,6 +55,9 @@ jobs:
       - name: Chat draft failure recovery
         run: npm run test:drafts
 
+      - name: Settings save failure recovery
+        run: npm run test:settings-save
+
       - name: Lint
         run: npm run lint
 
