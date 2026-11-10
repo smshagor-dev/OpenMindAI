@@ -336,6 +336,11 @@ impl LlamaRuntimeManager {
     ) -> Result<ModelLaunch, AppError> {
         let model_path = resolve_model_path(&self.root, &config.model_path)?;
         let model_path_string = model_path.display().to_string();
+        let explicit_mmproj = if config.mmproj_path.is_some() {
+            resolve_mmproj_path(&self.root, &model_path, config.mmproj_path.as_deref())?
+        } else {
+            None
+        };
         let selected = self.inventory(hardware)?.selected.ok_or_else(|| {
             AppError::RuntimeNotFound("no usable llama.cpp runtime found".to_string())
         })?;
@@ -433,7 +438,7 @@ impl LlamaRuntimeManager {
             "--parallel".to_string(),
             config.parallelism.to_string(),
         ];
-        if let Some(mmproj_path) = discover_mmproj_sibling(&model_path) {
+        if let Some(mmproj_path) = explicit_mmproj.or_else(|| discover_mmproj_sibling(&model_path)) {
             args.push("--mmproj".to_string());
             args.push(mmproj_path.display().to_string());
         }
@@ -871,6 +876,29 @@ fn resolve_model_path(root: &PortableRootManager, path: &str) -> Result<PathBuf,
     }
 }
 
+fn resolve_mmproj_path(
+    root: &PortableRootManager,
+    model_path: &Path,
+    explicit: Option<&str>,
+) -> Result<Option<PathBuf>, AppError> {
+    let Some(explicit) = explicit else {
+        return Ok(discover_mmproj_sibling(model_path));
+    };
+    let candidate = fs::canonicalize(resolve_model_path(root, explicit)?)?;
+    if !candidate.starts_with(fs::canonicalize(root.root())?)
+        || !candidate.is_file()
+        || !candidate
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
+    {
+        return Err(AppError::ModelInvalid(
+            "the requested vision projector is not a local GGUF file".into(),
+        ));
+    }
+    Ok(Some(candidate))
+}
+
 fn discover_mmproj_sibling(model_path: &Path) -> Option<PathBuf> {
     let parent = model_path.parent()?;
     let mut candidates = fs::read_dir(parent)
@@ -961,9 +989,29 @@ mod tests {
     use crate::hardware::{CpuProfile, MemoryProfile};
 
     #[test]
+    fn explicit_projector_overrides_sibling_order_and_rejects_invalid_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("root"));
+        fs::create_dir_all(root.root()).unwrap();
+        let model = root.root().join("Lens.gguf");
+        let wanted = root.root().join("mmproj-Lens.gguf");
+        fs::write(&model, b"fixture model").unwrap();
+        fs::write(&wanted, b"fixture projector").unwrap();
+        fs::write(root.root().join("mmproj-AAA-other.gguf"), b"other").unwrap();
+        assert_eq!(resolve_mmproj_path(&root, &model, Some("mmproj-Lens.gguf")).unwrap(), Some(fs::canonicalize(wanted).unwrap()));
+        assert!(resolve_mmproj_path(&root, &model, Some("missing.gguf")).is_err());
+        let outside = temp.path().join("outside.gguf");
+        fs::write(&outside, b"outside").unwrap();
+        assert!(resolve_mmproj_path(&root, &model, outside.to_str()).is_err());
+        fs::write(root.root().join("wrong.txt"), b"wrong").unwrap();
+        assert!(resolve_mmproj_path(&root, &model, Some("wrong.txt")).is_err());
+    }
+
+    #[test]
     fn model_hot_reuse_ignores_ephemeral_port_but_detects_profile_changes() {
         let original = ModelLaunchConfig {
             model_path: "model.gguf".into(),
+            mmproj_path: None,
             backend: BackendKind::Cpu,
             device: None,
             gpu_layers: 0,
@@ -987,6 +1035,9 @@ mod tests {
         requested.gpu_layers = 12;
         assert!(!same_model_launch_settings(&original, &requested));
         requested.gpu_layers = original.gpu_layers;
+        requested.mmproj_path = Some("lens-projector.gguf".into());
+        assert!(!same_model_launch_settings(&original, &requested));
+        requested.mmproj_path = None;
         requested.context_size = 16_384;
         assert!(!same_model_launch_settings(&original, &requested));
     }
@@ -999,6 +1050,7 @@ mod tests {
         let runtime = Arc::new(Mutex::new(LlamaRuntimeManager::new(root)));
         let config = ModelLaunchConfig {
             model_path: "missing.gguf".to_string(),
+            mmproj_path: None,
             backend: BackendKind::Cpu,
             device: None,
             gpu_layers: 0,
@@ -1049,6 +1101,7 @@ mod tests {
         let to_stop = cancelled.clone();
         let config = ModelLaunchConfig {
             model_path: "unused.gguf".to_string(),
+            mmproj_path: None,
             backend: BackendKind::Cpu,
             device: None,
             gpu_layers: 0,
