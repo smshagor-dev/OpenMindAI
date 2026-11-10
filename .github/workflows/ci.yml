@@ -55,6 +55,9 @@ jobs:
       - name: Conversation isolation regression
         run: npm run test:conversations
 
+      - name: Local workspace root and navigation race regression
+        run: npm run test:workspace
+
       - name: Chat draft failure recovery
         run: npm run test:drafts
 
