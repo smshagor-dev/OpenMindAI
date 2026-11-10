@@ -2370,8 +2370,38 @@ fn clear_google_credentials(state: State<AppState>) -> Result<(), app_error::App
     GoogleRepository::new(&db).clear()
 }
 
+fn application_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
+
+fn show_installation_error(error: app_error::AppError) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    let message = error.to_string();
+    let result = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .setup(move |app| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.hide();
+            }
+            let handle = app.handle().clone();
+            app.dialog()
+                .message(message.clone())
+                .title("OpenMindAI installation needs repair")
+                .kind(MessageDialogKind::Error)
+                .show(move |_| handle.exit(1));
+            Ok(())
+        })
+        .run(application_context());
+    if let Err(error) = result {
+        eprintln!("Could not display installation recovery error: {error}");
+    }
+}
+
 pub fn run() {
-    let root = PortableRootManager::resolve().expect("failed to resolve OpenMindAI Root");
+    let root = match PortableRootManager::resolve() {
+        Ok(root) => root,
+        Err(error) => { show_installation_error(error); return; }
+    };
     root.ensure_directories()
         .expect("failed to initialize OpenMindAI directories");
     // Held for the rest of this function's scope (which doesn't return
@@ -2541,7 +2571,7 @@ pub fn run() {
             save_google_credentials,
             clear_google_credentials
         ])
-        .build(tauri::generate_context!())
+        .build(application_context())
         .expect("error while building OpenMindAI");
 
     app.run(|app_handle, event| {
