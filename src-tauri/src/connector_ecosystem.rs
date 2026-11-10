@@ -879,10 +879,16 @@ async fn refresh_access_token(
         ));
     }
     let access = token_field(provider, &value, "access_token")?.to_string();
-    secret_store::set_secret(&access_slot(provider), &access)?;
-    if let Some(new_refresh) = value.get("refresh_token").and_then(Value::as_str) {
+    // Persist rotation first: an access/metadata write failure must not lose
+    // the replacement for a refresh token the provider has invalidated.
+    if let Some(new_refresh) = value
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .filter(|token| !token.is_empty())
+    {
         secret_store::set_secret(&refresh_slot(provider), new_refresh)?;
     }
+    secret_store::set_secret(&access_slot(provider), &access)?;
     let mut updated = record;
     updated.expires_at = value
         .get("expires_in")
@@ -904,6 +910,21 @@ async fn refresh_access_token(
 }
 
 async fn access_token(state: &State<'_, AppState>, provider: &str) -> Result<String, AppError> {
+    use crate::oauth_refresh::{coordinated, Store};
+    let store = match provider {
+        "microsoft" => Store::Microsoft,
+        "slack" => Store::Slack,
+        "notion" => Store::Notion,
+        "dropbox" => Store::Dropbox,
+        _ => return access_token_after_lock(state, provider).await,
+    };
+    coordinated(store, || access_token_after_lock(state, provider)).await
+}
+
+async fn access_token_after_lock(
+    state: &State<'_, AppState>,
+    provider: &str,
+) -> Result<String, AppError> {
     let record = load_record(state, provider)?
         .ok_or_else(|| connector_error(provider, "connector is not configured"))?;
     let token = secret_store::get_secret(&access_slot(provider))?

@@ -390,6 +390,7 @@ async fn refresh_access_token(state: &State<'_, AppState>) -> Result<String, App
     let (client_id, client_secret) = google_credentials(state)?;
     let response = http_client()?
         .post(OAUTH_TOKEN_ENDPOINT)
+        .timeout(Duration::from_secs(30))
         .form(&[
             ("client_id", client_id.as_str()),
             ("client_secret", client_secret.as_str()),
@@ -410,6 +411,13 @@ async fn refresh_access_token(state: &State<'_, AppState>) -> Result<String, App
         .json()
         .await
         .map_err(|error| google_error(error.to_string()))?;
+    if let Some(refresh) = token
+        .refresh_token
+        .as_deref()
+        .filter(|token| !token.is_empty())
+    {
+        secret_store::set_secret(GOOGLE_REFRESH_TOKEN_SLOT, refresh)?;
+    }
     secret_store::set_secret(GOOGLE_ACCESS_TOKEN_SLOT, &token.access_token)?;
     let mut metadata = oauth_metadata(state)?;
     metadata.expires_at = token
@@ -423,6 +431,13 @@ async fn refresh_access_token(state: &State<'_, AppState>) -> Result<String, App
 }
 
 async fn access_token(state: &State<'_, AppState>) -> Result<String, AppError> {
+    crate::oauth_refresh::coordinated(crate::oauth_refresh::Store::GoogleConnected, || {
+        access_token_after_lock(state)
+    })
+    .await
+}
+
+async fn access_token_after_lock(state: &State<'_, AppState>) -> Result<String, AppError> {
     let metadata = oauth_metadata(state)?;
     let still_valid = metadata
         .expires_at

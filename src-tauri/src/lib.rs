@@ -93,6 +93,7 @@ pub mod native_runtime;
 pub mod native_stream;
 #[cfg(feature = "native-cxx-llama")]
 pub mod native_supervisor;
+mod oauth_refresh;
 mod openagent_parallel;
 mod openagent_prompt_context;
 mod openagent_runs;
