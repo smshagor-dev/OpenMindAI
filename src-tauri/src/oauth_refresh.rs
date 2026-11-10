@@ -17,7 +17,6 @@ pub(crate) enum Store {
     Notion,
     Dropbox,
     GoogleWorkspace,
-    GoogleConnected,
 }
 #[derive(Default)]
 struct Flight {
@@ -61,14 +60,13 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<String, AppError>>,
 {
-    static FLIGHTS: OnceLock<[Flight; 6]> = OnceLock::new();
+    static FLIGHTS: OnceLock<[Flight; 5]> = OnceLock::new();
     let index = match store {
         Store::Microsoft => 0,
         Store::Slack => 1,
         Store::Notion => 2,
         Store::Dropbox => 3,
         Store::GoogleWorkspace => 4,
-        Store::GoogleConnected => 5,
     };
     FLIGHTS.get_or_init(|| std::array::from_fn(|_| Flight::default()))[index]
         .run(operation)
@@ -278,7 +276,7 @@ mod tests {
         );
     }
     #[tokio::test]
-    async fn google_credential_stores_remain_independent() {
+    async fn google_and_other_provider_stores_remain_independent() {
         let (begun, seen) = tokio::sync::oneshot::channel();
         let owner = tokio::spawn(async move {
             coordinated(Store::GoogleWorkspace, || async {
@@ -289,11 +287,9 @@ mod tests {
         });
         seen.await.unwrap();
         assert_eq!(
-            coordinated(Store::GoogleConnected, || async {
-                Ok("separate account".into())
-            })
-            .await
-            .unwrap(),
+            coordinated(Store::Microsoft, || async { Ok("separate account".into()) })
+                .await
+                .unwrap(),
             "separate account"
         );
         owner.abort();

@@ -1,8 +1,9 @@
 # OAuth refresh coordination
 
 Each credential store has one process-wide async refresh gate: Microsoft, Slack,
-Notion, Dropbox, Google Workspace and legacy Connected Google. The two Google
-stores deliberately have separate gates because their credentials are distinct.
+Notion, Dropbox and Google Workspace. Provider credential stores have separate
+gates. The unused legacy connected_google.rs module is not compiled on main
+and is outside the active connector path.
 The gate covers the expiry/credential re-read, refresh request and persistence.
 Overlapping waiters receive the completed attempt's token or failure. A later
 request re-reads persisted state, and can retry after a failed refresh.
@@ -30,7 +31,7 @@ Regression tests in `src-tauri/src/oauth_refresh.rs` exercise the production gat
 - Overlapping failure is shared; a later request can retry.
 - Cancelled ownership releases the gate; independent stores continue.
 - Waiting is bounded, verified with a paused Tokio clock.
-- The two Google credential stores do not share in-flight results.
+- Google Workspace and Microsoft do not share in-flight results.
 
 The HTTP fixture uses synthetic credentials and an in-memory persistence adapter.
 It does not call real providers or exercise platform keyring failure modes. Native
