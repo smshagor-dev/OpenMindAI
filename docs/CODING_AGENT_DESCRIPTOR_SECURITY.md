@@ -10,15 +10,15 @@ to 0700 and creates/verifies the new file at 0600, independently of the umask.
 Linked, multiply linked or foreign-owned descriptor files are rejected. A new
 exclusive temporary file is flushed and renamed only after protection succeeds.
 
-On Windows, the built-in Windows PowerShell ACL APIs install a protected DACL
+On Windows, the built-in Windows PowerShell .NET Framework ACL APIs install a protected DACL
 with one FullControl allow rule for the current user SID. Directory inheritance
 propagates this rule to children; the file also receives an explicit protected
 DACL. The owner, protection flag and complete access-rule list are checked. Windows preserves and verifies the creator ownership (the user SID or the
-process token default owner, Administrators, or SYSTEM).
+process token default owner, which may be Administrators for elevated users).
 Only the DACL access section is changed; other foreign ownership is rejected.
-Administrators and SYSTEM are privileged owners already outside this threat
-boundary. The sole DACL grant remains the current user SID; no group or SYSTEM
-DACL read grant is retained. Reparse
+The sole DACL grant remains the current user SID; no group DACL read grant is retained.
+The writer uses .NET Framework methods directly, without Get-Acl/Set-Acl or
+module autoload, so inherited PowerShell 7 module paths cannot break enforcement. Reparse
 points and nonregular paths are rejected. No token appears in subprocess
 arguments, environment, stdout or stderr. If PowerShell/ACL enforcement is
 unavailable, gateway startup fails; it never publishes a permissive token file.

@@ -56,8 +56,9 @@ fn protect(path: &Path, directory: bool) -> io::Result<()> {
 #[cfg(windows)]
 fn protect(path: &Path, directory: bool) -> io::Result<()> {
     use std::{os::windows::process::CommandExt, process::Command};
-    // Windows PowerShell's ACL APIs work on supported desktop Windows without
-    // an extra runtime. No token is passed in process arguments or output.
+    // Use .NET Framework ACL APIs in built-in Windows PowerShell. Get-Acl /
+    // Set-Acl module autoload can fail with an inherited PowerShell 7 module
+    // path. No token is passed in process arguments or output.
     const SCRIPT: &str = r#"
 $ErrorActionPreference = 'Stop'
 $phase = 10
@@ -65,21 +66,19 @@ try {
 $p = $env:OPENMINDAI_PRIVATE_PATH
 $isDir = $env:OPENMINDAI_PRIVATE_DIRECTORY -eq '1'
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-$item = Get-Item -LiteralPath $p -Force
-if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Linked descriptor path' }
+$attributes = [IO.File]::GetAttributes($p)
+if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Linked descriptor path' }
 # Modify only the existing access section. Constructing a fresh descriptor
 # with SetOwner also requests ownership/group writes and can require privileges
 # unrelated to restricting the DACL.
 $phase = 20
-$acl = Get-Acl -LiteralPath $p
+$acl = if ($isDir) { [IO.Directory]::GetAccessControl($p) } else { [IO.File]::GetAccessControl($p) }
 $phase = 21
 $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
 $phase = 22
 $creatorOwner = [System.Security.Principal.WindowsIdentity]::GetCurrent().Owner.Value
 $phase = 23
-# Privileged built-in owners can override ACLs regardless of DACL grants.
-# They remain outside the unprivileged-account threat boundary.
-if ($owner -ne $sid.Value -and $owner -ne $creatorOwner -and $owner -ne 'S-1-5-32-544' -and $owner -ne 'S-1-5-18') { throw 'Foreign descriptor owner' }
+if ($owner -ne $sid.Value -and $owner -ne $creatorOwner) { throw 'Foreign descriptor owner' }
 $phase = 30
 $acl.SetAccessRuleProtection($true, $false)
 foreach ($existing in @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]))) {
@@ -92,9 +91,9 @@ if ($isDir) {
 }
 $acl.AddAccessRule($rule)
 $phase = 40
-Set-Acl -LiteralPath $p -AclObject $acl
+if ($isDir) { [IO.Directory]::SetAccessControl($p, $acl) } else { [IO.File]::SetAccessControl($p, $acl) }
 $phase = 50
-$verified = Get-Acl -LiteralPath $p
+$verified = if ($isDir) { [IO.Directory]::GetAccessControl($p) } else { [IO.File]::GetAccessControl($p) }
 $rules = @($verified.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
 if ($verified.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $owner -or -not $verified.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid.Value -or $rules[0].AccessControlType -ne 'Allow' -or $rules[0].FileSystemRights -ne 'FullControl') { throw 'Private ACL verification failed' }
 } catch { [Console]::Error.WriteLine(('ACL phase={0} hr={1} dir={2} owner={3} current={4} default={5} error={6}' -f $phase, $_.Exception.HResult, $isDir, $owner, $sid.Value, $creatorOwner, $_.FullyQualifiedErrorId)); exit $phase }
@@ -110,6 +109,7 @@ if ($verified.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne
             "-Command",
             SCRIPT,
         ])
+        .env("PSModulePath", "")
         .env("OPENMINDAI_PRIVATE_PATH", path)
         .env(
             "OPENMINDAI_PRIVATE_DIRECTORY",
