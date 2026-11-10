@@ -7,6 +7,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use sha2::{Digest, Sha256};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -130,6 +131,15 @@ pub struct WorkspaceFileContent {
     pub path: String,
     pub content: String,
     pub size_bytes: u64,
+    pub revision_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileSaveResult {
+    pub path: String,
+    pub kind: String,
+    pub revision_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -312,13 +322,19 @@ pub fn read_project_workspace_file(
         )));
     }
     let bytes = fs::read(&file_path)?;
+    if bytes.len() as u64 > MAX_TEXT_FILE_BYTES {
+        return Err(AppError::internal("file grew beyond the local editor limit while reading"));
+    }
+    let revision_sha256 = workspace_revision(&bytes);
+    let size_bytes = bytes.len() as u64;
     let content = String::from_utf8(bytes).map_err(|_| {
         AppError::internal("binary or non-UTF-8 files cannot be opened in the text editor")
     })?;
     Ok(WorkspaceFileContent {
         path: display_path(&file_path),
         content,
-        size_bytes: metadata.len(),
+        size_bytes,
+        revision_sha256,
     })
 }
 
@@ -329,8 +345,9 @@ pub fn write_project_workspace_file(
     path: String,
     content: String,
     approved: bool,
+    expected_sha256: Option<String>,
     state: State<AppState>,
-) -> Result<WorkspaceMutationResult, AppError> {
+) -> Result<WorkspaceFileSaveResult, AppError> {
     if !approved {
         return Err(AppError::internal(
             "saving a local file requires explicit approval",
@@ -349,12 +366,68 @@ pub fn write_project_workspace_file(
     if let Some(parent) = file_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&file_path, content.as_bytes())?;
+    // Re-resolve after creating parents, so a replaced intermediate symlink cannot
+    // silently change the destination selected by the project scope check.
+    let checked_path = resolve_path(&config, root_id.as_deref(), &path, false)?;
+    if checked_path != file_path {
+        return Err(AppError::internal("workspace path changed before save; reopen the file"));
+    }
+    let revision_sha256 = transactional_workspace_save(
+        &checked_path,
+        content.as_bytes(),
+        expected_sha256.as_deref(),
+    )?;
     invalidate_project_workspace_context(&project_id);
-    Ok(WorkspaceMutationResult {
-        path: display_path(&file_path),
+    Ok(WorkspaceFileSaveResult {
+        path: display_path(&checked_path),
         kind: "file".to_string(),
+        revision_sha256,
     })
+}
+
+/// Stage changes in the existing durable patch transaction system instead of
+/// truncating the destination. A missing revision may only create a NEW file.
+fn transactional_workspace_save(
+    target: &Path,
+    bytes: &[u8],
+    expected_sha256: Option<&str>,
+) -> Result<String, AppError> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| AppError::internal("workspace file has no parent directory"))?;
+    let name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| AppError::internal("workspace file name is not valid UTF-8"))?;
+    let content = std::str::from_utf8(bytes)
+        .map_err(|_| AppError::internal("workspace editor requires UTF-8 text"))?;
+    let action = match expected_sha256 {
+        Some(expected) => {
+            if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(AppError::internal("invalid workspace revision token"));
+            }
+            serde_json::json!({
+                "operations": [{
+                    "op": "write",
+                    "path": name,
+                    "content": content,
+                    "expectedSha256": expected
+                }]
+            })
+        }
+        None => serde_json::json!({
+            "operations": [{ "op": "create", "path": name, "content": content }]
+        }),
+    };
+    // apply_patch_transaction serializes writes within this process, checks
+    // source hashes, journals old bytes, stages synced replacements and rolls
+    // back interrupted writes on the next transaction in this directory.
+    crate::coding_patch::apply_patch_transaction(parent, &action)?;
+    Ok(workspace_revision(bytes))
+}
+
+fn workspace_revision(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 #[tauri::command]
