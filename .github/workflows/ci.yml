@@ -55,6 +55,9 @@ jobs:
       - name: Chat draft failure recovery
         run: npm run test:drafts
 
+      - name: Concurrent attachment ingestion
+        run: npm run test:attachments
+
       - name: Lint
         run: npm run lint
 
