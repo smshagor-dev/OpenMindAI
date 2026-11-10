@@ -30,6 +30,7 @@ export interface AttachmentDraft {
   size: number;
   type: string;
   kind: "text" | "image" | "pdf" | "audio" | "video" | "binary";
+  warning?: string;
   contentPreview: string | null;
   mediaDataUrl: string | null;
   mediaMimeType: "image/png" | "image/jpeg" | null;
@@ -173,6 +174,7 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
     throw new Error("Text and code attachments must be 1 MB or smaller for local chat context.");
   }
 
+  let warning: string | undefined;
   let contentPreview: string | null = null;
   let mediaDataUrl: string | null = null;
   let mediaMimeType: "image/png" | "image/jpeg" | null = null;
@@ -217,7 +219,8 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
     const body = extracted.text
       ? extracted.text
       : "[No reliable selectable text was found. Use the supplied rendered PDF page images for visual/OCR analysis.]";
-    contentPreview = `[PDF processed locally: ${status}. Page markers below correspond to the original PDF.]\n\n${body}`;
+    contentPreview = `[${extracted.unreadPages.length ? "PDF text-only" : "PDF processed locally"}: ${status}. Page markers below correspond to the original PDF.]\n${extracted.warnings.join("\n")}\n${body}`;
+    warning = extracted.warnings.join(" ") || undefined;
   } else if (kind === "audio") {
     const transcript = await transcribeAudioFile(file);
     const language = transcript.language ? `, language ${transcript.language}` : "";
@@ -238,6 +241,7 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
     type: file.type || "unknown",
     kind,
     contentPreview,
+    warning,
     mediaDataUrl,
     mediaMimeType,
     mediaItems,

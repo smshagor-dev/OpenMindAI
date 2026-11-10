@@ -55,6 +55,9 @@ jobs:
       - name: Chat draft failure recovery
         run: npm run test:drafts
 
+      - name: PDF ingestion fallback regression
+        run: npm run test:pdf
+
       - name: Lint
         run: npm run lint
 
