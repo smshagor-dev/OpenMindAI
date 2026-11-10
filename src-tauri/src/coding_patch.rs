@@ -141,6 +141,19 @@ pub fn apply_patch_transaction(
     commit_transaction(&root, planned, recovered)
 }
 
+/// Safely restore an editor file after a crash interrupted a patch journal.
+pub(crate) fn recover_pending_transactions(root: &Path) -> Result<usize, AppError> {
+    let lock = PATCH_TRANSACTION_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock
+        .lock()
+        .map_err(|_| AppError::internal("patch transaction lock is poisoned"))?;
+    let root = fs::canonicalize(root)?;
+    if !root.is_dir() {
+        return Err(AppError::internal("transaction recovery root is not a directory"));
+    }
+    recover_interrupted_transactions(&root)
+}
+
 fn parse_operations(action: &Value) -> Result<Vec<PatchOperation>, AppError> {
     let operations = action
         .get("operations")
@@ -348,6 +361,13 @@ fn commit_transaction(
             }
             if change.target.exists() {
                 reject_symlink(&change.target)?;
+                // Preserve the original file's permissions for replacing edits,
+                // rather than silently replacing it with a default-mode staged file.
+                if change.replacement.is_some() {
+                    let stage = tx_dir.join(format!("{index}.stage"));
+                    fs::set_permissions(&stage, fs::metadata(&change.target)?.permissions())?;
+                    fs::File::open(&stage)?.sync_all()?;
+                }
                 let backup = tx_dir.join(format!("{index}.backup"));
                 durable_rename(&change.target, &backup)?;
             }
