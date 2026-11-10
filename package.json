@@ -23,6 +23,7 @@
     "test:ime": "node --test tests/composerIme.test.mjs",
     "test:drafts": "node --test tests/chatDraft.test.mjs",
     "test:conversations": "node --experimental-strip-types --test tests/conversationState.test.mjs",
+    "test:workspace": "node --experimental-strip-types --test tests/workspaceDirectoryGate.test.mjs",
     "test:updates": "node --experimental-strip-types --test tests/updateCoordinator.test.mjs",
     "test:model-updates": "node --test tests/modelUpdates.test.mjs",
     "check:theme": "node --test tests/theme-colors.test.mjs tests/download-surfaces.test.mjs",
