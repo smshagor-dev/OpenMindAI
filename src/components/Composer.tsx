@@ -1,5 +1,5 @@
 import type { VoiceDraftTarget } from "../lib/voiceDraft";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   FileText,
   FileType,
@@ -20,7 +20,7 @@ import {
 import type { ReactNode, RefObject } from "react";
 import type { ImageGenerationOptions, ModelRecord, RuntimeInventory } from "../types";
 import { formatBytes } from "../lib/format";
-import { inferChatMode, type AttachmentDraft } from "../lib/chat";
+import { attachmentContextStats, inferChatMode, type AttachmentDraft } from "../lib/chat";
 import { transcribeAudioBlob } from "../lib/media";
 import { api } from "../api";
 import { ModelSelector } from "./ModelSelector";
@@ -51,6 +51,7 @@ export function Composer(props: {
   note?: string;
 }) {
   const textareaRef = props.composerRef;
+  const contextPlan = useMemo(() => attachmentContextStats(props.attachments), [props.attachments]);
   const alive = useRef(false);
   const startingMicrophone = useRef(false);
   const composingRef = useRef(false);
@@ -254,7 +255,13 @@ export function Composer(props: {
                   )}
                   <span>{attachment.name}</span>
                   <small>{attachment.kind}</small>
-                  {attachment.warning ? <small role="status" title={attachment.warning} aria-label={attachment.warning}>PDF text only · OCR incomplete</small> : null}
+                  {attachment.warning ? (
+                    <small role="status" title={attachment.warning} aria-label={attachment.warning}>
+                      {attachment.kind === "pdf" && attachment.warning.includes("OCR incomplete")
+                        ? "PDF OCR incomplete"
+                        : "Limited context"}
+                    </small>
+                  ) : null}
                   <small>{formatBytes(attachment.size)}</small>
                   {audioPreview ? (
                     <audio
@@ -277,6 +284,13 @@ export function Composer(props: {
               );
             })}
           </div>
+        ) : null}
+        {contextPlan.truncatedCount > 0 ? (
+          <p className="composer-note" role="status">
+            {contextPlan.truncatedCount} of {props.attachments.length} attachment(s) will be sent as
+            excerpts. Some text will not reach the model; attach fewer files or ask about a specific
+            passage for better coverage.
+          </p>
         ) : null}
         {isImageRequest ? (
           <div className="composer-image-options">
