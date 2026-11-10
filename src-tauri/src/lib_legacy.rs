@@ -101,7 +101,7 @@ fn get_portable_root(state: State<AppState>) -> Result<PortableRootInfo, app_err
 }
 
 #[tauri::command]
-fn installation_status(state: State<AppState>) -> InstallationStatus {
+fn installation_status(state: State<AppState>) -> Result<InstallationStatus, app_error::AppError> {
     portable_root::installation_status(&state.root)
 }
 
@@ -177,7 +177,7 @@ fn save_setup_progress(
 /// not an error — there's nothing to persist for those.
 #[tauri::command]
 fn mark_runtime_ready() -> Result<(), app_error::AppError> {
-    if let Some(mut config) = load_installation() {
+    if let Some(mut config) = load_installation()? {
         config.runtime_ready = true;
         config.setup_state = Some(if config.model_ready {
             SetupState::Completed
@@ -192,7 +192,7 @@ fn mark_runtime_ready() -> Result<(), app_error::AppError> {
 
 #[tauri::command]
 fn mark_model_ready() -> Result<(), app_error::AppError> {
-    if let Some(mut config) = load_installation() {
+    if let Some(mut config) = load_installation()? {
         config.model_ready = true;
         config.setup_state = Some(if config.runtime_ready {
             SetupState::Completed
@@ -2370,8 +2370,37 @@ fn clear_google_credentials(state: State<AppState>) -> Result<(), app_error::App
     GoogleRepository::new(&db).clear()
 }
 
+fn show_installation_error(error: app_error::AppError) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    let message = error.to_string();
+    let result = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .setup(move |app| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.hide();
+            }
+            let handle = app.handle().clone();
+            app.dialog()
+                .message(message.clone())
+                .title("OpenMindAI installation needs repair")
+                .kind(MessageDialogKind::Error)
+                .show(move |_| handle.exit(1));
+            Ok(())
+        })
+        .run(tauri::generate_context!());
+    if let Err(error) = result {
+        eprintln!("Could not display installation recovery error: {error}");
+    }
+}
+
 pub fn run() {
-    let root = PortableRootManager::resolve().expect("failed to resolve OpenMindAI Root");
+    let root = match PortableRootManager::resolve() {
+        Ok(root) => root,
+        Err(error) => {
+            show_installation_error(error);
+            return;
+        }
+    };
     root.ensure_directories()
         .expect("failed to initialize OpenMindAI directories");
     // Held for the rest of this function's scope (which doesn't return
@@ -2381,7 +2410,14 @@ pub fn run() {
     tracing::info!(root = %root.root().display(), mode = ?root.mode(), "resolved OpenMindAI root");
     // When this root was set up via the first-run wizard, honor the
     // profile-named database it configured rather than the dev-mode default.
-    let database_path = portable_root::load_installation()
+    let installation = match portable_root::load_installation() {
+        Ok(installation) => installation,
+        Err(error) => {
+            show_installation_error(error);
+            return;
+        }
+    };
+    let database_path = installation
         .filter(|config| {
             config.installation_complete && config.root == root.root().display().to_string()
         })
