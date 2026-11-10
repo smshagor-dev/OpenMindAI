@@ -90,6 +90,7 @@ impl Database {
         register_artifact_cleanup(&connection, artifact_root)?;
         let mut database = Self { connection };
         database.migrate()?;
+        crate::connected_action_ledger::recover_interrupted(database.connection())?;
         database.recover_interrupted_chat_messages()?;
         database.recover_stale_image_artifacts()?;
         database.recover_interrupted_openagent_runs()?;

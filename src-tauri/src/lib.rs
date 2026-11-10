@@ -1,3 +1,4 @@
+mod connected_action_ledger;
 extern crate tauri as tauri_crate;
 
 #[macro_export]
