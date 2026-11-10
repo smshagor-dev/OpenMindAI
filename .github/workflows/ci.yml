@@ -49,6 +49,9 @@ jobs:
       - name: Shared application updater regression
         run: npm run test:updates
 
+      - name: Manual model update policy regression
+        run: npm run test:model-updates
+
       - name: Conversation isolation regression
         run: npm run test:conversations
 
@@ -57,6 +60,8 @@ jobs:
 
       - name: Voice draft ownership
         run: npm run test:voice-drafts
+      - name: Composer IME regression
+        run: npm run test:ime
 
       - name: Lint
         run: npm run lint

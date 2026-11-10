@@ -62,6 +62,7 @@ mod tauri {
 }
 
 mod agent_runtime;
+mod artifact_output;
 mod coding_agent_gateway;
 mod coding_ast;
 mod coding_control;
@@ -75,13 +76,17 @@ mod connected_agent;
 mod connector_ecosystem;
 mod connector_input_guard;
 mod connector_stabilization;
+mod database_backup;
 mod dataset_context;
 mod dataset_download;
+mod folder_opener;
 mod github_workspace;
 mod google_workspace;
+mod installation_file;
 mod isolated_runtime;
 mod local_agent;
 mod local_workspace;
+mod model_discovery;
 mod multimodal;
 #[cfg(feature = "native-cxx-llama")]
 pub mod native_bridge;

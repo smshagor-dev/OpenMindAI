@@ -511,6 +511,8 @@ pub(crate) async fn create_soundscape_artifact(
         (artifact, path)
     };
 
+    let output = crate::artifact_output::StagedOutput::new(&path);
+    let path = output.path.clone();
     app.emit("artifact:started", &artifact)
         .map_err(|error| AppError::internal(error.to_string()))?;
 
@@ -522,16 +524,14 @@ pub(crate) async fn create_soundscape_artifact(
     .await
     .map_err(|error| AppError::ArtifactGenerationFailed(format!("sound worker failed: {error}")))?;
 
+    let generation_result = generation_result.and_then(|()| output.commit_for("audio"));
     let db = state
         .database
         .lock()
         .map_err(|_| AppError::internal("database lock poisoned"))?;
     let artifacts = ArtifactRepository::new(&db);
     let updated = match generation_result {
-        Ok(()) => {
-            let size = fs::metadata(&path)
-                .map(|meta| meta.len() as i64)
-                .unwrap_or(0);
+        Ok(size) => {
             artifacts.set_ready(&artifact.id, size, None)?;
             artifacts.find(&artifact.id)?
         }

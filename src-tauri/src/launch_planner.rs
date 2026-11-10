@@ -13,6 +13,7 @@ const DISPLAY_GPU_FULL_OFFLOAD_HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 #[serde(rename_all = "camelCase")]
 pub struct ModelLaunchConfig {
     pub model_path: String,
+    pub mmproj_path: Option<String>,
     pub backend: BackendKind,
     pub device: Option<String>,
     pub gpu_layers: i32,
@@ -192,6 +193,7 @@ impl ModelLaunchPlanner {
         LaunchPlan {
             config: ModelLaunchConfig {
                 model_path: model.path.clone(),
+                mmproj_path: None,
                 backend,
                 device: selected_gpu.map(|gpu| gpu.name.clone()),
                 gpu_layers,
