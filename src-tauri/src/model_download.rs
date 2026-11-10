@@ -23,6 +23,18 @@ use crate::{
 mod model_package;
 pub(crate) use model_package::validate_installed_dependencies;
 
+pub(crate) fn primary_manifest_available(path: &Path) -> bool {
+    model_package::primary_manifest_available(path)
+}
+
+pub(crate) fn read_primary_manifest(
+    root: &PortableRootManager,
+    entry: &ModelCatalogEntry,
+    primary: &Path,
+) -> Result<QwenModelManifest, AppError> {
+    model_package::read_primary_manifest(root, entry, primary)
+}
+
 const SAFE_SPACE_MARGIN: u64 = 768 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

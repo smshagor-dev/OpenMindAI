@@ -16,8 +16,12 @@ mod database;
 mod diffusion_runtime;
 #[path = "../src/hardware.rs"]
 mod hardware;
+#[path = "../src/installation_file.rs"]
+mod installation_file;
 #[path = "../src/model_catalog.rs"]
 mod model_catalog;
+#[path = "../src/model_discovery.rs"]
+mod model_discovery;
 #[path = "../src/model_download.rs"]
 mod model_download;
 #[path = "../src/model_registry.rs"]

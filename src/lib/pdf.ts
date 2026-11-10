@@ -28,6 +28,8 @@ export interface PdfExtractionResult {
   truncated: boolean;
   visionPages: PdfVisionPage[];
   scannedPages: number[];
+  unreadPages: number[];
+  warnings: string[];
 }
 
 interface PdfOcrPageResult {
@@ -65,35 +67,48 @@ export async function extractPdfText(file: File): Promise<PdfExtractionResult> {
     const selectedVisionPages = new Set(selectRepresentativePages(scannedPages, MAX_VISION_PAGES));
     const visionPages: PdfVisionPage[] = [];
 
+    const unreadPages = new Set(scannedPages);
     for (let offset = 0; offset < scannedPages.length; offset += OCR_BATCH_SIZE) {
       const batchNumbers = scannedPages.slice(offset, offset + OCR_BATCH_SIZE);
-      const rendered = await Promise.all(
-        batchNumbers.map(async (pageNumber) => {
+      const rendered: { pageNumber: number; dataUrl: string }[] = [];
+      for (const pageNumber of batchNumbers) {
+        try {
           const page = await pdf.getPage(pageNumber);
           const dataUrl = await renderPdfPage(page);
+          rendered.push({ pageNumber, dataUrl });
           if (selectedVisionPages.has(pageNumber)) {
             visionPages.push({ pageNumber, dataUrl, mimeType: "image/jpeg" });
           }
-          return { pageNumber, dataUrl };
-        }),
-      );
-
-      let ocr: PdfOcrPageResult[];
-      try {
-        ocr = await invoke<PdfOcrPageResult[]>("ocr_pdf_pages", { pages: rendered });
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        throw new Error(
-          `OpenMindAI Lens could not read scanned PDF pages ${batchNumbers.join(", ")}: ${detail}`,
-        );
+        } catch {
+          // Selectable text is still usable when optional rendering fails.
+        }
       }
-      for (const result of ocr) {
-        if (result.pageNumber < 1 || result.pageNumber > pagesRead) continue;
-        const existing = pageTexts[result.pageNumber - 1].trim();
-        const visual = result.text.trim();
-        pageTexts[result.pageNumber - 1] = [existing, visual].filter(Boolean).join("\n");
+      if (!rendered.length) continue;
+      try {
+        const ocr = await invoke<PdfOcrPageResult[]>("ocr_pdf_pages", { pages: rendered });
+        const allowed = new Set(rendered.map(page => page.pageNumber));
+        for (const result of ocr) {
+          if (!allowed.delete(result.pageNumber) || typeof result.text !== "string") continue;
+          const visual = result.text.trim();
+          if (!visual) continue;
+          const existing = pageTexts[result.pageNumber - 1].trim();
+          pageTexts[result.pageNumber - 1] = [existing, visual].filter(Boolean).join("\n");
+          unreadPages.delete(result.pageNumber);
+        }
+      } catch {
+        // Retain selectable text and successful earlier OCR batches.
       }
     }
+    const missing = Array.from(unreadPages).sort((a, b) => a - b);
+    const warnings = missing.length ? [
+      `OCR incomplete on pages ${missing.join(", ")}. Only available text is included; image-only content on these pages was not analyzed. Install or repair OpenMindAI Lens for full coverage.`,
+    ] : [];
+    if (missing.length && !pageTexts.some(text => text.trim())) {
+      throw new Error(`No readable PDF text is available. ${warnings[0]}`);
+    }
+    // An incomplete OCR import must stay usable with a text model, even when
+    // Lens itself is unavailable. Do not route this fallback back to Lens.
+    if (missing.length) visionPages.length = 0;
 
     visionPages.sort((left, right) => left.pageNumber - right.pageNumber);
     const chunks: string[] = [];
@@ -124,6 +139,8 @@ export async function extractPdfText(file: File): Promise<PdfExtractionResult> {
       truncated,
       visionPages,
       scannedPages,
+      unreadPages: missing,
+      warnings,
     };
   } finally {
     await task.destroy().catch(() => undefined);

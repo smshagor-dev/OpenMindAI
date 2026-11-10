@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{ErrorKind, Write},
+    io::ErrorKind,
     path::{Component, Path, PathBuf},
 };
 
@@ -20,44 +20,66 @@ use crate::{
 };
 
 const PACKAGE_SPACE_MARGIN: u64 = 256 * 1024 * 1024;
+#[cfg(test)]
 const MAX_PACKAGE_MANIFEST_BYTES: u64 = 64 * 1024;
 
-/**
- * Publish an individual model metadata file only after its full contents have
- * been written and synced. A failed write or rename leaves the previous
- * manifest untouched and removes this attempt's temporary file.
- *
- * The temporary file is deliberately on the same filesystem as its final
- * destination; neither a cross-device copy nor truncation of the live manifest
- * is acceptable for model packages on removable storage.
- */
+#[path = "model_manifest.rs"]
+mod model_manifest;
+
 pub(super) fn write_manifest_atomically(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| AppError::internal("model manifest has no parent directory"))?;
-    let name = path
-        .file_name()
-        .ok_or_else(|| AppError::internal("model manifest has no file name"))?;
-    let temporary = parent.join(format!(
-        ".{}.{}.tmp",
-        name.to_string_lossy(),
-        uuid::Uuid::new_v4()
-    ));
-    let result = (|| -> Result<(), AppError> {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&temporary, path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result
+    model_manifest::write(path, bytes)
+}
+
+pub(crate) fn primary_manifest_available(path: &Path) -> bool {
+    path.is_file() || model_manifest::recovery_path(path).is_file()
+}
+
+pub(crate) fn read_primary_manifest(
+    root: &PortableRootManager,
+    entry: &ModelCatalogEntry,
+    primary: &Path,
+) -> Result<super::QwenModelManifest, AppError> {
+    let download = entry
+        .download
+        .as_ref()
+        .ok_or_else(|| AppError::ModelInvalid("model has no download metadata".into()))?;
+    let model_dir = root.resolve_relative(&download.destination_dir)?;
+    ensure_contained(root.root(), &model_dir)?;
+    model_manifest::read_or_recover(
+        &model_dir.join("model-manifest.json"),
+        |record: &super::QwenModelManifest, recovering| {
+            if record.repo != entry.repo
+                || record.quantization != entry.quantization
+                || !valid_package_filename(&record.filename)
+                || !wildcard_match(&download.filename_pattern, &record.filename)
+                || record.verification == VerificationState::Failed
+                || record.size_bytes == 0
+            {
+                return Ok(false);
+            }
+            let file = model_dir.join(&record.filename);
+            ensure_contained(root.root(), &file)?;
+            if fs::canonicalize(&file)? != fs::canonicalize(primary)?
+                || !fs::canonicalize(&file)?.starts_with(fs::canonicalize(&model_dir)?)
+                || fs::metadata(&file)?.len() != record.size_bytes
+            {
+                return Ok(false);
+            }
+            let Some(expected) = record
+                .actual_sha256
+                .as_deref()
+                .filter(|digest| valid_package_digest(digest))
+            else {
+                return Ok(false);
+            };
+            if record.sha256.as_deref().is_some_and(|value| {
+                !valid_package_digest(value) || !value.eq_ignore_ascii_case(expected)
+            }) {
+                return Ok(false);
+            }
+            Ok(!recovering || sha256_file(&file)?.eq_ignore_ascii_case(expected))
+        },
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -507,35 +529,40 @@ pub(crate) fn validate_installed_dependencies(
     let Some(download) = entry.download.as_ref() else {
         return Ok(true);
     };
+    if !download
+        .dependencies
+        .iter()
+        .any(|dependency| dependency.required)
+    {
+        return Ok(true);
+    }
+    let model_dir = root.resolve_relative(&download.destination_dir)?;
+    if !model_dir.is_dir() {
+        return Ok(false);
+    }
+    ensure_contained(root.root(), &model_dir)?;
+    let manifest_path = model_dir.join("package-manifest.json");
+    Ok(
+        model_manifest::read_or_recover(&manifest_path, |record, recovering| {
+            validate_package_files(root, entry, &model_dir, record, recovering || verify_hashes)
+        })
+        .is_ok(),
+    )
+}
+
+fn validate_package_files(
+    root: &PortableRootManager,
+    entry: &ModelCatalogEntry,
+    model_dir: &Path,
+    manifest: &ModelPackageManifest,
+    verify_hashes: bool,
+) -> Result<bool, AppError> {
+    let download = entry.download.as_ref().unwrap();
+    let canonical_model_dir = fs::canonicalize(model_dir)?;
     let required = download
         .dependencies
         .iter()
-        .filter(|dependency| dependency.required)
-        .collect::<Vec<_>>();
-    if required.is_empty() {
-        return Ok(true);
-    }
-
-    let model_dir = root.resolve_relative(&download.destination_dir)?;
-    let manifest_path = model_dir.join("package-manifest.json");
-    if !manifest_path.is_file() {
-        return Ok(false);
-    }
-    ensure_contained(root.root(), &manifest_path)?;
-    let canonical_model_dir = fs::canonicalize(&model_dir)?;
-    let canonical_manifest = fs::canonicalize(&manifest_path)?;
-    if !canonical_manifest.starts_with(&canonical_model_dir)
-        || fs::metadata(&canonical_manifest)?.len() > MAX_PACKAGE_MANIFEST_BYTES
-    {
-        return Ok(false);
-    }
-    let manifest: ModelPackageManifest = match fs::read_to_string(&manifest_path)
-        .ok()
-        .and_then(|content| serde_json::from_str(&content).ok())
-    {
-        Some(manifest) => manifest,
-        None => return Ok(false),
-    };
+        .filter(|dependency| dependency.required);
     if manifest.model_id != entry.id || manifest.repo != entry.repo {
         return Ok(false);
     }
@@ -546,12 +573,20 @@ pub(crate) fn validate_installed_dependencies(
                 && file.format == dependency.format
                 && wildcard_match(&dependency.filename_pattern, &file.filename)
         });
-        let Some(record) = matching.next() else {
+        if matching.next().is_none() {
             return Ok(false);
-        };
+        }
         if matching.next().is_some() {
             return Ok(false);
         }
+    }
+    for record in manifest.files.iter().filter(|record| {
+        verify_hashes
+            || download
+                .dependencies
+                .iter()
+                .any(|dependency| dependency.required && dependency.role == record.role)
+    }) {
         if record.size_bytes == 0
             || !valid_package_digest(&record.actual_sha256)
             || !valid_package_filename(&record.filename)
@@ -773,7 +808,7 @@ mod tests {
         assert_eq!(parsed["verified"], true);
         let files = fs::read_dir(dir.path()).unwrap().count();
         assert_eq!(
-            files, 1,
+            files, 2,
             "successful replacement must not leave a temp file"
         );
     }
@@ -1053,5 +1088,101 @@ mod tests {
         fs::write(&file_path, b"corrupted").unwrap();
         assert!(validate_installed_dependencies(&root, &entry, false).unwrap());
         assert!(!validate_installed_dependencies(&root, &entry, true).unwrap());
+    }
+    #[test]
+    fn recovers_primary_manifest_only_after_rehashing_matching_catalog_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(dir.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let entry = crate::model_catalog::entry_by_id("qwen25-vl-3b-q4km").unwrap();
+        let download = entry.download.as_ref().unwrap();
+        let model_dir = root.resolve_relative(&download.destination_dir).unwrap();
+        fs::create_dir_all(&model_dir).unwrap();
+        let filename = "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf";
+        assert!(wildcard_match(&download.filename_pattern, filename));
+        let file = model_dir.join(filename);
+        fs::write(&file, b"GGUFgood-model").unwrap();
+        let digest = sha256_file(&file).unwrap();
+        let manifest = crate::model_download::QwenModelManifest {
+            repo: entry.repo.clone(),
+            repo_sha: Some("a".repeat(40)),
+            quantization: entry.quantization.clone(),
+            filename: filename.into(),
+            size_bytes: 14,
+            sha256: Some(digest.clone()),
+            actual_sha256: Some(digest),
+            verification: VerificationState::Verified,
+            architecture: None,
+            context_length: None,
+            chat_template_available: true,
+            source_url: "https://example.invalid/fixture".into(),
+            installed_at: "fixture".into(),
+        };
+        let path = model_dir.join("model-manifest.json");
+        write_manifest_atomically(&path, &serde_json::to_vec(&manifest).unwrap()).unwrap();
+        fs::write(&path, b"{truncated").unwrap();
+        assert_eq!(
+            read_primary_manifest(&root, &entry, &file)
+                .unwrap()
+                .filename,
+            filename
+        );
+        fs::remove_file(&path).unwrap();
+        assert!(read_primary_manifest(&root, &entry, &file).is_ok());
+        let mut stale = manifest.clone();
+        stale.actual_sha256 = Some("0".repeat(64));
+        stale.sha256 = stale.actual_sha256.clone();
+        fs::write(&path, serde_json::to_vec(&stale).unwrap()).unwrap();
+        assert_eq!(
+            read_primary_manifest(&root, &entry, &file)
+                .unwrap()
+                .actual_sha256,
+            manifest.actual_sha256
+        );
+        // A parseable recovery record cannot bless same-length model corruption.
+        fs::write(&file, b"GGUFbad!-model").unwrap();
+        fs::remove_file(&path).unwrap();
+        assert!(read_primary_manifest(&root, &entry, &file).is_err());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn recovers_dependency_manifest_only_when_installed_dependency_hashes_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(dir.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let entry = crate::model_catalog::entry_by_id("qwen25-vl-3b-q4km").unwrap();
+        let model_dir = root
+            .resolve_relative(&entry.download.as_ref().unwrap().destination_dir)
+            .unwrap();
+        fs::create_dir_all(&model_dir).unwrap();
+        let filename = "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf";
+        let file = model_dir.join(filename);
+        fs::write(&file, b"projector").unwrap();
+        let digest = sha256_file(&file).unwrap();
+        let manifest = ModelPackageManifest {
+            model_id: entry.id.clone(),
+            repo: entry.repo.clone(),
+            files: vec![PackageFileManifest {
+                role: "mmproj".into(),
+                filename: filename.into(),
+                format: "gguf".into(),
+                size_bytes: 9,
+                sha256: Some(digest.clone()),
+                actual_sha256: digest,
+                verification: VerificationState::Verified,
+                source_url: "https://example.invalid/fixture".into(),
+            }],
+        };
+        let path = model_dir.join("package-manifest.json");
+        write_manifest_atomically(&path, &serde_json::to_vec(&manifest).unwrap()).unwrap();
+        fs::write(&path, b"{truncated").unwrap();
+        assert!(validate_installed_dependencies(&root, &entry, false).unwrap());
+        fs::remove_file(&path).unwrap();
+        assert!(validate_installed_dependencies(&root, &entry, true).unwrap());
+        fs::write(&file, b"corrupted").unwrap();
+        fs::remove_file(&path).unwrap();
+        assert!(!validate_installed_dependencies(&root, &entry, false).unwrap());
+        assert!(!path.exists());
     }
 }

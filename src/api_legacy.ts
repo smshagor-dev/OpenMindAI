@@ -742,6 +742,12 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
   if (command === "get_app_preferences" || command === "save_app_preferences") {
     if (
       command === "save_app_preferences" &&
+      (args?.preferences as { autoDownloadModelUpdates?: unknown } | undefined)?.autoDownloadModelUpdates === true
+    ) {
+      return Promise.reject(new Error("Automatic model downloading is not available. Confirm model downloads manually in Settings → Models."));
+    }
+    if (
+      command === "save_app_preferences" &&
       (args?.preferences as { saveChatHistory?: unknown } | undefined)?.saveChatHistory === false
     ) {
       return Promise.reject(new Error("This version saves chat history locally. Temporary chats are not supported."));

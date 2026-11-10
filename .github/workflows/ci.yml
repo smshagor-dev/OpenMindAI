@@ -49,11 +49,29 @@ jobs:
       - name: Shared application updater regression
         run: npm run test:updates
 
+      - name: Manual model update policy regression
+        run: npm run test:model-updates
+
       - name: Conversation isolation regression
         run: npm run test:conversations
 
       - name: Chat draft failure recovery
         run: npm run test:drafts
+
+      - name: PDF ingestion fallback regression
+        run: npm run test:pdf
+      - name: Regeneration history preservation
+        run: npm run test:regeneration
+      - name: Model action failure recovery
+        run: npm run test:model-actions
+      - name: Concurrent attachment ingestion
+        run: npm run test:attachments
+      - name: Settings save failure recovery
+        run: npm run test:settings-save
+      - name: Voice draft ownership
+        run: npm run test:voice-drafts
+      - name: Composer IME regression
+        run: npm run test:ime
 
       - name: Lint
         run: npm run lint
@@ -82,6 +100,32 @@ jobs:
         run: cargo clippy --locked --manifest-path tests/process-ownership/Cargo.toml --all-targets -- -D warnings
       - name: Runtime exit, crash and relaunch tests
         run: cargo test --locked --manifest-path tests/process-ownership/Cargo.toml
+
+  sandbox-capture:
+    name: Bounded sandbox capture (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Production module regressions
+        run: cargo test --locked --manifest-path tests/sandbox-capture/Cargo.toml
+
+  private-descriptor:
+    name: Private session descriptor (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Production module regressions
+        run: cargo test --locked --manifest-path tests/private-descriptor/Cargo.toml
 
   lockfile:
     name: Cargo lockfile consistency

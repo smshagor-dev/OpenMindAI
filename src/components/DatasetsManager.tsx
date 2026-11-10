@@ -860,5 +860,6 @@ function datasetDownloadLabel(status: DatasetDownloadStatus) {
       : formatBytes(status.downloadedBytes);
   const speed = status.speedBytesPerSec ? ` - ${formatBytes(status.speedBytesPerSec)}/s` : "";
   const current = status.currentFile ? ` - ${status.currentFile}` : "";
-  return `${files} - ${bytes}${speed}${current}`;
+  const verification = status.verification ? ` - ${status.verification}` : "";
+  return `${files} - ${bytes}${speed}${current}${verification}`;
 }
