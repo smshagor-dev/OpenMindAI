@@ -18,6 +18,7 @@
     "test:regeneration": "node --test tests/regeneration.test.mjs",
     "test:model-actions": "node --test tests/modelActions.test.mjs",
     "test:attachments": "node --test tests/attachmentIngestion.test.mjs",
+    "test:attachment-context": "node --experimental-strip-types --test tests/attachmentContext.test.mjs",
     "test:settings-save": "node --test tests/settingsSave.test.mjs",
     "test:voice-drafts": "node --test tests/voiceDraft.test.mjs tests/voiceComposer.test.mjs",
     "test:ime": "node --test tests/composerIme.test.mjs",
