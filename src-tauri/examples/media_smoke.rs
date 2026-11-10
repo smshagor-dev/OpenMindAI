@@ -8,6 +8,8 @@ use std::{
 
 #[path = "../src/app_error.rs"]
 mod app_error;
+#[path = "../src/connected_action_ledger.rs"]
+mod connected_action_ledger;
 #[path = "../src/database.rs"]
 mod database;
 #[path = "../src/diffusion_runtime.rs"]

@@ -103,6 +103,17 @@ jobs:
 
   sandbox-capture:
     name: Bounded sandbox capture (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Production module regressions
+        run: cargo test --locked --manifest-path tests/sandbox-capture/Cargo.toml
+
   private-descriptor:
     name: Private session descriptor (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -113,9 +124,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - name: Bounded host reads and guest capture regressions
-        run: cargo test --locked --manifest-path tests/sandbox-capture/Cargo.toml
-      - name: Owner-only descriptor regression
+      - name: Production module regressions
         run: cargo test --locked --manifest-path tests/private-descriptor/Cargo.toml
 
   lockfile:
