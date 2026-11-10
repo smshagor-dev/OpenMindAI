@@ -5,8 +5,9 @@ use crate::{
     hardware::HardwareProfile,
     model_catalog::{entry_by_id, installed_file_for_pattern, wildcard_match, ModelCatalogEntry},
     model_download::{
-        ensure_contained, format_byte_pair, format_bytes, validate_installed_dependencies,
-        QwenModelManifest, VerificationState,
+        ensure_contained, format_byte_pair, format_bytes, primary_manifest_available,
+        read_primary_manifest, validate_installed_dependencies, QwenModelManifest,
+        VerificationState,
     },
     portable_root::{available_bytes_for_path, PortableRootManager},
 };
@@ -234,9 +235,8 @@ fn validate_model_package(
     }
 
     let manifest_path = model_dir.join("model-manifest.json");
-    if manifest_path.is_file() {
-        ensure_contained(root.root(), &manifest_path)?;
-        match read_primary_manifest(&manifest_path) {
+    if primary_manifest_available(&manifest_path) {
+        match read_primary_manifest(root, entry, &primary_path) {
             Ok(manifest) => validate_primary_manifest(
                 root,
                 entry,
@@ -275,11 +275,6 @@ fn validate_model_package(
     }
 
     Ok(())
-}
-
-fn read_primary_manifest(path: &Path) -> Result<QwenModelManifest, AppError> {
-    let content = fs::read_to_string(path)?;
-    serde_json::from_str(&content).map_err(|error| AppError::ModelInvalid(error.to_string()))
 }
 
 fn validate_primary_manifest(
@@ -536,7 +531,10 @@ mod tests {
         .unwrap()
         .unwrap();
         let error = report.ensure_ready().unwrap_err().to_string();
-        assert!(error.contains("hardware detection is still in progress"), "{error}");
+        assert!(
+            error.contains("hardware detection is still in progress"),
+            "{error}"
+        );
         assert!(!error.contains("System memory"), "{error}");
         assert!(!error.contains("GPU memory"), "{error}");
         assert!(!error.contains("0 bytes"), "{error}");
@@ -567,7 +565,10 @@ mod tests {
 
         // The RX 580 from the live test reports 8,567,902,208 bytes.
         let rx580 = vram_shortfall_detail(8_567_902_208, recommended);
-        assert!(rx580.contains("7.98 GiB") && rx580.contains("8.00 GiB"), "{rx580}");
+        assert!(
+            rx580.contains("7.98 GiB") && rx580.contains("8.00 GiB"),
+            "{rx580}"
+        );
         assert!(rx580.contains("slightly below"), "{rx580}");
     }
 
@@ -597,13 +598,20 @@ mod tests {
                 available_backends: Vec::new(),
                 recommended_backend: crate::hardware::BackendKind::Vulkan,
             }];
-            preflight_with_environment(&root, "image", &profile, Some(100 * GIB), "windows", "x86_64")
-                .unwrap()
-                .unwrap()
-                .checks
-                .into_iter()
-                .find(|check| check.label == "GPU memory")
-                .unwrap()
+            preflight_with_environment(
+                &root,
+                "image",
+                &profile,
+                Some(100 * GIB),
+                "windows",
+                "x86_64",
+            )
+            .unwrap()
+            .unwrap()
+            .checks
+            .into_iter()
+            .find(|check| check.label == "GPU memory")
+            .unwrap()
         };
 
         assert_eq!(gpu_check(required - 1).status, PreflightStatus::Warning);
@@ -668,5 +676,82 @@ mod tests {
         .unwrap();
         let error = report.ensure_ready().unwrap_err().to_string();
         assert!(error.contains("Runtime platform"));
+    }
+    #[test]
+    fn media_preflight_repairs_metadata_without_accepting_corrupted_model_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(dir.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let entry = entry_by_id("sdxl-base-1").unwrap();
+        let download = entry.download.as_ref().unwrap();
+        let model_dir = root.resolve_relative(&download.destination_dir).unwrap();
+        fs::create_dir_all(&model_dir).unwrap();
+        let primary = model_dir.join(&download.filename_pattern);
+        fs::write(&primary, b"fixture-model").unwrap();
+        let digest = crate::model_download::sha256_file(&primary).unwrap();
+        let record = QwenModelManifest {
+            repo: entry.repo.clone(),
+            repo_sha: Some("a".repeat(40)),
+            quantization: entry.quantization.clone(),
+            filename: download.filename_pattern.clone(),
+            size_bytes: 13,
+            sha256: Some(digest.clone()),
+            actual_sha256: Some(digest),
+            verification: VerificationState::Verified,
+            architecture: None,
+            context_length: None,
+            chat_template_available: false,
+            source_url: "https://example.invalid/fixture".into(),
+            installed_at: "fixture".into(),
+        };
+        let path = model_dir.join("model-manifest.json");
+        fs::write(
+            path.with_extension("json.recovery"),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        for missing in [false, true] {
+            if missing {
+                fs::remove_file(&path).unwrap();
+            } else {
+                fs::write(&path, b"{truncated").unwrap();
+            }
+            let report = preflight_with_environment(
+                &root,
+                "image",
+                &hardware(32 * GIB),
+                Some(100 * GIB),
+                "windows",
+                "x86_64",
+            )
+            .unwrap()
+            .unwrap();
+            assert!(
+                report
+                    .checks
+                    .iter()
+                    .any(|check| check.label == "Model package"
+                        && check.status == PreflightStatus::Ok)
+            );
+            assert!(serde_json::from_slice::<QwenModelManifest>(&fs::read(&path).unwrap()).is_ok());
+        }
+        fs::write(&primary, b"corrupt-model").unwrap();
+        fs::write(&path, b"{truncated").unwrap();
+        let report = preflight_with_environment(
+            &root,
+            "image",
+            &hardware(32 * GIB),
+            Some(100 * GIB),
+            "windows",
+            "x86_64",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(report
+            .ensure_ready()
+            .unwrap_err()
+            .to_string()
+            .contains("Model package"));
+        assert_eq!(fs::read(&path).unwrap(), b"{truncated");
     }
 }

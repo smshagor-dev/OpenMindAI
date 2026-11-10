@@ -71,6 +71,16 @@ const MIGRATIONS: &[Migration] = &[
         name: "009_coding_workspace_control",
         sql: include_str!("../migrations/009_coding_workspace_control.sql"),
     },
+    Migration {
+        number: 10,
+        name: "010_artifact_path_guards",
+        sql: include_str!("../migrations/010_artifact_path_guards.sql"),
+    },
+    Migration {
+        number: 11,
+        name: "011_message_regeneration",
+        sql: include_str!("../migrations/011_message_regeneration.sql"),
+    },
 ];
 
 pub struct Database {

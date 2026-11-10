@@ -1,3 +1,4 @@
+import type { VoiceDraftTarget } from "../lib/voiceDraft";
 import { useEffect, useRef, useState } from "react";
 import {
   FileText,
@@ -27,6 +28,7 @@ import { ModelSelector } from "./ModelSelector";
 export function Composer(props: {
   prompt: string;
   setPrompt: (value: string) => void;
+  createVoiceDraftTarget: () => VoiceDraftTarget;
   imageOptions: ImageGenerationOptions;
   setImageOptions: (options: ImageGenerationOptions) => void;
   attachments: AttachmentDraft[];
@@ -49,6 +51,9 @@ export function Composer(props: {
   note?: string;
 }) {
   const textareaRef = props.composerRef;
+  const alive = useRef(false);
+  const startingMicrophone = useRef(false);
+  const composingRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -70,15 +75,17 @@ export function Composer(props: {
     node.style.height = `${Math.min(node.scrollHeight, 180)}px`;
   }, [props.prompt, textareaRef]);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    alive.current = true;
+    const previews = audioPreviewUrlsRef.current;
+    return () => {
+      alive.current = false;
       if (recorderRef.current?.state === "recording") recorderRef.current.stop();
       streamRef.current?.getTracks().forEach((track) => track.stop());
-      for (const url of audioPreviewUrlsRef.current.values()) URL.revokeObjectURL(url);
-      audioPreviewUrlsRef.current.clear();
-    },
-    [],
-  );
+      for (const url of previews.values()) URL.revokeObjectURL(url);
+      previews.clear();
+    };
+  }, []);
 
   useEffect(() => {
     pruneAudioPreviews(audioPreviewUrlsRef.current, props.attachments);
@@ -104,13 +111,15 @@ export function Composer(props: {
       stopMicrophone();
       return;
     }
-    if (transcribing || props.streaming || props.submitting || props.backgroundBusy) return;
+    if (startingMicrophone.current || transcribing || props.streaming || props.submitting || props.backgroundBusy) return;
     setMicError(null);
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       setMicError("Microphone recording is not available in this WebView.");
       return;
     }
 
+    const target = props.createVoiceDraftTarget();
+    startingMicrophone.current = true;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -120,6 +129,10 @@ export function Composer(props: {
           autoGainControl: true,
         },
       });
+      if (!alive.current || !target.isCurrent()) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       streamRef.current = stream;
       chunksRef.current = [];
       const preferred = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((mimeType) =>
@@ -133,43 +146,45 @@ export function Composer(props: {
         if (event.data.size > 0) chunksRef.current.push(event.data);
       };
       recorder.onerror = () => {
-        setMicError("Microphone recording failed.");
-        setRecording(false);
+        if (alive.current && target.isCurrent()) setMicError("Microphone recording failed.");
+        if (alive.current) setRecording(false);
         stream.getTracks().forEach((track) => track.stop());
       };
       recorder.onstop = () => {
-        setRecording(false);
+        if (alive.current) setRecording(false);
         stream.getTracks().forEach((track) => track.stop());
         streamRef.current = null;
         recorderRef.current = null;
         const chunks = chunksRef.current.slice();
         chunksRef.current = [];
-        if (chunks.length === 0) return;
+        if (chunks.length === 0 || !alive.current || !target.isCurrent()) return;
         const blob = new Blob(chunks, {
           type: recorder.mimeType || chunks[0].type || "audio/webm",
         });
         setTranscribing(true);
         void transcribeAudioBlob(blob, "microphone")
           .then((result) => {
-            const transcript = result.text.trim();
-            if (!transcript) return;
-            const current = props.prompt.trim();
-            props.setPrompt(current ? `${props.prompt.trimEnd()} ${transcript}` : transcript);
-            window.setTimeout(() => textareaRef.current?.focus(), 0);
+            if (!alive.current || !target.append(result.text)) return;
+            window.setTimeout(() => {
+              if (alive.current && target.isCurrent()) textareaRef.current?.focus();
+            }, 0);
           })
           .catch((error) => {
-            setMicError(error instanceof Error ? error.message : String(error));
+            if (alive.current && target.isCurrent()) setMicError(error instanceof Error ? error.message : String(error));
           })
-          .finally(() => setTranscribing(false));
+          .finally(() => { if (alive.current) setTranscribing(false); });
       };
       recorder.start(500);
       setRecording(true);
     } catch (error) {
+      if (!alive.current || !target.isCurrent()) return;
       setMicError(
         error instanceof Error
           ? `Microphone unavailable: ${error.message}`
           : "Microphone permission was not granted.",
       );
+    } finally {
+      startingMicrophone.current = false;
     }
   };
 
@@ -360,10 +375,16 @@ export function Composer(props: {
             ref={textareaRef}
             value={props.prompt}
             onChange={(event) => props.setPrompt(event.target.value)}
+            onCompositionStart={() => { composingRef.current = true; }}
+            onCompositionEnd={() => { composingRef.current = false; }}
+            onBlur={() => { composingRef.current = false; }}
             onKeyDown={(event) => {
               if (
                 props.enterToSend &&
                 event.key === "Enter" &&
+                !composingRef.current &&
+                !event.nativeEvent.isComposing &&
+                event.nativeEvent.keyCode !== 229 &&
                 !event.shiftKey &&
                 !props.streaming &&
                 !props.submitting &&
