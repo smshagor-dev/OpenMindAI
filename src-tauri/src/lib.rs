@@ -78,6 +78,7 @@ mod connector_stabilization;
 mod database_backup;
 mod dataset_context;
 mod dataset_download;
+mod folder_opener;
 mod github_workspace;
 mod google_workspace;
 mod installation_file;
