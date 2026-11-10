@@ -60,30 +60,37 @@ fn protect(path: &Path, directory: bool) -> io::Result<()> {
     // an extra runtime. No token is passed in process arguments or output.
     const SCRIPT: &str = r#"
 $ErrorActionPreference = 'Stop'
+$phase = 10
+try {
 $p = $env:OPENMINDAI_PRIVATE_PATH
 $isDir = $env:OPENMINDAI_PRIVATE_DIRECTORY -eq '1'
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $item = Get-Item -LiteralPath $p -Force
 if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Linked descriptor path' }
+$phase = 20
 $old = Get-Acl -LiteralPath $p
 $owner = $old.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
-$principal = New-Object System.Security.Principal.WindowsPrincipal([System.Security.Principal.WindowsIdentity]::GetCurrent())
+$principal = [System.Security.Principal.WindowsPrincipal]::new([System.Security.Principal.WindowsIdentity]::GetCurrent())
 $adminOwned = $owner -eq 'S-1-5-32-544' -and $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
 if ($owner -ne $sid.Value -and -not $adminOwned) { throw 'Foreign descriptor owner' }
+$phase = 30
 if ($isDir) {
-  $acl = New-Object System.Security.AccessControl.DirectorySecurity
-  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+  $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+  $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
 } else {
-  $acl = New-Object System.Security.AccessControl.FileSecurity
-  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'Allow')
+  $acl = [System.Security.AccessControl.FileSecurity]::new()
+  $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'Allow')
 }
 $acl.SetOwner($sid)
 $acl.SetAccessRuleProtection($true, $false)
 $acl.AddAccessRule($rule)
+$phase = 40
 Set-Acl -LiteralPath $p -AclObject $acl
+$phase = 50
 $verified = Get-Acl -LiteralPath $p
 $rules = @($verified.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
 if (-not $verified.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid.Value -or $rules[0].AccessControlType -ne 'Allow' -or $rules[0].FileSystemRights -ne 'FullControl') { throw 'Private ACL verification failed' }
+} catch { exit $phase }
 "#;
     let windows =
         std::env::var_os("SystemRoot").ok_or_else(|| refused("SystemRoot unavailable"))?;
@@ -106,7 +113,10 @@ if (-not $verified.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].
         .stderr(std::process::Stdio::null())
         .status()?;
     if !status.success() {
-        return Err(refused("could not enforce owner-only descriptor ACL"));
+        return Err(refused(&format!(
+            "could not enforce owner-only descriptor ACL (phase {})",
+            status.code().unwrap_or(-1)
+        )));
     }
     regular_owned_path(path, directory)
 }
