@@ -102,6 +102,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
 
   useEffect(() => {
     let alive = true;
+    const gate = directoryGate.current;
     directoryGate.current.select(props.projectId, null);
     setStatus(null);
     setActiveRootId(null);
@@ -124,7 +125,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
       });
     return () => {
       alive = false;
-      directoryGate.current.select(props.projectId, null);
+      gate.select(props.projectId, null);
     };
   }, [loadStatus, props.projectId]);
 
@@ -631,10 +632,6 @@ function parentWorkspacePath(path: string) {
   if (lastSlash === 0) return normalized.slice(0, 1);
   const parent = normalized.slice(0, lastSlash);
   return /^[A-Za-z]:$/.test(parent) ? `${parent}\\` : parent;
-}
-
-function isAbsoluteLike(path: string) {
-  return path.startsWith("/") || path.startsWith("\\\\") || /^[A-Za-z]:[\\/]/.test(path);
 }
 
 function sameDisplayPath(left: string, right: string) {
