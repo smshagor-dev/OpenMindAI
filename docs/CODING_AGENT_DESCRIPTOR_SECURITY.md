@@ -13,9 +13,8 @@ exclusive temporary file is flushed and renamed only after protection succeeds.
 On Windows, the built-in Windows PowerShell ACL APIs install a protected DACL
 with one FullControl allow rule for the current user SID. Directory inheritance
 propagates this rule to children; the file also receives an explicit protected
-DACL. The owner, protection flag and complete access-rule list are checked. An
-elevated administrator can repair an Administrators-owned directory by assigning
-ownership to the current user; other foreign ownership is rejected. Reparse
+DACL. The owner, protection flag and complete access-rule list are checked. Existing Windows ownership is repaired only if the OS authorizes assigning it
+to the current user, and the resulting owner SID is verified before publication. Reparse
 points and nonregular paths are rejected. No token appears in subprocess
 arguments, environment, stdout or stderr. If PowerShell/ACL enforcement is
 unavailable, gateway startup fails; it never publishes a permissive token file.

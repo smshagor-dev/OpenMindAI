@@ -67,12 +67,9 @@ $isDir = $env:OPENMINDAI_PRIVATE_DIRECTORY -eq '1'
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $item = Get-Item -LiteralPath $p -Force
 if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Linked descriptor path' }
-$phase = 20
-$old = Get-Acl -LiteralPath $p
-$owner = $old.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
-$principal = [System.Security.Principal.WindowsPrincipal]::new([System.Security.Principal.WindowsIdentity]::GetCurrent())
-$adminOwned = $owner -eq 'S-1-5-32-544' -and $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
-if ($owner -ne $sid.Value -and -not $adminOwned) { throw 'Foreign descriptor owner' }
+# Ownership may be inherited from an administrator/system-created config
+# directory. Request ownership for this account, and verify the final owner;
+# the OS must authorize the repair before any token is written.
 $phase = 30
 if ($isDir) {
   $acl = [System.Security.AccessControl.DirectorySecurity]::new()
@@ -89,7 +86,7 @@ Set-Acl -LiteralPath $p -AclObject $acl
 $phase = 50
 $verified = Get-Acl -LiteralPath $p
 $rules = @($verified.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
-if (-not $verified.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid.Value -or $rules[0].AccessControlType -ne 'Allow' -or $rules[0].FileSystemRights -ne 'FullControl') { throw 'Private ACL verification failed' }
+if ($verified.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value -or -not $verified.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid.Value -or $rules[0].AccessControlType -ne 'Allow' -or $rules[0].FileSystemRights -ne 'FullControl') { throw 'Private ACL verification failed' }
 } catch { exit $phase }
 "#;
     let windows =
