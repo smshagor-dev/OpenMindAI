@@ -92,6 +92,7 @@ export const cloud = {
   gpuJob: (id: string) => cloud.gpu<StudioJob>("jobs/" + id),
   gpuMesh: (id: string) =>
     cloud.gpu<{ filename: string; data_base64: string }>("jobs/" + id + "/mesh"),
+  outboxRecover: () => call<void>("studio_outbox_recover"),
   outboxList: () => call<QueuedScene[]>("studio_outbox_list"),
   queueScene: (prompt: string, mode: "object" | "architecture", requestKey = crypto.randomUUID()) =>
     call<QueuedScene[]>("studio_outbox_enqueue", {
