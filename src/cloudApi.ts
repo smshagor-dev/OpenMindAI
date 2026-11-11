@@ -1,8 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Message } from "./types";
 import { api as local } from "./api_legacy";
+import { ResponsePersistenceError } from "./lib/executionRouting";
+export type { ExecutionMode } from "./lib/executionRouting";
 
-export type ExecutionMode = "local" | "cloud";
 export type StudioSection = "research-studio" | "3d-studio" | "web-search";
 export type CloudConnection = {
   connected: boolean;
@@ -121,21 +122,25 @@ export async function hostedChat(
     messages.unshift({ role: "system", content:
       "Answer using these retrieved sources. Cite the numbered source URLs. State uncertainty explicitly.\n" + context });
   }
-  if (!replaceAssistantId) await local.addUserMessage(conversationId, content);
-  const assistant = replaceAssistantId
-    ? await call<Message>("cloud_begin_regeneration", { conversationId, assistantMessageId: replaceAssistantId })
-    : await local.createStreamingAssistantMessage(conversationId);
+  // The remote request goes first. A network outage must not create a duplicate
+  // local user turn or a failed streaming assistant before a local fallback.
+  const result = await cloud.request<{ choices: Array<{ message: { content: string } }> }>(
+    "mobile/chat/completions", "POST", { model, messages, stream: false },
+  );
+  const response = result.choices?.[0]?.message?.content?.trim();
+  if (!response) throw new Error("Cloud returned an empty assistant response.");
+  let assistant: Message | null = null;
   try {
-    const result = await cloud.request<{ choices: Array<{ message: { content: string } }> }>(
-      "mobile/chat/completions", "POST", { model, messages, stream: false },
-    );
-    const response = result.choices?.[0]?.message?.content?.trim();
-    if (!response) throw new Error("Cloud returned an empty assistant response.");
+    if (!replaceAssistantId) await local.addUserMessage(conversationId, content);
+    assistant = replaceAssistantId
+      ? await call<Message>("cloud_begin_regeneration", { conversationId, assistantMessageId: replaceAssistantId })
+      : await local.createStreamingAssistantMessage(conversationId);
     await local.appendMessageChunk(assistant.id, response);
     await local.completeMessage(assistant.id, "completed");
     return { ...assistant, content: response, status: "completed", modelId: model };
   } catch (error) {
-    await local.completeMessage(assistant.id, "failed").catch(() => undefined);
-    throw error;
+    // Never invoke another engine after the remote reply has succeeded.
+    if (assistant) await local.completeMessage(assistant.id, "failed").catch(() => undefined);
+    throw new ResponsePersistenceError(error);
   }
 }
