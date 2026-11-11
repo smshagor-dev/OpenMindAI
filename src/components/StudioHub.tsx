@@ -42,16 +42,17 @@ async function encodeReference(file: File): Promise<{ data: string; preview: str
   canvas.width = Math.max(1, Math.floor(bitmap.width * ratio));
   canvas.height = Math.max(1, Math.floor(bitmap.height * ratio));
   const context = canvas.getContext("2d");
-  if (!context) throw new Error("Image preview could not be generated.");
-  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  bitmap.close();
-  let preview = canvas.toDataURL("image/jpeg", 0.65);
-  if (preview.length > 175_000) {
-    canvas.width = Math.max(1, Math.floor(canvas.width * .65));
-    canvas.height = Math.max(1, Math.floor(canvas.height * .65));
-    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    preview = canvas.toDataURL("image/jpeg", .52);
-  }
+  if (!context) { bitmap.close(); throw new Error("Image preview could not be generated."); }
+  let preview = "";
+  try {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      preview = canvas.toDataURL("image/jpeg", attempt === 0 ? 0.65 : 0.52);
+      if (preview.length <= 175_000) break;
+      canvas.width = Math.max(1, Math.floor(canvas.width * 0.65));
+      canvas.height = Math.max(1, Math.floor(canvas.height * 0.65));
+    }
+  } finally { bitmap.close(); }
   if (preview.length > 175_000) throw new Error("Image preview exceeds Cloud's 175 KB limit.");
   return { data: btoa(binary), preview };
 }
@@ -60,7 +61,7 @@ function saveMesh(data: { filename: string; data_base64: string }) {
   const bytes = Uint8Array.from(atob(data.data_base64), (character) => character.charCodeAt(0));
   if (bytes.byteLength < 12 || String.fromCharCode(...bytes.subarray(0, 4)) !== "glTF")
     throw new Error("The returned asset is not a valid GLB mesh.");
-  const blob = new Blob([bytes], { type: "model/gltf-binary" });
+  const blob = new Blob([Uint8Array.from(bytes).buffer], { type: "model/gltf-binary" });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -131,7 +132,7 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
   // Poll only an actual saved job. Stop when the server reports a terminal status.
   useEffect(() => {
     if (section !== "3d-studio" || !job?.id ||
-        !["queued", "running", "pending", "processing"].includes(job.status.toLowerCase())) return;
+        !["queued", "running", "pending", "processing", "submitting"].includes(job.status.toLowerCase())) return;
     let live = true;
     const timer = window.setInterval(() => {
       const request = online ? cloud.studioJob(job.id) : cloud.gpuJob(job.id);
