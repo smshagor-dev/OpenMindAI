@@ -110,7 +110,7 @@ pub(crate) fn local_gpu_stop() -> Result<(), AppError> {
 }
 
 async fn local_gpu_health() -> Result<Value, AppError> {
-    let response = client()?
+    let response = local_client()?
         .get(format!("{LOCAL_GPU_BASE}health"))
         .header("X-OpenMindAI-Desktop", "1")
         .send()
@@ -125,11 +125,22 @@ fn failure(message: impl Into<String>) -> AppError {
 
 fn client() -> Result<Client, AppError> {
     Client::builder()
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(35))
+        // Cloud uses OS proxy settings, unlike the loopback GPU worker.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| failure("Could not initialize the API connection"))
+}
+
+fn local_client() -> Result<Client, AppError> {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(4))
         .timeout(Duration::from_secs(35))
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(|_| failure("Could not initialize the API connection"))
+        .map_err(|_| failure("Could not initialize the local GPU connection"))
 }
 
 fn allowed_cloud_path(method: &Method, path: &str) -> bool {
@@ -326,8 +337,20 @@ pub(crate) async fn cloud_request(
     }
     let token = secret_store::get_secret(CREDENTIAL_SLOT)?
         .ok_or_else(|| failure("Sign in to Cloud first"))?;
+    // Align with Mobile: Research and 3D jobs can legitimately take minutes.
+    // A short chat timeout would be mistaken for Cloud failure even when the
+    // request is accepted and still running remotely.
+    let timeout_seconds = if path.starts_with("research/") || path.starts_with("3d-studio/") ||
+        path.starts_with("3d-scenes/") {
+        180
+    } else if path == "mobile/chat/completions" {
+        120
+    } else {
+        35
+    };
     let mut request = client()?
         .request(method, format!("{CLOUD_BASE}{path}"))
+        .timeout(Duration::from_secs(timeout_seconds))
         .bearer_auth(token)
         .header("Accept", "application/json");
     if let Some(payload) = payload {
@@ -365,7 +388,7 @@ pub(crate) async fn local_gpu_request(
     if !allowed_gpu_path(&method, &path) {
         return Err(failure("Local GPU operation is not approved"));
     }
-    let http = client()?;
+    let http = local_client()?;
     if path != "health" {
         let health = decode(
             http.get(format!("{LOCAL_GPU_BASE}health"))
