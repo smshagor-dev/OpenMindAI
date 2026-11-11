@@ -440,7 +440,9 @@ pub(crate) async fn coding_cloud_completion(
     });
     let size = serde_json::to_vec(&body).map_err(|_| failure("Invalid Coding Agent payload"))?;
     if size.len() > 512_000 {
-        return Err(failure("Coding Agent context exceeds 512 KB; send less editor context"));
+        return Err(failure(
+            "Coding Agent context exceeds 512 KB; send less editor context",
+        ));
     }
     let response = client()?
         .post(format!("{CLOUD_BASE}mobile/chat/completions"))
@@ -555,7 +557,10 @@ mod tests {
             {"id":"openmindai-lite","available":true,"operation":"chat.completions"},
             {"id":"openmindai-super","available":true,"operation":"chat.completions"}
         ]});
-        assert_eq!(preferred_coding_model(&catalog).as_deref(), Some("openmindai-super"));
+        assert_eq!(
+            preferred_coding_model(&catalog).as_deref(),
+            Some("openmindai-super")
+        );
         assert!(preferred_coding_model(&json!({"data": []})).is_none());
     }
 
