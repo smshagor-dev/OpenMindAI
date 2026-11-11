@@ -839,4 +839,163 @@ mod tests {
             .contains("Model package"));
         assert_eq!(fs::read(&path).unwrap(), b"{truncated");
     }
+    #[test]
+    fn media_preflight_detects_same_length_primary_and_dependency_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(dir.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let entry = entry_by_id("kokoro-82m-onnx").unwrap();
+        let download = entry.download.as_ref().unwrap();
+        let model_dir = root.resolve_relative(&download.destination_dir).unwrap();
+        fs::create_dir_all(&model_dir).unwrap();
+
+        let primary = model_dir.join("kokoro-v1_0.pth");
+        let primary_bytes = b"primary-good";
+        fs::write(&primary, primary_bytes).unwrap();
+        let primary_digest = sha256_file(&primary).unwrap();
+        let primary_record = QwenModelManifest {
+            repo: entry.repo.clone(),
+            repo_sha: Some("a".repeat(40)),
+            quantization: entry.quantization.clone(),
+            filename: "kokoro-v1_0.pth".into(),
+            size_bytes: primary_bytes.len() as u64,
+            sha256: Some(primary_digest.clone()),
+            actual_sha256: Some(primary_digest),
+            verification: VerificationState::Verified,
+            architecture: None,
+            context_length: None,
+            chat_template_available: false,
+            source_url: "https://example.invalid/model".into(),
+            installed_at: "fixture".into(),
+        };
+        fs::write(
+            model_dir.join("model-manifest.json"),
+            serde_json::to_vec(&primary_record).unwrap(),
+        )
+        .unwrap();
+
+        let mut dependency_files = Vec::new();
+        for (role, filename, format, contents) in [
+            ("config", "config.json", "json", &b"config-good"[..]),
+            ("voice", "af_heart.pt", "pt", &b"voice-good"[..]),
+        ] {
+            let target = model_dir.join(filename);
+            fs::write(&target, contents).unwrap();
+            let digest = sha256_file(&target).unwrap();
+            dependency_files.push(serde_json::json!({
+                "role": role,
+                "filename": filename,
+                "format": format,
+                "sizeBytes": contents.len(),
+                "sha256": digest,
+                "actualSha256": digest,
+                "verification": "verified",
+                "sourceUrl": "https://example.invalid/dependency"
+            }));
+        }
+        fs::write(
+            model_dir.join("package-manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "modelId": entry.id,
+                "repo": entry.repo,
+                "files": dependency_files
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let report = |integrity| {
+            preflight_with_environment_and_policy(
+                &root,
+                "audio",
+                &hardware(64 * GIB),
+                Some(100 * GIB),
+                "windows",
+                "x86_64",
+                integrity,
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let verified = report(IntegrityPolicy::VerifyContents);
+        assert!(verified.ensure_ready().is_ok(), "{:?}", verified.checks);
+        assert!(verified.issue_summary().is_none(), "{:?}", verified.checks);
+
+        let quick = report(IntegrityPolicy::MetadataOnly);
+        assert!(quick.ensure_ready().is_ok());
+        assert!(quick.issue_summary().unwrap().contains("not verified"));
+
+        // No size, path, or stored manifest hash changed.
+        fs::write(&primary, b"primary-baad").unwrap();
+        assert!(report(IntegrityPolicy::MetadataOnly).ensure_ready().is_ok());
+        let primary_error = report(IntegrityPolicy::VerifyContents)
+            .ensure_ready()
+            .unwrap_err()
+            .to_string();
+        assert!(primary_error.contains("primary model SHA-256"), "{primary_error}");
+
+        // Restoring the primary must not hide corruption of a required asset.
+        fs::write(&primary, primary_bytes).unwrap();
+        fs::write(model_dir.join("config.json"), b"config-baad").unwrap();
+        assert!(report(IntegrityPolicy::MetadataOnly).ensure_ready().is_ok());
+        let dependency_error = report(IntegrityPolicy::VerifyContents)
+            .ensure_ready()
+            .unwrap_err()
+            .to_string();
+        assert!(dependency_error.contains("Dependencies"), "{dependency_error}");
+        assert!(dependency_error.contains("corrupt"), "{dependency_error}");
+    }
+
+    #[test]
+    fn quick_media_diagnostic_never_claims_file_contents_were_verified() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(dir.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let entry = entry_by_id("sdxl-base-1").unwrap();
+        let download = entry.download.as_ref().unwrap();
+        let model_dir = root.resolve_relative(&download.destination_dir).unwrap();
+        fs::create_dir_all(&model_dir).unwrap();
+        let primary = model_dir.join(&download.filename_pattern);
+        fs::write(&primary, b"tiny-model").unwrap();
+        let digest = sha256_file(&primary).unwrap();
+        fs::write(
+            model_dir.join("model-manifest.json"),
+            serde_json::to_vec(&QwenModelManifest {
+                repo: entry.repo.clone(),
+                repo_sha: Some("b".repeat(40)),
+                quantization: entry.quantization.clone(),
+                filename: download.filename_pattern.clone(),
+                size_bytes: 10,
+                sha256: Some(digest.clone()),
+                actual_sha256: Some(digest),
+                verification: VerificationState::Verified,
+                architecture: None,
+                context_length: None,
+                chat_template_available: false,
+                source_url: "https://example.invalid/model".into(),
+                installed_at: "fixture".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let quick = preflight_with_environment_and_policy(
+            &root,
+            "image",
+            &hardware(64 * GIB),
+            Some(100 * GIB),
+            "windows",
+            "x86_64",
+            IntegrityPolicy::MetadataOnly,
+        )
+        .unwrap()
+        .unwrap();
+        let primary_check = quick
+            .checks
+            .iter()
+            .find(|check| check.label == "Model package")
+            .unwrap();
+        assert_eq!(primary_check.status, PreflightStatus::Warning);
+        assert!(primary_check.detail.contains("not verified"));
+        assert!(quick.ensure_ready().is_ok());
+    }
 }
