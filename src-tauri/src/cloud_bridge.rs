@@ -26,7 +26,7 @@ fn client() -> Result<Client, AppError> {
 fn allowed_cloud_path(method: &Method, path: &str) -> bool {
     let parts: Vec<&str> = path.split('/').collect();
     match (method.as_str(), parts.as_slice()) {
-        ("GET", ["me"]) => true,
+        ("GET", ["me"]) | ("GET", ["mobile", "models"]) => true,
         ("POST", ["web-search"]) | ("POST", ["mobile", "chat", "completions"]) => true,
         ("GET", ["research", "status" | "projects"]) => true,
         ("POST", ["research", "projects"]) => true,
@@ -37,7 +37,7 @@ fn allowed_cloud_path(method: &Method, path: &str) -> bool {
         ("POST", ["3d-studio", "jobs", "scene"]) => true,
         ("GET", ["3d-studio", "jobs", id]) if valid_uuid(id) => true,
         ("POST", ["3d-studio", "jobs", id, "cancel"]) if valid_uuid(id) => true,
-        ("GET", ["3d-studio", "assets", id, "data"]) if valid_id(id) => true,
+        
         _ => false,
     }
 }
@@ -97,7 +97,7 @@ async fn validate_token(token: &str) -> Result<Value, AppError> {
 #[tauri::command]
 pub(crate) async fn cloud_connect(token: String) -> Result<CloudConnection, AppError> {
     let token = token.trim();
-    if token.is_empty() || token.len() > 4000 || token.contains(['\r', '\n']) {
+    if token.is_empty() || token.len() > 4000 || token.contains('\r') || token.contains('\n') {
         return Err(failure("Invalid user-session token"));
     }
     let profile = validate_token(token).await?;
