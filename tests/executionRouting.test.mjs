@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   selectExecutionRoute, isRecoverableCloudFailure, runWithFallback,
-  shouldShowCloudModels, requestsLocalOnly, offlineSourceNotice, ResponsePersistenceError,
+  shouldShowCloudModels, cloudProbeDelayMs, requestsLocalOnly, offlineSourceNotice, ResponsePersistenceError,
 } from "../src/lib/executionRouting.ts";
 
 test("auto routing prefers Cloud when authenticated and online", () => {
@@ -86,4 +86,16 @@ test("explicit offline-only prompts override authenticated Cloud, including mult
     preference:"cloud", task:"image-to-3d", online:true, cloudConnected:true,
     forceLocal:true,
   }).target, "deferred", "Never upload local-only reference images");
+});
+
+test("mobile-style foreground Cloud recovery checks back off without repeated generation", () => {
+  assert.equal(cloudProbeDelayMs(true, 0), 60000);
+  assert.equal(cloudProbeDelayMs(false, 1), 5000);
+  assert.equal(cloudProbeDelayMs(false, 2), 10000);
+  assert.equal(cloudProbeDelayMs(false, 3), 20000);
+  assert.equal(cloudProbeDelayMs(false, 4), 40000);
+  assert.equal(cloudProbeDelayMs(false, 5), 60000);
+  assert.equal(cloudProbeDelayMs(false, 20), 60000);
+  assert.equal(cloudProbeDelayMs(false, 1, 0.8), 4000);
+  assert.equal(cloudProbeDelayMs(false, 1, 1.2), 6000);
 });
