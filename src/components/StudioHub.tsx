@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Database, Cloud, Cpu, Globe, Loader2, Play, RefreshCw, Search, ShieldCheck, Square, TableProperties, X } from "lucide-react";
 import { cloud, submitQueuedScene, type CloudConnection, type ExecutionMode, type QueuedScene, type ResearchProject, type StudioJob, type StudioSection } from "../cloudApi";
-import { isRecoverableCloudFailure, offlineSourceNotice, selectExecutionRoute } from "../lib/executionRouting";
+import { isRecoverableCloudFailure, offlineSourceNotice, requestsLocalOnly, selectExecutionRoute } from "../lib/executionRouting";
 import "../cloud-studio.css";
 
 type Props = {
@@ -107,6 +107,7 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
   const decision = selectExecutionRoute({
     preference: mode, task: section === "3d-studio" ? "scene3d" : section === "research-studio" ? "research" : "search",
     online: internetAvailable, cloudConnected: Boolean(connection?.connected), cloudModelReady: true,
+    forceLocal: requestsLocalOnly(input),
   });
   const online = decision.target === "cloud";
   const requireCloudLogin = internetAvailable && !connection?.connected && showCloudLogin;
@@ -169,7 +170,7 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
     if (!prompt) throw new Error("Enter a prompt or search query.");
     if (section === "web-search") {
       if (!online) {
-        onLocalPrompt(internetAvailable ? "[Mode: Web Search]\n" + prompt : offlineSourceNotice(prompt));
+        onLocalPrompt(internetAvailable && !requestsLocalOnly(prompt) ? "[Mode: Web Search]\n" + prompt : offlineSourceNotice(prompt));
         setNotice(internetAvailable ? "Opened local web research." : "Opened local offline analysis. Live sources are unavailable.");
         return;
       }
@@ -179,12 +180,12 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
         setNotice((response.results ?? []).length ? null : "The search returned no results.");
       } catch (caught) {
         if (!isRecoverableCloudFailure(caught)) throw caught;
-        onLocalPrompt(internetAvailable ? "[Mode: Web Search]\n" + prompt : offlineSourceNotice(prompt));
+        onLocalPrompt(internetAvailable && !requestsLocalOnly(prompt) ? "[Mode: Web Search]\n" + prompt : offlineSourceNotice(prompt));
         setNotice("Cloud search is unavailable. Switched to the local search workflow.");
       }
     } else if (section === "research-studio") {
       if (!online) {
-        onLocalPrompt(internetAvailable ? "[Mode: Deep Research]\n" + prompt : offlineSourceNotice(prompt));
+        onLocalPrompt(internetAvailable && !requestsLocalOnly(prompt) ? "[Mode: Deep Research]\n" + prompt : offlineSourceNotice(prompt));
         setNotice(internetAvailable ? "Opened local research workflow." : "Opened local offline research, without live source verification.");
         return;
       }
@@ -402,7 +403,7 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
                       if (item.status === "review") {
                         await cloud.outboxRetry(item.id);
                       }
-                      const target: "cloud" | "local" = internetAvailable && connection?.connected && mode !== "local" ? "cloud" : "local";
+                      const target: "cloud" | "local" = internetAvailable && connection?.connected && mode !== "local" && !requestsLocalOnly(item.payload.prompt) ? "cloud" : "local";
                       if (target === "local") {
                         const health = await cloud.startGpu();
                         if (!health.gpu_active) throw new Error("Local GPU unavailable. The request remains saved.");
