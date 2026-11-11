@@ -293,7 +293,6 @@ fn validate_model_package(
                 entry,
                 &model_dir,
                 &primary_path,
-                primary_size,
                 &manifest,
                 checks,
                 integrity,
@@ -348,7 +347,6 @@ fn validate_primary_manifest(
     entry: &ModelCatalogEntry,
     model_dir: &Path,
     primary_path: &Path,
-    primary_size: u64,
     manifest: &QwenModelManifest,
     checks: &mut Vec<PreflightCheck>,
     integrity: IntegrityPolicy,
@@ -388,7 +386,10 @@ fn validate_primary_manifest(
         .ok()
         .map(|path| path.to_string_lossy().replace('\\', "/"))
         .is_some_and(|relative| relative == manifest.filename);
-    if !same_primary || manifest.size_bytes == 0 || primary_size != manifest.size_bytes {
+    if !same_primary
+        || manifest.size_bytes == 0
+        || fs::metadata(primary_path)?.len() != manifest.size_bytes
+    {
         checks.push(check(
             PreflightStatus::Error,
             "Model package",
