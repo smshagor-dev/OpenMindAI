@@ -1811,9 +1811,9 @@ fn ensure_hosted_agent_record(
          (id, name, family, path, format, quantization, size_bytes, capabilities,
           context_length, preferred_backend, enabled, created_at, updated_at)
          VALUES (?1, ?2, 'cloud', 'cloud://openmindai/coding-agent', 'cloud',
-                 NULL, 0, '[\\"chat\\",\\"coding\\"]', 16384, NULL, 1, ?3, ?3)
+                 NULL, 0, ?4, 16384, NULL, 1, ?3, ?3)
          ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at",
-        params![HOSTED_AGENT_RECORD_ID, format!("OpenMindAI Cloud ({hosted_model})"), now],
+        params![HOSTED_AGENT_RECORD_ID, format!("OpenMindAI Cloud ({hosted_model})"), now, r#"["chat","coding"]"#],
     )?;
     Ok(ModelRecord {
         id: HOSTED_AGENT_RECORD_ID.to_string(),
@@ -1823,7 +1823,7 @@ fn ensure_hosted_agent_record(
         format: "cloud".to_string(),
         quantization: None,
         size_bytes: 0,
-        capabilities: "[\\"chat\\",\\"coding\\"]".to_string(),
+        capabilities: r#"["chat","coding"]"#.to_string(),
         context_length: Some(16_384),
         preferred_backend: None,
         enabled: true,
