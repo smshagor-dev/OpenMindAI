@@ -196,11 +196,18 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
       setNotice("Research run submitted. The Cloud queue controls its execution.");
     } else {
       if (online && referenceImage) {
+        const catalog = await cloud.studioEngines();
+        const engines = Array.isArray(catalog.data) ? catalog.data as Array<{kind?: string; input?: string; available?: boolean}> : [];
+        if (!engines.some((engine) => engine.kind === "model" && engine.input === "image" && engine.available)) {
+          setNotice("Cloud image-to-mesh is not available. Your reference image is still selected; retry when a hosted mesh engine becomes ready.");
+          return;
+        }
         const encoded = await encodeReference(referenceImage);
         const upload = await cloud.uploadStudioImage(referenceImage.name, encoded.data, encoded.preview);
         const created = await cloud.imageToMesh(upload.id);
         if ("asset" in created) {
           setDirectAsset(created.asset.id);
+          setJobTarget("cloud");
           setJob(null);
           setNotice("Cloud created a 3D mesh asset. Download the GLB below.");
         } else {
@@ -210,7 +217,8 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
           setNotice("Image-to-mesh job submitted. Refresh or follow the live job status.");
         }
       } else if (referenceImage && !online) {
-        throw new Error("Image-conditioned 3D needs Cloud. The selected image stays in this form; reconnect to process it. A local procedural object would not be an equivalent reconstruction.");
+        setNotice("Reference image preserved. Image-conditioned 3D needs a hosted model; reconnect to Cloud to complete this request. No fake 2.5D fallback was used.");
+        return;
       } else {
         // Stage first, so a lost network or missing GPU never discards the scene request.
         const key = crypto.randomUUID();
@@ -221,8 +229,12 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
         let target: "local" | "cloud" = online ? "cloud" : "local";
         if (target === "cloud") {
           // Read-only preflight: avoid sending a costly Cloud job if connectivity is down.
-          try { await cloud.studioEngines(); }
-          catch (caught) {
+          try {
+            const catalog = await cloud.studioEngines();
+            const engines = Array.isArray(catalog.data) ? catalog.data as Array<{id?: string; available?: boolean}> : [];
+            const needed = shapeMode === "architecture" ? "architecture" : "procedural";
+            if (!engines.some((entry) => entry.id === needed && entry.available === true)) target = "local";
+          } catch (caught) {
             if (!isRecoverableCloudFailure(caught)) throw caught;
             target = "local";
           }
