@@ -1,3 +1,6 @@
+#[path = "validation_command.rs"]
+mod validation_command;
+
 use std::{
     collections::{HashSet, VecDeque},
     fs,
@@ -91,6 +94,7 @@ struct AgentWorkspaceRoot {
 
 #[derive(Debug, Clone)]
 struct AgentTurnResult {
+    validation_command: Option<String>,
     trace_label: String,
     transcript_result: String,
 }
@@ -934,13 +938,11 @@ async fn run_agent_message(
                 Ok(outcome) => {
                     consecutive_failures = 0;
                     let mut workspace_changed = tool_mutates_workspace(tool);
-                    let mut successful_validation: Option<String> = None;
+                    let successful_validation = if tool == "terminal" { outcome.validation_command.clone() } else { None };
 
                     if tool == "terminal" {
                         if let Some(command) = optional_string(&decision, "command") {
-                            if is_validation_command(&command) {
-                                successful_validation = Some(command);
-                            } else if terminal_command_may_mutate_workspace(&command) {
+                            if successful_validation.is_none() && terminal_command_may_mutate_workspace(&command) {
                                 workspace_changed = true;
                             }
                         }
@@ -2049,6 +2051,7 @@ async fn execute_delivery_tool(
     }
     let result = coding_delivery::execute(state, operation, params, exact_approved).await?;
     Ok(AgentTurnResult {
+        validation_command: None,
         trace_label: format!("Delivery operation {operation} completed"),
         transcript_result: bounded(&result.to_string(), MAX_TOOL_RESULT_CHARS),
     })
@@ -2102,6 +2105,7 @@ async fn execute_tool(
                     )
             });
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!("Listed {}", display_path(&directory)),
                 transcript_result: bounded(
                     &Value::Array(entries).to_string(),
@@ -2147,6 +2151,7 @@ async fn execute_tool(
                 }
             }
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!("Read {} (lines {}-{})", display_path(&file), start, end),
                 transcript_result: bounded(&output, MAX_TOOL_RESULT_CHARS),
             })
@@ -2160,6 +2165,7 @@ async fn execute_tool(
             let path = optional_string(action, "path").unwrap_or_default();
             let result = search_workspace(config, root_id.as_deref(), &path, &query)?;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!("Searched workspace for `{}`", one_line(&query, 80)),
                 transcript_result: bounded(&result, MAX_TOOL_RESULT_CHARS),
             })
@@ -2174,6 +2180,7 @@ async fn execute_tool(
                 AppError::internal(format!("failed to encode symbol_search result: {error}"))
             })?;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!("Searched symbols for `{}`", one_line(&query, 80)),
                 transcript_result: bounded(&result, MAX_TOOL_RESULT_CHARS),
             })
@@ -2187,6 +2194,7 @@ async fn execute_tool(
                 AppError::internal(format!("failed to encode symbol_outline result: {error}"))
             })?;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!("Outlined symbols in {path}"),
                 transcript_result: bounded(&result, MAX_TOOL_RESULT_CHARS),
             })
@@ -2202,6 +2210,7 @@ async fn execute_tool(
                 ))
             })?;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!("Collected diagnostics for {path}"),
                 transcript_result: bounded(&result, MAX_TOOL_RESULT_CHARS),
             })
@@ -2226,6 +2235,7 @@ async fn execute_tool(
                 AppError::internal(format!("failed to encode call hierarchy result: {error}"))
             })?;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!(
                     "{} calls at {path}:{}:{}",
                     if tool == "symbol_incoming_calls" {
@@ -2261,6 +2271,7 @@ async fn execute_tool(
                 ))
             })?;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!(
                     "{} {}:{}:{}",
                     if tool == "symbol_definition" {
@@ -2296,6 +2307,7 @@ async fn execute_tool(
                 }
                 fs::write(&file, content.as_bytes())?;
                 return Ok(AgentTurnResult {
+                    validation_command: None,
                     trace_label: format!("Wrote host file {}", display_path(&file)),
                     transcript_result: format!(
                         "ok path={} chars={} host_write=true",
@@ -2332,6 +2344,7 @@ async fn execute_tool(
                 collect_post_edit_diagnostics(config, root_id.as_deref(), "write_file", action)
                     .await;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!("Wrote {} transactionally", display_path(&file)),
                 transcript_result: format!(
                     "ok path={} chars={} transaction={}\npost_edit_diagnostics={}",
@@ -2372,6 +2385,7 @@ async fn execute_tool(
             if Path::new(&path).is_absolute() {
                 fs::write(&file, updated.as_bytes())?;
                 return Ok(AgentTurnResult {
+                    validation_command: None,
                     trace_label: format!("Updated host file {}", display_path(&file)),
                     transcript_result: format!(
                         "ok path={} exact_replacements=1 host_write=true",
@@ -2396,6 +2410,7 @@ async fn execute_tool(
                 collect_post_edit_diagnostics(config, root_id.as_deref(), "replace_text", action)
                     .await;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!("Updated {} transactionally", display_path(&file)),
                 transcript_result: format!(
                     "ok path={} exact_replacements=1 transaction={}\npost_edit_diagnostics={}",
@@ -2422,6 +2437,7 @@ async fn execute_tool(
             )
             .await;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!(
                     "Applied patch transaction {} across {} files",
                     outcome.transaction_id, outcome.changed_files
@@ -2438,6 +2454,7 @@ async fn execute_tool(
             let directory = resolve_agent_path(config, root_id.as_deref(), &path, false)?;
             fs::create_dir_all(&directory)?;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!("Created folder {}", display_path(&directory)),
                 transcript_result: format!("ok path={}", display_path(&directory)),
             })
@@ -2457,6 +2474,7 @@ async fn execute_tool(
             }
             fs::rename(&source, &target)?;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!(
                     "Moved {} → {}",
                     display_path(&source),
@@ -2477,6 +2495,7 @@ async fn execute_tool(
                 fs::remove_file(&target)?;
             }
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!("Deleted {}", display_path(&target)),
                 transcript_result: format!("ok deleted={}", display_path(&target)),
             })
@@ -2495,6 +2514,7 @@ async fn execute_tool(
             )
             .await?;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: "Inspected Git status".to_string(),
                 transcript_result: result,
             })
@@ -2525,6 +2545,7 @@ async fn execute_tool(
             )
             .await?;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: "Reviewed Git diff".to_string(),
                 transcript_result: bounded(
                     &format!("UNSTAGED\n{unstaged}\n\nSTAGED\n{staged}"),
@@ -2574,6 +2595,7 @@ async fn execute_tool(
                 )));
             }
             Ok(AgentTurnResult {
+                validation_command: validation_command::successful(&command, result.exit_code, result.timed_out),
                 trace_label: format!(
                     "Ran `{}` via {} (exit {})",
                     one_line(&command, 120),
@@ -2582,7 +2604,8 @@ async fn execute_tool(
                 ),
                 transcript_result: bounded(
                     &format!(
-                        "backend={}\nisolated={}\nnetwork_disabled={}\ncwd={}\nexit_code={}\ntimed_out={}\nstdout:\n{}\nstderr:\n{}",
+                        "validation_invocation_eligible={}\nbackend={}\nisolated={}\nnetwork_disabled={}\ncwd={}\nexit_code={}\ntimed_out={}\nstdout:\n{}\nstderr:\n{}",
+                        validation_command::recognized(&command),
                         result.backend,
                         result.isolated,
                         result.network_disabled,
@@ -3376,50 +3399,9 @@ fn is_validation_manifest_name(name: &str) -> bool {
         || name.ends_with(".sln")
 }
 
+#[cfg(test)]
 fn is_validation_command(command: &str) -> bool {
-    let command = command.to_ascii_lowercase();
-    if command.contains("&&")
-        || command.contains("||")
-        || command.contains(';')
-        || command.contains('\n')
-        || command.contains('\r')
-    {
-        return false;
-    }
-    [
-        "cargo test",
-        "cargo check",
-        "cargo clippy",
-        "cargo build",
-        "cargo fmt --check",
-        "npm test",
-        "npm run test",
-        "npm run lint",
-        "npm run build",
-        "npm run typecheck",
-        "pnpm test",
-        "pnpm lint",
-        "pnpm build",
-        "yarn test",
-        "yarn lint",
-        "yarn build",
-        "pytest",
-        "python -m pytest",
-        "go test",
-        "go vet",
-        "mvn test",
-        "mvn verify",
-        "gradle test",
-        "gradlew test",
-        "dotnet test",
-        "composer test",
-        "phpunit",
-        "eslint",
-        "tsc --noemit",
-        "ruff check",
-    ]
-    .iter()
-    .any(|needle| command.contains(needle))
+    validation_command::recognized(command)
 }
 
 fn terminal_timeout_secs(action: &Value) -> u64 {
