@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Message } from "./types";
 import { api as local } from "./api_legacy";
-import { ResponsePersistenceError } from "./lib/executionRouting";
+import { describeFailure, ResponsePersistenceError } from "./lib/executionRouting";
 export type { ExecutionMode } from "./lib/executionRouting";
 
 export type StudioSection = "research-studio" | "3d-studio" | "web-search";
@@ -85,9 +85,9 @@ export const cloud = {
   startGpu: () => call<{ gpu_active: boolean; gpu?: string; engine?: string }>("local_gpu_start"),
   stopGpu: () => call<void>("local_gpu_stop"),
   gpuHealth: () => cloud.gpu<{ gpu_active: boolean; gpu?: string; engine?: string }>("health"),
-  gpuScene: (prompt: string, mode: "object" | "architecture") =>
+  gpuScene: (prompt: string, mode: "object" | "architecture", requestKey = crypto.randomUUID()) =>
     cloud.gpu<StudioJob>("jobs", "POST", {
-      prompt: prompt.slice(0, 8000), mode, request_key: crypto.randomUUID(),
+      prompt: prompt.slice(0, 8000), mode, request_key: requestKey,
     }),
   gpuJob: (id: string) => cloud.gpu<StudioJob>("jobs/" + id),
   gpuMesh: (id: string) =>
@@ -102,6 +102,27 @@ export const cloud = {
     call<void>("studio_outbox_finish", { id, status, note: note ?? null }),
   outboxRetry: (id: string) => call<void>("studio_outbox_retry", { id }),
 };
+
+/**
+ * Outbox requests use stable idempotency keys. A failed POST becomes "review",
+ * never silently replayed after a crash or ambiguous network timeout.
+ */
+export async function submitQueuedScene(
+  item: QueuedScene,
+  target: "local" | "cloud",
+): Promise<StudioJob | null> {
+  if (!(await cloud.outboxClaim(item.id))) return null;
+  try {
+    const result = target === "cloud"
+      ? await cloud.studioScene(item.payload.prompt, item.payload.mode, item.requestKey)
+      : await cloud.gpuScene(item.payload.prompt, item.payload.mode, item.requestKey);
+    await cloud.outboxFinish(item.id, "completed", result.id);
+    return result;
+  } catch (caught) {
+    await cloud.outboxFinish(item.id, "review", describeFailure(caught)).catch(() => undefined);
+    throw caught;
+  }
+}
 
 // Hosted completions share the user's existing local conversation/history storage.
 // A hosted response is never misrepresented as a local GPU response.
