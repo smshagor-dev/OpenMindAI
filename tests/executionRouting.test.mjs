@@ -55,6 +55,8 @@ test("offline web search cannot claim verified live sources",()=>{
   assert.ok(result.endsWith("Is this headline true?"));
   assert.equal(isRecoverableCloudFailure("HTTP 401: session expired"),true);
   assert.equal(isRecoverableCloudFailure("HTTP 503: unavailable"),true);
+  assert.equal(isRecoverableCloudFailure("Cloud returned an empty assistant response."), true);
+  assert.equal(isRecoverableCloudFailure("Server returned non-JSON response (403)"), true);
 });
 
 test("the API model selector appears only when online and Cloud is authenticated", () => {
