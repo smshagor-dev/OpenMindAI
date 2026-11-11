@@ -603,12 +603,14 @@ export function App() {
         ? offlineSourceNotice(buildMessageContent(content, attachments, "chat"))
         : messageContent;
       const localMode = localOffline ? "chat" : inferredMode;
+      const requestConversationId = conversationId;
+      if (!requestConversationId) throw new Error("Conversation was not created.");
       const response = await runWithFallback(
         route,
-        () => hostedChat(conversationId, messageContent, cloudModel, inferredMode),
+        () => hostedChat(requestConversationId, messageContent, cloudModel, inferredMode),
         () => inferredMode === "image"
-          ? persistDirectImageRequest(conversationId, localContent, api)
-          : api.sendChatMessage(conversationId, localContent, localMode, inferenceMedia),
+          ? persistDirectImageRequest(requestConversationId, localContent, api)
+          : api.sendChatMessage(requestConversationId, localContent, localMode, inferenceMedia),
         (reason) => setRouteNotice(reason),
       );
       const assistant = response.result;
