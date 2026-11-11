@@ -340,8 +340,10 @@ pub(crate) async fn cloud_request(
     // Align with Mobile: Research and 3D jobs can legitimately take minutes.
     // A short chat timeout would be mistaken for Cloud failure even when the
     // request is accepted and still running remotely.
-    let timeout_seconds = if path.starts_with("research/") || path.starts_with("3d-studio/") ||
-        path.starts_with("3d-scenes/") {
+    let timeout_seconds = if path.starts_with("research/")
+        || path.starts_with("3d-studio/")
+        || path.starts_with("3d-scenes/")
+    {
         180
     } else if path == "mobile/chat/completions" {
         120
