@@ -100,6 +100,7 @@ export function App() {
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("auto");
   const [internetAvailable, setInternetAvailable] = useState(() => window.navigator.onLine);
   const [routeNotice, setRouteNotice] = useState<string | null>(null);
+  const [studioSubmission, setStudioSubmission] = useState<string | null>(null);
   const [cloudConnection, setCloudConnection] = useState<CloudConnection | null>(null);
   const [cloudModels, setCloudModels] = useState<CloudModel[]>([]);
   const [cloudModel, setCloudModel] = useState("");
@@ -672,6 +673,26 @@ export function App() {
     }, 0);
   }, [setAttachments, setPrompt]);
 
+  // Studio submissions are actually sent to the local engine, not left as
+  // drafts that require a second click. The existing composer failure recovery
+  // still retains the complete request if the local runtime is unavailable.
+  useEffect(() => {
+    if (studioSubmission === null || view !== "chat") return;
+    if (prompt !== studioSubmission) {
+      setStudioSubmission(null);
+      return;
+    }
+    if (chatState.anyBusy()) return;
+    setStudioSubmission(null);
+    void sendMessage();
+  }, [studioSubmission, view, prompt, sendMessage, chatState]);
+  const submitStudioLocally = useCallback((content: string) => {
+    setAttachments([]);
+    setEditingMessageId(null);
+    setPrompt(content);
+    setView("chat");
+    setStudioSubmission(content);
+  }, [setAttachments, setPrompt]);
   const startToolPrompt = useCallback((content: string) => {
     setEditingMessageId(null);
     setPrompt(content);
@@ -1406,7 +1427,7 @@ export function App() {
             connection={cloudConnection}
             onConnected={connectedCloud}
             onDisconnect={() => { setCloudConnection({ connected: false, user: null, message: null }); setCloudModels([]); setCloudModel(""); }}
-            onLocalPrompt={startToolPrompt}
+            onLocalPrompt={submitStudioLocally}
           />
         ) : view === "tools" ? (
           <ToolsWorkspace
