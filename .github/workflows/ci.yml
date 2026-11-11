@@ -117,6 +117,22 @@ jobs:
       - name: Production module regressions
         run: cargo test --locked --manifest-path tests/sandbox-capture/Cargo.toml
 
+  mcp-response:
+    name: MCP response correlation (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --manifest-path tests/mcp-response/Cargo.toml -- --check
+      - run: cargo clippy --locked --manifest-path tests/mcp-response/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path tests/mcp-response/Cargo.toml
+
   private-descriptor:
     name: Private session descriptor (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
