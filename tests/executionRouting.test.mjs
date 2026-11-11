@@ -16,7 +16,7 @@ test("offline or disconnected Cloud always routes supported work locally", () =>
     const offline = selectExecutionRoute({preference:"auto",task,online:false,cloudConnected:true});
     assert.equal(offline.target,"local",task);
     assert.equal(offline.offline,true);
-    assert.equal(selectExecutionRoute({preference:"cloud",task,online:true,cloudConnected:false}).target,"local");
+    assert.equal(selectExecutionRoute({preference:"cloud",task,online:true,cloudConnected:false}).target,"deferred");
   }
 });
 
@@ -28,7 +28,7 @@ test("explicit Local preference retains local processing when online", () => {
 test("never claim local image-to-mesh parity for an uploaded reference", () => {
   assert.equal(selectExecutionRoute({preference:"auto",task:"image-to-3d",online:false,cloudConnected:true}).target,"deferred");
   assert.equal(selectExecutionRoute({preference:"local",task:"image-to-3d",online:true,cloudConnected:false}).target,"deferred");
-  assert.equal(selectExecutionRoute({preference:"local",task:"image-to-3d",online:true,cloudConnected:true}).target,"cloud");
+  assert.equal(selectExecutionRoute({preference:"local",task:"image-to-3d",online:true,cloudConnected:true}).target,"deferred");
 });
 
 test("Cloud network failures permit one local fallback without remote replay", async () => {
@@ -100,4 +100,15 @@ test("mobile-style foreground Cloud recovery checks back off without repeated ge
   assert.equal(cloudProbeDelayMs(false, 20), 60000);
   assert.equal(cloudProbeDelayMs(false, 1, 0.8), 4000);
   assert.equal(cloudProbeDelayMs(false, 1, 1.2), 6000);
+});
+
+test("Cloud-only runs no Local fallback even after a network error", async () => {
+  const route = selectExecutionRoute({preference:"cloud", task:"chat", online:true, cloudConnected:true});
+  assert.equal(route.target,"cloud");
+  assert.equal(route.fallbackAllowed,false);
+  let localCalls = 0;
+  await assert.rejects(runWithFallback(route, async () => {
+    throw new Error("Cloud API request failed");
+  }, async () => { localCalls++; return "wrong"; }), /Cloud API request failed/);
+  assert.equal(localCalls,0);
 });
