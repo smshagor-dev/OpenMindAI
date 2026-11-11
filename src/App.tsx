@@ -47,6 +47,7 @@ import { WorkWorkspace } from "./components/WorkWorkspace";
 import { StudioHub } from "./components/StudioHub";
 import { cloud, hostedChat, submitQueuedScene, type CloudConnection, type CloudModel, type ExecutionMode, type StudioSection } from "./cloudApi";
 import { cloudProbeDelayMs, offlineSourceNotice, requestsLocalOnly, runWithFallback, selectExecutionRoute, shouldShowCloudModels } from "./lib/executionRouting";
+import { completeSetupPreparation, setupExecutionMode, setupPreparationPending } from "./lib/setupExecutionMode";
 import { notifyUser } from "./lib/notify";
 import {
   attachmentKind,
@@ -97,7 +98,7 @@ export function App() {
   const backgroundRuns = [...chatSnapshot.runs.keys()].filter((id) => id !== activeId && chatState.isBusy(id));
   const copyrightYear = new Date().getFullYear();
   const [view, setView] = useState<View>("chat");
-  const [executionMode, setExecutionMode] = useState<ExecutionMode>("auto");
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>(() => setupExecutionMode() ?? "auto");
   const [internetAvailable, setInternetAvailable] = useState(() => window.navigator.onLine);
   const [routeNotice, setRouteNotice] = useState<string | null>(null);
   const [studioSubmission, setStudioSubmission] = useState<string | null>(null);
@@ -362,7 +363,21 @@ export function App() {
     if (runtimeInfo) setRuntime(runtimeInfo);
     if (runtimeStatusInfo) setRuntimeStatus(runtimeStatusInfo);
     if (performanceInfo) setPerformance(performanceInfo);
-    if (preferencesInfo) setPreferences(preferencesInfo);
+    if (preferencesInfo) {
+      let nextPreferences = preferencesInfo;
+      if (setupPreparationPending() && setupExecutionMode()) {
+        const selected = setupExecutionMode()!;
+        // Write both modes before the download screen or Coding Agent starts.
+        nextPreferences = await api.savePreferences({
+          ...preferencesInfo,
+          aiExecutionMode: selected,
+          codingAgentExecutionMode: selected,
+          localRuntimeAutostart: selected === "cloud" ? false : preferencesInfo.localRuntimeAutostart,
+        });
+      }
+      setPreferences(nextPreferences);
+      setExecutionMode(nextPreferences.aiExecutionMode);
+    }
     if (userProfileInfo) setUserProfile(userProfileInfo);
     if (installationStatusInfo) setInstallationStatus(installationStatusInfo);
     setRefreshedOnce(true);
@@ -384,18 +399,20 @@ export function App() {
 
   useEffect(() => {
     if (!refreshedOnce || !installationStatus || installationStatus.setupRequired ||
+        preferences?.aiExecutionMode === "cloud" ||
+        (setupPreparationPending() && setupExecutionMode() === "cloud") ||
         runtime === null || runtime.selected !== null || runtimeAutoInstallAttemptedRef.current) return;
     runtimeAutoInstallAttemptedRef.current = true;
     void installRuntime();
     // One automatic attempt per application launch; manual retry remains available.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshedOnce, installationStatus, runtime]);
+  }, [refreshedOnce, installationStatus, runtime, preferences?.aiExecutionMode]);
 
   useEffect(() => {
     if (!refreshedOnce || installationStatus === null || wizardActive !== null) return;
     // Only first-time root/profile configuration is modal. Runtime repair
     // must not hide existing chats or prevent access to Settings.
-    setWizardActive(installationStatus.setupRequired);
+    setWizardActive(installationStatus.setupRequired || setupPreparationPending());
   }, [refreshedOnce, installationStatus, wizardActive]);
 
   useEffect(() => {
@@ -1101,6 +1118,13 @@ export function App() {
     }
   }
 
+  const changeExecutionMode = (selected: ExecutionMode) => {
+    setExecutionMode(selected);
+    if (preferences) {
+      void updatePreferences({ ...preferences, aiExecutionMode: selected }).catch(showError);
+    }
+  };
+
   async function updatePreferences(next: AppPreferences) {
     const saved = await api.savePreferences(next);
     setPreferences(saved);
@@ -1237,7 +1261,7 @@ export function App() {
         root={root}
         pending={installationStatus?.pending}
         refresh={refreshApp}
-        onDismiss={() => setWizardActive(false)}
+        onDismiss={() => { completeSetupPreparation(); setWizardActive(false); void refreshApp(); }}
       />
     );
   }
@@ -1355,11 +1379,11 @@ export function App() {
               }}
             />
             <div className="execution-mode-switch" role="group" aria-label="AI execution mode">
-              <button type="button" className={executionMode === "auto" ? "active" : ""} aria-pressed={executionMode === "auto"} onClick={() => setExecutionMode("auto")} title="Automatically route to Cloud when connected or Local when offline">Auto</button>
-              <button type="button" className={executionMode === "local" ? "active" : ""} aria-pressed={executionMode === "local"} onClick={() => setExecutionMode("local")} title="Use this computer for local inference">
+              <button type="button" className={executionMode === "auto" ? "active" : ""} aria-pressed={executionMode === "auto"} onClick={() => changeExecutionMode("auto")} title="Automatically route to Cloud when connected or Local when offline">Auto</button>
+              <button type="button" className={executionMode === "local" ? "active" : ""} aria-pressed={executionMode === "local"} onClick={() => changeExecutionMode("local")} title="Use this computer for local inference">
                 Local
               </button>
-              <button type="button" className={executionMode === "cloud" ? "active" : ""} aria-pressed={executionMode === "cloud"} onClick={() => setExecutionMode("cloud")} title={cloudConnection?.connected ? "Connected to OpenMindAI Cloud" : "Sign in from Research Studio to use Cloud"}>
+              <button type="button" className={executionMode === "cloud" ? "active" : ""} aria-pressed={executionMode === "cloud"} onClick={() => changeExecutionMode("cloud")} title={cloudConnection?.connected ? "Connected to OpenMindAI Cloud" : "Sign in from Research Studio to use Cloud"}>
                 <span className={internetAvailable && cloudConnection?.connected ? "studio-dot good" : "studio-dot"} /> Cloud
               </button>
             </div>
