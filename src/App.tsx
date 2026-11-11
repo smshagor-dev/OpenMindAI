@@ -45,7 +45,7 @@ import { ToolsWorkspace } from "./components/ToolsWorkspace";
 import { ProjectsWorkspace } from "./components/ProjectsWorkspace";
 import { WorkWorkspace } from "./components/WorkWorkspace";
 import { StudioHub } from "./components/StudioHub";
-import { cloud, hostedChat, type CloudConnection, type CloudModel, type ExecutionMode, type StudioSection } from "./cloudApi";
+import { cloud, hostedChat, submitQueuedScene, type CloudConnection, type CloudModel, type ExecutionMode, type StudioSection } from "./cloudApi";
 import { offlineSourceNotice, runWithFallback, selectExecutionRoute } from "./lib/executionRouting";
 import { notifyUser } from "./lib/notify";
 import {
@@ -101,6 +101,37 @@ export function App() {
   const [internetAvailable, setInternetAvailable] = useState(() => window.navigator.onLine);
   const [routeNotice, setRouteNotice] = useState<string | null>(null);
   const [studioSubmission, setStudioSubmission] = useState<string | null>(null);
+  const [studioOutboxReady, setStudioOutboxReady] = useState(false);
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let active = true;
+    void cloud.outboxRecover().then(() => {
+      if (active) setStudioOutboxReady(true);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+  useEffect(() => {
+    if (!studioOutboxReady || !internetAvailable || !cloudConnection?.connected || executionMode === "local") return;
+    let active = true;
+    void (async () => {
+      // Only a saved, never-submitted job is dispatched automatically.
+      // Interrupted/uncertain jobs stay in review state, not silently replayed.
+      const pending = (await cloud.outboxList()).filter((item) => item.status === "queued");
+      if (!pending.length) return;
+      await cloud.studioEngines(); // read-only connectivity and capability preflight
+      for (const item of pending) {
+        if (!active) return;
+        try {
+          const accepted = await submitQueuedScene(item, "cloud");
+          if (accepted && active) setRouteNotice("Saved offline 3D request accepted by Cloud.");
+        } catch {
+          if (active) setRouteNotice("A queued 3D submission needs review. Open 3D Studio to check its status.");
+          return;
+        }
+      }
+    })().catch(() => undefined);
+    return () => { active = false; };
+  }, [studioOutboxReady, internetAvailable, cloudConnection?.connected, executionMode]);
   const [cloudConnection, setCloudConnection] = useState<CloudConnection | null>(null);
   const [cloudModels, setCloudModels] = useState<CloudModel[]>([]);
   const [cloudModel, setCloudModel] = useState("");
