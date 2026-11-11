@@ -1,4 +1,5 @@
 mod connected_action_ledger;
+mod cloud_bridge;
 mod private_descriptor;
 #[cfg(any(windows, test))]
 mod sandbox_capture;
@@ -9,6 +10,12 @@ macro_rules! openmind_generate_handler {
     ($($command:ident),* $(,)?) => {
         $crate::tauri_crate::generate_handler![
             $($command),*,
+            cloud_connect,
+            cloud_login,
+            cloud_disconnect,
+            cloud_status,
+            cloud_request,
+            local_gpu_request,
             prepare_default_chat_runtime,
             reveal_main_window,
             transcribe_audio,
@@ -115,6 +122,7 @@ mod vision_batch;
 mod warm_start;
 
 pub(crate) use agent_runtime::{coding_agent_status, start_coding_agent};
+pub(crate) use cloud_bridge::{cloud_connect, cloud_login, cloud_disconnect, cloud_status, cloud_request, local_gpu_request};
 pub(crate) use coding_control::{approve_coding_action, coding_run_snapshot, reject_coding_action};
 pub(crate) use coding_eval::run_coding_qualification;
 pub(crate) use connected_agent::{
