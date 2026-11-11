@@ -119,6 +119,20 @@ pub(crate) fn studio_outbox_enqueue(
     read_rows(&db)
 }
 
+/// App startup only: unknown outcomes from a previous process require review.
+#[tauri::command]
+pub(crate) fn studio_outbox_recover(state: State<'_, AppState>) -> Result<(), AppError> {
+    let db = state.database.lock().map_err(|_| queue_error("Database unavailable"))?;
+    ensure_table(&db)?;
+    db.connection().execute(
+        "UPDATE studio_outbox SET status = 'review',
+         note = 'The app exited while submitting this request. Verify the remote job before retrying.'
+         WHERE status = 'sending'",
+        [],
+    )?;
+    Ok(())
+}
+
 #[tauri::command]
 pub(crate) fn studio_outbox_claim(id: String, state: State<'_, AppState>) -> Result<bool, AppError> {
     Uuid::parse_str(&id).map_err(|_| queue_error("Invalid queued request id"))?;
