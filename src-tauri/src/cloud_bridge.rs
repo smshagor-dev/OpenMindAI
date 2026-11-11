@@ -1,14 +1,14 @@
 //! Native-only Cloud and loopback GPU-worker transports. Tokens never enter a webview request.
 use crate::app_error::AppError;
-use base64::Engine;
 use crate::github::secret_store;
+use base64::Engine;
 use reqwest::{Client, Method, StatusCode};
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::time::Duration;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 use tauri::Manager;
 
 const CLOUD_BASE: &str = "https://cloud.openmindai.org/api/v1/";
@@ -32,7 +32,8 @@ pub(crate) fn stop_gpu_worker() {
 
 fn worker_script(app: &tauri::AppHandle) -> Result<PathBuf, AppError> {
     if let Ok(resource) = app.path().resolve(
-        "local-3d-worker/worker.py", tauri::path::BaseDirectory::Resource,
+        "local-3d-worker/worker.py",
+        tauri::path::BaseDirectory::Resource,
     ) {
         if resource.is_file() {
             return Ok(resource);
@@ -44,7 +45,9 @@ fn worker_script(app: &tauri::AppHandle) -> Result<PathBuf, AppError> {
         current.join("services/local-3d-worker/worker.py"),
         current.join("../services/local-3d-worker/worker.py"),
     ] {
-        if candidate.is_file() { return Ok(candidate); }
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
     }
     Err(failure("Bundled local GPU worker is missing"))
 }
@@ -55,11 +58,17 @@ fn spawn_python_worker(script: &Path) -> Result<Child, AppError> {
     #[cfg(not(windows))]
     let (python, prefix): (&str, &[&str]) = ("python3", &[]);
     let mut cmd = Command::new(python);
-    cmd.args(prefix).arg("-E").arg(script)
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    cmd.spawn().map_err(|_| failure(
-        "Python 3 was not found. Install Python 3 plus numpy and pyopencl for local GPU meshes",
-    ))
+    cmd.args(prefix)
+        .arg("-E")
+        .arg(script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    cmd.spawn().map_err(|_| {
+        failure(
+            "Python 3 was not found. Install Python 3 plus numpy and pyopencl for local GPU meshes",
+        )
+    })
 }
 
 #[tauri::command]
@@ -70,9 +79,14 @@ pub(crate) async fn local_gpu_start(app: tauri::AppHandle) -> Result<Value, AppE
     }
     let script = worker_script(&app)?;
     {
-        let mut guard = worker_process().lock().map_err(|_| failure("GPU worker state locked"))?;
+        let mut guard = worker_process()
+            .lock()
+            .map_err(|_| failure("GPU worker state locked"))?;
         let running = match guard.as_mut() {
-            Some(child) => child.try_wait().map_err(|_| failure("Could not inspect GPU worker"))?.is_none(),
+            Some(child) => child
+                .try_wait()
+                .map_err(|_| failure("Could not inspect GPU worker"))?
+                .is_none(),
             None => false,
         };
         if !running {
@@ -96,12 +110,14 @@ pub(crate) fn local_gpu_stop() -> Result<(), AppError> {
 }
 
 async fn local_gpu_health() -> Result<Value, AppError> {
-    let response = client()?.get(format!("{LOCAL_GPU_BASE}health"))
+    let response = client()?
+        .get(format!("{LOCAL_GPU_BASE}health"))
         .header("X-OpenMindAI-Desktop", "1")
-        .send().await.map_err(|_| failure("Local GPU worker is offline"))?;
+        .send()
+        .await
+        .map_err(|_| failure("Local GPU worker is offline"))?;
     decode(response).await
 }
-
 
 fn failure(message: impl Into<String>) -> AppError {
     AppError::Internal(format!("Cloud/Studio: {}", message.into()))
@@ -131,7 +147,7 @@ fn allowed_cloud_path(method: &Method, path: &str) -> bool {
         ("POST", ["3d-scenes", "uploads"]) => true,
         ("GET", ["3d-studio", "jobs", id]) if valid_uuid(id) => true,
         ("POST", ["3d-studio", "jobs", id, "cancel"]) if valid_uuid(id) => true,
-        
+
         _ => false,
     }
 }
@@ -157,19 +173,26 @@ fn allowed_gpu_path(method: &Method, path: &str) -> bool {
 
 async fn decode(response: reqwest::Response) -> Result<Value, AppError> {
     let status = response.status();
-    let bytes = response.bytes().await.map_err(|_| failure("Response could not be read"))?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| failure("Response could not be read"))?;
     if bytes.len() > 2_000_000 {
         return Err(failure("Response exceeds the 2 MB safety limit"));
     }
     let value: Value = serde_json::from_slice(&bytes)
         .map_err(|_| failure(format!("Server returned non-JSON response ({status})")))?;
     if !status.is_success() {
-        let detail = value.get("message")
+        let detail = value
+            .get("message")
             .or_else(|| value.get("error").and_then(|error| error.get("message")))
             .and_then(Value::as_str)
             .unwrap_or("Request rejected");
         // Do not echo credentials or unbounded upstream payloads into the UI.
-        return Err(failure(format!("HTTP {status}: {}", detail.chars().take(240).collect::<String>())));
+        return Err(failure(format!(
+            "HTTP {status}: {}",
+            detail.chars().take(240).collect::<String>()
+        )));
     }
     Ok(value)
 }
@@ -183,9 +206,13 @@ pub(crate) struct CloudConnection {
 }
 
 async fn validate_token(token: &str) -> Result<Value, AppError> {
-    let response = client()?.get(format!("{CLOUD_BASE}me"))
-        .bearer_auth(token).header("Accept", "application/json")
-        .send().await.map_err(|_| failure("Cloud API is unreachable"))?;
+    let response = client()?
+        .get(format!("{CLOUD_BASE}me"))
+        .bearer_auth(token)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|_| failure("Cloud API is unreachable"))?;
     decode(response).await
 }
 
@@ -195,7 +222,10 @@ pub(crate) fn cloud_begin_regeneration(
     assistant_message_id: String,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<crate::chat::Message, AppError> {
-    let db = state.database.lock().map_err(|_| failure("Conversation database is unavailable"))?;
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| failure("Conversation database is unavailable"))?;
     let repository = crate::chat::ChatRepository::new(&db);
     // Reuse the same regeneration marker and immutable original reply as local chat.
     repository.begin_regeneration(&conversation_id, &assistant_message_id, None)
@@ -209,15 +239,24 @@ pub(crate) async fn cloud_connect(token: String) -> Result<CloudConnection, AppE
     }
     let profile = validate_token(token).await?;
     secret_store::set_secret(CREDENTIAL_SLOT, token)?;
-    Ok(CloudConnection { connected: true, user: Some(profile), message: None })
+    Ok(CloudConnection {
+        connected: true,
+        user: Some(profile),
+        message: None,
+    })
 }
 
 #[tauri::command]
-pub(crate) async fn cloud_login(email: String, password: String, code: Option<String>) -> Result<CloudConnection, AppError> {
+pub(crate) async fn cloud_login(
+    email: String,
+    password: String,
+    code: Option<String>,
+) -> Result<CloudConnection, AppError> {
     if email.trim().len() > 254 || !email.contains('@') || password.is_empty() {
         return Err(failure("Enter a valid email and password"));
     }
-    let response = client()?.post(format!("{CLOUD_BASE}login"))
+    let response = client()?
+        .post(format!("{CLOUD_BASE}login"))
         .header("Accept", "application/json")
         .json(&json!({
             "email": email.trim(),
@@ -225,28 +264,45 @@ pub(crate) async fn cloud_login(email: String, password: String, code: Option<St
             "code": code.unwrap_or_default(),
             "device_name": "OpenMindAI Desktop"
         }))
-        .send().await.map_err(|_| failure("Cloud login is unreachable"))?;
+        .send()
+        .await
+        .map_err(|_| failure("Cloud login is unreachable"))?;
     if response.status() == StatusCode::ACCEPTED {
         // An unfamiliar-IP verification challenge must be completed via the account flow.
         return Err(failure("Sign-in needs new-device verification. Approve the security email, then sign in again."));
     }
     let value = decode(response).await?;
-    let token = value.get("token").and_then(Value::as_str)
+    let token = value
+        .get("token")
+        .and_then(Value::as_str)
         .ok_or_else(|| failure("Cloud did not return a user-session token"))?;
     let profile = validate_token(token).await?;
     secret_store::set_secret(CREDENTIAL_SLOT, token)?;
-    Ok(CloudConnection { connected: true, user: Some(profile), message: None })
+    Ok(CloudConnection {
+        connected: true,
+        user: Some(profile),
+        message: None,
+    })
 }
 
 #[tauri::command]
 pub(crate) async fn cloud_status() -> Result<CloudConnection, AppError> {
     let Some(token) = secret_store::get_secret(CREDENTIAL_SLOT)? else {
-        return Ok(CloudConnection { connected: false, user: None, message: None });
+        return Ok(CloudConnection {
+            connected: false,
+            user: None,
+            message: None,
+        });
     };
     match validate_token(&token).await {
-        Ok(profile) => Ok(CloudConnection { connected: true, user: Some(profile), message: None }),
+        Ok(profile) => Ok(CloudConnection {
+            connected: true,
+            user: Some(profile),
+            message: None,
+        }),
         Err(_) => Ok(CloudConnection {
-            connected: false, user: None,
+            connected: false,
+            user: None,
             message: Some("Cloud is unavailable or your session expired. Sign in again.".into()),
         }),
     }
@@ -258,64 +314,122 @@ pub(crate) fn cloud_disconnect() -> Result<(), AppError> {
 }
 
 #[tauri::command]
-pub(crate) async fn cloud_request(path: String, method: String, payload: Option<Value>) -> Result<Value, AppError> {
-    let method = Method::from_bytes(method.as_bytes()).map_err(|_| failure("Invalid HTTP method"))?;
+pub(crate) async fn cloud_request(
+    path: String,
+    method: String,
+    payload: Option<Value>,
+) -> Result<Value, AppError> {
+    let method =
+        Method::from_bytes(method.as_bytes()).map_err(|_| failure("Invalid HTTP method"))?;
     if !allowed_cloud_path(&method, &path) {
         return Err(failure("Cloud API operation is not approved"));
     }
-    let token = secret_store::get_secret(CREDENTIAL_SLOT)?.ok_or_else(|| failure("Sign in to Cloud first"))?;
-    let mut request = client()?.request(method, format!("{CLOUD_BASE}{path}"))
-        .bearer_auth(token).header("Accept", "application/json");
+    let token = secret_store::get_secret(CREDENTIAL_SLOT)?
+        .ok_or_else(|| failure("Sign in to Cloud first"))?;
+    let mut request = client()?
+        .request(method, format!("{CLOUD_BASE}{path}"))
+        .bearer_auth(token)
+        .header("Accept", "application/json");
     if let Some(payload) = payload {
-        let json_bytes = serde_json::to_vec(&payload).map_err(|_| failure("Invalid JSON payload"))?;
-        let cap = if path == "3d-scenes/uploads" { 4_500_000 } else { 64_000 };
-        if json_bytes.len() > cap { return Err(failure("Payload exceeds the endpoint size limit")); }
-        request = request.header("Content-Type", "application/json").body(json_bytes);
+        let json_bytes =
+            serde_json::to_vec(&payload).map_err(|_| failure("Invalid JSON payload"))?;
+        let cap = if path == "3d-scenes/uploads" {
+            4_500_000
+        } else {
+            64_000
+        };
+        if json_bytes.len() > cap {
+            return Err(failure("Payload exceeds the endpoint size limit"));
+        }
+        request = request
+            .header("Content-Type", "application/json")
+            .body(json_bytes);
     }
-    decode(request.send().await.map_err(|_| failure("Cloud API request failed"))?).await
+    decode(
+        request
+            .send()
+            .await
+            .map_err(|_| failure("Cloud API request failed"))?,
+    )
+    .await
 }
 
 #[tauri::command]
-pub(crate) async fn local_gpu_request(path: String, method: String, payload: Option<Value>) -> Result<Value, AppError> {
-    let method = Method::from_bytes(method.as_bytes()).map_err(|_| failure("Invalid HTTP method"))?;
+pub(crate) async fn local_gpu_request(
+    path: String,
+    method: String,
+    payload: Option<Value>,
+) -> Result<Value, AppError> {
+    let method =
+        Method::from_bytes(method.as_bytes()).map_err(|_| failure("Invalid HTTP method"))?;
     if !allowed_gpu_path(&method, &path) {
         return Err(failure("Local GPU operation is not approved"));
     }
     let http = client()?;
     if path != "health" {
-        let health = decode(http.get(format!("{LOCAL_GPU_BASE}health"))
-            .header("X-OpenMindAI-Desktop", "1")
-            .send().await.map_err(|_| failure("Local 3D GPU worker is offline (127.0.0.1:8765)"))?).await?;
+        let health = decode(
+            http.get(format!("{LOCAL_GPU_BASE}health"))
+                .header("X-OpenMindAI-Desktop", "1")
+                .send()
+                .await
+                .map_err(|_| failure("Local 3D GPU worker is offline (127.0.0.1:8765)"))?,
+        )
+        .await?;
         if health.get("gpu_active").and_then(Value::as_bool) != Some(true) {
-            return Err(failure("Local 3D worker has no active GPU. No silent CPU/cloud fallback."));
+            return Err(failure(
+                "Local 3D worker has no active GPU. No silent CPU/cloud fallback.",
+            ));
         }
     }
-    let mut request = http.request(method, format!("{LOCAL_GPU_BASE}{path}"))
+    let mut request = http
+        .request(method, format!("{LOCAL_GPU_BASE}{path}"))
         .header("X-OpenMindAI-Desktop", "1")
         .header("Accept", "application/json");
     if let Some(payload) = payload {
         let bytes = serde_json::to_vec(&payload).map_err(|_| failure("Invalid JSON payload"))?;
-        if bytes.len() > 64_000 { return Err(failure("Payload exceeds 64 KB")); }
-        request = request.header("Content-Type", "application/json").body(bytes);
+        if bytes.len() > 64_000 {
+            return Err(failure("Payload exceeds 64 KB"));
+        }
+        request = request
+            .header("Content-Type", "application/json")
+            .body(bytes);
     }
-    decode(request.send().await.map_err(|_| failure("Local 3D GPU worker is unreachable"))?).await
+    decode(
+        request
+            .send()
+            .await
+            .map_err(|_| failure("Local 3D GPU worker is unreachable"))?,
+    )
+    .await
 }
-
 
 #[tauri::command]
 pub(crate) async fn cloud_download_mesh(asset_id: u64) -> Result<Value, AppError> {
-    if asset_id == 0 { return Err(failure("A valid mesh asset id is required")); }
-    let token = secret_store::get_secret(CREDENTIAL_SLOT)?.ok_or_else(|| failure("Sign in to Cloud first"))?;
-    let response = client()?.get(format!("{CLOUD_BASE}3d-studio/assets/{asset_id}/download"))
-        .bearer_auth(token).header("Accept", "application/octet-stream")
-        .send().await.map_err(|_| failure("Mesh download failed"))?;
+    if asset_id == 0 {
+        return Err(failure("A valid mesh asset id is required"));
+    }
+    let token = secret_store::get_secret(CREDENTIAL_SLOT)?
+        .ok_or_else(|| failure("Sign in to Cloud first"))?;
+    let response = client()?
+        .get(format!("{CLOUD_BASE}3d-studio/assets/{asset_id}/download"))
+        .bearer_auth(token)
+        .header("Accept", "application/octet-stream")
+        .send()
+        .await
+        .map_err(|_| failure("Mesh download failed"))?;
     if !response.status().is_success() {
-        return Err(failure(format!("Mesh download returned HTTP {}", response.status())));
+        return Err(failure(format!(
+            "Mesh download returned HTTP {}",
+            response.status()
+        )));
     }
     if response.content_length().unwrap_or(0) > 16 * 1024 * 1024 {
         return Err(failure("Mesh exceeds the 16 MB desktop download limit"));
     }
-    let bytes = response.bytes().await.map_err(|_| failure("Could not read mesh"))?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| failure("Could not read mesh"))?;
     if bytes.len() > 16 * 1024 * 1024 || bytes.len() < 12 || &bytes[0..4] != b"glTF" {
         return Err(failure("Expected a valid GLB asset (16 MB maximum)"));
     }
@@ -334,7 +448,12 @@ mod tests {
         assert!(allowed_cloud_path("POST", "3d-studio/jobs/scene"));
         assert!(allowed_cloud_path("POST", "research/projects/42/runs"));
         assert!(allowed_cloud_path("GET", "research/projects/42"));
-        for path in ["../admin", "developer/keys", "research/projects/../runs", "3d-studio/jobs/bad"] {
+        for path in [
+            "../admin",
+            "developer/keys",
+            "research/projects/../runs",
+            "3d-studio/jobs/bad",
+        ] {
             assert!(!allowed_cloud_path("GET", path));
             assert!(!allowed_cloud_path("POST", path));
         }
