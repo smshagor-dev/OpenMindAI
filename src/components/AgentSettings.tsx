@@ -142,7 +142,7 @@ export function AgentSettings(props: {
             {cloudConnected
               ? "Cloud account connected. Hosted coding inference uses the available API model."
               : "Cloud is disconnected. Connect your account in Research Studio. Both can use Local if installed; Cloud Only requires a connection."}
-            {" "}The Coding Agent's workspace permissions and approval gates remain on this computer.
+            {" "}Cloud inference sends selected code excerpts, project instructions and recent tool context to your authenticated account API. Tool execution and approval gates stay on this computer.
           </p>
         ) : <p className="muted">Inference remains on this device, including when internet is available.</p>}
       </section>
