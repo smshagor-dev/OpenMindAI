@@ -48,6 +48,10 @@ impl Events {
             }
             // SSE joins data fields with LF and removes the last LF on dispatch.
             self.data.pop();
+            if self.data.trim().is_empty() {
+                self.data.clear();
+                return Ok(None);
+            }
             let value = serde_json::from_str(&self.data)
                 .map_err(|error| format!("invalid SSE JSON response: {error}"))?;
             self.data.clear();
@@ -209,7 +213,7 @@ mod tests {
     #[test]
     fn frames_multiline_data_and_ignores_notifications_at_every_byte_boundary() {
         for newline in ["\n", "\r\n", "\r"] {
-            let text = format!("\u{feff}: heartbeat{newline}event: message{newline}data: {{\"jsonrpc\":\"2.0\",\"method\":\"notice\"}}{newline}{newline}data: {{\"jsonrpc\":\"2.0\",{newline}data: \"id\":\"req\",\"result\":{{\"text\":\"বাংলা\"}}}}{newline}{newline}data: invalid later event{newline}{newline}");
+            let text = format!("\u{feff}: heartbeat{newline}data:{newline}{newline}data:  {newline}{newline}event: message{newline}data: {{\"jsonrpc\":\"2.0\",\"method\":\"notice\"}}{newline}{newline}data: {{\"jsonrpc\":\"2.0\",{newline}data: \"id\":\"req\",\"result\":{{\"text\":\"বাংলা\"}}}}{newline}{newline}data: invalid later event{newline}{newline}");
             for split in 0..=text.len() {
                 let mut events = Events::new();
                 let first = events
