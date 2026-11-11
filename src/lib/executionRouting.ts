@@ -99,7 +99,7 @@ export function isRecoverableCloudFailure(error: unknown): boolean {
       /invalid|unauthori[sz]ed|forbidden|validation|permission|user-session token|store failed|persist|quota invalid/i.test(message))
     return false;
   return /\bHTTP\s+(408|425|429|500|502|503|504|520|522|524)\b/i.test(message) ||
-    /unreachable|connection (?:lost|refused|reset)|offline|no internet|network(?:error| failure)?|timeout|timed out|failed to fetch|cloud api request failed|temporarily unavailable|service unavailable/i.test(message);
+    /unreachable|connection (?:lost|refused|reset)|offline|no internet|network(?:error| failure)?|timeout|timed out|failed to fetch|cloud api request failed|cloud returned an empty assistant response|server returned non-json response|temporarily unavailable|service unavailable/i.test(message);
 }
 
 export class ResponsePersistenceError extends Error {
