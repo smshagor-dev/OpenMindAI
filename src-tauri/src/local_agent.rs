@@ -3552,6 +3552,19 @@ mod tests {
     use super::*;
     use crate::model_registry::ModelLifecycleState;
 
+    #[test]
+    fn offline_only_coding_prompts_never_enter_hosted_inference() {
+        for prompt in [
+            "Only use local only models for these files",
+            "No cloud, this is confidential",
+            "শুধু লোকাল ব্যবহার করো",
+            "Только локально",
+        ] {
+            assert!(local_only_agent_request(prompt), "{prompt}");
+        }
+        assert!(!local_only_agent_request("Implement Cloud account sign-in"));
+    }
+
     fn decoded_checkpoint_entries(values: Vec<Value>) -> Vec<CheckpointEntry> {
         values
             .into_iter()
