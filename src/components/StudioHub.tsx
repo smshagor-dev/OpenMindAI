@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Box, Cloud, Cpu, FlaskConical, Globe, Loader2, Play, RefreshCw, Search, ShieldCheck, Square, X } from "lucide-react";
+import { Database, Cloud, Cpu, Globe, Loader2, Play, RefreshCw, Search, ShieldCheck, Square, TableProperties, X } from "lucide-react";
 import { cloud, type CloudConnection, type ExecutionMode, type ResearchProject, type StudioJob, type StudioSection } from "../cloudApi";
 import "../cloud-studio.css";
 
@@ -199,7 +199,7 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
   });
 
   const titleText = sectionLabels[section];
-  const Icon = section === "3d-studio" ? Box : section === "research-studio" ? FlaskConical : Search;
+  const Icon = section === "3d-studio" ? Database : section === "research-studio" ? TableProperties : Search;
   return (
     <div className="studio-hub">
       <header className="studio-hero">
@@ -278,7 +278,7 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
 
           {section === "research-studio" && online ? (
             <section className="studio-panel">
-              <div className="studio-section-title"><FlaskConical size={17} /><h3>Cloud research projects</h3></div>
+              <div className="studio-section-title"><TableProperties size={17} /><h3>Cloud research projects</h3></div>
               {projects.length === 0 ? <p className="studio-muted">No projects returned for this account.</p> : (
                 <div className="studio-list">{projects.map((project) => (
                   <div className="studio-list-item" key={project.id}>
@@ -312,7 +312,7 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
 
           {section === "3d-studio" ? (
             <section className="studio-panel">
-              <div className="studio-section-title"><Box size={18} /><h3>3D processor</h3></div>
+              <div className="studio-section-title"><Database size={18} /><h3>3D processor</h3></div>
               {online ? <p>Cloud engine catalog: {engines ? "loaded" : "unavailable"}. Only configured, ready engines can complete jobs.</p>
                 : <p>Local GPU: {gpu?.gpu_active ? (gpu.gpu ?? "active") + " · " + (gpu.engine ?? "3D worker") : "not detected"}. A real installed worker is required for GPU mesh generation.</p>}
               {!online ? <button type="button" className="studio-secondary" disabled={busy} onClick={() => void action(async () => {
