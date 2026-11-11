@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::time::Duration;
 
-const CLOUD_BASE: &str = "https://api.openmindai.org/api/v1/";
+const CLOUD_BASE: &str = "https://cloud.openmindai.org/api/v1/";
 const CREDENTIAL_SLOT: &str = "openmindai-cloud-user-session";
 const LOCAL_GPU_BASE: &str = "http://127.0.0.1:8765/";
 
