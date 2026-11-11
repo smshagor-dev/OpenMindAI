@@ -60,6 +60,14 @@ export const cloud = {
   researchControl: (id: number, action: "pause" | "resume" | "cancel") =>
     cloud.request<unknown>("research/projects/" + id + "/control", "POST", { action }),
   studioEngines: () => cloud.request<Record<string, unknown>>("3d-studio/engines"),
+  uploadStudioImage: (name: string, base64: string, preview: string) =>
+    cloud.request<{ id: number }>("3d-scenes/uploads", "POST", {
+      name, data: base64, image_preview: preview,
+    }),
+  imageToMesh: (uploadId: number) =>
+    cloud.request<StudioJob | { asset: { id: number } }>("3d-studio/jobs/image-model", "POST", {
+      upload_id: uploadId, request_key: crypto.randomUUID(),
+    }),
   studioScene: (prompt: string, mode: "object" | "architecture") =>
     cloud.request<StudioJob>("3d-studio/jobs/scene", "POST", {
       prompt: prompt.slice(0, 8000), mode, request_key: crypto.randomUUID(),
