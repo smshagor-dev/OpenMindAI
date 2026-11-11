@@ -1464,7 +1464,7 @@ export function App() {
           </div>
         ))}
 
-        {runtime && !runtime.selected ? (
+        {executionMode !== "cloud" && runtime && !runtime.selected ? (
           <div className="runtime-recovery-banner" role="status" aria-live="polite">
             <div>
               <strong>Local AI engine is missing</strong>
