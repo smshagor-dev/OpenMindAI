@@ -1,4 +1,4 @@
-import { Archive, Check, Cloud, Cpu, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
+import { Archive, Check, Cpu, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type SetStateAction } from "react";
 import { io, type Socket } from "socket.io-client";
