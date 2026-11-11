@@ -25,19 +25,19 @@ fn client() -> Result<Client, AppError> {
 
 fn allowed_cloud_path(method: &Method, path: &str) -> bool {
     let parts: Vec<&str> = path.split('/').collect();
-    match (method, parts.as_slice()) {
-        (&Method::GET, ["me" | "research/status" | "3d-studio/engines"]) => true,
-        (&Method::POST, ["web-search" | "mobile/chat/completions"]) => true,
-        (&Method::GET, ["research", "status" | "projects"]) => true,
-        (&Method::POST, ["research", "projects"]) => true,
-        (&Method::GET, ["research", "projects", id]) if valid_id(id) => true,
-        (&Method::POST, ["research", "projects", id, "runs" | "control"]) if valid_id(id) => true,
-        (&Method::GET, ["research", "projects", id, "events"]) if valid_id(id) => true,
-        (&Method::GET, ["3d-studio", "engines" | "jobs" | "assets"]) => true,
-        (&Method::POST, ["3d-studio", "jobs", "scene"]) => true,
-        (&Method::GET, ["3d-studio", "jobs", id]) if valid_uuid(id) => true,
-        (&Method::POST, ["3d-studio", "jobs", id, "cancel"]) if valid_uuid(id) => true,
-        (&Method::GET, ["3d-studio", "assets", id, "data"]) if valid_id(id) => true,
+    match (method.as_str(), parts.as_slice()) {
+        ("GET", ["me"]) => true,
+        ("POST", ["web-search"]) | ("POST", ["mobile", "chat", "completions"]) => true,
+        ("GET", ["research", "status" | "projects"]) => true,
+        ("POST", ["research", "projects"]) => true,
+        ("GET", ["research", "projects", id]) if valid_id(id) => true,
+        ("POST", ["research", "projects", id, "runs" | "control"]) if valid_id(id) => true,
+        ("GET", ["research", "projects", id, "events"]) if valid_id(id) => true,
+        ("GET", ["3d-studio", "engines" | "jobs" | "assets"]) => true,
+        ("POST", ["3d-studio", "jobs", "scene"]) => true,
+        ("GET", ["3d-studio", "jobs", id]) if valid_uuid(id) => true,
+        ("POST", ["3d-studio", "jobs", id, "cancel"]) if valid_uuid(id) => true,
+        ("GET", ["3d-studio", "assets", id, "data"]) if valid_id(id) => true,
         _ => false,
     }
 }
@@ -52,10 +52,10 @@ fn valid_uuid(s: &str) -> bool {
 
 fn allowed_gpu_path(method: &Method, path: &str) -> bool {
     let parts: Vec<&str> = path.split('/').collect();
-    match (method, parts.as_slice()) {
-        (&Method::GET, ["health"]) | (&Method::POST, ["jobs"]) => true,
-        (&Method::GET, ["jobs", id]) if valid_uuid(id) => true,
-        (&Method::POST, ["jobs", id, "cancel"]) if valid_uuid(id) => true,
+    match (method.as_str(), parts.as_slice()) {
+        ("GET", ["health"]) | ("POST", ["jobs"]) => true,
+        ("GET", ["jobs", id]) if valid_uuid(id) => true,
+        ("POST", ["jobs", id, "cancel"]) if valid_uuid(id) => true,
         _ => false,
     }
 }
@@ -196,21 +196,21 @@ mod tests {
     use super::*;
     #[test]
     fn cloud_route_gate_rejects_secrets_and_path_traversal() {
-        assert!(allowed_cloud_path(&Method::POST, "web-search"));
-        assert!(allowed_cloud_path(&Method::POST, "3d-studio/jobs/scene"));
-        assert!(allowed_cloud_path(&Method::POST, "research/projects/42/runs"));
-        assert!(allowed_cloud_path(&Method::GET, "research/projects/42"));
+        assert!(allowed_cloud_path("POST", "web-search"));
+        assert!(allowed_cloud_path("POST", "3d-studio/jobs/scene"));
+        assert!(allowed_cloud_path("POST", "research/projects/42/runs"));
+        assert!(allowed_cloud_path("GET", "research/projects/42"));
         for path in ["../admin", "developer/keys", "research/projects/../runs", "3d-studio/jobs/bad"] {
-            assert!(!allowed_cloud_path(&Method::GET, path));
-            assert!(!allowed_cloud_path(&Method::POST, path));
+            assert!(!allowed_cloud_path("GET", path));
+            assert!(!allowed_cloud_path("POST", path));
         }
     }
     #[test]
     fn worker_is_loopback_and_strictly_scoped() {
         assert!(LOCAL_GPU_BASE.starts_with("http://127.0.0.1:"));
-        assert!(allowed_gpu_path(&Method::GET, "health"));
-        assert!(allowed_gpu_path(&Method::POST, "jobs"));
-        assert!(!allowed_gpu_path(&Method::POST, "health"));
-        assert!(!allowed_gpu_path(&Method::GET, "../health"));
+        assert!(allowed_gpu_path("GET", "health"));
+        assert!(allowed_gpu_path("POST", "jobs"));
+        assert!(!allowed_gpu_path("POST", "health"));
+        assert!(!allowed_gpu_path("GET", "../health"));
     }
 }
