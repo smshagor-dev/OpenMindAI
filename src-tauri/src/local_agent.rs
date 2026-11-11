@@ -465,12 +465,17 @@ async fn run_agent_message(
             .filter(|plan| plan.model.id == model.id);
         let (endpoint, launch_config, lease) = match agent_plan {
             Some(plan) => {
-                let (endpoint, lease) = crate::agent_runtime::acquire_agent_runtime(app, &plan).await?;
+                let (endpoint, lease) =
+                    crate::agent_runtime::acquire_agent_runtime(app, &plan).await?;
                 (endpoint, plan.config, lease)
             }
             None => {
-                let launch_config =
-                    openagent_launch_config(&model, &hardware, &preferences, allocate_local_port()?);
+                let launch_config = openagent_launch_config(
+                    &model,
+                    &hardware,
+                    &preferences,
+                    allocate_local_port()?,
+                );
                 let (status, lease) =
                     crate::runtime::ensure_model_ready(&state.runtime, &hardware, &launch_config)?;
                 let endpoint = status.endpoint.ok_or_else(|| {
@@ -1813,7 +1818,12 @@ fn ensure_hosted_agent_record(
          VALUES (?1, ?2, 'cloud', 'cloud://openmindai/coding-agent', 'cloud',
                  NULL, 0, ?4, 16384, NULL, 1, ?3, ?3)
          ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at",
-        params![HOSTED_AGENT_RECORD_ID, format!("OpenMindAI Cloud ({hosted_model})"), now, r#"["chat","coding"]"#],
+        params![
+            HOSTED_AGENT_RECORD_ID,
+            format!("OpenMindAI Cloud ({hosted_model})"),
+            now,
+            r#"["chat","coding"]"#
+        ],
     )?;
     Ok(ModelRecord {
         id: HOSTED_AGENT_RECORD_ID.to_string(),
