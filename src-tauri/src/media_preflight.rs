@@ -6,7 +6,7 @@ use crate::{
     model_catalog::{entry_by_id, installed_file_for_pattern, wildcard_match, ModelCatalogEntry},
     model_download::{
         ensure_contained, format_byte_pair, format_bytes, primary_manifest_available,
-        read_primary_manifest, validate_installed_dependencies, QwenModelManifest,
+        read_primary_manifest, sha256_file, validate_installed_dependencies, QwenModelManifest,
         VerificationState,
     },
     portable_root::{available_bytes_for_path, PortableRootManager},
@@ -23,6 +23,14 @@ enum PreflightStatus {
     Ok,
     Warning,
     Error,
+}
+
+// A diagnostic UI refresh must never claim that it rehashed multi-GB models.
+// The generation gate takes the verified path and hashes the bytes in use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntegrityPolicy {
+    MetadataOnly,
+    VerifyContents,
 }
 
 #[derive(Debug, Clone)]
@@ -74,21 +82,33 @@ struct MediaSpec {
     diffusion_runtime: bool,
 }
 
+/// Called at the generation boundary. A matching stored digest is not proof
+/// that the current file bytes are intact, so verify primary and dependency files.
 pub(crate) fn preflight_for_hardware(
     root: &PortableRootManager,
     artifact_kind: &str,
     hardware: &HardwareProfile,
 ) -> Result<Option<MediaPreflightReport>, AppError> {
-    preflight_with_environment(
-        root,
-        artifact_kind,
-        hardware,
-        available_bytes_for_path(root.root()),
-        std::env::consts::OS,
-        std::env::consts::ARCH,
+    preflight_with_environment_and_policy(
+        root, artifact_kind, hardware, available_bytes_for_path(root.root()),
+        std::env::consts::OS, std::env::consts::ARCH, IntegrityPolicy::VerifyContents,
     )
 }
 
+/// Diagnostics-only: quick checks disclose that hashes were not recalculated.
+/// Do not use this mode to authorize a generation job.
+pub(crate) fn preflight_for_hardware_fast(
+    root: &PortableRootManager,
+    artifact_kind: &str,
+    hardware: &HardwareProfile,
+) -> Result<Option<MediaPreflightReport>, AppError> {
+    preflight_with_environment_and_policy(
+        root, artifact_kind, hardware, available_bytes_for_path(root.root()),
+        std::env::consts::OS, std::env::consts::ARCH, IntegrityPolicy::MetadataOnly,
+    )
+}
+
+#[cfg(test)]
 fn preflight_with_environment(
     root: &PortableRootManager,
     artifact_kind: &str,
@@ -96,6 +116,20 @@ fn preflight_with_environment(
     available_bytes: Option<u64>,
     os: &str,
     arch: &str,
+) -> Result<Option<MediaPreflightReport>, AppError> {
+    preflight_with_environment_and_policy(
+        root, artifact_kind, hardware, available_bytes, os, arch, IntegrityPolicy::VerifyContents,
+    )
+}
+
+fn preflight_with_environment_and_policy(
+    root: &PortableRootManager,
+    artifact_kind: &str,
+    hardware: &HardwareProfile,
+    available_bytes: Option<u64>,
+    os: &str,
+    arch: &str,
+    integrity: IntegrityPolicy,
 ) -> Result<Option<MediaPreflightReport>, AppError> {
     let Some(spec) = spec_for(artifact_kind) else {
         return Ok(None);
@@ -188,7 +222,7 @@ fn preflight_with_environment(
         });
     }
 
-    validate_model_package(root, &entry, &mut checks)?;
+    validate_model_package(root, &entry, &mut checks, integrity)?;
 
     Ok(Some(MediaPreflightReport {
         model_name: entry.name,
@@ -200,6 +234,7 @@ fn validate_model_package(
     root: &PortableRootManager,
     entry: &ModelCatalogEntry,
     checks: &mut Vec<PreflightCheck>,
+    integrity: IntegrityPolicy,
 ) -> Result<(), AppError> {
     let Some(download) = entry.download.as_ref() else {
         checks.push(check(
@@ -245,6 +280,7 @@ fn validate_model_package(
                 primary_size,
                 &manifest,
                 checks,
+                integrity,
             )?,
             Err(error) => checks.push(check(
                 PreflightStatus::Error,
@@ -260,17 +296,31 @@ fn validate_model_package(
         ));
     }
 
-    if validate_installed_dependencies(root, entry, false)? {
-        checks.push(check(
-            PreflightStatus::Ok,
-            "Dependencies",
-            "required package dependencies are present and match their install manifest",
-        ));
+    let hashes_checked = integrity == IntegrityPolicy::VerifyContents;
+    if validate_installed_dependencies(root, entry, hashes_checked)? {
+        let has_required = download.dependencies.iter().any(|dependency| dependency.required);
+        checks.push(if !hashes_checked && has_required {
+            check(
+                PreflightStatus::Warning,
+                "Dependencies",
+                "required dependency paths/sizes match their manifest, but file content SHA-256 was not verified in this quick diagnostic; generation rechecks it",
+            )
+        } else {
+            check(
+                PreflightStatus::Ok,
+                "Dependencies",
+                if has_required {
+                    "current dependency file SHA-256 matches recorded install digests"
+                } else {
+                    "no required dependency files"
+                },
+            )
+        });
     } else {
         checks.push(check(
             PreflightStatus::Error,
             "Dependencies",
-            "required package dependencies are missing or invalid; validate or re-download the model package",
+            "required package dependencies are missing, corrupt, or invalid; validate or re-download the model package",
         ));
     }
 
@@ -285,6 +335,7 @@ fn validate_primary_manifest(
     primary_size: u64,
     manifest: &QwenModelManifest,
     checks: &mut Vec<PreflightCheck>,
+    integrity: IntegrityPolicy,
 ) -> Result<(), AppError> {
     if manifest.repo != entry.repo || manifest.quantization != entry.quantization {
         checks.push(check(
@@ -349,11 +400,45 @@ fn validate_primary_manifest(
         return Ok(());
     }
 
-    checks.push(check(
-        PreflightStatus::Ok,
-        "Model package",
-        "primary model file matches its verified install manifest",
-    ));
+    if integrity == IntegrityPolicy::MetadataOnly {
+        checks.push(check(
+            PreflightStatus::Warning,
+            "Model package",
+            "primary model path, size and install metadata match, but current file content SHA-256 was not verified in this quick diagnostic; generation rechecks it",
+        ));
+        return Ok(());
+    }
+
+    let actual_digest = sha256_file(primary_path)?;
+    if !manifest
+        .actual_sha256
+        .as_deref()
+        .is_some_and(|recorded| actual_digest.eq_ignore_ascii_case(recorded))
+        || manifest
+            .sha256
+            .as_deref()
+            .is_some_and(|expected| !actual_digest.eq_ignore_ascii_case(expected))
+    {
+        checks.push(check(
+            PreflightStatus::Error,
+            "Model package",
+            "primary model SHA-256 does not match its install manifest; file may be corrupted or replaced, re-download it",
+        ));
+        return Ok(());
+    }
+    checks.push(if manifest.verification == VerificationState::Verified {
+        check(
+            PreflightStatus::Ok,
+            "Model package",
+            "current primary model file SHA-256 matches its verified install manifest",
+        )
+    } else {
+        check(
+            PreflightStatus::Warning,
+            "Model package",
+            "current primary file SHA-256 matches the recorded local digest; no verified upstream checksum was available",
+        )
+    });
     Ok(())
 }
 
