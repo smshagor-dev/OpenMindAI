@@ -2714,7 +2714,7 @@ mod milestone2_tests {
     fn unavailable_active_model_cannot_override_a_usable_fallback() {
         let unavailable = test_model("missing", None, false);
         let fallback = test_model("available", None, true);
-        assert!(select_conversation_model(&[unavailable.clone()], Some("missing"), "chat", "hello").is_none());
+        assert!(select_conversation_model(std::slice::from_ref(&unavailable), Some("missing"), "chat", "hello").is_none());
         let selected = select_conversation_model(&[unavailable, fallback], Some("missing"), "chat", "hello").unwrap();
         assert_eq!(selected.id, "available");
     }
