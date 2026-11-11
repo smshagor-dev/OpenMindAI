@@ -81,6 +81,7 @@ impl<'a> ModelRegistry<'a> {
             "SELECT id, name, family, path, format, quantization, size_bytes, capabilities,
                     context_length, preferred_backend, enabled, created_at, updated_at
              FROM model_registry
+             WHERE format <> 'cloud'
              ORDER BY name ASC",
         )?;
         let rows = statement.query_map([], map_model)?;
