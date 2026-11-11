@@ -95,7 +95,7 @@ export async function createChatAppHarness() {
           builder.onLoad({ filter: /.*/, namespace: "fixture" }, ({ path }) => {
             const modules = {
               api: "export const api=globalThis.__chatDraftHarness.api;",
-              cloud: "export const cloud={status:async()=>({connected:false,user:null,message:null}),models:async()=>[]};export const hostedChat=async()=>{throw Error('Unexpected Cloud call during local draft regression');};",
+              cloud: "export const cloud={status:async()=>({connected:false,user:null,message:null}),models:async()=>[]};export const hostedChat=async()=>{throw Error('Unexpected Cloud call during local draft regression');};export const submitQueuedScene=async()=>{throw Error('Unexpected queued Studio call during local chat regression');};",
               events:
                 "export const listen=async(name,callback)=>{const events=globalThis.__chatDraftHarness.events;events.set(name,callback);return()=>events.delete(name);};",
               socket:
