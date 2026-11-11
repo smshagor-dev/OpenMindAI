@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    app_error::AppError, hardware::HardwareProfile, model_registry::ModelRecord,
+    app_error::AppError,
+    hardware::HardwareProfile,
+    model_registry::{ModelLifecycleState, ModelRecord},
     portable_root::PortableRootManager,
 };
 
@@ -165,7 +167,12 @@ fn installed_path_for(
     let download = entry.download.as_ref();
     let primary = installed
         .iter()
-        .find(|model| installed_model_matches_entry(entry, model))
+        .find(|model| {
+            !matches!(
+                model.state,
+                ModelLifecycleState::NotInstalled | ModelLifecycleState::Failed
+            ) && installed_model_matches_entry(entry, model)
+        })
         .map(|model| model.path.clone())
         .or_else(|| download.and_then(|download| find_downloaded_file(root, download)))?;
 
@@ -577,5 +584,30 @@ mod tests {
             "mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf"
         ));
         assert!(!wildcard_match("*quantized*.onnx", "model.onnx"));
+    }
+    #[test]
+    fn missing_registry_entry_does_not_keep_the_catalog_installed_flag() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let entry = entry_by_id("qwen3-4b-q4km").unwrap();
+        let directory = root
+            .resolve_relative(&entry.download.as_ref().unwrap().destination_dir)
+            .unwrap();
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("Qwen3-4B-Q4_K_M.gguf");
+        {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&path).unwrap();
+            file.write_all(b"GGUF").unwrap();
+            file.set_len(33 * 1024 * 1024).unwrap();
+        }
+        let db = crate::database::Database::in_memory().unwrap();
+        let registry = crate::model_registry::ModelRegistry::new(&db, &root);
+        let installed = registry.discover_gguf_models().unwrap();
+        assert!(installed_path_for(&entry, &installed, &root).is_some());
+        std::fs::remove_file(path).unwrap();
+        let missing = registry.list_models().unwrap();
+        assert!(installed_path_for(&entry, &missing, &root).is_none());
     }
 }

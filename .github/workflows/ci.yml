@@ -65,6 +65,8 @@ jobs:
         run: npm run test:pdf
       - name: Regeneration history preservation
         run: npm run test:regeneration
+      - name: Model inventory availability
+        run: npm run test:model-inventory
       - name: Model action failure recovery
         run: npm run test:model-actions
       - name: Concurrent attachment ingestion
