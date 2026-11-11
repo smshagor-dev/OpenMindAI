@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   selectExecutionRoute, isRecoverableCloudFailure, runWithFallback,
-  shouldShowCloudModels, offlineSourceNotice, ResponsePersistenceError,
+  shouldShowCloudModels, requestsLocalOnly, offlineSourceNotice, ResponsePersistenceError,
 } from "../src/lib/executionRouting.ts";
 
 test("auto routing prefers Cloud when authenticated and online", () => {
@@ -65,4 +65,25 @@ test("the API model selector appears only when online and Cloud is authenticated
     assert.equal(shouldShowCloudModels(mode, true, true, 0), false, "no hosted models");
   }
   assert.equal(shouldShowCloudModels("local", true, true, 2), false, "Local always shows local models");
+});
+
+test("explicit offline-only prompts override authenticated Cloud, including multilingual input", () => {
+  for (const prompt of [
+    "This is sensitive; offline only, do not use cloud",
+    "শুধু লোকাল মডেল ব্যবহার করো",
+    "ইন্টারনেট ছাড়া কাজ করো",
+    "Только локально, пожалуйста",
+  ]) {
+    assert.equal(requestsLocalOnly(prompt), true, prompt);
+    const route = selectExecutionRoute({
+      preference: "auto", task: "research", online: true, cloudConnected: true,
+      cloudModelReady: true, forceLocal: requestsLocalOnly(prompt),
+    });
+    assert.equal(route.target, "local", prompt);
+  }
+  assert.equal(requestsLocalOnly("Research new online API design"), false);
+  assert.equal(selectExecutionRoute({
+    preference:"cloud", task:"image-to-3d", online:true, cloudConnected:true,
+    forceLocal:true,
+  }).target, "deferred", "Never upload local-only reference images");
 });
