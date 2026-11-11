@@ -30,7 +30,9 @@ use uuid::Uuid;
 use crate::{
     agent_runtime::{self, AgentModelInfo, AgentPhase},
     app_error::AppError,
-    cloud_bridge, coding_control, settings::SettingsRepository, AppState,
+    cloud_bridge, coding_control,
+    settings::SettingsRepository,
+    AppState,
 };
 
 pub const SERVICE_NAME: &str = "openmindai-coding-agent";
@@ -393,9 +395,7 @@ enum CodingExecutionMode {
     Both,
 }
 
-fn coding_execution_preferences(
-    app: &AppHandle,
-) -> Result<(CodingExecutionMode, bool), AppError> {
+fn coding_execution_preferences(app: &AppHandle) -> Result<(CodingExecutionMode, bool), AppError> {
     let state = app.state::<AppState>();
     let db = state
         .database
@@ -525,9 +525,8 @@ async fn chat(app: &AppHandle, raw_body: &[u8]) -> Result<HttpResponse, AppError
                 let max_tokens = requested_max_tokens(&request);
                 // The preflight completed before POST. Once Cloud receives a
                 // completion request we NEVER replay it on Local after error.
-                let (status, mut payload) = cloud_bridge::coding_cloud_completion(
-                    &model, &messages, max_tokens,
-                ).await?;
+                let (status, mut payload) =
+                    cloud_bridge::coding_cloud_completion(&model, &messages, max_tokens).await?;
                 if let Value::Object(object) = &mut payload {
                     object.insert("openmindai".to_string(), json!({
                         "route": "cloud-coding-agent",
@@ -535,7 +534,10 @@ async fn chat(app: &AppHandle, raw_body: &[u8]) -> Result<HttpResponse, AppError
                         "executionMode": if mode == CodingExecutionMode::Cloud {"cloud"} else {"auto"},
                     }));
                 }
-                return Ok(HttpResponse { status, body: payload });
+                return Ok(HttpResponse {
+                    status,
+                    body: payload,
+                });
             }
             Err(error) if mode == CodingExecutionMode::Cloud => {
                 return Ok(HttpResponse::error(503, format!("Cloud Only: {error}")));
