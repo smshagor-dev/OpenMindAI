@@ -10,6 +10,7 @@ export interface RouteInput {
   cloudConnected: boolean;
   cloudModelReady?: boolean;
   localAvailable?: boolean;
+  forceLocal?: boolean;
 }
 
 export interface RouteDecision {
@@ -22,6 +23,11 @@ export interface RouteDecision {
 export function selectExecutionRoute(input: RouteInput): RouteDecision {
   const offline = !input.online;
   const localSupported = input.task !== "image-to-3d" && input.localAvailable !== false;
+  if (input.forceLocal) {
+    return localSupported
+      ? { target: "local", offline: true, reason: "Your prompt explicitly requires private/local-only processing." }
+      : { target: "deferred", offline: true, reason: "This task has no equivalent installed local capability; it will not be sent to Cloud." };
+  }
   const remoteReady = input.online && input.cloudConnected &&
     (input.task !== "chat" && input.task !== "vision" && input.task !== "search" ||
       input.cloudModelReady !== false);
@@ -50,6 +56,11 @@ export function selectExecutionRoute(input: RouteInput): RouteDecision {
  * API model discovery is a private, authenticated Cloud feature.
  * Never show cached hosted models when signed out, offline or using Local.
  */
+/** Mirrors Mobile's explicit offline/local-only privacy override. */
+export function requestsLocalOnly(prompt: string): boolean {
+  return /\b(offline[ -]only|local[ -]only|on[ -]device only|without internet|no cloud|do not (use|send|upload|share).{0,25}(cloud|internet|server)|don['’]?t (use|send|upload|share).{0,25}(cloud|internet|server)|only (use )?(local|offline))\b|শুধু\s*(লোকাল|অফলাইন)|ইন্টারনেট\s*ছা[ড়ড]া|ক্লাউডে\s*পাঠা(?:বে\s*না|বেন\s*না)|без\s+интернета|только\s+локально|не\s+отправл.{0,20}облак/i.test(prompt);
+}
+
 export function shouldShowCloudModels(
   mode: ExecutionMode,
   online: boolean,
