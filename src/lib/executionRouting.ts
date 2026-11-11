@@ -70,6 +70,8 @@ export function describeFailure(error: unknown): string {
 /** Safe to fall back on these Cloud errors; never retry a POST on the remote server. */
 export function isRecoverableCloudFailure(error: unknown): boolean {
   const message = describeFailure(error);
+  // Mobile also switches to installed models after a Cloud session expires.
+  if (/\bHTTP\s+401\b/i.test(message)) return true;
   if (/\bHTTP\s+(400|401|403|404|405|409|413|415|422)\b/i.test(message) ||
       /invalid|unauthori[sz]ed|forbidden|validation|permission|user-session token|store failed|persist|quota invalid/i.test(message))
     return false;
