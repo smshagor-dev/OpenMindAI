@@ -408,6 +408,7 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
                         await cloud.outboxRetry(item.id);
                       }
                       const target: "cloud" | "local" = internetAvailable && connection?.connected && mode !== "local" && !requestsLocalOnly(item.payload.prompt) ? "cloud" : "local";
+                  if (mode === "cloud" && target !== "cloud") throw new Error("Cloud Only: connect your account before resuming this 3D job. It was not sent to a local worker.");
                       if (target === "local") {
                         const health = await cloud.startGpu();
                         if (!health.gpu_active) throw new Error("Local GPU unavailable. The request remains saved.");
