@@ -10,7 +10,7 @@ import React, { act } from "react";
 import { JSDOM } from "jsdom";
 const require = createRequire(import.meta.url);
 
-test("production model selector excludes unavailable records and restores them after rediscovery", async () => {
+test("production selector preserves availability and distinct model identities", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "model-inventory-"));
   const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "http://localhost/" });
   const previous = new Map();
@@ -50,6 +50,56 @@ test("production model selector excludes unavailable records and restores them a
     await click(trigger()); options = [...dom.window.document.querySelectorAll('[role="option"]')];
     const restored = options.find(option => option.textContent.includes("Missing"));
     assert.ok(restored); await click(restored); assert.deepEqual(selected, ["valid", "missing"]);
+
+    await t.test("unknown custom GGUFs remain independently selectable", async () => {
+      props.models = [
+        { ...valid, id: "custom-a", name: "Local alpha", path: "/models/alpha.gguf", quantization: "Q4_K_M", sizeBytes: 1024 ** 3 },
+        { ...valid, id: "custom-b", name: "Local beta", path: "C:\\models\\beta.gguf", quantization: "Q4_K_M", sizeBytes: 1024 ** 3 },
+      ];
+      props.activeModelId = "custom-b"; await render();
+      assert.match(trigger().textContent, /beta\.gguf/);
+      await click(trigger());
+      options = [...dom.window.document.querySelectorAll('[role="option"]')];
+      assert.equal(options.length, 2);
+      assert.equal(new Set(options.map(option => option.textContent)).size, 2);
+      const alpha = options.find(option => option.textContent.includes("alpha.gguf"));
+      assert.ok(alpha); assert.equal(alpha.getAttribute("aria-selected"), "false");
+      assert.equal(options.find(option => option.textContent.includes("beta.gguf")).getAttribute("aria-selected"), "true");
+      await click(alpha); assert.equal(selected.at(-1), "custom-a");
+    });
+    await t.test("family quantizations expose their filename and size", async () => {
+      props.models = [
+        { ...valid, id: "q4", name: "Qwen", sourceRepository: "Qwen/Qwen3-4B-GGUF", path: "/models/core-q4.gguf", quantization: "Q4_K_M", sizeBytes: 2 * 1024 ** 3 },
+        { ...valid, id: "q8", name: "Qwen", sourceRepository: "Qwen/Qwen3-4B-GGUF", path: "/models/core-q8.gguf", quantization: "Q8_0", sizeBytes: 4 * 1024 ** 3 },
+      ];
+      props.activeModelId = "q8"; await render();
+      assert.match(trigger().textContent, /Q8_0.*4\.0 GB.*core-q8/);
+      for (const [id, quant] of [["q4", "Q4_K_M"], ["q8", "Q8_0"]]) {
+        await click(trigger()); options = [...dom.window.document.querySelectorAll('[role="option"]')];
+        assert.equal(options.length, 2);
+        const option = options.find(item => item.textContent.includes(quant));
+        assert.ok(option); assert.match(option.textContent, /OpenMindAI Core/);
+        await click(option); assert.equal(selected.at(-1), id);
+        props.activeModelId = id; await render();
+      }
+    });
+    await t.test("identical filenames and quantizations remain distinct by stable ID", async () => {
+      props.models = [
+        { ...valid, id: "same-file-a", name: "Local", path: "/first/model.gguf", quantization: "Q4_K_M", sizeBytes: 1024 },
+        { ...valid, id: "same-file-b", name: "Local", path: "/second/model.gguf", quantization: "Q4_K_M", sizeBytes: 1024 },
+      ];
+      props.activeModelId = "same-file-b"; await render();
+      assert.match(trigger().textContent, /same-file-b/);
+      await click(trigger()); options = [...dom.window.document.querySelectorAll('[role="option"]')];
+      assert.equal(options.length, 2);
+      assert.equal(new Set(options.map(option => option.textContent)).size, 2);
+      await click(options.find(option => option.textContent.includes("same-file-a")));
+      assert.equal(selected.at(-1), "same-file-a");
+      props.activeModelId = "same-file-a";
+      props.models.reverse(); await render(); await click(trigger());
+      options = [...dom.window.document.querySelectorAll('[role="option"]')];
+      assert.equal(options.find(option => option.getAttribute("aria-selected") === "true").textContent.includes("same-file-a"), true);
+    });
   } finally {
     if (root) await act(async () => root.unmount());
     dom.window.close();
