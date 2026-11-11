@@ -46,6 +46,7 @@ import { ProjectsWorkspace } from "./components/ProjectsWorkspace";
 import { WorkWorkspace } from "./components/WorkWorkspace";
 import { StudioHub } from "./components/StudioHub";
 import { cloud, hostedChat, type CloudConnection, type CloudModel, type ExecutionMode, type StudioSection } from "./cloudApi";
+import { offlineSourceNotice, runWithFallback, selectExecutionRoute } from "./lib/executionRouting";
 import { notifyUser } from "./lib/notify";
 import {
   attachmentKind,
@@ -96,7 +97,9 @@ export function App() {
   const backgroundRuns = [...chatSnapshot.runs.keys()].filter((id) => id !== activeId && chatState.isBusy(id));
   const copyrightYear = new Date().getFullYear();
   const [view, setView] = useState<View>("chat");
-  const [executionMode, setExecutionMode] = useState<ExecutionMode>("local");
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>("auto");
+  const [internetAvailable, setInternetAvailable] = useState(() => window.navigator.onLine);
+  const [routeNotice, setRouteNotice] = useState<string | null>(null);
   const [cloudConnection, setCloudConnection] = useState<CloudConnection | null>(null);
   const [cloudModels, setCloudModels] = useState<CloudModel[]>([]);
   const [cloudModel, setCloudModel] = useState("");
@@ -110,6 +113,29 @@ export function App() {
       }).catch(() => undefined);
     }).catch(() => undefined);
     return () => { alive = false; };
+  }, []);
+  useEffect(() => {
+    let active = true;
+    const reconnect = () => {
+      setInternetAvailable(true);
+      void cloud.status().then((status) => {
+        if (!active) return;
+        setCloudConnection(status);
+        if (status.connected) void cloud.models().then((available) => {
+          if (!active) return;
+          setCloudModels(available);
+          setCloudModel((current) => available.some((item) => item.id === current) ? current : available[0]?.id ?? "");
+        }).catch(() => undefined);
+      }).catch(() => undefined);
+    };
+    const disconnect = () => setInternetAvailable(false);
+    window.addEventListener("online", reconnect);
+    window.addEventListener("offline", disconnect);
+    return () => {
+      active = false;
+      window.removeEventListener("online", reconnect);
+      window.removeEventListener("offline", disconnect);
+    };
   }, []);
   const connectedCloud = (connection: CloudConnection) => {
     setCloudConnection(connection);
@@ -530,14 +556,33 @@ export function App() {
           setConversations((items) => items.map((conversation) => conversation.id === conversationId ? { ...conversation, title: generatedTitle } : conversation));
         }
       }
-      if (executionMode === "cloud" && (inferenceMedia.length > 0 || !["chat", "thinking", "search", "research"].includes(inferredMode))) {
-        throw new Error("This operation currently requires Local mode. Cloud chat supports text, thinking, web search and sourced research.");
-      }
-      const assistant = executionMode === "cloud"
-        ? await hostedChat(conversationId, messageContent, cloudModel, inferredMode)
-        : inferredMode === "image"
-          ? await persistDirectImageRequest(conversationId, messageContent, api)
-          : await api.sendChatMessage(conversationId, messageContent, inferredMode, inferenceMedia);
+      // Unimplemented Cloud media types still work using their existing local engine.
+      const cloudChatCapable = inferenceMedia.length === 0 &&
+        ["chat", "thinking", "search", "research"].includes(inferredMode) && Boolean(cloudModel);
+      const route = selectExecutionRoute({
+        preference: cloudChatCapable ? executionMode : "local",
+        task: inferredMode === "search" ? "search" : inferredMode === "research" ? "research" : "chat",
+        online: internetAvailable,
+        cloudConnected: Boolean(cloudConnection?.connected),
+        cloudModelReady: Boolean(cloudModel),
+      });
+      const localOffline = !internetAvailable && ["search", "research"].includes(inferredMode);
+      const localContent = localOffline
+        ? offlineSourceNotice(buildMessageContent(content, attachments, "chat"))
+        : messageContent;
+      const localMode = localOffline ? "chat" : inferredMode;
+      const response = await runWithFallback(
+        route,
+        () => hostedChat(conversationId, messageContent, cloudModel, inferredMode),
+        () => inferredMode === "image"
+          ? persistDirectImageRequest(conversationId, localContent, api)
+          : api.sendChatMessage(conversationId, localContent, localMode, inferenceMedia),
+        (reason) => setRouteNotice(reason),
+      );
+      const assistant = response.result;
+      if (route.offline) setRouteNotice("Offline: processed locally. Live web sources cannot be verified.");
+      else if (!response.fallback && route.target === "local" && executionMode !== "local" && cloudChatCapable)
+        setRouteNotice(route.reason);
       requestScope.setMessages((items) => items.filter((message) => message.id !== optimisticUser?.id));
       const generationKind = generationKindForMode(inferredMode);
       if (generationKind) {
@@ -561,7 +606,7 @@ export function App() {
       chatState.finishRequest(lease);
     }
   }, [activeId, attachments, chatState, conversations, editingMessageId, imageOptions, pendingModelId,
-    executionMode, cloudModel, preferences?.autoGenerateTitles, preferences?.openArtifactsAfterGeneration, prompt, refreshMessages, setActiveId, setAttachments, setPrompt, showError]);
+    executionMode, cloudModel, internetAvailable, cloudConnection?.connected, preferences?.autoGenerateTitles, preferences?.openArtifactsAfterGeneration, prompt, refreshMessages, setActiveId, setAttachments, setPrompt, showError]);
 
   const sendWorkTask = useCallback(async (conversationId: string, content: string) => {
     const task = content.trim();
@@ -579,19 +624,30 @@ export function App() {
         await api.renameConversation(conversationId, generatedTitle);
         setConversations((items) => items.map((conversation) => conversation.id === conversationId ? { ...conversation, title: generatedTitle } : conversation));
       }
-      if (executionMode === "cloud") {
-        if (!["chat", "thinking", "search", "research"].includes(inferredMode)) throw new Error("This Work operation requires Local mode.");
-        await hostedChat(conversationId, messageContent, cloudModel, inferredMode);
-      } else {
-        await api.sendChatMessage(conversationId, messageContent, inferredMode, []);
-      }
+      const availableForCloud = ["chat", "thinking", "search", "research"].includes(inferredMode) && Boolean(cloudModel);
+      const route = selectExecutionRoute({
+        preference: availableForCloud ? executionMode : "local",
+        task: inferredMode === "search" ? "search" : inferredMode === "research" ? "research" : "chat",
+        online: internetAvailable,
+        cloudConnected: Boolean(cloudConnection?.connected),
+        cloudModelReady: Boolean(cloudModel),
+      });
+      await runWithFallback(
+        route,
+        () => hostedChat(conversationId, messageContent, cloudModel, inferredMode),
+        () => api.sendChatMessage(conversationId,
+          !internetAvailable && ["search", "research"].includes(inferredMode)
+            ? offlineSourceNotice(buildMessageContent(task, [], "chat")) : messageContent,
+          !internetAvailable && ["search", "research"].includes(inferredMode) ? "chat" : inferredMode, []),
+        (reason) => setRouteNotice(reason),
+      );
       await refreshMessages(conversationId);
       setConversations(await api.conversations());
     } catch (caught) {
       requestScope.setError(formatError(caught));
       await refreshMessages(conversationId);
     } finally { chatState.finishRequest(lease); }
-  }, [chatState, refreshMessages, setActiveId, setAttachments, setPrompt, executionMode, cloudModel]);
+  }, [chatState, refreshMessages, setActiveId, setAttachments, setPrompt, executionMode, cloudModel, internetAvailable, cloudConnection?.connected]);
 
   const cancelConversationGeneration = useCallback(async (conversationId: string) => {
     try { await chatState.cancelGeneration(conversationId, api.cancelGeneration); }
@@ -637,19 +693,30 @@ export function App() {
     if (!lease) return;
     const requestScope = chatState.scope(activeId);
     try {
-      if (executionMode === "cloud") {
-        if (!user) throw new Error("The original user message is unavailable.");
-        await hostedChat(activeId, user.content, cloudModel, mode, assistantMessageId);
-      } else {
-        await api.regenerateMessage(activeId, assistantMessageId, mode);
-      }
+      const cloudCapable = ["chat", "thinking", "search", "research"].includes(mode) && Boolean(cloudModel);
+      const route = selectExecutionRoute({
+        preference: cloudCapable ? executionMode : "local",
+        task: mode === "search" ? "search" : mode === "research" ? "research" : "chat",
+        online: internetAvailable,
+        cloudConnected: Boolean(cloudConnection?.connected),
+        cloudModelReady: Boolean(cloudModel),
+      });
+      await runWithFallback(route,
+        async () => {
+          if (!user) throw new Error("The original user message is unavailable.");
+          return hostedChat(activeId, user.content, cloudModel, mode, assistantMessageId);
+        },
+        () => api.regenerateMessage(activeId, assistantMessageId,
+          !internetAvailable && ["search", "research"].includes(mode) ? "chat" : mode),
+        (reason) => setRouteNotice(reason),
+      );
       await refreshMessages(activeId);
       await refreshApp();
     } catch (caught) {
       requestScope.setError(formatError(caught));
       await refreshMessages(activeId);
     } finally { chatState.finishRequest(lease); }
-  }, [activeId, chatState, messages, refreshApp, refreshMessages, executionMode, cloudModel]);
+  }, [activeId, chatState, messages, refreshApp, refreshMessages, executionMode, cloudModel, internetAvailable, cloudConnection?.connected]);
 
   const selectModel = useCallback(
     async (modelId: string) => {
@@ -1174,18 +1241,20 @@ export function App() {
               }}
             />
             <div className="execution-mode-switch" role="group" aria-label="AI execution mode">
+              <button type="button" className={executionMode === "auto" ? "active" : ""} aria-pressed={executionMode === "auto"} onClick={() => setExecutionMode("auto")} title="Automatically route to Cloud when connected or Local when offline">Auto</button>
               <button type="button" className={executionMode === "local" ? "active" : ""} aria-pressed={executionMode === "local"} onClick={() => setExecutionMode("local")} title="Use this computer for local inference">
                 Local
               </button>
               <button type="button" className={executionMode === "cloud" ? "active" : ""} aria-pressed={executionMode === "cloud"} onClick={() => setExecutionMode("cloud")} title={cloudConnection?.connected ? "Connected to OpenMindAI Cloud" : "Sign in from Research Studio to use Cloud"}>
-                <span className={cloudConnection?.connected ? "studio-dot good" : "studio-dot"} /> Cloud
+                <span className={internetAvailable && cloudConnection?.connected ? "studio-dot good" : "studio-dot"} /> Cloud
               </button>
             </div>
-            {executionMode === "cloud" && cloudModels.length > 0 ? (
+            {(executionMode === "cloud" || executionMode === "auto") && internetAvailable && cloudModels.length > 0 ? (
               <select className="cloud-model-select" aria-label="Cloud model" value={cloudModel} onChange={(event) => setCloudModel(event.target.value)}>
                 {cloudModels.map((model) => <option key={model.id} value={model.id}>{model.name || model.id}</option>)}
               </select>
             ) : null}
+            <span className="mode-connection-status" role="status">{internetAvailable ? "Online" : "Offline"}</span>
           </div>
           <div className="topbar-actions">
             {view === "chat" && activeConversation ? (
@@ -1281,6 +1350,12 @@ export function App() {
           </div>
         ) : null}
 
+        {routeNotice ? (
+          <div className="routing-notice" role="status">
+            <span>{routeNotice}</span>
+            <button type="button" onClick={() => setRouteNotice(null)} aria-label="Dismiss routing notice">Dismiss</button>
+          </div>
+        ) : null}
         {view === "chat" ? (
           <ChatView
             conversation={activeConversation}
@@ -1327,6 +1402,7 @@ export function App() {
           <StudioHub
             section={view}
             mode={executionMode}
+            internetAvailable={internetAvailable}
             connection={cloudConnection}
             onConnected={connectedCloud}
             onDisconnect={() => { setCloudConnection({ connected: false, user: null, message: null }); setCloudModels([]); setCloudModel(""); }}
