@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { Database, Cloud, Cpu, Globe, Loader2, Play, RefreshCw, Search, ShieldCheck, Square, TableProperties, X } from "lucide-react";
 import { cloud, type CloudConnection, type ExecutionMode, type ResearchProject, type StudioJob, type StudioSection } from "../cloudApi";
+import { isRecoverableCloudFailure, offlineSourceNotice, selectExecutionRoute } from "../lib/executionRouting";
 import "../cloud-studio.css";
 
 type Props = {
   section: StudioSection;
   mode: ExecutionMode;
+  internetAvailable: boolean;
   connection: CloudConnection | null;
   onConnected: (connection: CloudConnection) => void;
   onDisconnect: () => void;
@@ -78,12 +80,13 @@ const sectionLabels: Record<StudioSection, string> = {
   "web-search": "Web Search",
 };
 
-export function StudioHub({ section, mode, connection, onConnected, onDisconnect, onLocalPrompt }: Props) {
+export function StudioHub({ section, mode, internetAvailable, connection, onConnected, onDisconnect, onLocalPrompt }: Props) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [twoFactor, setTwoFactor] = useState("");
   const [token, setToken] = useState("");
   const [advanced, setAdvanced] = useState(false);
+  const [showCloudLogin, setShowCloudLogin] = useState(false);
   const [input, setInput] = useState("");
   const [title, setTitle] = useState("");
   const [shapeMode, setShapeMode] = useState<"object" | "architecture">("object");
@@ -93,13 +96,19 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
   const [selectedProject, setSelectedProject] = useState<number | null>(null);
   const [researchInfo, setResearchInfo] = useState<Record<string, unknown> | null>(null);
   const [job, setJob] = useState<StudioJob | null>(null);
+  const [jobTarget, setJobTarget] = useState<"local" | "cloud">("local");
   const [engines, setEngines] = useState<Record<string, unknown> | null>(null);
   const [gpu, setGpu] = useState<{ gpu_active: boolean; gpu?: string; engine?: string } | null>(null);
   const [results, setResults] = useState<Array<{ title?: string; url?: string; snippet?: string; description?: string }>>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const online = mode === "cloud";
+  const decision = selectExecutionRoute({
+    preference: mode, task: section === "3d-studio" ? "scene3d" : section === "research-studio" ? "research" : "search",
+    online: internetAvailable, cloudConnected: Boolean(connection?.connected), cloudModelReady: true,
+  });
+  const online = decision.target === "cloud";
+  const requireCloudLogin = internetAvailable && !connection?.connected && (mode === "cloud" || showCloudLogin);
 
   const action = useCallback(async (run: () => Promise<void>) => {
     setBusy(true); setError(null); setNotice(null);
@@ -124,10 +133,9 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
   useEffect(() => {
     setError(null);
     setNotice(null);
-    setJob(null);
-    setDirectAsset(null);
     setResults([]);
-    setResearchInfo(null);
+  }, [section]);
+  useEffect(() => {
     if ((online && connection?.connected) || (!online && section === "3d-studio")) {
       void refresh().catch((caught: unknown) => setError(explain(caught)));
     }
@@ -139,18 +147,19 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
         !["queued", "running", "pending", "processing", "submitting"].includes(job.status.toLowerCase())) return;
     let live = true;
     const timer = window.setInterval(() => {
-      const request = online ? cloud.studioJob(job.id) : cloud.gpuJob(job.id);
+      const request = jobTarget === "cloud" ? cloud.studioJob(job.id) : cloud.gpuJob(job.id);
       void request.then((updated) => { if (live) setJob(updated); })
         .catch((caught: unknown) => { if (live) setError(explain(caught)); });
     }, 4000);
     return () => { live = false; window.clearInterval(timer); };
-  }, [section, online, job?.id, job?.status]);
+  }, [section, jobTarget, job?.id, job?.status]);
 
   const signIn = () => action(async () => {
     const connected = advanced ? await cloud.connect(token) : await cloud.login(email, password, twoFactor);
     onConnected(connected);
     setPassword(""); setToken(""); setTwoFactor("");
-    setNotice("Cloud is connected. Credentials are managed by the operating system.");
+    setShowCloudLogin(false);
+    setNotice("Cloud is connected. Requests can now switch between Cloud and Local.");
   });
 
   const submit = () => action(async () => {
@@ -158,15 +167,23 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
     if (!prompt) throw new Error("Enter a prompt or search query.");
     if (section === "web-search") {
       if (!online) {
-        onLocalPrompt("[Mode: Web Search]\n" + prompt);
+        onLocalPrompt(internetAvailable ? "[Mode: Web Search]\n" + prompt : offlineSourceNotice(prompt));
+        setNotice(internetAvailable ? "Opened local web research." : "Opened local offline analysis. Live sources are unavailable.");
         return;
       }
-      const response = await cloud.search(prompt);
-      setResults(response.results ?? []);
-      setNotice((response.results ?? []).length ? null : "The search returned no results.");
+      try {
+        const response = await cloud.search(prompt);
+        setResults(response.results ?? []);
+        setNotice((response.results ?? []).length ? null : "The search returned no results.");
+      } catch (caught) {
+        if (!isRecoverableCloudFailure(caught)) throw caught;
+        onLocalPrompt(internetAvailable ? "[Mode: Web Search]\n" + prompt : offlineSourceNotice(prompt));
+        setNotice("Cloud search is unavailable. Switched to the local search workflow.");
+      }
     } else if (section === "research-studio") {
       if (!online) {
-        onLocalPrompt("[Mode: Deep Research]\n" + prompt);
+        onLocalPrompt(internetAvailable ? "[Mode: Deep Research]\n" + prompt : offlineSourceNotice(prompt));
+        setNotice(internetAvailable ? "Opened local research workflow." : "Opened local offline research, without live source verification.");
         return;
       }
       const project = await cloud.createResearch(title.trim() || prompt.slice(0, 100), prompt);
@@ -186,14 +203,29 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
           setNotice("Cloud created a 3D mesh asset. Download the GLB below.");
         } else {
           setJob(created);
+          setJobTarget("cloud");
           setDirectAsset(null);
           setNotice("Image-to-mesh job submitted. Refresh or follow the live job status.");
         }
+      } else if (referenceImage && !online) {
+        throw new Error("A reference image needs an image-conditioned 3D model. Local procedural shapes cannot reconstruct it. Reconnect to Cloud, or remove the image to generate a local scene.");
       } else {
-        const created = online ? await cloud.studioScene(prompt, shapeMode) : await cloud.gpuScene(prompt, shapeMode);
+        let target: "local" | "cloud" = online ? "cloud" : "local";
+        // Fail over on a read-only preflight, never after an ambiguous billable POST.
+        if (target === "cloud") {
+          try { await cloud.studioEngines(); }
+          catch (caught) {
+            if (!isRecoverableCloudFailure(caught)) throw caught;
+            target = "local";
+          }
+        }
+        const created = target === "cloud" ? await cloud.studioScene(prompt, shapeMode) : await cloud.gpuScene(prompt, shapeMode);
         setJob(created);
+        setJobTarget(target);
         setDirectAsset(null);
-        setNotice("3D job submitted. Processing status comes from the selected engine.");
+        setNotice(target === "local" && online
+          ? "Cloud preflight failed; routed to the local GPU."
+          : "3D job submitted to " + (target === "cloud" ? "Cloud" : "the local GPU") + ".");
       }
     }
   });
@@ -203,7 +235,7 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
   return (
     <div className="studio-hub">
       <header className="studio-hero">
-        <div className="studio-eyebrow"><Icon size={16} /> OpenMindAI Workspace <span> / </span>{online ? "Cloud" : "Local"}</div>
+        <div className="studio-eyebrow"><Icon size={16} /> OpenMindAI Workspace <span> / </span>{mode === "auto" ? "Auto · " : ""}{online ? "Cloud" : "Local"}</div>
         <h2>{titleText}</h2>
         <p>{section === "research-studio"
           ? "Evidence-led investigations, saved projects and resumable research runs."
@@ -213,11 +245,11 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
         <div className="studio-tags">
           <span><span className={online && connection?.connected ? "studio-dot good" : "studio-dot"} />{online ? connection?.connected ? "Cloud connected" : "Cloud disconnected" : "Local processing"}</span>
           <span>{online ? <Cloud size={13} /> : <Cpu size={13} />}{online ? "Remote compute" : "This computer"}</span>
-          <span><ShieldCheck size={13} /> No automatic fallback</span>
+          <span><ShieldCheck size={13} /> {mode === "auto" ? "Automatic routing" : "Safe fallback available"}</span>
         </div>
       </header>
 
-      {online && !connection?.connected ? (
+      {requireCloudLogin ? (
         <section className="studio-panel studio-auth">
           <div className="studio-section-title"><Cloud size={18} /><h3>Connect your OpenMindAI Cloud account</h3></div>
           <p>Use your existing Cloud account. Access is scoped to your own projects and jobs.</p>
@@ -240,6 +272,11 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
         </section>
       ) : (
         <>
+          {!connection?.connected && internetAvailable ? (
+            <button className="studio-secondary studio-cloud-connect" type="button" onClick={() => setShowCloudLogin(true)}>
+              <Cloud size={14} /> Connect Cloud to enable automatic routing
+            </button>
+          ) : null}
           <div className="studio-toolhead">
             <h3>{section === "web-search" ? "New search" : section === "3d-studio" ? "Create a 3D scene" : "Start an investigation"}</h3>
             <div className="studio-actions">
@@ -248,18 +285,18 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
             </div>
           </div>
           <section className="studio-panel">
-            {section === "research-studio" && online ? <label>Project title<input value={title} maxLength={200} onChange={(event) => setTitle(event.target.value)} placeholder="e.g. Robustness of UAV swarm coordination" /></label> : null}
+            {section === "research-studio" ? <label>Project title<input value={title} maxLength={200} onChange={(event) => setTitle(event.target.value)} placeholder="e.g. Robustness of UAV swarm coordination" /></label> : null}
             {section === "3d-studio" ? (
               <div className="studio-actions studio-mode-choice">
                 <button type="button" className={shapeMode === "object" ? "studio-choice active" : "studio-choice"} onClick={() => setShapeMode("object")}>Object</button>
                 <button type="button" className={shapeMode === "architecture" ? "studio-choice active" : "studio-choice"} onClick={() => setShapeMode("architecture")}>Architecture</button>
               </div>
             ) : null}
-            {section === "3d-studio" && online ? (
-              <label>Optional reference image for a real image-to-3D mesh (Cloud)
+            {section === "3d-studio" ? (
+              <label>Optional reference image for image-to-3D (Cloud model required)
                 <input type="file" accept="image/png,image/jpeg,image/webp"
                   onChange={(event) => setReferenceImage(event.currentTarget.files?.[0] ?? null)} />
-                <small>{referenceImage ? referenceImage.name : "No image selected. Text prompt creates a Cloud scene."}</small>
+                <small>{referenceImage ? referenceImage.name : "No image selected. Text prompt creates a 3D scene on either processor."}</small>
               </label>
             ) : null}
             <label>{section === "web-search" ? "Search query" : "Instructions"}
@@ -321,17 +358,17 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
               {job ? (
                 <div className="studio-run">
                   <div className="studio-list-item"><strong>Job {job.id}</strong><span>{job.status}</span></div>
-                  <button className="studio-secondary" disabled={busy} onClick={() => void action(async () => setJob(online ? await cloud.studioJob(job.id) : await cloud.gpuJob(job.id)))}><RefreshCw size={14} /> Refresh job</button>
+                  <button className="studio-secondary" disabled={busy} onClick={() => void action(async () => setJob(jobTarget === "cloud" ? await cloud.studioJob(job.id) : await cloud.gpuJob(job.id)))}><RefreshCw size={14} /> Refresh job</button>
                   {job.error ? <p role="alert">{job.error}</p> : null}
                   <details><summary>Job result and events</summary><pre>{JSON.stringify(job, null, 2).slice(0, 18000)}</pre></details>
                 </div>
               ) : null}
               {(directAsset ?? (job?.result && typeof job.result === "object" && "asset_id" in job.result
-                ? Number((job.result as { asset_id: number }).asset_id) : null)) || (!online && job?.status === "completed") ? (
+                ? Number((job.result as { asset_id: number }).asset_id) : null)) || (jobTarget === "local" && job?.status === "completed") ? (
                 <button className="studio-primary studio-download" disabled={busy} onClick={() => void action(async () => {
                   const assetId = directAsset ?? (job?.result && typeof job.result === "object" && "asset_id" in job.result
                     ? Number((job.result as { asset_id: number }).asset_id) : null);
-                  const file = online
+                  const file = jobTarget === "cloud"
                     ? await cloud.downloadMesh(assetId ?? 0)
                     : await cloud.gpuMesh(job?.id ?? "");
                   saveMesh(file);
