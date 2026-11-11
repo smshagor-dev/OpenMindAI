@@ -125,7 +125,7 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
       setProjects(data);
     } else if (section === "3d-studio") {
       if (online && connection?.connected) setEngines(await cloud.studioEngines());
-      if (!online) {
+      if (!online && mode !== "cloud") {
         const status = await cloud.startGpu();
         setGpu(status);
         if (!status.gpu_active) setError("OpenCL GPU not ready. Install local worker dependencies and GPU drivers.");
@@ -139,7 +139,7 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
     setResults([]);
   }, [section]);
   useEffect(() => {
-    if ((online && connection?.connected) || (!online && section === "3d-studio")) {
+    if ((online && connection?.connected) || (!online && mode !== "cloud" && section === "3d-studio")) {
       void refresh().catch((caught: unknown) => setError(explain(caught)));
     }
   }, [refresh, online, section, connection?.connected]);
@@ -168,6 +168,7 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
   const submit = () => action(async () => {
     const prompt = input.trim();
     if (!prompt) throw new Error("Enter a prompt or search query.");
+    if (decision.target === "deferred") throw new Error(decision.reason);
     if (section === "web-search") {
       if (!online) {
         onLocalPrompt(internetAvailable && !requestsLocalOnly(prompt) ? "[Mode: Web Search]\n" + prompt : offlineSourceNotice(prompt));
@@ -179,7 +180,7 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
         setResults(response.results ?? []);
         setNotice((response.results ?? []).length ? null : "The search returned no results.");
       } catch (caught) {
-        if (!isRecoverableCloudFailure(caught)) throw caught;
+        if (mode !== "auto" || !isRecoverableCloudFailure(caught)) throw caught;
         onLocalPrompt(internetAvailable && !requestsLocalOnly(prompt) ? "[Mode: Web Search]\n" + prompt : offlineSourceNotice(prompt));
         setNotice("Cloud search is unavailable. Switched to the local search workflow.");
       }
@@ -234,9 +235,12 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
             const catalog = await cloud.studioEngines();
             const engines = Array.isArray(catalog.data) ? catalog.data as Array<{id?: string; available?: boolean}> : [];
             const needed = shapeMode === "architecture" ? "architecture" : "procedural";
-            if (!engines.some((entry) => entry.id === needed && entry.available === true)) target = "local";
+            if (!engines.some((entry) => entry.id === needed && entry.available === true)) {
+              if (mode === "cloud") throw new Error("Cloud-only 3D engine is currently unavailable. The queued request was not submitted.");
+              target = "local";
+            }
           } catch (caught) {
-            if (!isRecoverableCloudFailure(caught)) throw caught;
+            if (mode === "cloud" || !isRecoverableCloudFailure(caught)) throw caught;
             target = "local";
           }
         }
@@ -285,7 +289,7 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
         <div className="studio-tags">
           <span><span className={online && connection?.connected ? "studio-dot good" : "studio-dot"} />{online ? connection?.connected ? "Cloud connected" : "Cloud disconnected" : "Local processing"}</span>
           <span>{online ? <Cloud size={13} /> : <Cpu size={13} />}{online ? "Remote compute" : "This computer"}</span>
-          <span><ShieldCheck size={13} /> {mode === "auto" ? "Automatic routing" : "Safe fallback available"}</span>
+          <span><ShieldCheck size={13} /> {mode === "auto" ? "Automatic routing" : mode === "cloud" ? "Cloud only · no local fallback" : "Local only · no Cloud upload"}</span>
         </div>
       </header>
 
