@@ -1,5 +1,6 @@
 //! Native-only Cloud and loopback GPU-worker transports. Tokens never enter a webview request.
 use crate::app_error::AppError;
+use base64::Engine;
 use crate::github::secret_store;
 use reqwest::{Client, Method, StatusCode};
 use serde::Serialize;
@@ -55,6 +56,7 @@ fn allowed_gpu_path(method: &Method, path: &str) -> bool {
     match (method.as_str(), parts.as_slice()) {
         ("GET", ["health"]) | ("POST", ["jobs"]) => true,
         ("GET", ["jobs", id]) if valid_uuid(id) => true,
+        ("GET", ["jobs", id, "mesh"]) if valid_uuid(id) => true,
         ("POST", ["jobs", id, "cancel"]) if valid_uuid(id) => true,
         _ => false,
     }
@@ -189,6 +191,30 @@ pub(crate) async fn local_gpu_request(path: String, method: String, payload: Opt
         request = request.header("Content-Type", "application/json").body(bytes);
     }
     decode(request.send().await.map_err(|_| failure("Local 3D GPU worker is unreachable"))?).await
+}
+
+
+#[tauri::command]
+pub(crate) async fn cloud_download_mesh(asset_id: u64) -> Result<Value, AppError> {
+    if asset_id == 0 { return Err(failure("A valid mesh asset id is required")); }
+    let token = secret_store::get_secret(CREDENTIAL_SLOT)?.ok_or_else(|| failure("Sign in to Cloud first"))?;
+    let response = client()?.get(format!("{CLOUD_BASE}3d-studio/assets/{asset_id}/download"))
+        .bearer_auth(token).header("Accept", "application/octet-stream")
+        .send().await.map_err(|_| failure("Mesh download failed"))?;
+    if !response.status().is_success() {
+        return Err(failure(format!("Mesh download returned HTTP {}", response.status())));
+    }
+    if response.content_length().unwrap_or(0) > 16 * 1024 * 1024 {
+        return Err(failure("Mesh exceeds the 16 MB desktop download limit"));
+    }
+    let bytes = response.bytes().await.map_err(|_| failure("Could not read mesh"))?;
+    if bytes.len() > 16 * 1024 * 1024 || bytes.len() < 12 || &bytes[0..4] != b"glTF" {
+        return Err(failure("Expected a valid GLB asset (16 MB maximum)"));
+    }
+    Ok(json!({
+        "filename": format!("openmindai-cloud-{asset_id}.glb"),
+        "data_base64": base64::engine::general_purpose::STANDARD.encode(bytes),
+    }))
 }
 
 #[cfg(test)]
