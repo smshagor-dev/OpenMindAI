@@ -137,14 +137,29 @@ export function App() {
   }, [studioOutboxReady, internetAvailable, cloudConnection?.connected, executionMode]);
   useEffect(() => {
     let alive = true;
-    void cloud.status().then((status) => {
-      if (!alive) return;
-      setCloudConnection(status);
-      if (status.connected) void cloud.models().then((models) => {
-        if (alive) { setCloudModels(models); setCloudModel((selected) => selected || models[0]?.id || ""); }
-      }).catch(() => undefined);
-    }).catch(() => undefined);
-    return () => { alive = false; };
+    const checkCloud = async () => {
+      try {
+        const status = await cloud.status();
+        if (!alive) return;
+        setCloudConnection(status);
+        if (status.connected) {
+          const available = await cloud.models();
+          if (!alive) return;
+          setCloudModels(available);
+          setCloudModel((selected) => available.some((entry) => entry.id === selected)
+            ? selected : available[0]?.id ?? "");
+        }
+      } catch {
+        if (alive) setCloudConnection((current) => current ? { ...current, connected: false } : current);
+      }
+    };
+    void checkCloud();
+    // Link status alone cannot detect a failed proxy/Cloud service. Probe actual
+    // authenticated availability, never resubmit a job during health checks.
+    const timer = window.setInterval(() => {
+      if (window.navigator.onLine) void checkCloud();
+    }, 60_000);
+    return () => { alive = false; window.clearInterval(timer); };
   }, []);
   useEffect(() => {
     let active = true;
@@ -611,7 +626,10 @@ export function App() {
         () => inferredMode === "image"
           ? persistDirectImageRequest(requestConversationId, localContent, api)
           : api.sendChatMessage(requestConversationId, localContent, localMode, inferenceMedia),
-        (reason) => setRouteNotice(reason),
+        (reason) => {
+          setRouteNotice(reason);
+          setCloudConnection((current) => current ? { ...current, connected: false } : current);
+        },
       );
       const assistant = response.result;
       if (route.offline) setRouteNotice("Offline: processed locally. Live web sources cannot be verified.");
@@ -673,7 +691,10 @@ export function App() {
           !internetAvailable && ["search", "research"].includes(inferredMode)
             ? offlineSourceNotice(buildMessageContent(task, [], "chat")) : messageContent,
           !internetAvailable && ["search", "research"].includes(inferredMode) ? "chat" : inferredMode, []),
-        (reason) => setRouteNotice(reason),
+        (reason) => {
+          setRouteNotice(reason);
+          setCloudConnection((current) => current ? { ...current, connected: false } : current);
+        },
       );
       await refreshMessages(conversationId);
       setConversations(await api.conversations());
@@ -762,7 +783,10 @@ export function App() {
         },
         () => api.regenerateMessage(activeId, assistantMessageId,
           !internetAvailable && ["search", "research"].includes(mode) ? "chat" : mode),
-        (reason) => setRouteNotice(reason),
+        (reason) => {
+          setRouteNotice(reason);
+          setCloudConnection((current) => current ? { ...current, connected: false } : current);
+        },
       );
       await refreshMessages(activeId);
       await refreshApp();
