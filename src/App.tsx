@@ -46,7 +46,7 @@ import { ProjectsWorkspace } from "./components/ProjectsWorkspace";
 import { WorkWorkspace } from "./components/WorkWorkspace";
 import { StudioHub } from "./components/StudioHub";
 import { cloud, hostedChat, submitQueuedScene, type CloudConnection, type CloudModel, type ExecutionMode, type StudioSection } from "./cloudApi";
-import { offlineSourceNotice, runWithFallback, selectExecutionRoute } from "./lib/executionRouting";
+import { offlineSourceNotice, runWithFallback, selectExecutionRoute, shouldShowCloudModels } from "./lib/executionRouting";
 import { notifyUser } from "./lib/notify";
 import {
   attachmentKind,
@@ -105,6 +105,8 @@ export function App() {
   const [cloudConnection, setCloudConnection] = useState<CloudConnection | null>(null);
   const [cloudModels, setCloudModels] = useState<CloudModel[]>([]);
   const [cloudModel, setCloudModel] = useState("");
+  const showCloudApiModels = shouldShowCloudModels(executionMode, internetAvailable,
+    Boolean(cloudConnection?.connected), cloudModels.length);
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
     let active = true;
@@ -142,6 +144,7 @@ export function App() {
         const status = await cloud.status();
         if (!alive) return;
         setCloudConnection(status);
+        if (!status.connected) { setCloudModels([]); setCloudModel(""); }
         if (status.connected) {
           const available = await cloud.models();
           if (!alive) return;
@@ -168,6 +171,7 @@ export function App() {
       void cloud.status().then((status) => {
         if (!active) return;
         setCloudConnection(status);
+        if (!status.connected) { setCloudModels([]); setCloudModel(""); }
         if (status.connected) void cloud.models().then((available) => {
           if (!active) return;
           setCloudModels(available);
@@ -188,7 +192,7 @@ export function App() {
     setCloudConnection(connection);
     void cloud.models().then((models) => {
       setCloudModels(models);
-      setCloudModel((selected) => selected || models[0]?.id || "");
+      setCloudModel((selected) => models.some((model) => model.id === selected) ? selected : models[0]?.id ?? "");
     }).catch(() => setCloudModels([]));
   };
   const [root, setRoot] = useState<PortableRootInfo | null>(null);
@@ -1328,8 +1332,8 @@ export function App() {
                 <span className={internetAvailable && cloudConnection?.connected ? "studio-dot good" : "studio-dot"} /> Cloud
               </button>
             </div>
-            {(executionMode === "cloud" || executionMode === "auto") && internetAvailable && cloudModels.length > 0 ? (
-              <select className="cloud-model-select" aria-label="Cloud model" value={cloudModel} onChange={(event) => setCloudModel(event.target.value)}>
+            {view === "work" && showCloudApiModels ? (
+              <select className="cloud-model-select" aria-label="Cloud API model" value={cloudModel} onChange={(event) => setCloudModel(event.target.value)}>
                 {cloudModels.map((model) => <option key={model.id} value={model.id}>{model.name || model.id}</option>)}
               </select>
             ) : null}
@@ -1468,6 +1472,10 @@ export function App() {
             modelSwitching={modelSwitching}
             modelSwitchError={modelSwitchError}
             onSelectModel={selectModel}
+            showCloudModels={showCloudApiModels}
+            cloudModels={showCloudApiModels ? cloudModels : []}
+            activeCloudModelId={showCloudApiModels ? cloudModel : ""}
+            onSelectCloudModel={setCloudModel}
             artifactsByMessage={artifactsByMessage}
             onCreateArtifact={createArtifact}
             onOpenArtifact={openArtifactHandler}
