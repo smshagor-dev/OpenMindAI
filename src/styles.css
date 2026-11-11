@@ -3677,6 +3677,74 @@ button {
   box-shadow: 0 24px 60px rgb(0 0 0 / 25%);
 }
 
+.setup-execution-options {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.setup-execution-option {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  cursor: pointer;
+  background: var(--surface);
+}
+
+.setup-execution-option.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.setup-execution-option input {
+  margin-top: 5px;
+  accent-color: var(--accent);
+}
+
+.setup-execution-option span,
+.setup-execution-option small {
+  display: block;
+}
+
+.setup-execution-option small {
+  margin-top: 4px;
+  line-height: 1.45;
+  color: var(--text-muted, var(--text));
+}
+
+.setup-cloud-account {
+  margin: 12px 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.setup-cloud-account form {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.setup-cloud-account input {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 6px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+@media (max-width: 540px) {
+  .setup-wizard { padding: 12px; }
+  .setup-card { padding: 18px; max-height: calc(100dvh - 24px); overflow-y: auto; }
+}
+
 .setup-card-wide {
   width: min(760px, 100%);
   max-height: calc(100vh - 48px);
