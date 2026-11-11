@@ -113,7 +113,11 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
       setProjects(data);
     } else if (section === "3d-studio") {
       if (online && connection?.connected) setEngines(await cloud.studioEngines());
-      if (!online) setGpu(await cloud.gpuHealth());
+      if (!online) {
+        const status = await cloud.startGpu();
+        setGpu(status);
+        if (!status.gpu_active) setError("OpenCL GPU not ready. Install local worker dependencies and GPU drivers.");
+      }
     }
   }, [section, online, connection?.connected]);
 
@@ -311,6 +315,9 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
               <div className="studio-section-title"><Box size={18} /><h3>3D processor</h3></div>
               {online ? <p>Cloud engine catalog: {engines ? "loaded" : "unavailable"}. Only configured, ready engines can complete jobs.</p>
                 : <p>Local GPU: {gpu?.gpu_active ? (gpu.gpu ?? "active") + " · " + (gpu.engine ?? "3D worker") : "not detected"}. A real installed worker is required for GPU mesh generation.</p>}
+              {!online ? <button type="button" className="studio-secondary" disabled={busy} onClick={() => void action(async () => {
+                await cloud.stopGpu(); setGpu(null); setNotice("Owned local GPU worker stopped.");
+              })}>Stop local worker</button> : null}
               {job ? (
                 <div className="studio-run">
                   <div className="studio-list-item"><strong>Job {job.id}</strong><span>{job.status}</span></div>
