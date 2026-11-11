@@ -34,6 +34,10 @@ pub struct AppPreferences {
     /// Remains set until an affected user explicitly acknowledges the correction.
     pub chat_history_notice_required: bool,
     pub local_runtime_autostart: bool,
+    /// Initial setup choice: "cloud", "local", or "auto" (Both).
+    pub ai_execution_mode: String,
+    /// Separate coding-agent preference; starts with the same onboarding choice.
+    pub coding_agent_execution_mode: String,
     pub confirm_before_delete: bool,
     pub web_search_enabled: bool,
     pub deep_research_enabled: bool,
@@ -142,6 +146,8 @@ impl Default for AppPreferences {
             save_chat_history: true,
             chat_history_notice_required: false,
             local_runtime_autostart: true,
+            ai_execution_mode: "auto".to_string(),
+            coding_agent_execution_mode: "auto".to_string(),
             confirm_before_delete: true,
             web_search_enabled: true,
             deep_research_enabled: true,
@@ -256,6 +262,11 @@ impl<'a> SettingsRepository<'a> {
             return Err(AppError::internal(
                 "This version saves chat history locally. Temporary chats are not supported; history saving cannot be disabled.",
             ));
+        }
+        if !["auto", "local", "cloud"].contains(&preferences.ai_execution_mode.as_str())
+            || !["auto", "local", "cloud"].contains(&preferences.coding_agent_execution_mode.as_str())
+        {
+            return Err(AppError::internal("Invalid Cloud/Local execution mode"));
         }
         let mut saved = preferences.clone();
         if let Some(existing) = self.load_saved_preferences()? {
