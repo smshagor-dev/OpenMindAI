@@ -633,8 +633,9 @@ export function App() {
       );
       const assistant = response.result;
       if (route.offline) setRouteNotice("Offline: processed locally. Live web sources cannot be verified.");
-      else if (!response.fallback && route.target === "local" && executionMode !== "local" && cloudChatCapable)
-        setRouteNotice(route.reason);
+      else if (!response.fallback && route.target === "local" && executionMode !== "local")
+        setRouteNotice(cloudChatCapable ? route.reason
+          : "This media operation uses the local processor; an equivalent Cloud API is not available.");
       requestScope.setMessages((items) => items.filter((message) => message.id !== optimisticUser?.id));
       const generationKind = generationKindForMode(inferredMode);
       if (generationKind) {
