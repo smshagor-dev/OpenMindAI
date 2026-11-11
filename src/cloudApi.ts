@@ -75,6 +75,8 @@ export const cloud = {
   studioJob: (id: string) => cloud.request<StudioJob>("3d-studio/jobs/" + id),
   downloadMesh: (assetId: number) =>
     call<{ filename: string; data_base64: string }>("cloud_download_mesh", { assetId }),
+  startGpu: () => call<{ gpu_active: boolean; gpu?: string; engine?: string }>("local_gpu_start"),
+  stopGpu: () => call<void>("local_gpu_stop"),
   gpuHealth: () => cloud.gpu<{ gpu_active: boolean; gpu?: string; engine?: string }>("health"),
   gpuScene: (prompt: string, mode: "object" | "architecture") =>
     cloud.gpu<StudioJob>("jobs", "POST", {
