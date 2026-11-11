@@ -10,7 +10,7 @@ export type CloudConnection = {
   user: { name?: string; user?: { name?: string } } | null;
   message: string | null;
 };
-export type CloudModel = { id: string; name?: string };
+export type CloudModel = { id: string; name?: string; available?: boolean; active?: boolean; operation?: string; supports_vision?: boolean };
 export type StudioJob = {
   id: string;
   status: string;
@@ -48,7 +48,13 @@ export const cloud = {
     call<T>("local_gpu_request", { path, method, payload: payload ?? null }),
   models: async () => {
     const response = await cloud.request<{ data: CloudModel[] }>("mobile/models");
-    return response.data.filter((model) => typeof model.id === "string" && model.id.length > 0);
+    if (!Array.isArray(response.data)) throw new Error("Cloud returned an invalid API model catalog.");
+    // Match Mobile's server-side capability filters. A listed-but-unavailable
+    // model must never appear selectable or be submitted for chat.
+    return response.data.filter((model) =>
+      typeof model.id === "string" && model.id.trim().length > 0 &&
+      model.available === true && model.operation === "chat.completions"
+    );
   },
   search: (query: string) =>
     cloud.request<{ results: Array<{ title?: string; url?: string; snippet?: string; description?: string }> }>(
