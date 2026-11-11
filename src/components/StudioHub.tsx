@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Database, Cloud, Cpu, Globe, Loader2, Play, RefreshCw, Search, ShieldCheck, Square, TableProperties, X } from "lucide-react";
-import { cloud, type CloudConnection, type ExecutionMode, type ResearchProject, type StudioJob, type StudioSection } from "../cloudApi";
+import { cloud, submitQueuedScene, type CloudConnection, type ExecutionMode, type QueuedScene, type ResearchProject, type StudioJob, type StudioSection } from "../cloudApi";
 import { isRecoverableCloudFailure, offlineSourceNotice, selectExecutionRoute } from "../lib/executionRouting";
 import "../cloud-studio.css";
 
@@ -97,6 +97,7 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
   const [researchInfo, setResearchInfo] = useState<Record<string, unknown> | null>(null);
   const [job, setJob] = useState<StudioJob | null>(null);
   const [jobTarget, setJobTarget] = useState<"local" | "cloud">("local");
+  const [queuedScenes, setQueuedScenes] = useState<QueuedScene[]>([]);
   const [engines, setEngines] = useState<Record<string, unknown> | null>(null);
   const [gpu, setGpu] = useState<{ gpu_active: boolean; gpu?: string; engine?: string } | null>(null);
   const [results, setResults] = useState<Array<{ title?: string; url?: string; snippet?: string; description?: string }>>([]);
@@ -117,6 +118,7 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
   }, []);
 
   const refresh = useCallback(async () => {
+    if (section === "3d-studio") setQueuedScenes(await cloud.outboxList());
     if (section === "research-studio" && online && connection?.connected) {
       const data = await cloud.researchProjects();
       setProjects(data);
@@ -208,24 +210,49 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
           setNotice("Image-to-mesh job submitted. Refresh or follow the live job status.");
         }
       } else if (referenceImage && !online) {
-        throw new Error("A reference image needs an image-conditioned 3D model. Local procedural shapes cannot reconstruct it. Reconnect to Cloud, or remove the image to generate a local scene.");
+        throw new Error("Image-conditioned 3D needs Cloud. The selected image stays in this form; reconnect to process it. A local procedural object would not be an equivalent reconstruction.");
       } else {
+        // Stage first, so a lost network or missing GPU never discards the scene request.
+        const key = crypto.randomUUID();
+        const pending = await cloud.queueScene(prompt, shapeMode, key);
+        setQueuedScenes(pending);
+        const item = pending.find((entry) => entry.requestKey === key);
+        if (!item) throw new Error("The 3D request could not be saved to the local outbox.");
         let target: "local" | "cloud" = online ? "cloud" : "local";
-        // Fail over on a read-only preflight, never after an ambiguous billable POST.
         if (target === "cloud") {
+          // Read-only preflight: avoid sending a costly Cloud job if connectivity is down.
           try { await cloud.studioEngines(); }
           catch (caught) {
             if (!isRecoverableCloudFailure(caught)) throw caught;
             target = "local";
           }
         }
-        const created = target === "cloud" ? await cloud.studioScene(prompt, shapeMode) : await cloud.gpuScene(prompt, shapeMode);
-        setJob(created);
-        setJobTarget(target);
-        setDirectAsset(null);
-        setNotice(target === "local" && online
-          ? "Cloud preflight failed; routed to the local GPU."
-          : "3D job submitted to " + (target === "cloud" ? "Cloud" : "the local GPU") + ".");
+        if (target === "local") {
+          try {
+            const status = await cloud.startGpu();
+            setGpu(status);
+            if (!status.gpu_active) {
+              setNotice("3D request saved locally. No active GPU; resume it after installing the GPU worker or reconnecting to Cloud.");
+              return;
+            }
+          } catch {
+            setNotice("3D request saved locally. Neither Cloud nor the local GPU worker is ready; resume it after either engine becomes available.");
+            return;
+          }
+        }
+        try {
+          const created = await submitQueuedScene(item, target);
+          if (created) {
+            setJob(created);
+            setJobTarget(target);
+            setDirectAsset(null);
+            setNotice("3D scene accepted by " + (target === "cloud" ? "Cloud" : "the local GPU") + ".");
+          }
+        } catch {
+          setNotice("The 3D submission outcome is uncertain. The same idempotency key was saved; check the pending jobs before retrying.");
+        } finally {
+          setQueuedScenes(await cloud.outboxList());
+        }
       }
     }
   });
@@ -347,6 +374,38 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
             </section>
           ) : null}
 
+          {section === "3d-studio" && queuedScenes.length > 0 ? (
+            <section className="studio-panel">
+              <div className="studio-section-title"><RefreshCw size={17} /><h3>Saved 3D requests</h3></div>
+              <p>Offline requests remain on this computer. Uncertain remote submissions are never replayed automatically.</p>
+              <div className="studio-list">
+                {queuedScenes.map((item) => (
+                  <div className="studio-list-item" key={item.id}>
+                    <div>
+                      <strong>{item.payload.prompt.slice(0, 100)}</strong>
+                      <small>{item.status === "review" ? "Needs review: may already have been submitted" : item.status === "sending" ? "Submission pending confirmation" : "Saved locally, waiting for a processor"}</small>
+                      {item.note ? <small>{item.note}</small> : null}
+                    </div>
+                    <button className="studio-secondary" type="button" disabled={busy || item.status === "sending"} onClick={() => void action(async () => {
+                      if (item.status === "review") {
+                        await cloud.outboxRetry(item.id);
+                      }
+                      const target: "cloud" | "local" = internetAvailable && connection?.connected && mode !== "local" ? "cloud" : "local";
+                      if (target === "local") {
+                        const health = await cloud.startGpu();
+                        if (!health.gpu_active) throw new Error("Local GPU unavailable. The request remains saved.");
+                      } else {
+                        await cloud.studioEngines();
+                      }
+                      const created = await submitQueuedScene(item, target);
+                      if (created) { setJob(created); setJobTarget(target); setNotice("Saved 3D scene resumed on " + target + "."); }
+                      setQueuedScenes(await cloud.outboxList());
+                    })}>{item.status === "review" ? "Review & retry" : "Resume"}</button>
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
           {section === "3d-studio" ? (
             <section className="studio-panel">
               <div className="studio-section-title"><Database size={18} /><h3>3D processor</h3></div>
