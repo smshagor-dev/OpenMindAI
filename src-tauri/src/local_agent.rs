@@ -1877,6 +1877,7 @@ async fn request_agent_decision(
     sandbox_mode: &str,
     context_window_tokens: usize,
     plan_text: &str,
+    cloud_model_id: Option<&str>,
 ) -> Result<AgentDecisionResult, AppError> {
     let root_summary = context
         .workspace
@@ -1908,7 +1909,7 @@ async fn request_agent_decision(
     };
 
     let system = format!(
-        "You are OpenAgent, OpenMindAI's local coding agent. You operate directly on a user's local project only to fulfill the latest user request.\n\
+        "You are OpenAgent, OpenMindAI's coding agent. You operate on an explicitly attached user project only to fulfill the latest user request.\n\
 Active sandbox policy: {sandbox_mode}. When isolated_sandbox is selected, explicit hostExecution is forbidden.\n\
 Return EXACTLY one JSON object and no markdown, commentary, chain-of-thought, or code fences.\n\
 Choose either a tool action or a final answer.\n\
@@ -2027,50 +2028,66 @@ Attached roots:\n{root_summary}"
     crate::sampling::SamplingProfile::AGENT.apply(&mut body);
 
     let model_started = Instant::now();
-    let url = format!("{}/v1/chat/completions", endpoint.trim_end_matches('/'));
-    let mut retry = 0u8;
-    let response = loop {
-        let response = client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|error| {
-                AppError::InferenceFailed(format!("agent model request failed: {error}"))
-            })?;
-        if response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE && retry < 5 {
-            retry += 1;
-            tokio::time::sleep(Duration::from_millis(600)).await;
-            continue;
-        }
-        break response;
-    };
-    let status = response.status();
-    let response_body = response.text().await.map_err(|error| {
-        AppError::InferenceFailed(format!("failed to read agent model response: {error}"))
-    })?;
-    if !status.is_success() {
-        let detail = response_body.trim();
-        return Err(AppError::InferenceFailed(format!(
-            "agent model returned HTTP {status}: {}",
-            if detail.is_empty() {
-                "empty response body".to_string()
-            } else {
-                bounded(detail, 2_000)
+    let payload: Value = if let Some(hosted) = cloud_model_id {
+        let messages = body["messages"]
+            .as_array()
+            .ok_or_else(|| AppError::internal("Coding Agent messages missing"))?;
+        // No retry/fallback after a hosted POST. The Cloud response is an
+        // inference decision only; local tool policy gates still execute here.
+        let (_, remote) = cloud_bridge::coding_cloud_completion(
+            hosted,
+            messages,
+            prompt_context.max_output_tokens as i64,
+        )
+        .await?;
+        remote
+    } else {
+        let url = format!("{}/v1/chat/completions", endpoint.trim_end_matches('/'));
+        let mut retry = 0u8;
+        let response = loop {
+            let response = client
+                .post(&url)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|error| {
+                    AppError::InferenceFailed(format!("agent model request failed: {error}"))
+                })?;
+            if response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE && retry < 5 {
+                retry += 1;
+                tokio::time::sleep(Duration::from_millis(600)).await;
+                continue;
             }
-        )));
-    }
-    if response_body.trim().is_empty() {
-        return Err(AppError::InferenceFailed(
-            "agent model returned an empty response body".to_string(),
-        ));
-    }
-    let payload: Value = serde_json::from_str(&response_body).map_err(|error| {
-        AppError::InferenceFailed(format!(
-            "invalid agent model response JSON: {error}; body: {}",
-            bounded(response_body.trim(), 2_000)
-        ))
-    })?;
+            break response;
+        };
+        let status = response.status();
+        let response_body = response.text().await.map_err(|error| {
+            AppError::InferenceFailed(format!("failed to read agent model response: {error}"))
+        })?;
+        if !status.is_success() {
+            let detail = response_body.trim();
+            return Err(AppError::InferenceFailed(format!(
+                "agent model returned HTTP {status}: {}",
+                if detail.is_empty() {
+                    "empty response body".to_string()
+                } else {
+                    bounded(detail, 2_000)
+                }
+            )));
+        }
+        if response_body.trim().is_empty() {
+            return Err(AppError::InferenceFailed(
+                "agent model returned an empty response body".to_string(),
+            ));
+        }
+        let payload: Value = serde_json::from_str(&response_body).map_err(|error| {
+            AppError::InferenceFailed(format!(
+                "invalid agent model response JSON: {error}; body: {}",
+                bounded(response_body.trim(), 2_000)
+            ))
+        })?;
+        payload
+    };
     let content = payload
         .pointer("/choices/0/message/content")
         .and_then(Value::as_str)
