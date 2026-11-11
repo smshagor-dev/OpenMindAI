@@ -35,7 +35,8 @@ fn allowed_cloud_path(method: &Method, path: &str) -> bool {
         ("POST", ["research", "projects", id, "runs" | "control"]) if valid_id(id) => true,
         ("GET", ["research", "projects", id, "events"]) if valid_id(id) => true,
         ("GET", ["3d-studio", "engines" | "jobs" | "assets"]) => true,
-        ("POST", ["3d-studio", "jobs", "scene"]) => true,
+        ("POST", ["3d-studio", "jobs", "scene" | "image-model"]) => true,
+        ("POST", ["3d-scenes", "uploads"]) => true,
         ("GET", ["3d-studio", "jobs", id]) if valid_uuid(id) => true,
         ("POST", ["3d-studio", "jobs", id, "cancel"]) if valid_uuid(id) => true,
         
@@ -163,7 +164,8 @@ pub(crate) async fn cloud_request(path: String, method: String, payload: Option<
         .bearer_auth(token).header("Accept", "application/json");
     if let Some(payload) = payload {
         let json_bytes = serde_json::to_vec(&payload).map_err(|_| failure("Invalid JSON payload"))?;
-        if json_bytes.len() > 64_000 { return Err(failure("Payload exceeds 64 KB")); }
+        let cap = if path == "3d-scenes/uploads" { 4_500_000 } else { 64_000 };
+        if json_bytes.len() > cap { return Err(failure("Payload exceeds the endpoint size limit")); }
         request = request.header("Content-Type", "application/json").body(json_bytes);
     }
     decode(request.send().await.map_err(|_| failure("Cloud API request failed"))?).await
@@ -178,12 +180,14 @@ pub(crate) async fn local_gpu_request(path: String, method: String, payload: Opt
     let http = client()?;
     if path != "health" {
         let health = decode(http.get(format!("{LOCAL_GPU_BASE}health"))
+            .header("X-OpenMindAI-Desktop", "1")
             .send().await.map_err(|_| failure("Local 3D GPU worker is offline (127.0.0.1:8765)"))?).await?;
         if health.get("gpu_active").and_then(Value::as_bool) != Some(true) {
             return Err(failure("Local 3D worker has no active GPU. No silent CPU/cloud fallback."));
         }
     }
     let mut request = http.request(method, format!("{LOCAL_GPU_BASE}{path}"))
+        .header("X-OpenMindAI-Desktop", "1")
         .header("Accept", "application/json");
     if let Some(payload) = payload {
         let bytes = serde_json::to_vec(&payload).map_err(|_| failure("Invalid JSON payload"))?;
