@@ -421,10 +421,10 @@ mod tests {
     fn variable_plan_overhead_is_excluded_from_context_selection() {
         let transcript = VecDeque::from(["large tool output ".repeat(20_000)]);
         let repository = "large repository context ".repeat(16_000);
-        let mut baseline_input = input("repair", &repository, &transcript, 65_536);
-        let baseline = build_prompt_context(baseline_input);
-        baseline_input.additional_user_chars = 40_000;
-        let with_plan = build_prompt_context(baseline_input);
+        let baseline = build_prompt_context(input("repair", &repository, &transcript, 65_536));
+        let mut with_plan_input = input("repair", &repository, &transcript, 65_536);
+        with_plan_input.additional_user_chars = 40_000;
+        let with_plan = build_prompt_context(with_plan_input);
         assert_eq!(baseline.budget_chars - with_plan.budget_chars, 40_000);
         assert!(with_plan.selected_chars < baseline.selected_chars);
         assert!(with_plan.selected_chars <= with_plan.budget_chars);
