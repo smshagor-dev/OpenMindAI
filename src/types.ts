@@ -468,6 +468,8 @@ export interface AppPreferences {
   readonly saveChatHistory: boolean;
   chatHistoryNoticeRequired: boolean;
   localRuntimeAutostart: boolean;
+  aiExecutionMode: "auto" | "local" | "cloud";
+  codingAgentExecutionMode: "auto" | "local" | "cloud";
   confirmBeforeDelete: boolean;
   webSearchEnabled: boolean;
   deepResearchEnabled: boolean;
