@@ -417,7 +417,7 @@ async fn agent_info(app: &AppHandle) -> Result<Value, AppError> {
     Ok(json!({
         "service": SERVICE_NAME,
         "instanceId": session().instance_id,
-        "configured": status.model.is_some(),
+        "configured": enabled && (execution_mode != CodingExecutionMode::Local || status.model.is_some()),
         "source": "Settings -> Agent Setup",
         "executionMode": match execution_mode {
             CodingExecutionMode::Cloud => "cloud",
@@ -425,7 +425,11 @@ async fn agent_info(app: &AppHandle) -> Result<Value, AppError> {
             CodingExecutionMode::Both => "auto",
         },
         "codingEnabled": enabled,
-        "model": status.model,
+        "model": if execution_mode == CodingExecutionMode::Cloud {
+            json!({"id":"openmindai-cloud-coding-agent", "name":"OpenMindAI Cloud Coding Agent"})
+        } else {
+            json!(status.model)
+        },
         "contextSize": status.configured_context,
         "gpuLayers": status.gpu_layers,
         "parallelism": status.parallel_workers,
