@@ -55,7 +55,7 @@ fn spawn_python_worker(script: &Path) -> Result<Child, AppError> {
     #[cfg(not(windows))]
     let (python, prefix): (&str, &[&str]) = ("python3", &[]);
     let mut cmd = Command::new(python);
-    cmd.args(prefix).arg("-I").arg(script)
+    cmd.args(prefix).arg("-E").arg(script)
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     cmd.spawn().map_err(|_| failure(
         "Python 3 was not found. Install Python 3 plus numpy and pyopencl for local GPU meshes",
