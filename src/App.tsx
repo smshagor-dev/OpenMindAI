@@ -1,4 +1,4 @@
-import { Archive, Check, Cpu, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
+import { Archive, Check, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type SetStateAction } from "react";
 import { io, type Socket } from "socket.io-client";
@@ -1175,7 +1175,7 @@ export function App() {
             />
             <div className="execution-mode-switch" role="group" aria-label="AI execution mode">
               <button type="button" className={executionMode === "local" ? "active" : ""} aria-pressed={executionMode === "local"} onClick={() => setExecutionMode("local")} title="Use this computer for local inference">
-                <Cpu size={14} /> Local
+                Local
               </button>
               <button type="button" className={executionMode === "cloud" ? "active" : ""} aria-pressed={executionMode === "cloud"} onClick={() => setExecutionMode("cloud")} title={cloudConnection?.connected ? "Connected to OpenMindAI Cloud" : "Sign in from Research Studio to use Cloud"}>
                 <span className={cloudConnection?.connected ? "studio-dot good" : "studio-dot"} /> Cloud
