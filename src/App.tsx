@@ -649,11 +649,16 @@ export function App() {
           setConversations((items) => items.map((conversation) => conversation.id === conversationId ? { ...conversation, title: generatedTitle } : conversation));
         }
       }
-      // Unimplemented Cloud media types still work using their existing local engine.
       const cloudChatCapable = inferenceMedia.length === 0 &&
         ["chat", "thinking", "search", "research"].includes(inferredMode) && Boolean(cloudModel);
+      if (executionMode === "cloud" && !["chat", "thinking", "search", "research"].includes(inferredMode)) {
+        throw new Error("Cloud Only does not yet support this media operation. Select Both or Local to use installed device tools.");
+      }
+      if (executionMode === "cloud" && inferenceMedia.length > 0) {
+        throw new Error("Cloud Only does not yet support these attachments. Switch to Both or Local before sending.");
+      }
       const route = selectExecutionRoute({
-        preference: cloudChatCapable ? executionMode : "local",
+        preference: executionMode === "cloud" ? "cloud" : cloudChatCapable ? executionMode : "local",
         task: inferredMode === "search" ? "search" : inferredMode === "research" ? "research" : "chat",
         online: internetAvailable,
         cloudConnected: Boolean(cloudConnection?.connected),
@@ -726,8 +731,11 @@ export function App() {
         setConversations((items) => items.map((conversation) => conversation.id === conversationId ? { ...conversation, title: generatedTitle } : conversation));
       }
       const availableForCloud = ["chat", "thinking", "search", "research"].includes(inferredMode) && Boolean(cloudModel);
+      if (executionMode === "cloud" && !["chat", "thinking", "search", "research"].includes(inferredMode)) {
+        throw new Error("Cloud Only does not support this Work task type. Choose Both or Local to use the device processor.");
+      }
       const route = selectExecutionRoute({
-        preference: availableForCloud ? executionMode : "local",
+        preference: executionMode === "cloud" ? "cloud" : availableForCloud ? executionMode : "local",
         task: inferredMode === "search" ? "search" : inferredMode === "research" ? "research" : "chat",
         online: internetAvailable,
         cloudConnected: Boolean(cloudConnection?.connected),
@@ -820,8 +828,11 @@ export function App() {
     const requestScope = chatState.scope(activeId);
     try {
       const cloudCapable = ["chat", "thinking", "search", "research"].includes(mode) && Boolean(cloudModel);
+      if (executionMode === "cloud" && !["chat", "thinking", "search", "research"].includes(mode)) {
+        throw new Error("Cloud Only cannot regenerate this local-only media type. Choose Both or Local.");
+      }
       const route = selectExecutionRoute({
-        preference: cloudCapable ? executionMode : "local",
+        preference: executionMode === "cloud" ? "cloud" : cloudCapable ? executionMode : "local",
         task: mode === "search" ? "search" : mode === "research" ? "research" : "chat",
         online: internetAvailable,
         cloudConnected: Boolean(cloudConnection?.connected),
