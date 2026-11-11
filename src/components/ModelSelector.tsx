@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Check, Loader2 } from "lucide-react";
 import type { ModelRecord, RuntimeInventory } from "../types";
+import { formatBytes } from "../lib/format";
 
 export function ModelSelector(props: {
   models: ModelRecord[];
@@ -25,13 +26,13 @@ export function ModelSelector(props: {
     return () => window.removeEventListener("mousedown", onClickOutside);
   }, [open]);
 
-  const visibleModels = dedupeModelsByPersonalName(props.models.filter((model) => model.enabled), props.activeModelId);
+  const visibleModels = modelsById(props.models.filter((model) => model.enabled));
   const activeModel = props.models.find((model) => model.id === props.activeModelId) ?? null;
   const label = props.switching
     ? "Loading model..."
     : activeModel && !activeModel.enabled
       ? `${displayModelName(activeModel)} (unavailable)`
-      : displayModelName(activeModel ?? visibleModels[0] ?? null);
+      : selectedModelLabel(activeModel ?? visibleModels[0] ?? null, visibleModels);
 
   return (
     <div className="model-selector" ref={containerRef}>
@@ -42,6 +43,7 @@ export function ModelSelector(props: {
         disabled={visibleModels.length === 0 || props.disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
+        title={label}
       >
         {props.switching ? <Loader2 size={14} className="spin" /> : null}
         <span>{label}</span>
@@ -72,6 +74,7 @@ export function ModelSelector(props: {
                 >
                   <div className="model-selector-item-text">
                     <strong>{displayModelName(model)}</strong>
+                    <small title={`${model.path} (${model.id})`}>{optionDetails(model, visibleModels)}</small>
                   </div>
                   {selected ? <Check size={15} className="model-selector-check" /> : null}
                 </button>
@@ -85,30 +88,29 @@ export function ModelSelector(props: {
   );
 }
 
-function dedupeModelsByPersonalName(models: ModelRecord[], activeModelId: string | null): ModelRecord[] {
-  const bestByName = new Map<string, ModelRecord>();
-  for (const model of models) {
-    const name = displayModelName(model);
-    const current = bestByName.get(name);
-    if (!current || modelPreferenceScore(model, activeModelId) > modelPreferenceScore(current, activeModelId)) {
-      bestByName.set(name, model);
-    }
-  }
-  return Array.from(bestByName.values()).sort((left, right) =>
-    displayModelName(left).localeCompare(displayModelName(right)),
+function modelsById(models: ModelRecord[]): ModelRecord[] {
+  return Array.from(new Map(models.map((model) => [model.id, model])).values()).sort((left, right) =>
+    displayModelName(left).localeCompare(displayModelName(right)) ||
+    modelDetails(left).localeCompare(modelDetails(right)) || left.id.localeCompare(right.id),
   );
 }
 
-function modelPreferenceScore(model: ModelRecord, activeModelId: string | null): number {
-  let score = 0;
-  if (model.id === activeModelId) score += 1000;
-  if (model.enabled) score += 100;
-  if (model.state === "loaded") score += 50;
-  if (model.state === "ready") score += 40;
-  if (model.verification === "verified") score += 30;
-  if (model.path.toLowerCase().includes("q4_k_m")) score += 20;
-  if (model.path.toLowerCase().includes("q8_0")) score -= 20;
-  return score;
+function modelDetails(model: ModelRecord): string {
+  const filename = model.path.split(/[\\/]/).pop() || model.id;
+  return [model.quantization, formatBytes(model.sizeBytes), filename].filter(Boolean).join(" · ");
+}
+
+function optionDetails(model: ModelRecord, models: ModelRecord[]): string {
+  const details = modelDetails(model);
+  const ambiguous = models.some((other) => other.id !== model.id &&
+    displayModelName(other) === displayModelName(model) && modelDetails(other) === details);
+  return ambiguous ? `${model.id} · ${details}` : details;
+}
+
+function selectedModelLabel(model: ModelRecord | null, models: ModelRecord[]): string {
+  const name = displayModelName(model);
+  if (!model || !models.some((other) => other.id !== model.id && displayModelName(other) === name)) return name;
+  return `${name} · ${optionDetails(model, models)}`;
 }
 
 function displayModelName(model: ModelRecord | null): string {
