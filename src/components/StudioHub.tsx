@@ -36,7 +36,7 @@ async function encodeReference(file: File): Promise<{ data: string; preview: str
   let binary = "";
   for (let i = 0; i < bytes.length; i += 8192)
     binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
-  const bitmap = await createImageBitmap(file);
+  const bitmap = await window.createImageBitmap(file);
   const canvas = document.createElement("canvas");
   const ratio = Math.min(1, 480 / Math.max(bitmap.width, bitmap.height));
   canvas.width = Math.max(1, Math.floor(bitmap.width * ratio));
@@ -54,11 +54,11 @@ async function encodeReference(file: File): Promise<{ data: string; preview: str
     }
   } finally { bitmap.close(); }
   if (preview.length > 175_000) throw new Error("Image preview exceeds Cloud's 175 KB limit.");
-  return { data: btoa(binary), preview };
+  return { data: window.btoa(binary), preview };
 }
 
 function saveMesh(data: { filename: string; data_base64: string }) {
-  const bytes = Uint8Array.from(atob(data.data_base64), (character) => character.charCodeAt(0));
+  const bytes = Uint8Array.from(window.atob(data.data_base64), (character) => character.charCodeAt(0));
   if (bytes.byteLength < 12 || String.fromCharCode(...bytes.subarray(0, 4)) !== "glTF")
     throw new Error("The returned asset is not a valid GLB mesh.");
   const blob = new Blob([Uint8Array.from(bytes).buffer], { type: "model/gltf-binary" });
