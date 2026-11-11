@@ -21,14 +21,14 @@ use uuid::Uuid;
 use crate::{
     app_error::AppError,
     chat::{ChatRepository, Message},
-    coding_control, coding_delivery, coding_intelligence, coding_lsp, coding_patch,
+    cloud_bridge, coding_control, coding_delivery, coding_intelligence, coding_lsp, coding_patch,
     database::Database,
     inference::{StreamChunkEvent, StreamDoneEvent, StreamStartedEvent},
     isolated_runtime,
     launch_planner::ModelLaunchPlanner,
     local_workspace,
     model_catalog::entry_by_id,
-    model_registry::{ModelRecord, ModelRegistry},
+    model_registry::{ModelLifecycleState, ModelRecord, ModelRegistry},
     openagent_parallel,
     openagent_prompt_context::{build_prompt_context, PromptContextInput},
     openagent_runs::OpenAgentRunRepository,
@@ -434,38 +434,59 @@ async fn run_agent_message(
         crate::sync_project_context_in_database(&db, conversation_id)?;
     }
 
-    let (model, routing_reason) = resolve_openagent_model(state, conversation_id, content)?;
-    let hardware = crate::hardware::HardwareProfiler::for_inference(&state.hardware);
-    let agent_plan = crate::agent_runtime::plan_agent_runtime(app)?
-        .plan
-        .filter(|plan| plan.model.id == model.id);
-    // The lease keeps the model resident for the whole OpenAgent run.
-    let (endpoint, launch_config, _model_lease) = match agent_plan {
-        // The Agent Setup model: same placement, startup coordination and launch settings
-        // as VS Code requests, so the two never reload each other.
-        Some(plan) => {
-            let (endpoint, lease) = crate::agent_runtime::acquire_agent_runtime(app, &plan).await?;
-            (endpoint, plan.config, lease)
+    let requested_local_only = local_only_agent_request(content);
+    let cloud_model_id = match preferences.coding_agent_execution_mode.as_str() {
+        "local" => None,
+        "cloud" if requested_local_only => {
+            return Err(AppError::internal(
+                "Cloud Only conflicts with this prompt's local-only instruction. Choose Local or Both.",
+            ));
         }
-        // General reasoning fallback when no agent model is installed.
-        None => {
-            let launch_config =
-                openagent_launch_config(&model, &hardware, &preferences, allocate_local_port()?);
-            let (status, lease) =
-                crate::runtime::ensure_model_ready(&state.runtime, &hardware, &launch_config)?;
-            let endpoint = status.endpoint.ok_or_else(|| {
-                AppError::InferenceServerUnavailable("runtime endpoint missing".to_string())
-            })?;
-            (endpoint, launch_config, lease)
-        }
+        "cloud" => Some(cloud_bridge::coding_cloud_model().await?),
+        "auto" if !requested_local_only => cloud_bridge::coding_cloud_model().await.ok(),
+        _ => None,
     };
-    // Prompt budgets must fit one llama-server slot, not the whole configured context.
-    let context_window_tokens = crate::agent_runtime::effective_context(
-        crate::agent_runtime::slot_context_size(&state.http, &endpoint).await,
-        launch_config.context_size,
-        launch_config.parallelism,
-    )
-    .0 as usize;
+    let (model, routing_reason) = if let Some(remote) = cloud_model_id.as_deref() {
+        (
+            ensure_hosted_agent_record(state, remote)?,
+            "OpenAgent · authenticated Cloud model, device-side tools and permissions".to_string(),
+        )
+    } else {
+        resolve_openagent_model(state, conversation_id, content)?
+    };
+    let hardware = crate::hardware::HardwareProfiler::for_inference(&state.hardware);
+    // Cloud inference has no local model to download/load. In Both mode
+    // preflight failure is the only point at which Local fallback occurs.
+    let (endpoint, context_window_tokens, _model_lease) = if cloud_model_id.is_some() {
+        (String::new(), 16_384usize, None)
+    } else {
+        let agent_plan = crate::agent_runtime::plan_agent_runtime(app)?
+            .plan
+            .filter(|plan| plan.model.id == model.id);
+        let (endpoint, launch_config, lease) = match agent_plan {
+            Some(plan) => {
+                let (endpoint, lease) = crate::agent_runtime::acquire_agent_runtime(app, &plan).await?;
+                (endpoint, plan.config, lease)
+            }
+            None => {
+                let launch_config =
+                    openagent_launch_config(&model, &hardware, &preferences, allocate_local_port()?);
+                let (status, lease) =
+                    crate::runtime::ensure_model_ready(&state.runtime, &hardware, &launch_config)?;
+                let endpoint = status.endpoint.ok_or_else(|| {
+                    AppError::InferenceServerUnavailable("runtime endpoint missing".to_string())
+                })?;
+                (endpoint, launch_config, lease)
+            }
+        };
+        let context_window_tokens = crate::agent_runtime::effective_context(
+            crate::agent_runtime::slot_context_size(&state.http, &endpoint).await,
+            launch_config.context_size,
+            launch_config.parallelism,
+        )
+        .0 as usize;
+        (endpoint, context_window_tokens, Some(lease))
+    };
 
     let cancellation = state.active_generations.start(conversation_id)?;
     let (user, assistant) = match create_agent_messages(
@@ -557,7 +578,7 @@ async fn run_agent_message(
         return Err(error);
     }
 
-    if preferences.coding_max_parallel_workers > 1 {
+    if cloud_model_id.is_none() && preferences.coding_max_parallel_workers > 1 {
         let parallel_result = tokio::select! {
             result = openagent_parallel::run_parallel_analysis(openagent_parallel::ParallelAnalysisInput {
                 client: state.http.clone(),
@@ -683,6 +704,7 @@ async fn run_agent_message(
                 &sandbox_mode,
                 context_window_tokens,
                 &plan_text,
+                cloud_model_id.as_deref(),
             ) => result?,
                 _ = cancellation.cancelled() => {
                     status = "cancelled";
@@ -1751,6 +1773,66 @@ fn recent_conversation_context(
         })
         .collect::<Vec<_>>()
         .join("\n\n"))
+}
+
+const HOSTED_AGENT_RECORD_ID: &str = "openmindai-hosted-coding-agent";
+
+fn local_only_agent_request(prompt: &str) -> bool {
+    let lower = prompt.to_lowercase();
+    [
+        "offline only",
+        "local only",
+        "no cloud",
+        "without internet",
+        "do not use cloud",
+        "don't use cloud",
+        "শুধু লোকাল",
+        "শুধু অফলাইন",
+        "только локально",
+        "без интернета",
+    ]
+    .iter()
+    .any(|phrase| lower.contains(phrase))
+}
+
+/// Stores one virtual model for SQLite foreign-key integrity. It is never
+/// downloaded, loaded into llama-server, or listed as an installable GGUF.
+fn ensure_hosted_agent_record(
+    state: &State<'_, AppState>,
+    hosted_model: &str,
+) -> Result<ModelRecord, AppError> {
+    let now = Utc::now().to_rfc3339();
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| AppError::internal("database lock poisoned"))?;
+    db.connection().execute(
+        "INSERT INTO model_registry
+         (id, name, family, path, format, quantization, size_bytes, capabilities,
+          context_length, preferred_backend, enabled, created_at, updated_at)
+         VALUES (?1, ?2, 'cloud', 'cloud://openmindai/coding-agent', 'cloud',
+                 NULL, 0, '[\\"chat\\",\\"coding\\"]', 16384, NULL, 1, ?3, ?3)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at",
+        params![HOSTED_AGENT_RECORD_ID, format!("OpenMindAI Cloud ({hosted_model})"), now],
+    )?;
+    Ok(ModelRecord {
+        id: HOSTED_AGENT_RECORD_ID.to_string(),
+        name: format!("OpenMindAI Cloud ({hosted_model})"),
+        family: Some("cloud".to_string()),
+        path: "cloud://openmindai/coding-agent".to_string(),
+        format: "cloud".to_string(),
+        quantization: None,
+        size_bytes: 0,
+        capabilities: "[\\"chat\\",\\"coding\\"]".to_string(),
+        context_length: Some(16_384),
+        preferred_backend: None,
+        enabled: true,
+        source_repository: None,
+        verification: Some("verified".to_string()),
+        state: ModelLifecycleState::Ready,
+        created_at: now.clone(),
+        updated_at: now,
+    })
 }
 
 fn create_agent_messages(
