@@ -102,7 +102,7 @@ export async function createChatAppHarness() {
                 "export const Archive=()=>null,Check=()=>null,Pencil=()=>null,Pin=()=>null,PinOff=()=>null,Trash2=()=>null;",
               notify: "export const notifyUser=async()=>{};",
               chat: `export const attachmentMedia=items=>items.flatMap(item=>item.mediaItems),buildMessageContent=content=>content,
-              inferChatMode=()=>globalThis.__chatDraftHarness.mode,isUntitledConversation=()=>false,
+              inferChatMode=()=>globalThis.__chatDraftHarness.mode,isUntitledConversation=()=>false,attachmentContextStats=()=>({truncatedCount:0,omittedCount:0}),
               attachmentKind=file=>file.attachmentDraft?.kind??file.kind??"text",
               readAttachment=async file=>{file.reads=(file.reads??0)+1;if(file.gate)await file.gate.promise;if(file.failure)throw file.failure;return file.attachmentDraft;},settledValue=result=>result.status==='fulfilled'?result.value:null,
               titleFromPrompt=content=>content;`,
