@@ -339,6 +339,98 @@ mod tests {
     }
 
     #[test]
+    fn real_32k_64k_and_128k_slots_retained_context_grows() {
+        let mut transcript = VecDeque::new();
+        for index in 0..100 {
+            transcript.push_back(format!("tool-result-{index} {}", "t".repeat(9_000)));
+        }
+        let repository = "repository evidence ".repeat(18_000);
+        let instructions = "workspace policy ".repeat(9_000);
+        let workspace = "workspace snapshot ".repeat(9_000);
+        let conversation = "previous conversation ".repeat(9_000);
+        let goal = "repair the failing code while retaining current user constraints".repeat(140);
+
+        let build = |slot| {
+            build_prompt_context(PromptContextInput {
+                project_instructions: &instructions,
+                repository_context: &repository,
+                workspace_context: &workspace,
+                conversation_context: &conversation,
+                goal: &goal,
+                transcript: &transcript,
+                context_window_tokens: slot,
+                system_chars: 7_000,
+                additional_user_chars: 3_000,
+            })
+        };
+        let small = build(32_768);
+        let medium = build(65_536);
+        let large = build(131_072);
+
+        assert!(small.selected_chars > 24_000, "32K slot must exceed the old ceiling");
+        assert!(medium.budget_chars > small.budget_chars);
+        assert!(large.budget_chars > medium.budget_chars);
+        assert!(medium.selected_chars > small.selected_chars);
+        assert!(large.selected_chars > medium.selected_chars);
+
+        for (slot, pack) in [(32_768, small), (65_536, medium), (131_072, large)] {
+            assert!(pack.selected_chars <= pack.budget_chars);
+            assert!(pack.max_output_tokens <= MAX_OUTPUT_TOKENS);
+            // Same conservative three-character-per-token budget used by
+            // production; preserve space for both JSON output and margin.
+            let prompt_chars = pack.selected_chars + 7_000 + 3_000 + FIXED_USER_OVERHEAD_CHARS;
+            let input_token_upper_bound =
+                prompt_chars.div_ceil(CHARS_PER_TOKEN_ESTIMATE);
+            assert!(
+                input_token_upper_bound + pack.max_output_tokens + PROMPT_MARGIN_TOKENS <= slot,
+                "prompt did not fit the reported llama-server slot of {slot} tokens"
+            );
+        }
+    }
+
+    #[test]
+    fn actual_parallel_slot_size_limits_prompt_not_configured_model_total() {
+        let transcript = VecDeque::from(["latest run evidence ".repeat(25_000)]);
+        let repository = "repository evidence ".repeat(14_000);
+        let configured = 131_072;
+        let (shared_slot, source) = crate::agent_runtime::effective_context(None, configured, 4);
+        assert_eq!(source, "estimate");
+        assert_eq!(shared_slot, 32_768);
+        let (reported_slot, source) =
+            crate::agent_runtime::effective_context(Some(65_536), configured, 4);
+        assert_eq!(source, "runtime");
+        assert_eq!(reported_slot, 65_536);
+        let shared = build_prompt_context(input(
+            "fix workspace",
+            &repository,
+            &transcript,
+            shared_slot as usize,
+        ));
+        let reported = build_prompt_context(input(
+            "fix workspace",
+            &repository,
+            &transcript,
+            reported_slot as usize,
+        ));
+        assert!(reported.selected_chars > shared.selected_chars);
+        assert!(shared.selected_chars <= shared.budget_chars);
+        assert!(reported.selected_chars <= reported.budget_chars);
+    }
+
+    #[test]
+    fn variable_plan_overhead_is_excluded_from_context_selection() {
+        let transcript = VecDeque::from(["large tool output ".repeat(20_000)]);
+        let repository = "large repository context ".repeat(16_000);
+        let mut baseline_input = input("repair", &repository, &transcript, 65_536);
+        let baseline = build_prompt_context(baseline_input);
+        baseline_input.additional_user_chars = 40_000;
+        let with_plan = build_prompt_context(baseline_input);
+        assert_eq!(baseline.budget_chars - with_plan.budget_chars, 40_000);
+        assert!(with_plan.selected_chars < baseline.selected_chars);
+        assert!(with_plan.selected_chars <= with_plan.budget_chars);
+    }
+
+    #[test]
     fn context_compression_is_unicode_safe() {
         let mut transcript = VecDeque::new();
         transcript.push_back("😀".repeat(4_000));
