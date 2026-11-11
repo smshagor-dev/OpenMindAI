@@ -7,9 +7,9 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use sha2::{Digest, Sha256};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::State;
 use uuid::Uuid;
 
@@ -334,7 +334,9 @@ pub fn read_project_workspace_file(
     }
     let bytes = fs::read(&file_path)?;
     if bytes.len() as u64 > MAX_TEXT_FILE_BYTES {
-        return Err(AppError::internal("file grew beyond the local editor limit while reading"));
+        return Err(AppError::internal(
+            "file grew beyond the local editor limit while reading",
+        ));
     }
     let revision_sha256 = workspace_revision(&bytes);
     let size_bytes = bytes.len() as u64;
@@ -381,7 +383,9 @@ pub fn write_project_workspace_file(
     // silently change the destination selected by the project scope check.
     let checked_path = resolve_path(&config, root_id.as_deref(), &path, false)?;
     if checked_path != file_path {
-        return Err(AppError::internal("workspace path changed before save; reopen the file"));
+        return Err(AppError::internal(
+            "workspace path changed before save; reopen the file",
+        ));
     }
     let revision_sha256 = transactional_workspace_save(
         &checked_path,
@@ -1057,8 +1061,8 @@ mod tests {
         assert_eq!(fs::read_to_string(&target).unwrap(), "external edit");
 
         let fresh = workspace_revision(b"external edit");
-        let updated = transactional_workspace_save(&target, b"new saved data", Some(&fresh))
-            .unwrap();
+        let updated =
+            transactional_workspace_save(&target, b"new saved data", Some(&fresh)).unwrap();
         assert_eq!(updated, workspace_revision(b"new saved data"));
         assert_eq!(fs::read_to_string(&target).unwrap(), "new saved data");
     }
@@ -1076,7 +1080,10 @@ mod tests {
         fs::create_dir(&directory).unwrap();
         fs::write(directory.join("child.txt"), "safe").unwrap();
         assert!(transactional_workspace_save(&directory, b"destroy", None).is_err());
-        assert_eq!(fs::read_to_string(directory.join("child.txt")).unwrap(), "safe");
+        assert_eq!(
+            fs::read_to_string(directory.join("child.txt")).unwrap(),
+            "safe"
+        );
     }
 
     #[test]
@@ -1111,7 +1118,11 @@ mod tests {
         let target = temp.path().join("existing.txt");
         fs::write(&target, "protected content").unwrap();
         // An unsafe transaction-store entry must abort before moving the target.
-        fs::write(temp.path().join(".openmindai-patch-transactions"), "not a folder").unwrap();
+        fs::write(
+            temp.path().join(".openmindai-patch-transactions"),
+            "not a folder",
+        )
+        .unwrap();
         let token = workspace_revision(b"protected content");
         assert!(transactional_workspace_save(&target, b"new content", Some(&token)).is_err());
         assert_eq!(fs::read_to_string(&target).unwrap(), "protected content");

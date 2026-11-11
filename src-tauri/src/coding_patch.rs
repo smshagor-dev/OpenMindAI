@@ -149,7 +149,9 @@ pub(crate) fn recover_pending_transactions(root: &Path) -> Result<usize, AppErro
         .map_err(|_| AppError::internal("patch transaction lock is poisoned"))?;
     let root = fs::canonicalize(root)?;
     if !root.is_dir() {
-        return Err(AppError::internal("transaction recovery root is not a directory"));
+        return Err(AppError::internal(
+            "transaction recovery root is not a directory",
+        ));
     }
     recover_interrupted_transactions(&root)
 }

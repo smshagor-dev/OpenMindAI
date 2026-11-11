@@ -1,3 +1,6 @@
+#[path = "dataset_location.rs"]
+mod dataset_location;
+
 use std::{
     fs,
     path::{Component, Path},
@@ -235,10 +238,13 @@ impl DatasetDownloadManager {
             format!("{unchecked} dataset files have no upstream checksum; integrity is not cryptographically verified")
         };
         let total_bytes = files.iter().map(tree_entry_size).sum::<u64>();
-        let dataset_dir = self.root.resolve_relative(format!(
-            "datasets/openmindai/{}/snapshot/main",
-            safe_repo_dir(dataset_id)
-        ))?;
+        let base = self.root.resolve_relative("datasets/openmindai")?;
+        let dataset_dir = dataset_location::prepare(&base, dataset_id)?;
+        // Resolve again after migration before any downloader mutation.
+        let relative = dataset_dir
+            .strip_prefix(self.root.root())
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        let dataset_dir = self.root.resolve_relative(relative)?;
         fs::create_dir_all(&dataset_dir)?;
         ensure_contained(self.root.root(), &dataset_dir)?;
         validate_free_space(
@@ -426,19 +432,6 @@ fn validate_dataset_id(dataset_id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn safe_repo_dir(dataset_id: &str) -> String {
-    dataset_id
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
 fn safe_dataset_path(path: &str) -> bool {
     let candidate = std::path::Path::new(path);
     !candidate.is_absolute()
@@ -590,7 +583,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dataset_dir = dir
             .path()
-            .join("datasets/openmindai/owner_first/snapshot/main");
+            .join("datasets/openmindai")
+            .join(dataset_location::key("owner/first"))
+            .join("snapshot/main");
         fs::create_dir_all(&dataset_dir).unwrap();
         let part = dataset_dir.join("data.openmindai-part");
         fs::write(&part, b"existing partial").unwrap();
@@ -738,5 +733,48 @@ mod tests {
         install_downloaded_file(&part, &fresh, Some(&expected)).unwrap();
         assert_eq!(fs::read(&fresh).unwrap(), b"original");
         assert!(!part.exists());
+    }
+    #[tokio::test]
+    async fn colliding_installs_keep_separate_payloads_and_migrate_only_the_matching_legacy_owner()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("datasets/openmindai");
+        let legacy = base.join("owner_first/snapshot/main");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(
+            legacy.join("openmindai-dataset.json"),
+            br#"{"datasetId":"owner/first","source":"openmindai","revision":"main"}"#,
+        )
+        .unwrap();
+        fs::write(legacy.join("data.txt"), b"old owner bytes").unwrap();
+        fs::write(legacy.join("retained.txt"), b"preserved").unwrap();
+        for id in ["owner_first", "owner/first"] {
+            let (manager, seen, release, server) = fixture(dir.path(), false).await;
+            release.send(()).unwrap();
+            let status = manager.download_dataset(id).await.unwrap();
+            seen.await.unwrap();
+            assert_eq!(server.await.unwrap().len(), 2);
+            let expected = base.join(dataset_location::key(id)).join("snapshot/main");
+            assert_eq!(status.destination.unwrap(), expected.display().to_string());
+            assert_eq!(fs::read(expected.join("data.txt")).unwrap(), b"data");
+            let manifest: serde_json::Value = serde_json::from_slice(
+                &fs::read(expected.join("openmindai-dataset.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(manifest["datasetId"], id);
+            if id == "owner_first" {
+                assert_eq!(
+                    fs::read(legacy.join("data.txt")).unwrap(),
+                    b"old owner bytes"
+                );
+                assert!(!expected.join("retained.txt").exists());
+            } else {
+                assert!(!legacy.exists());
+                assert_eq!(
+                    fs::read(expected.join("retained.txt")).unwrap(),
+                    b"preserved"
+                );
+            }
+        }
     }
 }

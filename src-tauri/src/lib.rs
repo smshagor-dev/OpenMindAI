@@ -90,6 +90,7 @@ mod installation_file;
 mod isolated_runtime;
 mod local_agent;
 mod local_workspace;
+mod mcp_response;
 mod model_discovery;
 mod multimodal;
 #[cfg(feature = "native-cxx-llama")]
@@ -102,6 +103,7 @@ pub mod native_runtime;
 pub mod native_stream;
 #[cfg(feature = "native-cxx-llama")]
 pub mod native_supervisor;
+mod oauth_callback;
 mod oauth_refresh;
 mod openagent_parallel;
 mod openagent_prompt_context;

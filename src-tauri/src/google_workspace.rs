@@ -11,11 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tauri::State;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
-    time::timeout,
-};
+use tokio::net::TcpListener;
 use url::Url;
 use uuid::Uuid;
 
@@ -314,60 +310,14 @@ async fn receive_oauth_callback(
     listener: TcpListener,
     expected_state: &str,
 ) -> Result<String, AppError> {
-    let work = async {
-        let (mut socket, _) = listener.accept().await?;
-        let mut buffer = vec![0u8; 16 * 1024];
-        let read = socket.read(&mut buffer).await?;
-        let request = String::from_utf8_lossy(&buffer[..read]);
-        let first_line = request
-            .lines()
-            .next()
-            .ok_or_else(|| connector_error("OAuth callback request was empty"))?;
-        let target = first_line
-            .split_whitespace()
-            .nth(1)
-            .ok_or_else(|| connector_error("OAuth callback path was invalid"))?;
-        let callback = Url::parse(&format!("http://127.0.0.1{target}"))
-            .map_err(|error| connector_error(format!("invalid OAuth callback URL: {error}")))?;
-        let mut code = None;
-        let mut state = None;
-        let mut oauth_error = None;
-        for (key, value) in callback.query_pairs() {
-            match key.as_ref() {
-                "code" => code = Some(value.into_owned()),
-                "state" => state = Some(value.into_owned()),
-                "error" => oauth_error = Some(value.into_owned()),
-                _ => {}
-            }
-        }
-        let success =
-            oauth_error.is_none() && state.as_deref() == Some(expected_state) && code.is_some();
-        let message = if success {
-            "Google account connected. You can return to OpenMindAI."
-        } else {
-            "Google connection failed. Return to OpenMindAI for details."
-        };
-        let html = format!(
-            "<!doctype html><html><body style=\"font-family:sans-serif;padding:40px\"><h2>{message}</h2><p>You may close this tab.</p></body></html>"
-        );
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            html.len(), html
-        );
-        socket.write_all(response.as_bytes()).await?;
-        if let Some(error) = oauth_error {
-            return Err(connector_error(format!(
-                "Google authorization returned '{error}'"
-            )));
-        }
-        if state.as_deref() != Some(expected_state) {
-            return Err(connector_error("OAuth state validation failed"));
-        }
-        code.ok_or_else(|| connector_error("OAuth callback did not contain an authorization code"))
-    };
-    timeout(Duration::from_secs(OAUTH_TIMEOUT_SECS), work)
-        .await
-        .map_err(|_| connector_error("Google authorization timed out"))?
+    crate::oauth_callback::receive(
+        listener,
+        "/oauth2/callback",
+        expected_state,
+        Duration::from_secs(OAUTH_TIMEOUT_SECS),
+    )
+    .await
+    .map_err(connector_error)
 }
 
 #[tauri::command]

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Check, Loader2 } from "lucide-react";
 import type { ModelRecord, RuntimeInventory } from "../types";
+import { formatBytes } from "../lib/format";
 
 export function ModelSelector(props: {
   models: ModelRecord[];
@@ -25,11 +26,14 @@ export function ModelSelector(props: {
     return () => window.removeEventListener("mousedown", onClickOutside);
   }, [open]);
 
-  const visibleModels = dedupeModelsByPersonalName(props.models, props.activeModelId);
+  const visibleModels = modelsById(props.models.filter((model) => model.enabled));
+  const labelCounts = countModelLabels(visibleModels);
   const activeModel = props.models.find((model) => model.id === props.activeModelId) ?? null;
   const label = props.switching
     ? "Loading model..."
-    : displayModelName(activeModel ?? visibleModels[0] ?? null);
+    : activeModel && !activeModel.enabled
+      ? `${displayModelName(activeModel)} (unavailable)`
+      : selectedModelLabel(activeModel ?? visibleModels[0] ?? null, labelCounts);
 
   return (
     <div className="model-selector" ref={containerRef}>
@@ -40,6 +44,7 @@ export function ModelSelector(props: {
         disabled={visibleModels.length === 0 || props.disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
+        title={label}
       >
         {props.switching ? <Loader2 size={14} className="spin" /> : null}
         <span>{label}</span>
@@ -70,6 +75,7 @@ export function ModelSelector(props: {
                 >
                   <div className="model-selector-item-text">
                     <strong>{displayModelName(model)}</strong>
+                    <small title={`${model.path} (${model.id})`}>{optionDetails(model, labelCounts.details)}</small>
                   </div>
                   {selected ? <Check size={15} className="model-selector-check" /> : null}
                 </button>
@@ -83,30 +89,40 @@ export function ModelSelector(props: {
   );
 }
 
-function dedupeModelsByPersonalName(models: ModelRecord[], activeModelId: string | null): ModelRecord[] {
-  const bestByName = new Map<string, ModelRecord>();
-  for (const model of models) {
-    const name = displayModelName(model);
-    const current = bestByName.get(name);
-    if (!current || modelPreferenceScore(model, activeModelId) > modelPreferenceScore(current, activeModelId)) {
-      bestByName.set(name, model);
-    }
-  }
-  return Array.from(bestByName.values()).sort((left, right) =>
-    displayModelName(left).localeCompare(displayModelName(right)),
+function modelsById(models: ModelRecord[]): ModelRecord[] {
+  return Array.from(new Map(models.map((model) => [model.id, model])).values()).sort((left, right) =>
+    displayModelName(left).localeCompare(displayModelName(right)) ||
+    modelDetails(left).localeCompare(modelDetails(right)) || left.id.localeCompare(right.id),
   );
 }
 
-function modelPreferenceScore(model: ModelRecord, activeModelId: string | null): number {
-  let score = 0;
-  if (model.id === activeModelId) score += 1000;
-  if (model.enabled) score += 100;
-  if (model.state === "loaded") score += 50;
-  if (model.state === "ready") score += 40;
-  if (model.verification === "verified") score += 30;
-  if (model.path.toLowerCase().includes("q4_k_m")) score += 20;
-  if (model.path.toLowerCase().includes("q8_0")) score -= 20;
-  return score;
+function modelDetails(model: ModelRecord): string {
+  const filename = model.path.split(/[\\/]/).pop() || model.id;
+  return [model.quantization, formatBytes(model.sizeBytes), filename].filter(Boolean).join(" · ");
+}
+
+function countModelLabels(models: ModelRecord[]) {
+  const names = new Map<string, number>();
+  const details = new Map<string, number>();
+  for (const model of models) {
+    const name = displayModelName(model);
+    const key = JSON.stringify([name, modelDetails(model)]);
+    names.set(name, (names.get(name) ?? 0) + 1);
+    details.set(key, (details.get(key) ?? 0) + 1);
+  }
+  return { names, details };
+}
+
+function optionDetails(model: ModelRecord, counts: Map<string, number>): string {
+  const details = modelDetails(model);
+  const ambiguous = (counts.get(JSON.stringify([displayModelName(model), details])) ?? 0) > 1;
+  return ambiguous ? `${model.id} · ${details}` : details;
+}
+
+function selectedModelLabel(model: ModelRecord | null, counts: ReturnType<typeof countModelLabels>): string {
+  const name = displayModelName(model);
+  if (!model || (counts.names.get(name) ?? 0) < 2) return name;
+  return `${name} · ${optionDetails(model, counts.details)}`;
 }
 
 function displayModelName(model: ModelRecord | null): string {

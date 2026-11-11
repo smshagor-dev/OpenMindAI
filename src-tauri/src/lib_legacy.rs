@@ -2006,7 +2006,7 @@ fn select_conversation_model(
 
     if normalized_mode == "chat" {
         if let Some(model) =
-            active_model_id.and_then(|id| models.iter().find(|model| model.id == id))
+            active_model_id.and_then(|id| models.iter().find(|model| model.id == id && model.enabled))
         {
             return Some(model.clone());
         }
@@ -2708,6 +2708,15 @@ mod milestone2_tests {
 
         let selected = select_conversation_model(&models, Some("other"), "chat", "hello").unwrap();
         assert_eq!(selected.id, "other");
+    }
+
+    #[test]
+    fn unavailable_active_model_cannot_override_a_usable_fallback() {
+        let unavailable = test_model("missing", None, false);
+        let fallback = test_model("available", None, true);
+        assert!(select_conversation_model(std::slice::from_ref(&unavailable), Some("missing"), "chat", "hello").is_none());
+        let selected = select_conversation_model(&[unavailable, fallback], Some("missing"), "chat", "hello").unwrap();
+        assert_eq!(selected.id, "available");
     }
 
     #[test]
