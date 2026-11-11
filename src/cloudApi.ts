@@ -65,12 +65,16 @@ export const cloud = {
       prompt: prompt.slice(0, 8000), mode, request_key: crypto.randomUUID(),
     }),
   studioJob: (id: string) => cloud.request<StudioJob>("3d-studio/jobs/" + id),
+  downloadMesh: (assetId: number) =>
+    call<{ filename: string; data_base64: string }>("cloud_download_mesh", { assetId }),
   gpuHealth: () => cloud.gpu<{ gpu_active: boolean; gpu?: string; engine?: string }>("health"),
   gpuScene: (prompt: string, mode: "object" | "architecture") =>
     cloud.gpu<StudioJob>("jobs", "POST", {
       prompt: prompt.slice(0, 8000), mode, request_key: crypto.randomUUID(),
     }),
   gpuJob: (id: string) => cloud.gpu<StudioJob>("jobs/" + id),
+  gpuMesh: (id: string) =>
+    cloud.gpu<{ filename: string; data_base64: string }>("jobs/" + id + "/mesh"),
 };
 
 // Hosted completions share the user's existing local conversation/history storage.
