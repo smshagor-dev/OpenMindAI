@@ -27,12 +27,13 @@ export function ModelSelector(props: {
   }, [open]);
 
   const visibleModels = modelsById(props.models.filter((model) => model.enabled));
+  const labelCounts = countModelLabels(visibleModels);
   const activeModel = props.models.find((model) => model.id === props.activeModelId) ?? null;
   const label = props.switching
     ? "Loading model..."
     : activeModel && !activeModel.enabled
       ? `${displayModelName(activeModel)} (unavailable)`
-      : selectedModelLabel(activeModel ?? visibleModels[0] ?? null, visibleModels);
+      : selectedModelLabel(activeModel ?? visibleModels[0] ?? null, labelCounts);
 
   return (
     <div className="model-selector" ref={containerRef}>
@@ -74,7 +75,7 @@ export function ModelSelector(props: {
                 >
                   <div className="model-selector-item-text">
                     <strong>{displayModelName(model)}</strong>
-                    <small title={`${model.path} (${model.id})`}>{optionDetails(model, visibleModels)}</small>
+                    <small title={`${model.path} (${model.id})`}>{optionDetails(model, labelCounts.details)}</small>
                   </div>
                   {selected ? <Check size={15} className="model-selector-check" /> : null}
                 </button>
@@ -100,17 +101,28 @@ function modelDetails(model: ModelRecord): string {
   return [model.quantization, formatBytes(model.sizeBytes), filename].filter(Boolean).join(" · ");
 }
 
-function optionDetails(model: ModelRecord, models: ModelRecord[]): string {
+function countModelLabels(models: ModelRecord[]) {
+  const names = new Map<string, number>();
+  const details = new Map<string, number>();
+  for (const model of models) {
+    const name = displayModelName(model);
+    const key = JSON.stringify([name, modelDetails(model)]);
+    names.set(name, (names.get(name) ?? 0) + 1);
+    details.set(key, (details.get(key) ?? 0) + 1);
+  }
+  return { names, details };
+}
+
+function optionDetails(model: ModelRecord, counts: Map<string, number>): string {
   const details = modelDetails(model);
-  const ambiguous = models.some((other) => other.id !== model.id &&
-    displayModelName(other) === displayModelName(model) && modelDetails(other) === details);
+  const ambiguous = (counts.get(JSON.stringify([displayModelName(model), details])) ?? 0) > 1;
   return ambiguous ? `${model.id} · ${details}` : details;
 }
 
-function selectedModelLabel(model: ModelRecord | null, models: ModelRecord[]): string {
+function selectedModelLabel(model: ModelRecord | null, counts: ReturnType<typeof countModelLabels>): string {
   const name = displayModelName(model);
-  if (!model || !models.some((other) => other.id !== model.id && displayModelName(other) === name)) return name;
-  return `${name} · ${optionDetails(model, models)}`;
+  if (!model || (counts.names.get(name) ?? 0) < 2) return name;
+  return `${name} · ${optionDetails(model, counts.details)}`;
 }
 
 function displayModelName(model: ModelRecord | null): string {
