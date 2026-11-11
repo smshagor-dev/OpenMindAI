@@ -190,6 +190,18 @@ async fn validate_token(token: &str) -> Result<Value, AppError> {
 }
 
 #[tauri::command]
+pub(crate) fn cloud_begin_regeneration(
+    conversation_id: String,
+    assistant_message_id: String,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<crate::chat::Message, AppError> {
+    let db = state.database.lock().map_err(|_| failure("Conversation database is unavailable"))?;
+    let repository = crate::chat::ChatRepository::new(&db);
+    // Reuse the same regeneration marker and immutable original reply as local chat.
+    repository.begin_regeneration(&conversation_id, &assistant_message_id, None)
+}
+
+#[tauri::command]
 pub(crate) async fn cloud_connect(token: String) -> Result<CloudConnection, AppError> {
     let token = token.trim();
     if token.is_empty() || token.len() > 4000 || token.contains('\r') || token.contains('\n') {
