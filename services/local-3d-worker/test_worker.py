@@ -120,6 +120,13 @@ class LocalGpuWorkerTest(unittest.TestCase):
                     headers={"X-OpenMindAI-Desktop":"1","Content-Type":"application/json"})
                 self.assertEqual(status, 202)
                 job_id = result["id"]
+                # Same request key may be retried after a dropped reply; it
+                # must return the original job rather than trigger another run.
+                duplicate_status, duplicate = request("POST", "/jobs", body=request_body,
+                    headers={"X-OpenMindAI-Desktop":"1","Content-Type":"application/json"})
+                self.assertEqual(duplicate_status, 202)
+                self.assertEqual(duplicate["id"], job_id)
+                self.assertEqual(len(worker.JOBS), 1)
                 for _ in range(200):
                     _, result = request("GET", "/jobs/" + job_id,
                                         headers={"X-OpenMindAI-Desktop":"1"})
