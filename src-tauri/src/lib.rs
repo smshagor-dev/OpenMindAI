@@ -90,6 +90,7 @@ mod installation_file;
 mod isolated_runtime;
 mod local_agent;
 mod local_workspace;
+mod mcp_response;
 mod model_discovery;
 mod multimodal;
 #[cfg(feature = "native-cxx-llama")]

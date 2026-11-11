@@ -1310,6 +1310,7 @@ async fn mcp_rpc(
     let endpoint = required_config("mcp", &record.config, "endpoint")?;
     validate_mcp_endpoint(endpoint)?;
     let token = secret_store::get_secret(&access_slot("mcp"))?;
+    let request_id = Value::String(Uuid::new_v4().to_string());
     let mut request = state
         .http
         .post(endpoint)
@@ -1324,7 +1325,7 @@ async fn mcp_rpc(
         )
         .json(&json!({
             "jsonrpc": "2.0",
-            "id": Uuid::new_v4().to_string(),
+            "id": &request_id,
             "method": method,
             "params": params
         }));
@@ -1335,33 +1336,14 @@ async fn mcp_rpc(
         .send()
         .await
         .map_err(|error| connector_error("mcp", error.to_string()))?;
-    let content_type = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let body = read_bounded("mcp", response, MAX_JSON_BYTES).await?;
-    let value: Value = if content_type.contains("text/event-stream") {
-        let text = String::from_utf8_lossy(&body);
-        let data = text
-            .lines()
-            .filter_map(|line| line.strip_prefix("data:"))
-            .map(str::trim)
-            .rfind(|line| !line.is_empty())
-            .ok_or_else(|| connector_error("mcp", "SSE response did not contain JSON data"))?;
-        serde_json::from_str(data).map_err(|error| {
-            connector_error("mcp", format!("invalid SSE JSON response: {error}"))
-        })?
-    } else {
-        serde_json::from_slice(&body).map_err(|error| {
-            connector_error("mcp", format!("invalid JSON-RPC response: {error}"))
-        })?
-    };
-    if let Some(error) = value.get("error") {
-        return Err(connector_error("mcp", format!("JSON-RPC error: {error}")));
-    }
-    Ok(value.get("result").cloned().unwrap_or(value))
+    crate::mcp_response::read_response(
+        response,
+        &request_id,
+        MAX_JSON_BYTES,
+        Duration::from_secs(REQUEST_TIMEOUT_SECS),
+    )
+    .await
+    .map_err(|error| connector_error("mcp", error))
 }
 
 #[tauri::command]
