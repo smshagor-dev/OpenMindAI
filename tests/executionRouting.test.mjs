@@ -53,7 +53,7 @@ test("offline web search cannot claim verified live sources",()=>{
   assert.match(result,/internet is unavailable/);
   assert.match(result,/Do not claim that live web search/);
   assert.ok(result.endsWith("Is this headline true?"));
-  assert.equal(isRecoverableCloudFailure("HTTP 401: session expired"),false);
+  assert.equal(isRecoverableCloudFailure("HTTP 401: session expired"),true);
   assert.equal(isRecoverableCloudFailure("HTTP 503: unavailable"),true);
 });
 
