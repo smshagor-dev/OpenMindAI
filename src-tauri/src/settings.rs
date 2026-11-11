@@ -147,7 +147,9 @@ impl Default for AppPreferences {
             chat_history_notice_required: false,
             local_runtime_autostart: true,
             ai_execution_mode: "auto".to_string(),
-            coding_agent_execution_mode: "auto".to_string(),
+            // Existing installs used only local OpenAgent; require an explicit
+            // Cloud/Both choice before sending project context remotely.
+            coding_agent_execution_mode: "local".to_string(),
             confirm_before_delete: true,
             web_search_enabled: true,
             deep_research_enabled: true,
