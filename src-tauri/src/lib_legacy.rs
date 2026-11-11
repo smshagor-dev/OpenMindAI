@@ -2585,6 +2585,7 @@ pub fn run() {
         if matches!(event, tauri::RunEvent::Exit) {
             tauri::async_runtime::block_on(coding_lsp::shutdown_pooled_sessions());
             coding_agent_gateway::remove_descriptor();
+            cloud_bridge::stop_gpu_worker();
             let state = app_handle.state::<AppState>();
             for runtime in [&state.agent_runtime, state.runtime.as_ref()] {
                 if let Ok(mut runtime) = runtime.lock() {
