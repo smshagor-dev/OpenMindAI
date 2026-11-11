@@ -696,7 +696,9 @@ async fn create_generation_artifact(
         )
     })
     .await
-    .map_err(|error| app_error::AppError::internal(format!("media integrity task failed: {error}")))??;
+    .map_err(|error| {
+        app_error::AppError::internal(format!("media integrity task failed: {error}"))
+    })??;
     if let Some(report) = media_report {
         report.ensure_ready()?;
     }
