@@ -25,11 +25,13 @@ export function ModelSelector(props: {
     return () => window.removeEventListener("mousedown", onClickOutside);
   }, [open]);
 
-  const visibleModels = dedupeModelsByPersonalName(props.models, props.activeModelId);
+  const visibleModels = dedupeModelsByPersonalName(props.models.filter((model) => model.enabled), props.activeModelId);
   const activeModel = props.models.find((model) => model.id === props.activeModelId) ?? null;
   const label = props.switching
     ? "Loading model..."
-    : displayModelName(activeModel ?? visibleModels[0] ?? null);
+    : activeModel && !activeModel.enabled
+      ? `${displayModelName(activeModel)} (unavailable)`
+      : displayModelName(activeModel ?? visibleModels[0] ?? null);
 
   return (
     <div className="model-selector" ref={containerRef}>

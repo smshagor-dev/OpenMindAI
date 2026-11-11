@@ -84,7 +84,53 @@ impl<'a> ModelRegistry<'a> {
              ORDER BY name ASC",
         )?;
         let rows = statement.query_map([], map_model)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+        let mut models = rows.collect::<Result<Vec<_>, _>>()?;
+        for model in &mut models {
+            self.refresh_availability(model);
+        }
+        Ok(models)
+    }
+
+    fn refresh_availability(&self, model: &mut ModelRecord) {
+        let inspect = || -> Result<Option<(u64, Option<QwenModelManifest>)>, AppError> {
+            let path = resolve_model_path(self.root, &model.path)?;
+            let metadata = match fs::metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error.into()),
+            };
+            if !metadata.is_file() {
+                return Err(AppError::ModelInvalid("model is not a regular file".into()));
+            }
+            validate_gguf_header(&path, self.root)?;
+            let manifest = read_model_manifest(&path);
+            if !catalog_package_ready(self.root, &path, manifest.as_ref())? {
+                return Err(AppError::ModelInvalid("model package is incomplete".into()));
+            }
+            Ok(Some((metadata.len(), manifest)))
+        };
+        match inspect() {
+            Ok(Some((size, manifest))) => {
+                model.size_bytes = i64::try_from(size).unwrap_or(i64::MAX);
+                model.source_repository = manifest.as_ref().map(|record| record.repo.clone());
+                model.verification = manifest.map(|record| {
+                    match record.verification {
+                        VerificationState::Verified => "verified",
+                        VerificationState::Unverified => "unverified",
+                        VerificationState::Failed => "failed",
+                    }
+                    .to_string()
+                });
+            }
+            Ok(None) => {
+                model.enabled = false;
+                model.state = ModelLifecycleState::NotInstalled;
+            }
+            Err(_) => {
+                model.enabled = false;
+                model.state = ModelLifecycleState::Failed;
+            }
+        }
     }
 
     pub fn register_gguf(&self, path: &Path) -> Result<(), AppError> {
@@ -105,10 +151,6 @@ impl<'a> ModelRegistry<'a> {
             .replace('\\', "/");
         let manifest = read_model_manifest(&canonical);
         if !catalog_package_ready(self.root, &canonical, manifest.as_ref())? {
-            self.database.connection().execute(
-                "DELETE FROM model_registry WHERE path = ?1 OR path = ?2",
-                params![relative_path, canonical.display().to_string()],
-            )?;
             tracing::warn!(
                 path = %canonical.display(),
                 "model package is incomplete; skipping registry activation"
@@ -125,26 +167,6 @@ impl<'a> ModelRegistry<'a> {
                 |row| row.get(0),
             )
             .optional()?;
-
-        if let Some(id) = existing {
-            let name = manifest.as_ref().map(display_name_from_manifest);
-            let capabilities = manifest
-                .as_ref()
-                .and_then(catalog_capabilities_from_manifest);
-            self.database.connection().execute(
-                "UPDATE model_registry
-                 SET path = ?1, name = COALESCE(?2, name), capabilities = COALESCE(?3, capabilities), updated_at = ?4
-                 WHERE id = ?5",
-                params![
-                    relative_path,
-                    name,
-                    capabilities,
-                    Utc::now().to_rfc3339(),
-                    id
-                ],
-            )?;
-            return Ok(());
-        }
 
         validate_gguf_header(&canonical, self.root)?;
         let metadata = fs::metadata(&canonical)?;
@@ -194,6 +216,26 @@ impl<'a> ModelRegistry<'a> {
                     "[\"chat\"]".to_string()
                 }
             });
+
+        if let Some(id) = existing {
+            self.database.connection().execute(
+                "UPDATE model_registry SET path=?1, name=COALESCE(?2,name), family=?3,
+                 quantization=?4, size_bytes=?5, capabilities=?6, context_length=?7, updated_at=?8
+                 WHERE id=?9",
+                params![
+                    relative_path,
+                    manifest.as_ref().map(display_name_from_manifest),
+                    family,
+                    quantization,
+                    metadata.len() as i64,
+                    capabilities,
+                    context_length,
+                    now,
+                    id
+                ],
+            )?;
+            return Ok(());
+        }
 
         self.database.connection().execute(
             "INSERT INTO model_registry
@@ -277,6 +319,9 @@ fn catalog_package_ready(
     let Some(manifest) = manifest else {
         return Ok(true);
     };
+    if manifest.verification == VerificationState::Failed {
+        return Ok(false);
+    }
     let catalog = crate::model_catalog::load_catalog()?;
     let Some(entry) = catalog
         .models
@@ -336,27 +381,6 @@ fn infer_quantization(name: &str) -> Option<String> {
         .map(|quant| quant.to_string())
 }
 
-fn verification_for(path: &str) -> Option<String> {
-    let manifest = model_manifest_for_path(path)?;
-    Some(
-        match manifest.verification {
-            VerificationState::Verified => "verified",
-            VerificationState::Unverified => "unverified",
-            VerificationState::Failed => "failed",
-        }
-        .to_string(),
-    )
-}
-
-fn model_manifest_for_path(path: &str) -> Option<QwenModelManifest> {
-    read_model_manifest(Path::new(path)).or_else(|| {
-        PortableRootManager::resolve()
-            .ok()
-            .and_then(|root| resolve_model_path(&root, path).ok())
-            .and_then(read_model_manifest)
-    })
-}
-
 fn stable_model_id(path: &str) -> String {
     let digest = Sha256::digest(path.as_bytes());
     format!("gguf-{:x}", digest)[0..21].to_string()
@@ -376,8 +400,8 @@ fn map_model(row: &rusqlite::Row<'_>) -> rusqlite::Result<ModelRecord> {
         context_length: row.get(8)?,
         preferred_backend: row.get(9)?,
         enabled: row.get::<_, i64>(10)? != 0,
-        source_repository: model_manifest_for_path(&path).map(|manifest| manifest.repo),
-        verification: verification_for(&path),
+        source_repository: None,
+        verification: None,
         state: ModelLifecycleState::Ready,
         created_at: row.get(11)?,
         updated_at: row.get(12)?,
@@ -539,5 +563,203 @@ mod tests {
         assert!(!qwen.capabilities.contains("vision"));
         assert!(!qwen.capabilities.contains("embedding"));
         assert!(!qwen.capabilities.contains("image"));
+    }
+    fn fixture_manifest(
+        path: &Path,
+        size: u64,
+        architecture: &str,
+        quantization: &str,
+        context: u64,
+    ) {
+        let record = QwenModelManifest {
+            repo: "fixture/custom".into(),
+            repo_sha: None,
+            quantization: quantization.into(),
+            filename: path.file_name().unwrap().to_string_lossy().into_owned(),
+            size_bytes: size,
+            sha256: None,
+            actual_sha256: None,
+            verification: VerificationState::Unverified,
+            architecture: Some(architecture.into()),
+            context_length: Some(context),
+            chat_template_available: true,
+            source_url: "https://example.invalid/fixture".into(),
+            installed_at: "fixture".into(),
+        };
+        fs::write(
+            path.parent().unwrap().join("model-manifest.json"),
+            serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn replacement_refreshes_metadata_and_size_without_resetting_preferences() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let path = root.models_dir().join("llm/fixture.gguf");
+        write_sparse_gguf(&path);
+        fixture_manifest(&path, 33 * 1024 * 1024, "first", "Q4_K_M", 8192);
+        let db = Database::in_memory().unwrap();
+        let registry = ModelRegistry::new(&db, &root);
+        let original = registry.discover_gguf_models().unwrap().remove(0);
+        db.connection()
+            .execute(
+                "UPDATE model_registry SET enabled=0, preferred_backend='cpu' WHERE id=?1",
+                [&original.id],
+            )
+            .unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(35 * 1024 * 1024)
+            .unwrap();
+        fixture_manifest(&path, 35 * 1024 * 1024, "second", "Q8_0", 32768);
+        // Even a list read before rediscovery must not plan with the old size.
+        assert_eq!(
+            registry.list_models().unwrap()[0].size_bytes,
+            35 * 1024 * 1024
+        );
+        let updated = registry.discover_gguf_models().unwrap().remove(0);
+        assert_eq!(updated.id, original.id);
+        assert_eq!(updated.created_at, original.created_at);
+        assert_eq!(updated.size_bytes, 35 * 1024 * 1024);
+        assert_eq!(updated.family.as_deref(), Some("second"));
+        assert_eq!(updated.quantization.as_deref(), Some("Q8_0"));
+        assert_eq!(updated.context_length, Some(32768));
+        assert!(!updated.enabled);
+        assert_eq!(updated.preferred_backend.as_deref(), Some("cpu"));
+        assert_eq!(updated.source_repository.as_deref(), Some("fixture/custom"));
+        assert_eq!(updated.verification.as_deref(), Some("unverified"));
+        use crate::hardware::{BackendProfile, CpuProfile, HardwareProfile, MemoryProfile};
+        let hardware = HardwareProfile {
+            operating_system: "fixture".into(),
+            architecture: "x86_64".into(),
+            cpu: CpuProfile {
+                name: "fixture".into(),
+                physical_cores: Some(4),
+                logical_threads: 8,
+            },
+            memory: MemoryProfile {
+                total_bytes: 16 * 1024 * 1024 * 1024,
+                available_bytes: 16 * 1024 * 1024 * 1024,
+            },
+            gpus: vec![],
+            primary_gpu: None,
+            recommended_inference_gpu: None,
+            backends: BackendProfile {
+                cpu: true,
+                cuda: false,
+                vulkan: false,
+                sycl: false,
+                hip: false,
+                metal: false,
+            },
+            detection_complete: true,
+        };
+        let plan = crate::launch_planner::ModelLaunchPlanner::plan(&updated, &hardware, 8080);
+        assert_eq!(plan.estimated_model_bytes, 35 * 1024 * 1024);
+    }
+
+    #[test]
+    fn deleted_model_stays_in_history_but_is_unavailable_until_restored() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let path = root.models_dir().join("llm/kept.gguf");
+        write_sparse_gguf(&path);
+        let db = Database::in_memory().unwrap();
+        let registry = ModelRegistry::new(&db, &root);
+        let original = registry.discover_gguf_models().unwrap().remove(0);
+        let chats = crate::chat::ChatRepository::new(&db);
+        let chat = chats.create_conversation(Some("keep history")).unwrap();
+        chats
+            .set_active_model(&chat.id, Some(&original.id))
+            .unwrap();
+        fs::remove_file(&path).unwrap();
+        let missing = registry.discover_gguf_models().unwrap().remove(0);
+        assert_eq!(missing.id, original.id);
+        assert!(!missing.enabled);
+        assert_eq!(missing.state, ModelLifecycleState::NotInstalled);
+        assert_eq!(
+            db.connection()
+                .query_row(
+                    "SELECT enabled FROM model_registry WHERE id=?1",
+                    [&original.id],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            chats
+                .find_conversation(&chat.id)
+                .unwrap()
+                .active_model_id
+                .as_deref(),
+            Some(original.id.as_str())
+        );
+        write_sparse_gguf(&path);
+        let restored = registry.discover_gguf_models().unwrap().remove(0);
+        assert!(restored.enabled);
+        assert_eq!(restored.id, original.id);
+        assert_eq!(restored.state, ModelLifecycleState::Ready);
+    }
+
+    #[test]
+    fn invalid_replacement_is_not_activated_and_does_not_erase_preferences() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let path = root.models_dir().join("llm/kept.gguf");
+        write_sparse_gguf(&path);
+        let db = Database::in_memory().unwrap();
+        let registry = ModelRegistry::new(&db, &root);
+        let original = registry.discover_gguf_models().unwrap().remove(0);
+        fs::write(&path, b"not a model").unwrap();
+        let invalid = registry.discover_gguf_models().unwrap().remove(0);
+        assert_eq!(invalid.id, original.id);
+        assert!(!invalid.enabled);
+        assert_eq!(invalid.state, ModelLifecycleState::Failed);
+        assert!(registry.register_gguf(&path).is_err());
+        write_sparse_gguf(&path);
+        assert!(registry.discover_gguf_models().unwrap()[0].enabled);
+    }
+    #[test]
+    fn incomplete_catalog_package_retains_the_existing_registry_row() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let path = root.models_dir().join("llm/fixture.gguf");
+        write_sparse_gguf(&path);
+        fixture_manifest(&path, 33 * 1024 * 1024, "fixture", "Q4_K_M", 8192);
+        let db = Database::in_memory().unwrap();
+        let registry = ModelRegistry::new(&db, &root);
+        let original = registry.discover_gguf_models().unwrap().remove(0);
+        let manifest_path = path.parent().unwrap().join("model-manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["repo"] = serde_json::json!("ggml-org/Qwen2.5-VL-3B-Instruct-GGUF");
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let unavailable = registry.discover_gguf_models().unwrap().remove(0);
+        assert_eq!(unavailable.id, original.id);
+        assert!(!unavailable.enabled);
+        assert_eq!(unavailable.state, ModelLifecycleState::Failed);
+        assert_eq!(
+            db.connection()
+                .query_row(
+                    "SELECT count(*) FROM model_registry WHERE id=?1",
+                    [&original.id],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+        fixture_manifest(&path, 33 * 1024 * 1024, "fixture", "Q4_K_M", 8192);
+        let restored = registry.discover_gguf_models().unwrap().remove(0);
+        assert_eq!(restored.id, original.id);
+        assert!(restored.enabled);
     }
 }
