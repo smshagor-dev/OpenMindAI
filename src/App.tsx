@@ -46,7 +46,7 @@ import { ProjectsWorkspace } from "./components/ProjectsWorkspace";
 import { WorkWorkspace } from "./components/WorkWorkspace";
 import { StudioHub } from "./components/StudioHub";
 import { cloud, hostedChat, submitQueuedScene, type CloudConnection, type CloudModel, type ExecutionMode, type StudioSection } from "./cloudApi";
-import { offlineSourceNotice, requestsLocalOnly, runWithFallback, selectExecutionRoute, shouldShowCloudModels } from "./lib/executionRouting";
+import { cloudProbeDelayMs, offlineSourceNotice, requestsLocalOnly, runWithFallback, selectExecutionRoute, shouldShowCloudModels } from "./lib/executionRouting";
 import { notifyUser } from "./lib/notify";
 import {
   attachmentKind,
@@ -140,18 +140,30 @@ export function App() {
   }, [studioOutboxReady, internetAvailable, cloudConnection?.connected, executionMode]);
   useEffect(() => {
     let alive = true;
+    let timer: number | null = null;
+    let failures = 0;
     const checkCloud = async () => {
+      let healthy = false;
       try {
-        const status = await cloud.status();
-        if (!alive) return;
-        setCloudConnection(status);
-        if (!status.connected) { setCloudModels([]); setCloudModel(""); }
-        if (status.connected) {
-          const available = await cloud.models();
+        if (!window.navigator.onLine) {
+          if (alive) {
+            setCloudConnection((current) => current ? { ...current, connected: false } : current);
+            setCloudModels([]);
+            setCloudModel("");
+          }
+        } else {
+          const status = await cloud.status();
           if (!alive) return;
-          setCloudModels(available);
-          setCloudModel((selected) => available.some((entry) => entry.id === selected)
-            ? selected : available[0]?.id ?? "");
+          setCloudConnection(status);
+          if (!status.connected) { setCloudModels([]); setCloudModel(""); }
+          if (status.connected) {
+            const available = await cloud.models();
+            if (!alive) return;
+            setCloudModels(available);
+            setCloudModel((selected) => available.some((entry) => entry.id === selected)
+              ? selected : available[0]?.id ?? "");
+          }
+          healthy = status.connected || status.message == null;
         }
       } catch {
         if (alive) {
@@ -159,15 +171,21 @@ export function App() {
           setCloudModels([]);
           setCloudModel("");
         }
+      } finally {
+        if (alive) {
+          failures = healthy ? 0 : failures + 1;
+          // Like Mobile: 5s → 10s → 20s → 40s → 60s after failure.
+          // Health checks only read session status and model catalog, never replay POSTs.
+          timer = window.setTimeout(() => void checkCloud(),
+            cloudProbeDelayMs(healthy, failures, 0.9 + Math.random() * 0.2));
+        }
       }
     };
     void checkCloud();
-    // Link status alone cannot detect a failed proxy/Cloud service. Probe actual
-    // authenticated availability, never resubmit a job during health checks.
-    const timer = window.setInterval(() => {
-      if (window.navigator.onLine) void checkCloud();
-    }, 60_000);
-    return () => { alive = false; window.clearInterval(timer); };
+    return () => {
+      alive = false;
+      if (timer !== null) window.clearTimeout(timer);
+    };
   }, []);
   useEffect(() => {
     let active = true;
