@@ -90,8 +90,13 @@ pub(crate) fn preflight_for_hardware(
     hardware: &HardwareProfile,
 ) -> Result<Option<MediaPreflightReport>, AppError> {
     preflight_with_environment_and_policy(
-        root, artifact_kind, hardware, available_bytes_for_path(root.root()),
-        std::env::consts::OS, std::env::consts::ARCH, IntegrityPolicy::VerifyContents,
+        root,
+        artifact_kind,
+        hardware,
+        available_bytes_for_path(root.root()),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        IntegrityPolicy::VerifyContents,
     )
 }
 
@@ -103,8 +108,13 @@ pub(crate) fn preflight_for_hardware_fast(
     hardware: &HardwareProfile,
 ) -> Result<Option<MediaPreflightReport>, AppError> {
     preflight_with_environment_and_policy(
-        root, artifact_kind, hardware, available_bytes_for_path(root.root()),
-        std::env::consts::OS, std::env::consts::ARCH, IntegrityPolicy::MetadataOnly,
+        root,
+        artifact_kind,
+        hardware,
+        available_bytes_for_path(root.root()),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        IntegrityPolicy::MetadataOnly,
     )
 }
 
@@ -118,7 +128,13 @@ fn preflight_with_environment(
     arch: &str,
 ) -> Result<Option<MediaPreflightReport>, AppError> {
     preflight_with_environment_and_policy(
-        root, artifact_kind, hardware, available_bytes, os, arch, IntegrityPolicy::VerifyContents,
+        root,
+        artifact_kind,
+        hardware,
+        available_bytes,
+        os,
+        arch,
+        IntegrityPolicy::VerifyContents,
     )
 }
 
