@@ -27,6 +27,7 @@ import type {
   WebResearchProgressEvent,
 } from "../types";
 import type { AttachmentDraft } from "../lib/chat";
+import type { CloudModel } from "../cloudApi";
 import { MessageItem } from "./MessageItem";
 import { ResearchProgress } from "./ResearchProgress";
 import { Composer } from "./Composer";
@@ -79,6 +80,10 @@ export function ChatView(props: {
   modelSwitching: boolean;
   modelSwitchError: string | null;
   onSelectModel: (modelId: string) => void;
+  showCloudModels?: boolean;
+  cloudModels?: CloudModel[];
+  activeCloudModelId?: string;
+  onSelectCloudModel?: (modelId: string) => void;
   artifactsByMessage: Map<string, Artifact[]>;
   onCreateArtifact: (messageId: string, kind: ArtifactKind, content: string, filenameHint?: string) => void;
   onOpenArtifact: (artifact: Artifact) => void;
@@ -138,8 +143,14 @@ export function ChatView(props: {
       modelSwitching={props.modelSwitching}
       modelSwitchError={props.modelSwitchError}
       onSelectModel={props.onSelectModel}
+      showCloudModels={props.showCloudModels}
+      cloudModels={props.cloudModels}
+      activeCloudModelId={props.activeCloudModelId}
+      onSelectCloudModel={props.onSelectCloudModel}
       placeholder={isEmpty ? "Ask anything..." : "Message OpenMindAI..."}
-      note={isEmpty ? undefined : "Responses are generated locally on your machine."}
+      note={isEmpty ? undefined : props.showCloudModels
+        ? "Cloud API model selected. Your request can route to Local if Cloud becomes unavailable."
+        : "Responses use installed local models when Cloud is unavailable or Local is selected."}
     />
   );
 
