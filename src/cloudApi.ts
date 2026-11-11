@@ -34,6 +34,8 @@ const call = <T>(command: string, args?: Record<string, unknown>) => {
   return invoke<T>(command, args);
 };
 
+let oneTimeOutboxRecovery: Promise<void> | null = null;
+
 export const cloud = {
   status: () => call<CloudConnection>("cloud_status"),
   login: (email: string, password: string, code?: string) =>
@@ -92,7 +94,14 @@ export const cloud = {
   gpuJob: (id: string) => cloud.gpu<StudioJob>("jobs/" + id),
   gpuMesh: (id: string) =>
     cloud.gpu<{ filename: string; data_base64: string }>("jobs/" + id + "/mesh"),
-  outboxRecover: () => call<void>("studio_outbox_recover"),
+  outboxRecover: () => {
+    if (!oneTimeOutboxRecovery)
+      oneTimeOutboxRecovery = call<void>("studio_outbox_recover").catch((error: unknown) => {
+        oneTimeOutboxRecovery = null;
+        throw error;
+      });
+    return oneTimeOutboxRecovery;
+  },
   outboxList: () => call<QueuedScene[]>("studio_outbox_list"),
   queueScene: (prompt: string, mode: "object" | "architecture", requestKey = crypto.randomUUID()) =>
     call<QueuedScene[]>("studio_outbox_enqueue", {
