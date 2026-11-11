@@ -18,6 +18,7 @@ macro_rules! openmind_generate_handler {
             cloud_request,
             cloud_download_mesh,
             cloud_begin_regeneration,
+            studio_outbox_recover,
             studio_outbox_list,
             studio_outbox_enqueue,
             studio_outbox_claim,
@@ -138,7 +139,7 @@ pub(crate) use cloud_bridge::{
 };
 pub(crate) use studio_outbox::{
     studio_outbox_claim, studio_outbox_enqueue, studio_outbox_finish, studio_outbox_list,
-    studio_outbox_retry,
+    studio_outbox_recover, studio_outbox_retry,
 };
 pub(crate) use coding_control::{approve_coding_action, coding_run_snapshot, reject_coding_action};
 pub(crate) use coding_eval::run_coding_qualification;
