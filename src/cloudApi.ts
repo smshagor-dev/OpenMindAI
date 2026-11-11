@@ -100,10 +100,17 @@ export async function hostedChat(
   const previous = await local.messages(conversationId);
   const prompt = content.trim();
   if (!prompt) throw new Error("Cloud prompt is empty.");
+  const target = replaceAssistantId ? previous.findIndex((item) =>
+    item.id === replaceAssistantId && item.role === "assistant") : -1;
+  if (replaceAssistantId && target < 0)
+    throw new Error("The original assistant response is unavailable for regeneration.");
+  const context = target >= 0 ? previous.slice(0, target) : previous;
   const messages: Array<{ role: string; content: string }> =
-    previous.filter((item) => item.status === "completed" && item.content.trim())
+    context.filter((item) => item.status === "completed" && item.content.trim())
       .slice(-28).map((item) => ({ role: item.role, content: item.content }));
-  messages.push({ role: "user", content: prompt });
+  if (!replaceAssistantId) messages.push({ role: "user", content: prompt });
+  else if (!messages.some((message) => message.role === "user"))
+    throw new Error("The original user turn is unavailable.");
   if (mode === "search" || mode === "research") {
     const found = await cloud.search(prompt.slice(0, 500));
     const context = (found.results ?? []).slice(0, 8).map((item, index) =>
@@ -115,7 +122,9 @@ export async function hostedChat(
       "Answer using these retrieved sources. Cite the numbered source URLs. State uncertainty explicitly.\n" + context });
   }
   if (!replaceAssistantId) await local.addUserMessage(conversationId, content);
-  const assistant = await local.createStreamingAssistantMessage(conversationId);
+  const assistant = replaceAssistantId
+    ? await call<Message>("cloud_begin_regeneration", { conversationId, assistantMessageId: replaceAssistantId })
+    : await local.createStreamingAssistantMessage(conversationId);
   try {
     const result = await cloud.request<{ choices: Array<{ message: { content: string } }> }>(
       "mobile/chat/completions", "POST", { model, messages, stream: false },
