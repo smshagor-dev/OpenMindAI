@@ -21,6 +21,12 @@ export type StudioJob = {
   events?: unknown[];
 };
 export type ResearchProject = { id: number; title: string; status?: string; prompt?: string };
+export type QueuedScene = {
+  id: string; kind: "scene3d"; requestKey: string;
+  payload: { prompt: string; mode: "object" | "architecture" };
+  status: "queued" | "sending" | "review";
+  note: string | null; createdAt: string;
+};
 
 const call = <T>(command: string, args?: Record<string, unknown>) => {
   if (!("__TAURI_INTERNALS__" in window))
@@ -69,9 +75,9 @@ export const cloud = {
     cloud.request<StudioJob | { asset: { id: number } }>("3d-studio/jobs/image-model", "POST", {
       upload_id: uploadId, request_key: crypto.randomUUID(),
     }),
-  studioScene: (prompt: string, mode: "object" | "architecture") =>
+  studioScene: (prompt: string, mode: "object" | "architecture", requestKey = crypto.randomUUID()) =>
     cloud.request<StudioJob>("3d-studio/jobs/scene", "POST", {
-      prompt: prompt.slice(0, 8000), mode, request_key: crypto.randomUUID(),
+      prompt: prompt.slice(0, 8000), mode, request_key: requestKey,
     }),
   studioJob: (id: string) => cloud.request<StudioJob>("3d-studio/jobs/" + id),
   downloadMesh: (assetId: number) =>
@@ -86,6 +92,15 @@ export const cloud = {
   gpuJob: (id: string) => cloud.gpu<StudioJob>("jobs/" + id),
   gpuMesh: (id: string) =>
     cloud.gpu<{ filename: string; data_base64: string }>("jobs/" + id + "/mesh"),
+  outboxList: () => call<QueuedScene[]>("studio_outbox_list"),
+  queueScene: (prompt: string, mode: "object" | "architecture", requestKey = crypto.randomUUID()) =>
+    call<QueuedScene[]>("studio_outbox_enqueue", {
+      kind: "scene3d", requestKey, payload: { prompt, mode },
+    }),
+  outboxClaim: (id: string) => call<boolean>("studio_outbox_claim", { id }),
+  outboxFinish: (id: string, status: "completed" | "review", note?: string) =>
+    call<void>("studio_outbox_finish", { id, status, note: note ?? null }),
+  outboxRetry: (id: string) => call<void>("studio_outbox_retry", { id }),
 };
 
 // Hosted completions share the user's existing local conversation/history storage.
