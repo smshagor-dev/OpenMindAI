@@ -44,6 +44,9 @@ import { PreviewPanel, type PreviewTarget } from "./components/PreviewPanel";
 import { ToolsWorkspace } from "./components/ToolsWorkspace";
 import { ProjectsWorkspace } from "./components/ProjectsWorkspace";
 import { WorkWorkspace } from "./components/WorkWorkspace";
+import { StudioHub } from "./components/StudioHub";
+import { cloud, hostedChat, submitQueuedScene, type CloudConnection, type CloudModel, type ExecutionMode, type StudioSection } from "./cloudApi";
+import { cloudProbeDelayMs, offlineSourceNotice, requestsLocalOnly, runWithFallback, selectExecutionRoute, shouldShowCloudModels } from "./lib/executionRouting";
 import { notifyUser } from "./lib/notify";
 import {
   attachmentKind,
@@ -61,7 +64,7 @@ import { formatError } from "./lib/format";
 import { imageRendererPrompt, persistDirectImageRequest, plainImageRequest } from "./lib/imageGeneration";
 import { ConversationState } from "./lib/conversationState";
 
-type View = "chat" | "work" | "settings" | "tools" | "projects";
+type View = "chat" | "work" | "settings" | "tools" | "projects" | StudioSection;
 
 type RuntimeAction = "start" | "restart" | "stop";
 
@@ -94,6 +97,129 @@ export function App() {
   const backgroundRuns = [...chatSnapshot.runs.keys()].filter((id) => id !== activeId && chatState.isBusy(id));
   const copyrightYear = new Date().getFullYear();
   const [view, setView] = useState<View>("chat");
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>("auto");
+  const [internetAvailable, setInternetAvailable] = useState(() => window.navigator.onLine);
+  const [routeNotice, setRouteNotice] = useState<string | null>(null);
+  const [studioSubmission, setStudioSubmission] = useState<string | null>(null);
+  const [studioOutboxReady, setStudioOutboxReady] = useState(false);
+  const [cloudConnection, setCloudConnection] = useState<CloudConnection | null>(null);
+  const [cloudModels, setCloudModels] = useState<CloudModel[]>([]);
+  const [cloudModel, setCloudModel] = useState("");
+  const showCloudApiModels = shouldShowCloudModels(executionMode, internetAvailable,
+    Boolean(cloudConnection?.connected), cloudModels.length);
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let active = true;
+    void cloud.outboxRecover().then(() => {
+      if (active) setStudioOutboxReady(true);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+  useEffect(() => {
+    if (!studioOutboxReady || !internetAvailable || !cloudConnection?.connected || executionMode === "local") return;
+    let active = true;
+    void (async () => {
+      // Only a saved, never-submitted job is dispatched automatically.
+      // Interrupted/uncertain jobs stay in review state, not silently replayed.
+      const pending = (await cloud.outboxList()).filter((item) =>
+        item.status === "queued" && !requestsLocalOnly(item.payload.prompt));
+      if (!pending.length) return;
+      await cloud.studioEngines(); // read-only connectivity and capability preflight
+      for (const item of pending) {
+        if (!active) return;
+        try {
+          const accepted = await submitQueuedScene(item, "cloud");
+          if (accepted && active) setRouteNotice("Saved offline 3D request accepted by Cloud.");
+        } catch {
+          if (active) setRouteNotice("A queued 3D submission needs review. Open 3D Studio to check its status.");
+          return;
+        }
+      }
+    })().catch(() => undefined);
+    return () => { active = false; };
+  }, [studioOutboxReady, internetAvailable, cloudConnection?.connected, executionMode]);
+  useEffect(() => {
+    let alive = true;
+    let timer: number | null = null;
+    let failures = 0;
+    const checkCloud = async () => {
+      let healthy = false;
+      try {
+        if (!window.navigator.onLine) {
+          if (alive) {
+            setCloudConnection((current) => current ? { ...current, connected: false } : current);
+            setCloudModels([]);
+            setCloudModel("");
+          }
+        } else {
+          const status = await cloud.status();
+          if (!alive) return;
+          setCloudConnection(status);
+          if (!status.connected) { setCloudModels([]); setCloudModel(""); }
+          if (status.connected) {
+            const available = await cloud.models();
+            if (!alive) return;
+            setCloudModels(available);
+            setCloudModel((selected) => available.some((entry) => entry.id === selected)
+              ? selected : available[0]?.id ?? "");
+          }
+          healthy = status.connected || status.message == null;
+        }
+      } catch {
+        if (alive) {
+          setCloudConnection((current) => current ? { ...current, connected: false } : current);
+          setCloudModels([]);
+          setCloudModel("");
+        }
+      } finally {
+        if (alive) {
+          failures = healthy ? 0 : failures + 1;
+          // Like Mobile: 5s → 10s → 20s → 40s → 60s after failure.
+          // Health checks only read session status and model catalog, never replay POSTs.
+          timer = window.setTimeout(() => void checkCloud(),
+            cloudProbeDelayMs(healthy, failures, 0.9 + Math.random() * 0.2));
+        }
+      }
+    };
+    void checkCloud();
+    return () => {
+      alive = false;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, []);
+  useEffect(() => {
+    let active = true;
+    const reconnect = () => {
+      setInternetAvailable(true);
+      void cloud.status().then((status) => {
+        if (!active) return;
+        setCloudConnection(status);
+        if (!status.connected) { setCloudModels([]); setCloudModel(""); }
+        if (status.connected) void cloud.models().then((available) => {
+          if (!active) return;
+          setCloudModels(available);
+          setCloudModel((current) => available.some((item) => item.id === current) ? current : available[0]?.id ?? "");
+        }).catch(() => undefined);
+      }).catch(() => undefined);
+    };
+    const disconnect = () => setInternetAvailable(false);
+    window.addEventListener("online", reconnect);
+    window.addEventListener("offline", disconnect);
+    return () => {
+      active = false;
+      window.removeEventListener("online", reconnect);
+      window.removeEventListener("offline", disconnect);
+    };
+  }, []);
+  const connectedCloud = (connection: CloudConnection) => {
+    setCloudConnection(connection);
+    setCloudModels([]);
+    setCloudModel("");
+    void cloud.models().then((models) => {
+      setCloudModels(models);
+      setCloudModel((selected) => models.some((model) => model.id === selected) ? selected : models[0]?.id ?? "");
+    }).catch(() => { setCloudModels([]); setCloudModel(""); });
+  };
   const [root, setRoot] = useState<PortableRootInfo | null>(null);
   const [installationStatus, setInstallationStatus] = useState<InstallationStatus | null>(null);
   const [wizardActive, setWizardActive] = useState<boolean | null>(null);
@@ -506,9 +632,41 @@ export function App() {
           setConversations((items) => items.map((conversation) => conversation.id === conversationId ? { ...conversation, title: generatedTitle } : conversation));
         }
       }
-      const assistant = inferredMode === "image"
-        ? await persistDirectImageRequest(conversationId, messageContent, api)
-        : await api.sendChatMessage(conversationId, messageContent, inferredMode, inferenceMedia);
+      // Unimplemented Cloud media types still work using their existing local engine.
+      const cloudChatCapable = inferenceMedia.length === 0 &&
+        ["chat", "thinking", "search", "research"].includes(inferredMode) && Boolean(cloudModel);
+      const route = selectExecutionRoute({
+        preference: cloudChatCapable ? executionMode : "local",
+        task: inferredMode === "search" ? "search" : inferredMode === "research" ? "research" : "chat",
+        online: internetAvailable,
+        cloudConnected: Boolean(cloudConnection?.connected),
+        cloudModelReady: Boolean(cloudModel),
+        forceLocal: requestsLocalOnly(content),
+      });
+      const localOffline = (!internetAvailable || requestsLocalOnly(content)) &&
+        ["search", "research"].includes(inferredMode);
+      const localContent = localOffline
+        ? offlineSourceNotice(buildMessageContent(content, attachments, "chat"))
+        : messageContent;
+      const localMode = localOffline ? "chat" : inferredMode;
+      const requestConversationId = conversationId;
+      if (!requestConversationId) throw new Error("Conversation was not created.");
+      const response = await runWithFallback(
+        route,
+        () => hostedChat(requestConversationId, messageContent, cloudModel, inferredMode),
+        () => inferredMode === "image"
+          ? persistDirectImageRequest(requestConversationId, localContent, api)
+          : api.sendChatMessage(requestConversationId, localContent, localMode, inferenceMedia),
+        (reason) => {
+          setRouteNotice(reason);
+          setCloudConnection((current) => current ? { ...current, connected: false } : current);
+        },
+      );
+      const assistant = response.result;
+      if (route.offline) setRouteNotice("Offline: processed locally. Live web sources cannot be verified.");
+      else if (!response.fallback && route.target === "local" && executionMode !== "local")
+        setRouteNotice(cloudChatCapable ? route.reason
+          : "This media operation uses the local processor; an equivalent Cloud API is not available.");
       requestScope.setMessages((items) => items.filter((message) => message.id !== optimisticUser?.id));
       const generationKind = generationKindForMode(inferredMode);
       if (generationKind) {
@@ -532,7 +690,7 @@ export function App() {
       chatState.finishRequest(lease);
     }
   }, [activeId, attachments, chatState, conversations, editingMessageId, imageOptions, pendingModelId,
-    preferences?.autoGenerateTitles, preferences?.openArtifactsAfterGeneration, prompt, refreshMessages, setActiveId, setAttachments, setPrompt, showError]);
+    executionMode, cloudModel, internetAvailable, cloudConnection?.connected, preferences?.autoGenerateTitles, preferences?.openArtifactsAfterGeneration, prompt, refreshMessages, setActiveId, setAttachments, setPrompt, showError]);
 
   const sendWorkTask = useCallback(async (conversationId: string, content: string) => {
     const task = content.trim();
@@ -550,14 +708,35 @@ export function App() {
         await api.renameConversation(conversationId, generatedTitle);
         setConversations((items) => items.map((conversation) => conversation.id === conversationId ? { ...conversation, title: generatedTitle } : conversation));
       }
-      await api.sendChatMessage(conversationId, messageContent, inferredMode, []);
+      const availableForCloud = ["chat", "thinking", "search", "research"].includes(inferredMode) && Boolean(cloudModel);
+      const route = selectExecutionRoute({
+        preference: availableForCloud ? executionMode : "local",
+        task: inferredMode === "search" ? "search" : inferredMode === "research" ? "research" : "chat",
+        online: internetAvailable,
+        cloudConnected: Boolean(cloudConnection?.connected),
+        cloudModelReady: Boolean(cloudModel),
+        forceLocal: requestsLocalOnly(task),
+      });
+      await runWithFallback(
+        route,
+        () => hostedChat(conversationId, messageContent, cloudModel, inferredMode),
+        () => api.sendChatMessage(conversationId,
+          (!internetAvailable || requestsLocalOnly(task)) && ["search", "research"].includes(inferredMode)
+            ? offlineSourceNotice(buildMessageContent(task, [], "chat")) : messageContent,
+          (!internetAvailable || requestsLocalOnly(task)) && ["search", "research"].includes(inferredMode)
+            ? "chat" : inferredMode, []),
+        (reason) => {
+          setRouteNotice(reason);
+          setCloudConnection((current) => current ? { ...current, connected: false } : current);
+        },
+      );
       await refreshMessages(conversationId);
       setConversations(await api.conversations());
     } catch (caught) {
       requestScope.setError(formatError(caught));
       await refreshMessages(conversationId);
     } finally { chatState.finishRequest(lease); }
-  }, [chatState, refreshMessages, setActiveId, setAttachments, setPrompt]);
+  }, [chatState, refreshMessages, setActiveId, setAttachments, setPrompt, executionMode, cloudModel, internetAvailable, cloudConnection?.connected]);
 
   const cancelConversationGeneration = useCallback(async (conversationId: string) => {
     try { await chatState.cancelGeneration(conversationId, api.cancelGeneration); }
@@ -582,6 +761,26 @@ export function App() {
     }, 0);
   }, [setAttachments, setPrompt]);
 
+  // Studio submissions are actually sent to the local engine, not left as
+  // drafts that require a second click. The existing composer failure recovery
+  // still retains the complete request if the local runtime is unavailable.
+  useEffect(() => {
+    if (studioSubmission === null || view !== "chat") return;
+    if (prompt !== studioSubmission) {
+      setStudioSubmission(null);
+      return;
+    }
+    if (chatState.anyBusy()) return;
+    setStudioSubmission(null);
+    void sendMessage();
+  }, [studioSubmission, view, prompt, sendMessage, chatState]);
+  const submitStudioLocally = useCallback((content: string) => {
+    setAttachments([]);
+    setEditingMessageId(null);
+    setPrompt(content);
+    setView("chat");
+    setStudioSubmission(content);
+  }, [setAttachments, setPrompt]);
   const startToolPrompt = useCallback((content: string) => {
     setEditingMessageId(null);
     setPrompt(content);
@@ -603,14 +802,35 @@ export function App() {
     if (!lease) return;
     const requestScope = chatState.scope(activeId);
     try {
-      await api.regenerateMessage(activeId, assistantMessageId, mode);
+      const cloudCapable = ["chat", "thinking", "search", "research"].includes(mode) && Boolean(cloudModel);
+      const route = selectExecutionRoute({
+        preference: cloudCapable ? executionMode : "local",
+        task: mode === "search" ? "search" : mode === "research" ? "research" : "chat",
+        online: internetAvailable,
+        cloudConnected: Boolean(cloudConnection?.connected),
+        cloudModelReady: Boolean(cloudModel),
+        forceLocal: user ? requestsLocalOnly(user.content) : false,
+      });
+      await runWithFallback(route,
+        async () => {
+          if (!user) throw new Error("The original user message is unavailable.");
+          return hostedChat(activeId, user.content, cloudModel, mode, assistantMessageId);
+        },
+        () => api.regenerateMessage(activeId, assistantMessageId,
+          (!internetAvailable || (user && requestsLocalOnly(user.content))) &&
+            ["search", "research"].includes(mode) ? "chat" : mode),
+        (reason) => {
+          setRouteNotice(reason);
+          setCloudConnection((current) => current ? { ...current, connected: false } : current);
+        },
+      );
       await refreshMessages(activeId);
       await refreshApp();
     } catch (caught) {
       requestScope.setError(formatError(caught));
       await refreshMessages(activeId);
     } finally { chatState.finishRequest(lease); }
-  }, [activeId, chatState, messages, refreshApp, refreshMessages]);
+  }, [activeId, chatState, messages, refreshApp, refreshMessages, executionMode, cloudModel, internetAvailable, cloudConnection?.connected]);
 
   const selectModel = useCallback(
     async (modelId: string) => {
@@ -1063,6 +1283,7 @@ export function App() {
         onOpenDatasets={() => setDatasetsOpen(true)}
         onOpenTools={() => setView("tools")}
         onOpenProjects={() => setView("projects")}
+        onOpenStudio={(section) => setView(section)}
         onOpenSettings={(section) => {
           setSettingsSection(section ?? "general");
           setView("settings");
@@ -1107,7 +1328,13 @@ export function App() {
                       ? "Work"
                       : view === "projects"
                         ? "Projects"
-                        : "Settings"}
+                        : view === "research-studio"
+                        ? "Research Studio"
+                        : view === "3d-studio"
+                          ? "3D Studio"
+                          : view === "web-search"
+                            ? "Web Search"
+                            : "Settings"}
               </h1>
             )}
           </div>
@@ -1127,6 +1354,21 @@ export function App() {
                 setView("work");
               }}
             />
+            <div className="execution-mode-switch" role="group" aria-label="AI execution mode">
+              <button type="button" className={executionMode === "auto" ? "active" : ""} aria-pressed={executionMode === "auto"} onClick={() => setExecutionMode("auto")} title="Automatically route to Cloud when connected or Local when offline">Auto</button>
+              <button type="button" className={executionMode === "local" ? "active" : ""} aria-pressed={executionMode === "local"} onClick={() => setExecutionMode("local")} title="Use this computer for local inference">
+                Local
+              </button>
+              <button type="button" className={executionMode === "cloud" ? "active" : ""} aria-pressed={executionMode === "cloud"} onClick={() => setExecutionMode("cloud")} title={cloudConnection?.connected ? "Connected to OpenMindAI Cloud" : "Sign in from Research Studio to use Cloud"}>
+                <span className={internetAvailable && cloudConnection?.connected ? "studio-dot good" : "studio-dot"} /> Cloud
+              </button>
+            </div>
+            {view === "work" && !workThreadId && showCloudApiModels ? (
+              <select className="cloud-model-select" aria-label="Cloud API model" value={cloudModel} onChange={(event) => setCloudModel(event.target.value)}>
+                {cloudModels.map((model) => <option key={model.id} value={model.id}>{model.name || model.id}</option>)}
+              </select>
+            ) : null}
+            <span className="mode-connection-status" role="status">{internetAvailable ? "Online" : "Offline"}</span>
           </div>
           <div className="topbar-actions">
             {view === "chat" && activeConversation ? (
@@ -1222,6 +1464,12 @@ export function App() {
           </div>
         ) : null}
 
+        {routeNotice ? (
+          <div className="routing-notice" role="status">
+            <span>{routeNotice}</span>
+            <button type="button" onClick={() => setRouteNotice(null)} aria-label="Dismiss routing notice">Dismiss</button>
+          </div>
+        ) : null}
         {view === "chat" ? (
           <ChatView
             conversation={activeConversation}
@@ -1255,6 +1503,10 @@ export function App() {
             modelSwitching={modelSwitching}
             modelSwitchError={modelSwitchError}
             onSelectModel={selectModel}
+            showCloudModels={showCloudApiModels}
+            cloudModels={showCloudApiModels ? cloudModels : []}
+            activeCloudModelId={showCloudApiModels ? cloudModel : ""}
+            onSelectCloudModel={setCloudModel}
             artifactsByMessage={artifactsByMessage}
             onCreateArtifact={createArtifact}
             onOpenArtifact={openArtifactHandler}
@@ -1263,6 +1515,16 @@ export function App() {
             onCancelImageArtifact={cancelImageArtifact}
             imageProgressByArtifact={imageProgressByArtifact}
             onPreview={setPreviewTarget}
+          />
+        ) : view === "research-studio" || view === "3d-studio" || view === "web-search" ? (
+          <StudioHub
+            section={view}
+            mode={executionMode}
+            internetAvailable={internetAvailable}
+            connection={cloudConnection}
+            onConnected={connectedCloud}
+            onDisconnect={() => { setCloudConnection({ connected: false, user: null, message: null }); setCloudModels([]); setCloudModel(""); }}
+            onLocalPrompt={submitStudioLocally}
           />
         ) : view === "tools" ? (
           <ToolsWorkspace
@@ -1315,6 +1577,10 @@ export function App() {
               modelSwitching={modelSwitching}
               modelSwitchError={modelSwitchError}
               onSelectModel={selectModel}
+              showCloudModels={showCloudApiModels}
+              cloudModels={showCloudApiModels ? cloudModels : []}
+              activeCloudModelId={showCloudApiModels ? cloudModel : ""}
+              onSelectCloudModel={setCloudModel}
               artifactsByMessage={artifactsByMessage}
               onCreateArtifact={createArtifact}
               onOpenArtifact={openArtifactHandler}

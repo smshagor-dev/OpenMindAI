@@ -24,6 +24,7 @@ import { attachmentContextStats, inferChatMode, type AttachmentDraft } from "../
 import { transcribeAudioBlob } from "../lib/media";
 import { api } from "../api";
 import { ModelSelector } from "./ModelSelector";
+import type { CloudModel } from "../cloudApi";
 
 export function Composer(props: {
   prompt: string;
@@ -47,6 +48,10 @@ export function Composer(props: {
   modelSwitching: boolean;
   modelSwitchError: string | null;
   onSelectModel: (modelId: string) => void;
+  showCloudModels?: boolean;
+  cloudModels?: CloudModel[];
+  activeCloudModelId?: string;
+  onSelectCloudModel?: (modelId: string) => void;
   placeholder?: string;
   note?: string;
 }) {
@@ -421,15 +426,32 @@ export function Composer(props: {
             rows={1}
           />
           <div className="composer-trailing">
-            <ModelSelector
-              models={props.models}
-              activeModelId={props.activeModelId}
-              runtime={props.runtime}
-              switching={props.modelSwitching}
-              disabled={props.backgroundBusy || props.streaming || props.submitting}
-              switchError={props.modelSwitchError}
-              onSelect={props.onSelectModel}
-            />
+            {props.showCloudModels ? (
+              <label className="cloud-composer-model" title="Authenticated OpenMindAI Cloud API model">
+                <span className="sr-only">Cloud API model</span>
+                <select
+                  className="cloud-model-select"
+                  aria-label="Cloud API model"
+                  value={props.activeCloudModelId ?? ""}
+                  disabled={props.backgroundBusy || props.streaming || props.submitting}
+                  onChange={(event) => props.onSelectCloudModel?.(event.currentTarget.value)}
+                >
+                  {(props.cloudModels ?? []).map((model) => (
+                    <option key={model.id} value={model.id}>{model.name || model.id}</option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <ModelSelector
+                models={props.models}
+                activeModelId={props.activeModelId}
+                runtime={props.runtime}
+                switching={props.modelSwitching}
+                disabled={props.backgroundBusy || props.streaming || props.submitting}
+                switchError={props.modelSwitchError}
+                onSelect={props.onSelectModel}
+              />
+            )}
             <button
               type="button"
               className={recording ? "icon-button mic-active" : "icon-button"}

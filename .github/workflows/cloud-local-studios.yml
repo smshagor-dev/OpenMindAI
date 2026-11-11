@@ -1,0 +1,30 @@
+name: Cloud and Local Studios contract tests
+
+on:
+  pull_request:
+    paths:
+      - "src/cloudApi.ts"
+      - "src/components/StudioHub.tsx"
+      - "src-tauri/src/cloud_bridge.rs"
+      - "services/local-3d-worker/**"
+      - ".github/workflows/cloud-local-studios.yml"
+  push:
+    branches:
+      - feature/cloud-local-studios-web-search-20261111
+
+permissions:
+  contents: read
+
+jobs:
+  local-3d-worker:
+    name: Local 3D GLB and HTTP security contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Test GPU job contract without requiring physical GPU
+        run: python -m unittest discover -s services/local-3d-worker -p "test_*.py" -v
+      - name: Check Python compilation
+        run: python -m py_compile services/local-3d-worker/worker.py services/local-3d-worker/test_worker.py

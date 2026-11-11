@@ -46,6 +46,9 @@
         "installerIcon": "icons/icon.ico",
         "uninstallerIcon": "icons/icon.ico"
       }
+    },
+    "resources": {
+      "../services/local-3d-worker/worker.py": "local-3d-worker/worker.py"
     }
   },
   "plugins": {

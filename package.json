@@ -32,7 +32,8 @@
     "format": "prettier --write .",
     "check:version": "node scripts/check-version-consistency.mjs",
     "check:release": "node scripts/check-release-readiness.mjs",
-    "check:models": "node scripts/check-model-catalog.mjs"
+    "check:models": "node scripts/check-model-catalog.mjs",
+    "test:routing": "node --experimental-strip-types --test tests/executionRouting.test.mjs"
   },
   "allowScripts": {
     "esbuild@0.25.12": true

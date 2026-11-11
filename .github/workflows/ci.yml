@@ -80,6 +80,9 @@ jobs:
       - name: Composer IME regression
         run: npm run test:ime
 
+      - name: Auto routing and offline regression
+        run: npm run test:routing
+
       - name: Lint
         run: npm run lint
 
