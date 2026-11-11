@@ -6,10 +6,102 @@ use reqwest::{Client, Method, StatusCode};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, OnceLock};
+use tauri::Manager;
 
 const CLOUD_BASE: &str = "https://cloud.openmindai.org/api/v1/";
 const CREDENTIAL_SLOT: &str = "openmindai-cloud-user-session";
 const LOCAL_GPU_BASE: &str = "http://127.0.0.1:8765/";
+
+static GPU_WORKER: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
+
+fn worker_process() -> &'static Mutex<Option<Child>> {
+    GPU_WORKER.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) fn stop_gpu_worker() {
+    if let Ok(mut running) = worker_process().lock() {
+        if let Some(mut worker) = running.take() {
+            let _ = worker.kill();
+            let _ = worker.wait();
+        }
+    }
+}
+
+fn worker_script(app: &tauri::AppHandle) -> Result<PathBuf, AppError> {
+    if let Ok(resource) = app.path().resolve(
+        "local-3d-worker/worker.py", tauri::path::BaseDirectory::Resource,
+    ) {
+        if resource.is_file() {
+            return Ok(resource);
+        }
+    }
+    // Development checkouts can run without a complete Tauri bundle.
+    let current = std::env::current_dir().map_err(|_| failure("Cannot locate the local worker"))?;
+    for candidate in [
+        current.join("services/local-3d-worker/worker.py"),
+        current.join("../services/local-3d-worker/worker.py"),
+    ] {
+        if candidate.is_file() { return Ok(candidate); }
+    }
+    Err(failure("Bundled local GPU worker is missing"))
+}
+
+fn spawn_python_worker(script: &Path) -> Result<Child, AppError> {
+    #[cfg(windows)]
+    let (python, prefix): (&str, &[&str]) = ("py", &["-3"]);
+    #[cfg(not(windows))]
+    let (python, prefix): (&str, &[&str]) = ("python3", &[]);
+    let mut cmd = Command::new(python);
+    cmd.args(prefix).arg("-I").arg(script)
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    cmd.spawn().map_err(|_| failure(
+        "Python 3 was not found. Install Python 3 plus numpy and pyopencl for local GPU meshes",
+    ))
+}
+
+#[tauri::command]
+pub(crate) async fn local_gpu_start(app: tauri::AppHandle) -> Result<Value, AppError> {
+    // Avoid duplicate workers; never terminate an unrelated worker on this port.
+    if let Ok(status) = local_gpu_health().await {
+        return Ok(status);
+    }
+    let script = worker_script(&app)?;
+    {
+        let mut guard = worker_process().lock().map_err(|_| failure("GPU worker state locked"))?;
+        let running = match guard.as_mut() {
+            Some(child) => child.try_wait().map_err(|_| failure("Could not inspect GPU worker"))?.is_none(),
+            None => false,
+        };
+        if !running {
+            guard.take();
+            *guard = Some(spawn_python_worker(&script)?);
+        }
+    }
+    for _ in 0..15 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        if let Ok(status) = local_gpu_health().await {
+            return Ok(status);
+        }
+    }
+    Err(failure("GPU worker failed to start or did not bind 127.0.0.1:8765. Check OpenCL drivers and Python dependencies."))
+}
+
+#[tauri::command]
+pub(crate) fn local_gpu_stop() -> Result<(), AppError> {
+    stop_gpu_worker();
+    Ok(())
+}
+
+async fn local_gpu_health() -> Result<Value, AppError> {
+    let response = client()?.get(format!("{LOCAL_GPU_BASE}health"))
+        .header("X-OpenMindAI-Desktop", "1")
+        .send().await.map_err(|_| failure("Local GPU worker is offline"))?;
+    decode(response).await
+}
+
 
 fn failure(message: impl Into<String>) -> AppError {
     AppError::Internal(format!("Cloud/Studio: {}", message.into()))
