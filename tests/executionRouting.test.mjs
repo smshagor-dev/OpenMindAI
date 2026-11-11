@@ -4,6 +4,7 @@ import {
   selectExecutionRoute, isRecoverableCloudFailure, runWithFallback,
   shouldShowCloudModels, cloudProbeDelayMs, requestsLocalOnly, offlineSourceNotice, ResponsePersistenceError,
 } from "../src/lib/executionRouting.ts";
+import { beginSetupPreparation, setupExecutionMode, setupPreparationPending, completeSetupPreparation } from "../src/lib/setupExecutionMode.ts";
 
 test("auto routing prefers Cloud when authenticated and online", () => {
   assert.equal(selectExecutionRoute({preference:"auto",task:"chat",online:true,cloudConnected:true,cloudModelReady:true}).target,"cloud");
@@ -111,4 +112,30 @@ test("Cloud-only runs no Local fallback even after a network error", async () =>
     throw new Error("Cloud API request failed");
   }, async () => { localCalls++; return "wrong"; }), /Cloud API request failed/);
   assert.equal(localCalls,0);
+});
+
+test("first-run Cloud/Local/Both choice survives simulated relaunch before downloads", () => {
+  const originalWindow = globalThis.window;
+  const storage = new Map();
+  globalThis.window = { localStorage: {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, String(value)),
+    removeItem: (key) => storage.delete(key),
+  } };
+  try {
+    for (const mode of ["cloud", "local", "auto"]) {
+      beginSetupPreparation(mode);
+      assert.equal(setupExecutionMode(), mode);
+      assert.equal(setupPreparationPending(), true);
+      completeSetupPreparation();
+      assert.equal(setupPreparationPending(), false);
+      assert.equal(setupExecutionMode(), mode);
+    }
+    storage.set("openmindai.setup.executionMode.v1", "invalid");
+    assert.equal(setupExecutionMode(), null, "never trust an invalid persisted execution mode");
+    assert.equal(setupPreparationPending(), false);
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
 });
