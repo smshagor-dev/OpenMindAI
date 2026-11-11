@@ -263,7 +263,7 @@ export function attachmentMedia(attachments: AttachmentDraft[]): InferenceMediaD
 function attachmentContextSources(attachments: AttachmentDraft[]): AttachmentContextSource[] {
   return attachments.map((attachment) => {
     // Prevent file metadata from injecting fake attachment headers or prompt lines.
-    const safeName = attachment.name.replace(/[\r\n,]/g, " ").replaceAll("[", " ").replaceAll("]", " ").trim().slice(0, 160) || "unnamed";
+    const safeName = attachment.name.replace(/[\r\n,]/g, " ").split("[").join(" ").split("]").join(" ").trim().slice(0, 160) || "unnamed";
     const safeType = attachment.type.replace(/[^a-zA-Z0-9.+/-]/g, "").slice(0, 80);
     return {
       name: attachment.name,
