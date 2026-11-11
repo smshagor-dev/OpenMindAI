@@ -56,6 +56,18 @@ export function selectExecutionRoute(input: RouteInput): RouteDecision {
  * API model discovery is a private, authenticated Cloud feature.
  * Never show cached hosted models when signed out, offline or using Local.
  */
+/** Foreground Cloud-health probing, aligned with Mobile's bounded backoff. */
+export function cloudProbeDelayMs(
+  connected: boolean,
+  consecutiveFailures: number,
+  jitter = 1,
+): number {
+  if (connected) return 60_000;
+  const attempts = Math.max(1, Math.floor(consecutiveFailures));
+  const seconds = Math.min(60, 5 * 2 ** Math.min(4, attempts - 1));
+  return Math.round(seconds * 1000 * Math.max(0.8, Math.min(1.2, jitter)));
+}
+
 /** Mirrors Mobile's explicit offline/local-only privacy override. */
 export function requestsLocalOnly(prompt: string): boolean {
   return /\b(offline[ -]only|local[ -]only|on[ -]device only|without internet|no cloud|do not (use|send|upload|share).{0,25}(cloud|internet|server)|don['’]?t (use|send|upload|share).{0,25}(cloud|internet|server)|only (use )?(local|offline))\b|শুধু\s*(লোকাল|অফলাইন)|ইন্টারনেট\s*ছা[ড়ড]া|ক্লাউডে\s*পাঠা(?:বে\s*না|বেন\s*না)|без\s+интернета|только\s+локально|не\s+отправл.{0,20}облак/i.test(prompt);
