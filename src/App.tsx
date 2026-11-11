@@ -102,6 +102,9 @@ export function App() {
   const [routeNotice, setRouteNotice] = useState<string | null>(null);
   const [studioSubmission, setStudioSubmission] = useState<string | null>(null);
   const [studioOutboxReady, setStudioOutboxReady] = useState(false);
+  const [cloudConnection, setCloudConnection] = useState<CloudConnection | null>(null);
+  const [cloudModels, setCloudModels] = useState<CloudModel[]>([]);
+  const [cloudModel, setCloudModel] = useState("");
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
     let active = true;
@@ -132,9 +135,6 @@ export function App() {
     })().catch(() => undefined);
     return () => { active = false; };
   }, [studioOutboxReady, internetAvailable, cloudConnection?.connected, executionMode]);
-  const [cloudConnection, setCloudConnection] = useState<CloudConnection | null>(null);
-  const [cloudModels, setCloudModels] = useState<CloudModel[]>([]);
-  const [cloudModel, setCloudModel] = useState("");
   useEffect(() => {
     let alive = true;
     void cloud.status().then((status) => {
