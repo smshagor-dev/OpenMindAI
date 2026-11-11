@@ -153,7 +153,11 @@ export function App() {
             ? selected : available[0]?.id ?? "");
         }
       } catch {
-        if (alive) setCloudConnection((current) => current ? { ...current, connected: false } : current);
+        if (alive) {
+          setCloudConnection((current) => current ? { ...current, connected: false } : current);
+          setCloudModels([]);
+          setCloudModel("");
+        }
       }
     };
     void checkCloud();
@@ -190,10 +194,12 @@ export function App() {
   }, []);
   const connectedCloud = (connection: CloudConnection) => {
     setCloudConnection(connection);
+    setCloudModels([]);
+    setCloudModel("");
     void cloud.models().then((models) => {
       setCloudModels(models);
       setCloudModel((selected) => models.some((model) => model.id === selected) ? selected : models[0]?.id ?? "");
-    }).catch(() => setCloudModels([]));
+    }).catch(() => { setCloudModels([]); setCloudModel(""); });
   };
   const [root, setRoot] = useState<PortableRootInfo | null>(null);
   const [installationStatus, setInstallationStatus] = useState<InstallationStatus | null>(null);
@@ -1332,7 +1338,7 @@ export function App() {
                 <span className={internetAvailable && cloudConnection?.connected ? "studio-dot good" : "studio-dot"} /> Cloud
               </button>
             </div>
-            {view === "work" && showCloudApiModels ? (
+            {view === "work" && !workThreadId && showCloudApiModels ? (
               <select className="cloud-model-select" aria-label="Cloud API model" value={cloudModel} onChange={(event) => setCloudModel(event.target.value)}>
                 {cloudModels.map((model) => <option key={model.id} value={model.id}>{model.name || model.id}</option>)}
               </select>
@@ -1546,6 +1552,10 @@ export function App() {
               modelSwitching={modelSwitching}
               modelSwitchError={modelSwitchError}
               onSelectModel={selectModel}
+              showCloudModels={showCloudApiModels}
+              cloudModels={showCloudApiModels ? cloudModels : []}
+              activeCloudModelId={showCloudApiModels ? cloudModel : ""}
+              onSelectCloudModel={setCloudModel}
               artifactsByMessage={artifactsByMessage}
               onCreateArtifact={createArtifact}
               onOpenArtifact={openArtifactHandler}
