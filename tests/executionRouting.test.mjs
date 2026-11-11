@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   selectExecutionRoute, isRecoverableCloudFailure, runWithFallback,
-  offlineSourceNotice, ResponsePersistenceError,
+  shouldShowCloudModels, offlineSourceNotice, ResponsePersistenceError,
 } from "../src/lib/executionRouting.ts";
 
 test("auto routing prefers Cloud when authenticated and online", () => {
@@ -55,4 +55,14 @@ test("offline web search cannot claim verified live sources",()=>{
   assert.ok(result.endsWith("Is this headline true?"));
   assert.equal(isRecoverableCloudFailure("HTTP 401: session expired"),false);
   assert.equal(isRecoverableCloudFailure("HTTP 503: unavailable"),true);
+});
+
+test("the API model selector appears only when online and Cloud is authenticated", () => {
+  for (const mode of ["auto", "cloud"]) {
+    assert.equal(shouldShowCloudModels(mode, true, true, 3), true, mode);
+    assert.equal(shouldShowCloudModels(mode, false, true, 3), false, "offline");
+    assert.equal(shouldShowCloudModels(mode, true, false, 3), false, "signed out");
+    assert.equal(shouldShowCloudModels(mode, true, true, 0), false, "no hosted models");
+  }
+  assert.equal(shouldShowCloudModels("local", true, true, 2), false, "Local always shows local models");
 });
