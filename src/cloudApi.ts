@@ -77,7 +77,7 @@ export const cloud = {
     cloud.request<StudioJob | { asset: { id: number } }>("3d-studio/jobs/image-model", "POST", {
       upload_id: uploadId, request_key: crypto.randomUUID(),
     }),
-  studioScene: (prompt: string, mode: "object" | "architecture", requestKey = crypto.randomUUID()) =>
+  studioScene: (prompt: string, mode: "object" | "architecture", requestKey: string = crypto.randomUUID()) =>
     cloud.request<StudioJob>("3d-studio/jobs/scene", "POST", {
       prompt: prompt.slice(0, 8000), mode, request_key: requestKey,
     }),
@@ -87,7 +87,7 @@ export const cloud = {
   startGpu: () => call<{ gpu_active: boolean; gpu?: string; engine?: string }>("local_gpu_start"),
   stopGpu: () => call<void>("local_gpu_stop"),
   gpuHealth: () => cloud.gpu<{ gpu_active: boolean; gpu?: string; engine?: string }>("health"),
-  gpuScene: (prompt: string, mode: "object" | "architecture", requestKey = crypto.randomUUID()) =>
+  gpuScene: (prompt: string, mode: "object" | "architecture", requestKey: string = crypto.randomUUID()) =>
     cloud.gpu<StudioJob>("jobs", "POST", {
       prompt: prompt.slice(0, 8000), mode, request_key: requestKey,
     }),
@@ -103,7 +103,7 @@ export const cloud = {
     return oneTimeOutboxRecovery;
   },
   outboxList: () => call<QueuedScene[]>("studio_outbox_list"),
-  queueScene: (prompt: string, mode: "object" | "architecture", requestKey = crypto.randomUUID()) =>
+  queueScene: (prompt: string, mode: "object" | "architecture", requestKey: string = crypto.randomUUID()) =>
     call<QueuedScene[]>("studio_outbox_enqueue", {
       kind: "scene3d", requestKey, payload: { prompt, mode },
     }),
