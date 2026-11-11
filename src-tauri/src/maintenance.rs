@@ -121,7 +121,7 @@ pub fn run_diagnostics(
         ("mediaSpeak", "OpenMindAI Speak", "audio"),
     ] {
         let report =
-            media_preflight::preflight_for_hardware(root, kind, hardware)?.ok_or_else(|| {
+            media_preflight::preflight_for_hardware_fast(root, kind, hardware)?.ok_or_else(|| {
                 AppError::internal(format!("no media preflight configured for {kind}"))
             })?;
         let detail = report.issue_summary();
