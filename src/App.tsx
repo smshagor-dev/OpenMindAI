@@ -1,4 +1,4 @@
-import { Archive, Check, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
+import { Archive, Check, Cloud, Cpu, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type SetStateAction } from "react";
 import { io, type Socket } from "socket.io-client";
@@ -44,6 +44,8 @@ import { PreviewPanel, type PreviewTarget } from "./components/PreviewPanel";
 import { ToolsWorkspace } from "./components/ToolsWorkspace";
 import { ProjectsWorkspace } from "./components/ProjectsWorkspace";
 import { WorkWorkspace } from "./components/WorkWorkspace";
+import { StudioHub } from "./components/StudioHub";
+import { cloud, hostedChat, type CloudConnection, type CloudModel, type ExecutionMode, type StudioSection } from "./cloudApi";
 import { notifyUser } from "./lib/notify";
 import {
   attachmentKind,
@@ -61,7 +63,7 @@ import { formatError } from "./lib/format";
 import { imageRendererPrompt, persistDirectImageRequest, plainImageRequest } from "./lib/imageGeneration";
 import { ConversationState } from "./lib/conversationState";
 
-type View = "chat" | "work" | "settings" | "tools" | "projects";
+type View = "chat" | "work" | "settings" | "tools" | "projects" | StudioSection;
 
 type RuntimeAction = "start" | "restart" | "stop";
 
@@ -94,6 +96,28 @@ export function App() {
   const backgroundRuns = [...chatSnapshot.runs.keys()].filter((id) => id !== activeId && chatState.isBusy(id));
   const copyrightYear = new Date().getFullYear();
   const [view, setView] = useState<View>("chat");
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>("local");
+  const [cloudConnection, setCloudConnection] = useState<CloudConnection | null>(null);
+  const [cloudModels, setCloudModels] = useState<CloudModel[]>([]);
+  const [cloudModel, setCloudModel] = useState("");
+  useEffect(() => {
+    let alive = true;
+    void cloud.status().then((status) => {
+      if (!alive) return;
+      setCloudConnection(status);
+      if (status.connected) void cloud.models().then((models) => {
+        if (alive) { setCloudModels(models); setCloudModel((selected) => selected || models[0]?.id || ""); }
+      }).catch(() => undefined);
+    }).catch(() => undefined);
+    return () => { alive = false; };
+  }, []);
+  const connectedCloud = (connection: CloudConnection) => {
+    setCloudConnection(connection);
+    void cloud.models().then((models) => {
+      setCloudModels(models);
+      setCloudModel((selected) => selected || models[0]?.id || "");
+    }).catch(() => setCloudModels([]));
+  };
   const [root, setRoot] = useState<PortableRootInfo | null>(null);
   const [installationStatus, setInstallationStatus] = useState<InstallationStatus | null>(null);
   const [wizardActive, setWizardActive] = useState<boolean | null>(null);
@@ -506,9 +530,14 @@ export function App() {
           setConversations((items) => items.map((conversation) => conversation.id === conversationId ? { ...conversation, title: generatedTitle } : conversation));
         }
       }
-      const assistant = inferredMode === "image"
-        ? await persistDirectImageRequest(conversationId, messageContent, api)
-        : await api.sendChatMessage(conversationId, messageContent, inferredMode, inferenceMedia);
+      if (executionMode === "cloud" && (inferenceMedia.length > 0 || !["chat", "thinking", "search", "research"].includes(inferredMode))) {
+        throw new Error("This operation currently requires Local mode. Cloud chat supports text, thinking, web search and sourced research.");
+      }
+      const assistant = executionMode === "cloud"
+        ? await hostedChat(conversationId, messageContent, cloudModel, inferredMode)
+        : inferredMode === "image"
+          ? await persistDirectImageRequest(conversationId, messageContent, api)
+          : await api.sendChatMessage(conversationId, messageContent, inferredMode, inferenceMedia);
       requestScope.setMessages((items) => items.filter((message) => message.id !== optimisticUser?.id));
       const generationKind = generationKindForMode(inferredMode);
       if (generationKind) {
@@ -532,7 +561,7 @@ export function App() {
       chatState.finishRequest(lease);
     }
   }, [activeId, attachments, chatState, conversations, editingMessageId, imageOptions, pendingModelId,
-    preferences?.autoGenerateTitles, preferences?.openArtifactsAfterGeneration, prompt, refreshMessages, setActiveId, setAttachments, setPrompt, showError]);
+    executionMode, cloudModel, preferences?.autoGenerateTitles, preferences?.openArtifactsAfterGeneration, prompt, refreshMessages, setActiveId, setAttachments, setPrompt, showError]);
 
   const sendWorkTask = useCallback(async (conversationId: string, content: string) => {
     const task = content.trim();
@@ -550,14 +579,19 @@ export function App() {
         await api.renameConversation(conversationId, generatedTitle);
         setConversations((items) => items.map((conversation) => conversation.id === conversationId ? { ...conversation, title: generatedTitle } : conversation));
       }
-      await api.sendChatMessage(conversationId, messageContent, inferredMode, []);
+      if (executionMode === "cloud") {
+        if (!["chat", "thinking", "search", "research"].includes(inferredMode)) throw new Error("This Work operation requires Local mode.");
+        await hostedChat(conversationId, messageContent, cloudModel, inferredMode);
+      } else {
+        await api.sendChatMessage(conversationId, messageContent, inferredMode, []);
+      }
       await refreshMessages(conversationId);
       setConversations(await api.conversations());
     } catch (caught) {
       requestScope.setError(formatError(caught));
       await refreshMessages(conversationId);
     } finally { chatState.finishRequest(lease); }
-  }, [chatState, refreshMessages, setActiveId, setAttachments, setPrompt]);
+  }, [chatState, refreshMessages, setActiveId, setAttachments, setPrompt, executionMode, cloudModel]);
 
   const cancelConversationGeneration = useCallback(async (conversationId: string) => {
     try { await chatState.cancelGeneration(conversationId, api.cancelGeneration); }
@@ -603,14 +637,19 @@ export function App() {
     if (!lease) return;
     const requestScope = chatState.scope(activeId);
     try {
-      await api.regenerateMessage(activeId, assistantMessageId, mode);
+      if (executionMode === "cloud") {
+        if (!user) throw new Error("The original user message is unavailable.");
+        await hostedChat(activeId, user.content, cloudModel, mode, assistantMessageId);
+      } else {
+        await api.regenerateMessage(activeId, assistantMessageId, mode);
+      }
       await refreshMessages(activeId);
       await refreshApp();
     } catch (caught) {
       requestScope.setError(formatError(caught));
       await refreshMessages(activeId);
     } finally { chatState.finishRequest(lease); }
-  }, [activeId, chatState, messages, refreshApp, refreshMessages]);
+  }, [activeId, chatState, messages, refreshApp, refreshMessages, executionMode, cloudModel]);
 
   const selectModel = useCallback(
     async (modelId: string) => {
@@ -1063,6 +1102,7 @@ export function App() {
         onOpenDatasets={() => setDatasetsOpen(true)}
         onOpenTools={() => setView("tools")}
         onOpenProjects={() => setView("projects")}
+        onOpenStudio={(section) => setView(section)}
         onOpenSettings={(section) => {
           setSettingsSection(section ?? "general");
           setView("settings");
@@ -1107,7 +1147,13 @@ export function App() {
                       ? "Work"
                       : view === "projects"
                         ? "Projects"
-                        : "Settings"}
+                        : view === "research-studio"
+                        ? "Research Studio"
+                        : view === "3d-studio"
+                          ? "3D Studio"
+                          : view === "web-search"
+                            ? "Web Search"
+                            : "Settings"}
               </h1>
             )}
           </div>
@@ -1127,6 +1173,19 @@ export function App() {
                 setView("work");
               }}
             />
+            <div className="execution-mode-switch" role="group" aria-label="AI execution mode">
+              <button type="button" className={executionMode === "local" ? "active" : ""} aria-pressed={executionMode === "local"} onClick={() => setExecutionMode("local")} title="Use this computer for local inference">
+                <Cpu size={14} /> Local
+              </button>
+              <button type="button" className={executionMode === "cloud" ? "active" : ""} aria-pressed={executionMode === "cloud"} onClick={() => setExecutionMode("cloud")} title={cloudConnection?.connected ? "Connected to OpenMindAI Cloud" : "Sign in from Research Studio to use Cloud"}>
+                <span className={cloudConnection?.connected ? "studio-dot good" : "studio-dot"} /> Cloud
+              </button>
+            </div>
+            {executionMode === "cloud" && cloudModels.length > 0 ? (
+              <select className="cloud-model-select" aria-label="Cloud model" value={cloudModel} onChange={(event) => setCloudModel(event.target.value)}>
+                {cloudModels.map((model) => <option key={model.id} value={model.id}>{model.name || model.id}</option>)}
+              </select>
+            ) : null}
           </div>
           <div className="topbar-actions">
             {view === "chat" && activeConversation ? (
@@ -1263,6 +1322,15 @@ export function App() {
             onCancelImageArtifact={cancelImageArtifact}
             imageProgressByArtifact={imageProgressByArtifact}
             onPreview={setPreviewTarget}
+          />
+        ) : view === "research-studio" || view === "3d-studio" || view === "web-search" ? (
+          <StudioHub
+            section={view}
+            mode={executionMode}
+            connection={cloudConnection}
+            onConnected={connectedCloud}
+            onDisconnect={() => { setCloudConnection({ connected: false, user: null, message: null }); setCloudModels([]); setCloudModel(""); }}
+            onLocalPrompt={startToolPrompt}
           />
         ) : view === "tools" ? (
           <ToolsWorkspace
