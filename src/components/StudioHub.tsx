@@ -29,6 +29,48 @@ function safeWebLink(value: string | undefined): string | null {
   return null;
 }
 
+async function encodeReference(file: File): Promise<{ data: string; preview: string }> {
+  if (!["image/png", "image/jpeg", "image/webp"].includes(file.type) || file.size > 2_950_000 || file.size === 0)
+    throw new Error("Choose a PNG, JPEG or WebP reference up to 2.95 MB.");
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 8192)
+    binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  const bitmap = await createImageBitmap(file);
+  const canvas = document.createElement("canvas");
+  const ratio = Math.min(1, 480 / Math.max(bitmap.width, bitmap.height));
+  canvas.width = Math.max(1, Math.floor(bitmap.width * ratio));
+  canvas.height = Math.max(1, Math.floor(bitmap.height * ratio));
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Image preview could not be generated.");
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  let preview = canvas.toDataURL("image/jpeg", 0.65);
+  if (preview.length > 175_000) {
+    canvas.width = Math.max(1, Math.floor(canvas.width * .65));
+    canvas.height = Math.max(1, Math.floor(canvas.height * .65));
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    preview = canvas.toDataURL("image/jpeg", .52);
+  }
+  if (preview.length > 175_000) throw new Error("Image preview exceeds Cloud's 175 KB limit.");
+  return { data: btoa(binary), preview };
+}
+
+function saveMesh(data: { filename: string; data_base64: string }) {
+  const bytes = Uint8Array.from(atob(data.data_base64), (character) => character.charCodeAt(0));
+  if (bytes.byteLength < 12 || String.fromCharCode(...bytes.subarray(0, 4)) !== "glTF")
+    throw new Error("The returned asset is not a valid GLB mesh.");
+  const blob = new Blob([bytes], { type: "model/gltf-binary" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = data.filename.replace(/[^a-z0-9._-]/gi, "_").slice(0, 120) || "openmindai-3d.glb";
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 3000);
+}
+
 const sectionLabels: Record<StudioSection, string> = {
   "research-studio": "Research Studio",
   "3d-studio": "3D Studio",
@@ -44,6 +86,8 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
   const [input, setInput] = useState("");
   const [title, setTitle] = useState("");
   const [shapeMode, setShapeMode] = useState<"object" | "architecture">("object");
+  const [referenceImage, setReferenceImage] = useState<File | null>(null);
+  const [directAsset, setDirectAsset] = useState<number | null>(null);
   const [projects, setProjects] = useState<ResearchProject[]>([]);
   const [selectedProject, setSelectedProject] = useState<number | null>(null);
   const [researchInfo, setResearchInfo] = useState<Record<string, unknown> | null>(null);
@@ -76,6 +120,7 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
     setError(null);
     setNotice(null);
     setJob(null);
+    setDirectAsset(null);
     setResults([]);
     setResearchInfo(null);
     if ((online && connection?.connected) || (!online && section === "3d-studio")) {
@@ -126,9 +171,25 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
       setProjects(await cloud.researchProjects());
       setNotice("Research run submitted. The Cloud queue controls its execution.");
     } else {
-      const created = online ? await cloud.studioScene(prompt, shapeMode) : await cloud.gpuScene(prompt, shapeMode);
-      setJob(created);
-      setNotice("3D job submitted. Processing status comes from the selected engine.");
+      if (online && referenceImage) {
+        const encoded = await encodeReference(referenceImage);
+        const upload = await cloud.uploadStudioImage(referenceImage.name, encoded.data, encoded.preview);
+        const created = await cloud.imageToMesh(upload.id);
+        if ("asset" in created) {
+          setDirectAsset(created.asset.id);
+          setJob(null);
+          setNotice("Cloud created a 3D mesh asset. Download the GLB below.");
+        } else {
+          setJob(created);
+          setDirectAsset(null);
+          setNotice("Image-to-mesh job submitted. Refresh or follow the live job status.");
+        }
+      } else {
+        const created = online ? await cloud.studioScene(prompt, shapeMode) : await cloud.gpuScene(prompt, shapeMode);
+        setJob(created);
+        setDirectAsset(null);
+        setNotice("3D job submitted. Processing status comes from the selected engine.");
+      }
     }
   });
 
@@ -188,6 +249,13 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
                 <button type="button" className={shapeMode === "object" ? "studio-choice active" : "studio-choice"} onClick={() => setShapeMode("object")}>Object</button>
                 <button type="button" className={shapeMode === "architecture" ? "studio-choice active" : "studio-choice"} onClick={() => setShapeMode("architecture")}>Architecture</button>
               </div>
+            ) : null}
+            {section === "3d-studio" && online ? (
+              <label>Optional reference image for a real image-to-3D mesh (Cloud)
+                <input type="file" accept="image/png,image/jpeg,image/webp"
+                  onChange={(event) => setReferenceImage(event.currentTarget.files?.[0] ?? null)} />
+                <small>{referenceImage ? referenceImage.name : "No image selected. Text prompt creates a Cloud scene."}</small>
+              </label>
             ) : null}
             <label>{section === "web-search" ? "Search query" : "Instructions"}
               <textarea rows={4} value={input} onChange={(event) => setInput(event.target.value)}
@@ -249,6 +317,18 @@ export function StudioHub({ section, mode, connection, onConnected, onDisconnect
                   {job.error ? <p role="alert">{job.error}</p> : null}
                   <details><summary>Job result and events</summary><pre>{JSON.stringify(job, null, 2).slice(0, 18000)}</pre></details>
                 </div>
+              ) : null}
+              {(directAsset ?? (job?.result && typeof job.result === "object" && "asset_id" in job.result
+                ? Number((job.result as { asset_id: number }).asset_id) : null)) || (!online && job?.status === "completed") ? (
+                <button className="studio-primary studio-download" disabled={busy} onClick={() => void action(async () => {
+                  const assetId = directAsset ?? (job?.result && typeof job.result === "object" && "asset_id" in job.result
+                    ? Number((job.result as { asset_id: number }).asset_id) : null);
+                  const file = online
+                    ? await cloud.downloadMesh(assetId ?? 0)
+                    : await cloud.gpuMesh(job?.id ?? "");
+                  saveMesh(file);
+                  setNotice("Full 3D GLB mesh downloaded.");
+                })}>Download 3D mesh (.glb)</button>
               ) : null}
               <small>Job completion and downloadable mesh availability are reported by the backend; no 2.5D image is presented as a full mesh.</small>
             </section>
