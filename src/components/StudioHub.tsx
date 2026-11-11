@@ -108,7 +108,7 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
     online: internetAvailable, cloudConnected: Boolean(connection?.connected), cloudModelReady: true,
   });
   const online = decision.target === "cloud";
-  const requireCloudLogin = internetAvailable && !connection?.connected && (mode === "cloud" || showCloudLogin);
+  const requireCloudLogin = internetAvailable && !connection?.connected && showCloudLogin;
 
   const action = useCallback(async (run: () => Promise<void>) => {
     setBusy(true); setError(null); setNotice(null);
