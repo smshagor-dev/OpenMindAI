@@ -46,7 +46,7 @@ import { ProjectsWorkspace } from "./components/ProjectsWorkspace";
 import { WorkWorkspace } from "./components/WorkWorkspace";
 import { StudioHub } from "./components/StudioHub";
 import { cloud, hostedChat, submitQueuedScene, type CloudConnection, type CloudModel, type ExecutionMode, type StudioSection } from "./cloudApi";
-import { offlineSourceNotice, runWithFallback, selectExecutionRoute, shouldShowCloudModels } from "./lib/executionRouting";
+import { offlineSourceNotice, requestsLocalOnly, runWithFallback, selectExecutionRoute, shouldShowCloudModels } from "./lib/executionRouting";
 import { notifyUser } from "./lib/notify";
 import {
   attachmentKind,
@@ -121,7 +121,8 @@ export function App() {
     void (async () => {
       // Only a saved, never-submitted job is dispatched automatically.
       // Interrupted/uncertain jobs stay in review state, not silently replayed.
-      const pending = (await cloud.outboxList()).filter((item) => item.status === "queued");
+      const pending = (await cloud.outboxList()).filter((item) =>
+        item.status === "queued" && !requestsLocalOnly(item.payload.prompt));
       if (!pending.length) return;
       await cloud.studioEngines(); // read-only connectivity and capability preflight
       for (const item of pending) {
@@ -622,8 +623,10 @@ export function App() {
         online: internetAvailable,
         cloudConnected: Boolean(cloudConnection?.connected),
         cloudModelReady: Boolean(cloudModel),
+        forceLocal: requestsLocalOnly(content),
       });
-      const localOffline = !internetAvailable && ["search", "research"].includes(inferredMode);
+      const localOffline = (!internetAvailable || requestsLocalOnly(content)) &&
+        ["search", "research"].includes(inferredMode);
       const localContent = localOffline
         ? offlineSourceNotice(buildMessageContent(content, attachments, "chat"))
         : messageContent;
@@ -694,14 +697,16 @@ export function App() {
         online: internetAvailable,
         cloudConnected: Boolean(cloudConnection?.connected),
         cloudModelReady: Boolean(cloudModel),
+        forceLocal: requestsLocalOnly(task),
       });
       await runWithFallback(
         route,
         () => hostedChat(conversationId, messageContent, cloudModel, inferredMode),
         () => api.sendChatMessage(conversationId,
-          !internetAvailable && ["search", "research"].includes(inferredMode)
+          (!internetAvailable || requestsLocalOnly(task)) && ["search", "research"].includes(inferredMode)
             ? offlineSourceNotice(buildMessageContent(task, [], "chat")) : messageContent,
-          !internetAvailable && ["search", "research"].includes(inferredMode) ? "chat" : inferredMode, []),
+          (!internetAvailable || requestsLocalOnly(task)) && ["search", "research"].includes(inferredMode)
+            ? "chat" : inferredMode, []),
         (reason) => {
           setRouteNotice(reason);
           setCloudConnection((current) => current ? { ...current, connected: false } : current);
@@ -786,6 +791,7 @@ export function App() {
         online: internetAvailable,
         cloudConnected: Boolean(cloudConnection?.connected),
         cloudModelReady: Boolean(cloudModel),
+        forceLocal: user ? requestsLocalOnly(user.content) : false,
       });
       await runWithFallback(route,
         async () => {
@@ -793,7 +799,8 @@ export function App() {
           return hostedChat(activeId, user.content, cloudModel, mode, assistantMessageId);
         },
         () => api.regenerateMessage(activeId, assistantMessageId,
-          !internetAvailable && ["search", "research"].includes(mode) ? "chat" : mode),
+          (!internetAvailable || (user && requestsLocalOnly(user.content))) &&
+            ["search", "research"].includes(mode) ? "chat" : mode),
         (reason) => {
           setRouteNotice(reason);
           setCloudConnection((current) => current ? { ...current, connected: false } : current);
