@@ -1,5 +1,5 @@
-mod connected_action_ledger;
 mod cloud_bridge;
+mod connected_action_ledger;
 mod private_descriptor;
 #[cfg(any(windows, test))]
 mod sandbox_capture;
@@ -126,7 +126,10 @@ mod vision_batch;
 mod warm_start;
 
 pub(crate) use agent_runtime::{coding_agent_status, start_coding_agent};
-pub(crate) use cloud_bridge::{cloud_connect, cloud_login, cloud_disconnect, cloud_status, cloud_request, cloud_download_mesh, cloud_begin_regeneration, local_gpu_request, local_gpu_start, local_gpu_stop};
+pub(crate) use cloud_bridge::{
+    cloud_begin_regeneration, cloud_connect, cloud_disconnect, cloud_download_mesh, cloud_login,
+    cloud_request, cloud_status, local_gpu_request, local_gpu_start, local_gpu_stop,
+};
 pub(crate) use coding_control::{approve_coding_action, coding_run_snapshot, reject_coding_action};
 pub(crate) use coding_eval::run_coding_qualification;
 pub(crate) use connected_agent::{
