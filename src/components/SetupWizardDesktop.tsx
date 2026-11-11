@@ -396,6 +396,7 @@ function PreparingFlow(props: {
           <li>✓ GPU acceleration (when supported)</li>
           <li>✓ Offline mode</li>
         </ul>
+        {initialMode === "auto" ? <CloudAccountSetup /> : null}
         <div className="setup-actions">
           <button type="button" className="primary-button" onClick={() => props.onDismiss?.()}>
             Launch OpenMindAI
