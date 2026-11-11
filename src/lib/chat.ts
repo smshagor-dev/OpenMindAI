@@ -3,6 +3,12 @@ import { formatBytes } from "./format";
 import { analyzeVideoFile, transcribeAudioFile } from "./media";
 import { extractPdfText } from "./pdf";
 import { isImageGenerationIntent } from "./imageGeneration";
+import {
+  MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS,
+  planAttachmentContext,
+  serializeAttachmentContext,
+  type AttachmentContextSource,
+} from "./attachmentContext";
 
 export type ChatMode =
   | "chat"
@@ -44,9 +50,6 @@ export interface UserMessageDisplay {
 }
 
 const MAX_TEXT_ATTACHMENT_BYTES = 1024 * 1024;
-const MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS = 8_000;
-const MAX_TOTAL_ATTACHMENT_CONTEXT_CHARS = 16_000;
-const ATTACHMENT_TRUNCATION_MARKER = "\n[truncated to fit local chat context]";
 const MAX_VISION_IMAGE_INPUT_BYTES = 16 * 1024 * 1024;
 const MAX_VISION_IMAGE_DATA_URL_CHARS = 6_000_000;
 const MAX_VISION_IMAGE_DIMENSION = 2048;
@@ -64,13 +67,6 @@ const CHAT_MODES: ChatMode[] = [
   "sound",
   "vision",
 ];
-
-function takeAttachmentContext(value: string, limit: number) {
-  if (limit <= 0) return "";
-  if (value.length <= limit) return value;
-  if (limit <= ATTACHMENT_TRUNCATION_MARKER.length) return value.slice(0, limit);
-  return `${value.slice(0, limit - ATTACHMENT_TRUNCATION_MARKER.length)}${ATTACHMENT_TRUNCATION_MARKER}`;
-}
 
 function visionMimeType(file: File) {
   const declared = file.type.toLowerCase();
@@ -181,7 +177,12 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
   let mediaItems: InferenceMediaDraft[] = [];
 
   if (isTextLike) {
-    contentPreview = takeAttachmentContext(await file.text(), MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS);
+    // Retain the full bounded source until the user's query is known. Selecting
+    // only the first 8,000 characters here permanently loses deep evidence.
+    contentPreview = await file.text();
+    if (contentPreview.length > MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS) {
+      warning = "Long text file: OpenMindAI will send selected excerpts (8,000 characters per file, 16,000 total). Unselected text is not analyzed.";
+    }
   } else if (kind === "image") {
     const encoded = await encodeVisionImage(file);
     mediaDataUrl = encoded.dataUrl;
@@ -220,7 +221,12 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
       ? extracted.text
       : "[No reliable selectable text was found. Use the supplied rendered PDF page images for visual/OCR analysis.]";
     contentPreview = `[${extracted.unreadPages.length ? "PDF text-only" : "PDF processed locally"}: ${status}. Page markers below correspond to the original PDF.]\n${extracted.warnings.join("\n")}\n${body}`;
-    warning = extracted.warnings.join(" ") || undefined;
+    warning = [
+      ...extracted.warnings,
+      ...(extracted.truncated
+        ? ["PDF text extraction was truncated before chat-context excerpt selection."]
+        : []),
+    ].join(" ") || undefined;
   } else if (kind === "audio") {
     const transcript = await transcribeAudioFile(file);
     const language = transcript.language ? `, language ${transcript.language}` : "";
@@ -254,6 +260,23 @@ export function attachmentMedia(attachments: AttachmentDraft[]): InferenceMediaD
     .slice(0, MAX_INFERENCE_MEDIA_ITEMS);
 }
 
+function attachmentContextSources(attachments: AttachmentDraft[]): AttachmentContextSource[] {
+  return attachments.map((attachment) => {
+    // Prevent file metadata from injecting fake attachment headers or prompt lines.
+    const safeName = attachment.name.replace(/[\r\n,]/g, " ").split("[").join(" ").split("]").join(" ").trim().slice(0, 160) || "unnamed";
+    const safeType = attachment.type.replace(/[^a-zA-Z0-9.+/-]/g, "").slice(0, 80);
+    return {
+      name: attachment.name,
+      header: `[Attachment: ${safeName}, ${attachment.kind}, ${formatBytes(attachment.size)}, ${safeType}]`,
+      content: attachment.contentPreview,
+    };
+  });
+}
+
+export function attachmentContextStats(attachments: AttachmentDraft[]) {
+  return planAttachmentContext(attachmentContextSources(attachments));
+}
+
 export function buildMessageContent(
   prompt: string,
   attachments: AttachmentDraft[],
@@ -262,28 +285,10 @@ export function buildMessageContent(
   const modePrefix = modeInstruction(mode);
   if (attachments.length === 0) return [modePrefix, prompt].filter(Boolean).join("\n\n");
 
-  let remaining = MAX_TOTAL_ATTACHMENT_CONTEXT_CHARS;
-  const attachmentParts: string[] = [];
-  for (const attachment of attachments) {
-    if (remaining <= 0) break;
-    const header = `[Attachment: ${attachment.name}, ${attachment.kind}, ${formatBytes(attachment.size)}, ${attachment.type}]`;
-    const previewBudget = Math.max(0, remaining - header.length - 1);
-    const preview = attachment.contentPreview
-      ? takeAttachmentContext(
-          attachment.contentPreview,
-          Math.min(MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS, previewBudget),
-        )
-      : "";
-    const serialized = preview ? `${header}\n${preview}` : header.slice(0, remaining);
-    attachmentParts.push(serialized);
-    remaining -= serialized.length + 2;
-  }
-
-  if (attachments.length > attachmentParts.length && remaining > 0) {
-    attachmentParts.push("[Additional attachments omitted to fit local chat context]");
-  }
-
-  const attachmentText = attachmentParts.join("\n\n");
+  const { text: attachmentText } = serializeAttachmentContext(
+    attachmentContextSources(attachments),
+    prompt,
+  );
   return [modePrefix, prompt, attachmentText].filter(Boolean).join("\n\n");
 }
 

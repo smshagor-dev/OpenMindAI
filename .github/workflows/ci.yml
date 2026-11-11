@@ -71,6 +71,8 @@ jobs:
         run: npm run test:model-actions
       - name: Concurrent attachment ingestion
         run: npm run test:attachments
+      - name: Attachment context fairness and truncation disclosure
+        run: npm run test:attachment-context
       - name: Settings save failure recovery
         run: npm run test:settings-save
       - name: Voice draft ownership

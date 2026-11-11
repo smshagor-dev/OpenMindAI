@@ -50,7 +50,7 @@ test("production Composer ignores transcription after discard/unmount and releas
         "icons": "export const FileText=()=>null,FileType=()=>null,Hash=()=>null,Image=()=>null,Loader2=()=>null,Mic=()=>null,MicOff=()=>null,Music2=()=>null,Paperclip=()=>null,Plus=()=>null,Send=()=>null,Square=()=>null,Video=()=>null,Volume2=()=>null,X=()=>null;",
         "../api": "export const api={checkModelUpdates:async()=>({entries:[]})};",
         "../lib/media": "export const transcribeAudioBlob=(...args)=>globalThis.__voiceTranscribe(...args);",
-        "../lib/chat": "export const inferChatMode=()=> 'chat';",
+        "../lib/chat": "export const inferChatMode=()=> 'chat';export const attachmentContextStats=()=>({truncatedCount:0,omittedCount:0});",
         "./ModelSelector": "export const ModelSelector=()=>null;",
       }[path] }));
     } }] });
