@@ -446,7 +446,10 @@ mod tests {
     fn cloud_route_gate_rejects_secrets_and_path_traversal() {
         assert!(allowed_cloud_path(&Method::POST, "web-search"));
         assert!(allowed_cloud_path(&Method::POST, "3d-studio/jobs/scene"));
-        assert!(allowed_cloud_path(&Method::POST, "research/projects/42/runs"));
+        assert!(allowed_cloud_path(
+            &Method::POST,
+            "research/projects/42/runs"
+        ));
         assert!(allowed_cloud_path(&Method::GET, "research/projects/42"));
         for path in [
             "../admin",
