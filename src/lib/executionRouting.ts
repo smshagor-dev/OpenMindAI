@@ -46,6 +46,19 @@ export function selectExecutionRoute(input: RouteInput): RouteDecision {
     "Reference-conditioned 3D requires Cloud. No equivalent local image-to-mesh model is installed." };
 }
 
+/**
+ * API model discovery is a private, authenticated Cloud feature.
+ * Never show cached hosted models when signed out, offline or using Local.
+ */
+export function shouldShowCloudModels(
+  mode: ExecutionMode,
+  online: boolean,
+  signedIn: boolean,
+  availableModelCount: number,
+): boolean {
+  return mode !== "local" && online && signedIn && availableModelCount > 0;
+}
+
 export function describeFailure(error: unknown): string {
   if (typeof error === "string") return error;
   if (error instanceof Error) return error.message;
