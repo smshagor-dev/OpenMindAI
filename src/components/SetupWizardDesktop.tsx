@@ -15,7 +15,7 @@ import { formatBytes, formatError } from "../lib/format";
 import { notifyUser } from "../lib/notify";
 import { ModelsManager } from "./ModelsManager";
 import { cloud } from "../cloudApi";
-import { beginSetupPreparation, setupExecutionMode } from "../lib/setupExecutionMode";
+import { beginSetupPreparation, completeSetupPreparation, setupExecutionMode } from "../lib/setupExecutionMode";
 import type { ExecutionMode } from "../lib/executionRouting";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
@@ -127,6 +127,7 @@ function FullSetupFlow(props: { pending: PendingSetup | null }) {
         window.setTimeout(() => void relaunch(), 900);
       }
     } catch (caught) {
+      completeSetupPreparation();
       setError(formatError(caught));
       setSubmitting(false);
     }
