@@ -5,7 +5,12 @@ const PROMPT_MARGIN_TOKENS: usize = 256;
 const MIN_OUTPUT_TOKENS: usize = 640;
 const MAX_OUTPUT_TOKENS: usize = 1_536;
 const FIXED_USER_OVERHEAD_CHARS: usize = 900;
-const MAX_SELECTED_CONTEXT_CHARS: usize = 24_000;
+// The legacy 24K-character hard ceiling discarded evidence even in 64K/128K
+// llama-server slots. Keep section priorities, but scale caps with the actual
+// per-request slot size instead of an unrelated fixed global maximum.
+const BASE_SECTION_BUDGET_CHARS: usize = 24_000;
+const BASE_SECTION_CAPS: [usize; 6] = [6_000, 8_000, 10_000, 5_000, 5_000, 5_000];
+const MAX_MODEL_CONTEXT_TOKENS: usize = 131_072;
 
 pub(crate) struct PromptContextInput<'a> {
     pub project_instructions: &'a str,
@@ -14,8 +19,12 @@ pub(crate) struct PromptContextInput<'a> {
     pub conversation_context: &'a str,
     pub goal: &'a str,
     pub transcript: &'a VecDeque<String>,
+    /// Actual llama-server tokens available in this request's slot, not
+    /// configured total model context shared by multiple parallel slots.
     pub context_window_tokens: usize,
     pub system_chars: usize,
+    /// Variable user-message text outside the selected context (e.g. plan).
+    pub additional_user_chars: usize,
 }
 
 pub(crate) struct PromptContextPack {
@@ -32,7 +41,9 @@ pub(crate) struct PromptContextPack {
 }
 
 pub(crate) fn build_prompt_context(input: PromptContextInput<'_>) -> PromptContextPack {
-    let context_window_tokens = input.context_window_tokens.clamp(4_096, 32_768);
+    // Never round a smaller real slot up: the caller already resolved the
+    // runtime's /props n_ctx or divided configured context across workers.
+    let context_window_tokens = input.context_window_tokens.min(MAX_MODEL_CONTEXT_TOKENS);
     let max_output_tokens = (context_window_tokens / 6).clamp(MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS);
     let input_tokens = context_window_tokens
         .saturating_sub(max_output_tokens)
@@ -40,8 +51,8 @@ pub(crate) fn build_prompt_context(input: PromptContextInput<'_>) -> PromptConte
     let budget_chars = input_tokens
         .saturating_mul(CHARS_PER_TOKEN_ESTIMATE)
         .saturating_sub(input.system_chars)
-        .saturating_sub(FIXED_USER_OVERHEAD_CHARS)
-        .min(MAX_SELECTED_CONTEXT_CHARS);
+        .saturating_sub(input.additional_user_chars)
+        .saturating_sub(FIXED_USER_OVERHEAD_CHARS);
 
     let transcript_raw = input
         .transcript
@@ -57,7 +68,14 @@ pub(crate) fn build_prompt_context(input: PromptContextInput<'_>) -> PromptConte
         input.conversation_context,
         input.workspace_context,
     ];
-    let caps = [6_000usize, 8_000, 10_000, 5_000, 5_000, 5_000];
+    // Preserve the per-section priorities of the original small-window
+    // prompt, while allowing larger real slots to include more tool evidence,
+    // instructions, and repository context. No section can exceed the global
+    // available input budget, even if its scaled cap is larger.
+    let scale = budget_chars
+        .saturating_add(BASE_SECTION_BUDGET_CHARS - 1)
+        / BASE_SECTION_BUDGET_CHARS;
+    let caps = BASE_SECTION_CAPS.map(|cap| cap.saturating_mul(scale.max(1)));
     let weights = [30usize, 25, 22, 10, 8, 5];
     let lengths = raw
         .iter()
@@ -272,6 +290,7 @@ mod tests {
             transcript,
             context_window_tokens: window,
             system_chars: 7_000,
+            additional_user_chars: 0,
         }
     }
 
