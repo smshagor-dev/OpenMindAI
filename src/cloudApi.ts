@@ -1,0 +1,118 @@
+import { invoke } from "@tauri-apps/api/core";
+import type { Message } from "./types";
+import { api as local } from "./api_legacy";
+
+export type ExecutionMode = "local" | "cloud";
+export type StudioSection = "research-studio" | "3d-studio" | "web-search";
+export type CloudConnection = {
+  connected: boolean;
+  user: { name?: string; user?: { name?: string } } | null;
+  message: string | null;
+};
+export type CloudModel = { id: string; name?: string };
+export type StudioJob = {
+  id: string;
+  status: string;
+  output?: unknown;
+  result?: unknown;
+  error?: string | null;
+  asset_id?: number | null;
+  events?: unknown[];
+};
+export type ResearchProject = { id: number; title: string; status?: string; prompt?: string };
+
+const call = <T>(command: string, args?: Record<string, unknown>) => {
+  if (!("__TAURI_INTERNALS__" in window))
+    return Promise.reject(new Error("Cloud features require the OpenMindAI desktop application."));
+  return invoke<T>(command, args);
+};
+
+export const cloud = {
+  status: () => call<CloudConnection>("cloud_status"),
+  login: (email: string, password: string, code?: string) =>
+    call<CloudConnection>("cloud_login", { email, password, code: code || null }),
+  connect: (token: string) => call<CloudConnection>("cloud_connect", { token }),
+  disconnect: () => call<void>("cloud_disconnect"),
+  request: <T>(path: string, method = "GET", payload?: unknown) =>
+    call<T>("cloud_request", { path, method, payload: payload ?? null }),
+  gpu: <T>(path: string, method = "GET", payload?: unknown) =>
+    call<T>("local_gpu_request", { path, method, payload: payload ?? null }),
+  models: async () => {
+    const response = await cloud.request<{ data: CloudModel[] }>("mobile/models");
+    return response.data.filter((model) => typeof model.id === "string" && model.id.length > 0);
+  },
+  search: (query: string) =>
+    cloud.request<{ results: Array<{ title?: string; url?: string; snippet?: string; description?: string }> }>(
+      "web-search", "POST", { query: query.slice(0, 500) },
+    ),
+  researchProjects: async (): Promise<ResearchProject[]> => {
+    const page = await cloud.request<{ data: ResearchProject[] }>("research/projects");
+    return Array.isArray(page.data) ? page.data : [];
+  },
+  createResearch: (title: string, prompt: string) =>
+    cloud.request<ResearchProject>("research/projects", "POST", {
+      title: title.slice(0, 200), prompt: prompt.slice(0, 16000), output_language: "auto",
+    }),
+  startResearch: (id: number) =>
+    cloud.request<unknown>("research/projects/" + id + "/runs", "POST", {}),
+  researchDetail: (id: number) =>
+    cloud.request<Record<string, unknown>>("research/projects/" + id),
+  researchControl: (id: number, action: "pause" | "resume" | "cancel") =>
+    cloud.request<unknown>("research/projects/" + id + "/control", "POST", { action }),
+  studioEngines: () => cloud.request<Record<string, unknown>>("3d-studio/engines"),
+  studioScene: (prompt: string, mode: "object" | "architecture") =>
+    cloud.request<StudioJob>("3d-studio/jobs/scene", "POST", {
+      prompt: prompt.slice(0, 8000), mode, request_key: crypto.randomUUID(),
+    }),
+  studioJob: (id: string) => cloud.request<StudioJob>("3d-studio/jobs/" + id),
+  gpuHealth: () => cloud.gpu<{ gpu_active: boolean; gpu?: string; engine?: string }>("health"),
+  gpuScene: (prompt: string, mode: "object" | "architecture") =>
+    cloud.gpu<StudioJob>("jobs", "POST", {
+      prompt: prompt.slice(0, 8000), mode, request_key: crypto.randomUUID(),
+    }),
+  gpuJob: (id: string) => cloud.gpu<StudioJob>("jobs/" + id),
+};
+
+// Hosted completions share the user's existing local conversation/history storage.
+// A hosted response is never misrepresented as a local GPU response.
+export async function hostedChat(
+  conversationId: string,
+  content: string,
+  model: string,
+  mode: string,
+  replaceAssistantId?: string,
+): Promise<Message> {
+  if (!model) throw new Error("Choose an available Cloud model before sending.");
+  const previous = await local.messages(conversationId);
+  const prompt = content.trim();
+  if (!prompt) throw new Error("Cloud prompt is empty.");
+  const messages: Array<{ role: string; content: string }> =
+    previous.filter((item) => item.status === "completed" && item.content.trim())
+      .slice(-28).map((item) => ({ role: item.role, content: item.content }));
+  messages.push({ role: "user", content: prompt });
+  if (mode === "search" || mode === "research") {
+    const found = await cloud.search(prompt.slice(0, 500));
+    const context = (found.results ?? []).slice(0, 8).map((item, index) =>
+      "[" + (index + 1) + "] " + (item.title ?? "Result") + " " + (item.url ?? "") +
+      "\n" + (item.snippet ?? item.description ?? ""),
+    ).join("\n");
+    if (!context) throw new Error("Cloud web search returned no sources. No answer was fabricated.");
+    messages.unshift({ role: "system", content:
+      "Answer using these retrieved sources. Cite the numbered source URLs. State uncertainty explicitly.\n" + context });
+  }
+  if (!replaceAssistantId) await local.addUserMessage(conversationId, content);
+  const assistant = await local.createStreamingAssistantMessage(conversationId);
+  try {
+    const result = await cloud.request<{ choices: Array<{ message: { content: string } }> }>(
+      "mobile/chat/completions", "POST", { model, messages, stream: false },
+    );
+    const response = result.choices?.[0]?.message?.content?.trim();
+    if (!response) throw new Error("Cloud returned an empty assistant response.");
+    await local.appendMessageChunk(assistant.id, response);
+    await local.completeMessage(assistant.id, "completed");
+    return { ...assistant, content: response, status: "completed", modelId: model };
+  } catch (error) {
+    await local.completeMessage(assistant.id, "failed").catch(() => undefined);
+    throw error;
+  }
+}
