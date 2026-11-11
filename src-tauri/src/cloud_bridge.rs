@@ -444,26 +444,26 @@ mod tests {
     use super::*;
     #[test]
     fn cloud_route_gate_rejects_secrets_and_path_traversal() {
-        assert!(allowed_cloud_path("POST", "web-search"));
-        assert!(allowed_cloud_path("POST", "3d-studio/jobs/scene"));
-        assert!(allowed_cloud_path("POST", "research/projects/42/runs"));
-        assert!(allowed_cloud_path("GET", "research/projects/42"));
+        assert!(allowed_cloud_path(&Method::POST, "web-search"));
+        assert!(allowed_cloud_path(&Method::POST, "3d-studio/jobs/scene"));
+        assert!(allowed_cloud_path(&Method::POST, "research/projects/42/runs"));
+        assert!(allowed_cloud_path(&Method::GET, "research/projects/42"));
         for path in [
             "../admin",
             "developer/keys",
             "research/projects/../runs",
             "3d-studio/jobs/bad",
         ] {
-            assert!(!allowed_cloud_path("GET", path));
-            assert!(!allowed_cloud_path("POST", path));
+            assert!(!allowed_cloud_path(&Method::GET, path));
+            assert!(!allowed_cloud_path(&Method::POST, path));
         }
     }
     #[test]
     fn worker_is_loopback_and_strictly_scoped() {
         assert!(LOCAL_GPU_BASE.starts_with("http://127.0.0.1:"));
-        assert!(allowed_gpu_path("GET", "health"));
-        assert!(allowed_gpu_path("POST", "jobs"));
-        assert!(!allowed_gpu_path("POST", "health"));
-        assert!(!allowed_gpu_path("GET", "../health"));
+        assert!(allowed_gpu_path(&Method::GET, "health"));
+        assert!(allowed_gpu_path(&Method::POST, "jobs"));
+        assert!(!allowed_gpu_path(&Method::POST, "health"));
+        assert!(!allowed_gpu_path(&Method::GET, "../health"));
     }
 }
