@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Database,
-  Box,
-  FlaskConical,
   Globe,
   FolderKanban,
   FolderOpen,
@@ -144,10 +142,10 @@ export function Sidebar(props: {
           <Wrench size={18} /> {!props.collapsed ? "Tools" : null}
         </button>
         <button className={props.view === "research-studio" ? "nav-button active" : "nav-button"} onClick={() => props.onOpenStudio("research-studio")} title="Research Studio">
-          <FlaskConical size={18} /> {!props.collapsed ? "Research Studio" : null}
+          <TableProperties size={18} /> {!props.collapsed ? "Research Studio" : null}
         </button>
         <button className={props.view === "3d-studio" ? "nav-button active" : "nav-button"} onClick={() => props.onOpenStudio("3d-studio")} title="3D Studio">
-          <Box size={18} /> {!props.collapsed ? "3D Studio" : null}
+          <Wrench size={18} /> {!props.collapsed ? "3D Studio" : null}
         </button>
         <button className={props.view === "web-search" ? "nav-button active" : "nav-button"} onClick={() => props.onOpenStudio("web-search")} title="Web Search">
           <Globe size={18} /> {!props.collapsed ? "Web Search" : null}
