@@ -47,6 +47,7 @@ import { WorkWorkspace } from "./components/WorkWorkspace";
 import { StudioHub } from "./components/StudioHub";
 import { cloud, hostedChat, submitQueuedScene, type CloudConnection, type CloudModel, type ExecutionMode, type StudioSection } from "./cloudApi";
 import { cloudProbeDelayMs, offlineSourceNotice, requestsLocalOnly, runWithFallback, selectExecutionRoute, shouldShowCloudModels } from "./lib/executionRouting";
+import { completeSetupPreparation, setupExecutionMode, setupPreparationPending } from "./lib/setupExecutionMode";
 import { notifyUser } from "./lib/notify";
 import {
   attachmentKind,
@@ -97,7 +98,7 @@ export function App() {
   const backgroundRuns = [...chatSnapshot.runs.keys()].filter((id) => id !== activeId && chatState.isBusy(id));
   const copyrightYear = new Date().getFullYear();
   const [view, setView] = useState<View>("chat");
-  const [executionMode, setExecutionMode] = useState<ExecutionMode>("auto");
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>(() => setupExecutionMode() ?? "auto");
   const [internetAvailable, setInternetAvailable] = useState(() => window.navigator.onLine);
   const [routeNotice, setRouteNotice] = useState<string | null>(null);
   const [studioSubmission, setStudioSubmission] = useState<string | null>(null);
@@ -362,7 +363,21 @@ export function App() {
     if (runtimeInfo) setRuntime(runtimeInfo);
     if (runtimeStatusInfo) setRuntimeStatus(runtimeStatusInfo);
     if (performanceInfo) setPerformance(performanceInfo);
-    if (preferencesInfo) setPreferences(preferencesInfo);
+    if (preferencesInfo) {
+      let nextPreferences = preferencesInfo;
+      if (setupPreparationPending() && setupExecutionMode()) {
+        const selected = setupExecutionMode()!;
+        // Write both modes before the download screen or Coding Agent starts.
+        nextPreferences = await api.savePreferences({
+          ...preferencesInfo,
+          aiExecutionMode: selected,
+          codingAgentExecutionMode: selected,
+          localRuntimeAutostart: selected === "cloud" ? false : preferencesInfo.localRuntimeAutostart,
+        });
+      }
+      setPreferences(nextPreferences);
+      setExecutionMode(nextPreferences.aiExecutionMode);
+    }
     if (userProfileInfo) setUserProfile(userProfileInfo);
     if (installationStatusInfo) setInstallationStatus(installationStatusInfo);
     setRefreshedOnce(true);
@@ -384,18 +399,20 @@ export function App() {
 
   useEffect(() => {
     if (!refreshedOnce || !installationStatus || installationStatus.setupRequired ||
+        preferences?.aiExecutionMode === "cloud" ||
+        (setupPreparationPending() && setupExecutionMode() === "cloud") ||
         runtime === null || runtime.selected !== null || runtimeAutoInstallAttemptedRef.current) return;
     runtimeAutoInstallAttemptedRef.current = true;
     void installRuntime();
     // One automatic attempt per application launch; manual retry remains available.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshedOnce, installationStatus, runtime]);
+  }, [refreshedOnce, installationStatus, runtime, preferences?.aiExecutionMode]);
 
   useEffect(() => {
     if (!refreshedOnce || installationStatus === null || wizardActive !== null) return;
     // Only first-time root/profile configuration is modal. Runtime repair
     // must not hide existing chats or prevent access to Settings.
-    setWizardActive(installationStatus.setupRequired);
+    setWizardActive(installationStatus.setupRequired || setupPreparationPending());
   }, [refreshedOnce, installationStatus, wizardActive]);
 
   useEffect(() => {
@@ -632,11 +649,16 @@ export function App() {
           setConversations((items) => items.map((conversation) => conversation.id === conversationId ? { ...conversation, title: generatedTitle } : conversation));
         }
       }
-      // Unimplemented Cloud media types still work using their existing local engine.
       const cloudChatCapable = inferenceMedia.length === 0 &&
         ["chat", "thinking", "search", "research"].includes(inferredMode) && Boolean(cloudModel);
+      if (executionMode === "cloud" && !["chat", "thinking", "search", "research"].includes(inferredMode)) {
+        throw new Error("Cloud Only does not yet support this media operation. Select Both or Local to use installed device tools.");
+      }
+      if (executionMode === "cloud" && inferenceMedia.length > 0) {
+        throw new Error("Cloud Only does not yet support these attachments. Switch to Both or Local before sending.");
+      }
       const route = selectExecutionRoute({
-        preference: cloudChatCapable ? executionMode : "local",
+        preference: executionMode === "cloud" ? "cloud" : cloudChatCapable ? executionMode : "local",
         task: inferredMode === "search" ? "search" : inferredMode === "research" ? "research" : "chat",
         online: internetAvailable,
         cloudConnected: Boolean(cloudConnection?.connected),
@@ -709,8 +731,11 @@ export function App() {
         setConversations((items) => items.map((conversation) => conversation.id === conversationId ? { ...conversation, title: generatedTitle } : conversation));
       }
       const availableForCloud = ["chat", "thinking", "search", "research"].includes(inferredMode) && Boolean(cloudModel);
+      if (executionMode === "cloud" && !["chat", "thinking", "search", "research"].includes(inferredMode)) {
+        throw new Error("Cloud Only does not support this Work task type. Choose Both or Local to use the device processor.");
+      }
       const route = selectExecutionRoute({
-        preference: availableForCloud ? executionMode : "local",
+        preference: executionMode === "cloud" ? "cloud" : availableForCloud ? executionMode : "local",
         task: inferredMode === "search" ? "search" : inferredMode === "research" ? "research" : "chat",
         online: internetAvailable,
         cloudConnected: Boolean(cloudConnection?.connected),
@@ -803,8 +828,11 @@ export function App() {
     const requestScope = chatState.scope(activeId);
     try {
       const cloudCapable = ["chat", "thinking", "search", "research"].includes(mode) && Boolean(cloudModel);
+      if (executionMode === "cloud" && !["chat", "thinking", "search", "research"].includes(mode)) {
+        throw new Error("Cloud Only cannot regenerate this local-only media type. Choose Both or Local.");
+      }
       const route = selectExecutionRoute({
-        preference: cloudCapable ? executionMode : "local",
+        preference: executionMode === "cloud" ? "cloud" : cloudCapable ? executionMode : "local",
         task: mode === "search" ? "search" : mode === "research" ? "research" : "chat",
         online: internetAvailable,
         cloudConnected: Boolean(cloudConnection?.connected),
@@ -1101,6 +1129,13 @@ export function App() {
     }
   }
 
+  const changeExecutionMode = (selected: ExecutionMode) => {
+    setExecutionMode(selected);
+    if (preferences) {
+      void updatePreferences({ ...preferences, aiExecutionMode: selected }).catch(showError);
+    }
+  };
+
   async function updatePreferences(next: AppPreferences) {
     const saved = await api.savePreferences(next);
     setPreferences(saved);
@@ -1237,7 +1272,7 @@ export function App() {
         root={root}
         pending={installationStatus?.pending}
         refresh={refreshApp}
-        onDismiss={() => setWizardActive(false)}
+        onDismiss={() => { completeSetupPreparation(); setWizardActive(false); void refreshApp(); }}
       />
     );
   }
@@ -1355,11 +1390,11 @@ export function App() {
               }}
             />
             <div className="execution-mode-switch" role="group" aria-label="AI execution mode">
-              <button type="button" className={executionMode === "auto" ? "active" : ""} aria-pressed={executionMode === "auto"} onClick={() => setExecutionMode("auto")} title="Automatically route to Cloud when connected or Local when offline">Auto</button>
-              <button type="button" className={executionMode === "local" ? "active" : ""} aria-pressed={executionMode === "local"} onClick={() => setExecutionMode("local")} title="Use this computer for local inference">
+              <button type="button" className={executionMode === "auto" ? "active" : ""} aria-pressed={executionMode === "auto"} onClick={() => changeExecutionMode("auto")} title="Automatically route to Cloud when connected or Local when offline">Auto</button>
+              <button type="button" className={executionMode === "local" ? "active" : ""} aria-pressed={executionMode === "local"} onClick={() => changeExecutionMode("local")} title="Use this computer for local inference">
                 Local
               </button>
-              <button type="button" className={executionMode === "cloud" ? "active" : ""} aria-pressed={executionMode === "cloud"} onClick={() => setExecutionMode("cloud")} title={cloudConnection?.connected ? "Connected to OpenMindAI Cloud" : "Sign in from Research Studio to use Cloud"}>
+              <button type="button" className={executionMode === "cloud" ? "active" : ""} aria-pressed={executionMode === "cloud"} onClick={() => changeExecutionMode("cloud")} title={cloudConnection?.connected ? "Connected to OpenMindAI Cloud" : "Sign in from Research Studio to use Cloud"}>
                 <span className={internetAvailable && cloudConnection?.connected ? "studio-dot good" : "studio-dot"} /> Cloud
               </button>
             </div>
@@ -1440,7 +1475,7 @@ export function App() {
           </div>
         ))}
 
-        {runtime && !runtime.selected ? (
+        {executionMode !== "cloud" && runtime && !runtime.selected ? (
           <div className="runtime-recovery-banner" role="status" aria-live="polite">
             <div>
               <strong>Local AI engine is missing</strong>
@@ -1504,6 +1539,8 @@ export function App() {
             modelSwitchError={modelSwitchError}
             onSelectModel={selectModel}
             showCloudModels={showCloudApiModels}
+            cloudUnavailable={executionMode === "cloud" && !showCloudApiModels}
+            onConnectCloud={() => setView("research-studio")}
             cloudModels={showCloudApiModels ? cloudModels : []}
             activeCloudModelId={showCloudApiModels ? cloudModel : ""}
             onSelectCloudModel={setCloudModel}
@@ -1578,6 +1615,8 @@ export function App() {
               modelSwitchError={modelSwitchError}
               onSelectModel={selectModel}
               showCloudModels={showCloudApiModels}
+              cloudUnavailable={executionMode === "cloud" && !showCloudApiModels}
+              onConnectCloud={() => setView("research-studio")}
               cloudModels={showCloudApiModels ? cloudModels : []}
               activeCloudModelId={showCloudApiModels ? cloudModel : ""}
               onSelectCloudModel={setCloudModel}

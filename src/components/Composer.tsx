@@ -49,6 +49,8 @@ export function Composer(props: {
   modelSwitchError: string | null;
   onSelectModel: (modelId: string) => void;
   showCloudModels?: boolean;
+  cloudUnavailable?: boolean;
+  onConnectCloud?: () => void;
   cloudModels?: CloudModel[];
   activeCloudModelId?: string;
   onSelectCloudModel?: (modelId: string) => void;
@@ -426,7 +428,11 @@ export function Composer(props: {
             rows={1}
           />
           <div className="composer-trailing">
-            {props.showCloudModels ? (
+            {props.cloudUnavailable ? (
+              <button type="button" className="ghost-button cloud-connect-button"
+                title="Cloud-only mode needs a signed-in account with available API models"
+                onClick={props.onConnectCloud}>Connect Cloud</button>
+            ) : props.showCloudModels ? (
               <label className="cloud-composer-model" title="Authenticated OpenMindAI Cloud API model">
                 <span className="sr-only">Cloud API model</span>
                 <select

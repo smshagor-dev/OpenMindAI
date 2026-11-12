@@ -81,6 +81,8 @@ export function ChatView(props: {
   modelSwitchError: string | null;
   onSelectModel: (modelId: string) => void;
   showCloudModels?: boolean;
+  cloudUnavailable?: boolean;
+  onConnectCloud?: () => void;
   cloudModels?: CloudModel[];
   activeCloudModelId?: string;
   onSelectCloudModel?: (modelId: string) => void;
@@ -144,11 +146,15 @@ export function ChatView(props: {
       modelSwitchError={props.modelSwitchError}
       onSelectModel={props.onSelectModel}
       showCloudModels={props.showCloudModels}
+      cloudUnavailable={props.cloudUnavailable}
+      onConnectCloud={props.onConnectCloud}
       cloudModels={props.cloudModels}
       activeCloudModelId={props.activeCloudModelId}
       onSelectCloudModel={props.onSelectCloudModel}
       placeholder={isEmpty ? "Ask anything..." : "Message OpenMindAI..."}
-      note={isEmpty ? undefined : props.showCloudModels
+      note={isEmpty ? undefined : props.cloudUnavailable
+        ? "Cloud Only is waiting for a verified account and an available API model. No local inference will start."
+        : props.showCloudModels
         ? "Cloud API model selected. Your request can route to Local if Cloud becomes unavailable."
         : "Responses use installed local models when Cloud is unavailable or Local is selected."}
     />

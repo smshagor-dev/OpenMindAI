@@ -17,6 +17,7 @@ export interface RouteDecision {
   target: ExecutionTarget;
   reason: string;
   offline: boolean;
+  fallbackAllowed?: boolean;
 }
 
 /** Local image-to-3D is not a reference-conditioned ML model. Never silently substitute a primitive. */
@@ -31,22 +32,23 @@ export function selectExecutionRoute(input: RouteInput): RouteDecision {
   const remoteReady = input.online && input.cloudConnected &&
     (input.task !== "chat" && input.task !== "vision" && input.task !== "search" ||
       input.cloudModelReady !== false);
-  if (input.preference === "local" && localSupported) {
-    return { target: "local", offline, reason: offline
-      ? "Local mode. Internet is unavailable; live web sources cannot be fetched."
-      : "Local mode selected." };
+  if (input.preference === "local") {
+    return localSupported
+      ? { target: "local", offline, reason: "Local-only mode: requests stay on this computer." }
+      : { target: "deferred", offline, reason: "This feature has no installed local implementation. Cloud was not contacted." };
   }
-  if (input.preference !== "local" && remoteReady) {
-    return { target: "cloud", offline: false, reason: "Connected to OpenMindAI Cloud." };
+  if (input.preference === "cloud") {
+    return remoteReady
+      ? { target: "cloud", offline: false, fallbackAllowed: false, reason: "Cloud-only mode: do not fall back to Local." }
+      : { target: "deferred", offline, reason: "Cloud-only mode requires a connected account, internet and a supported hosted model." };
+  }
+  if (remoteReady) {
+    return { target: "cloud", offline: false, fallbackAllowed: true, reason: "Both: Cloud first with Local fallback." };
   }
   if (localSupported) {
     return { target: "local", offline, reason: offline
       ? "Internet unavailable. Using the local engine without live web access."
       : "Cloud unavailable or unsupported; using the local engine." };
-  }
-  if (input.preference === "local" && remoteReady) {
-    return { target: "cloud", offline: false, reason:
-      "Reference-conditioned image-to-3D is only available on Cloud; using Cloud." };
   }
   return { target: "deferred", offline, reason:
     "Reference-conditioned 3D requires Cloud. No equivalent local image-to-mesh model is installed." };
@@ -127,7 +129,7 @@ export async function runWithFallback<T>(
   try {
     return { result: await remote(), target: "cloud", fallback: false };
   } catch (error) {
-    if (error instanceof ResponsePersistenceError || !isRecoverableCloudFailure(error))
+    if (decision.fallbackAllowed === false || error instanceof ResponsePersistenceError || !isRecoverableCloudFailure(error))
       throw error;
     onFallback?.("Cloud request failed (" + describeFailure(error) + "). Continuing with the local engine.");
     return { result: await local(), target: "local", fallback: true };

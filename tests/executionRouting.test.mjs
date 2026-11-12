@@ -4,6 +4,7 @@ import {
   selectExecutionRoute, isRecoverableCloudFailure, runWithFallback,
   shouldShowCloudModels, cloudProbeDelayMs, requestsLocalOnly, offlineSourceNotice, ResponsePersistenceError,
 } from "../src/lib/executionRouting.ts";
+import { beginSetupPreparation, setupExecutionMode, setupPreparationPending, completeSetupPreparation } from "../src/lib/setupExecutionMode.ts";
 
 test("auto routing prefers Cloud when authenticated and online", () => {
   assert.equal(selectExecutionRoute({preference:"auto",task:"chat",online:true,cloudConnected:true,cloudModelReady:true}).target,"cloud");
@@ -16,7 +17,7 @@ test("offline or disconnected Cloud always routes supported work locally", () =>
     const offline = selectExecutionRoute({preference:"auto",task,online:false,cloudConnected:true});
     assert.equal(offline.target,"local",task);
     assert.equal(offline.offline,true);
-    assert.equal(selectExecutionRoute({preference:"cloud",task,online:true,cloudConnected:false}).target,"local");
+    assert.equal(selectExecutionRoute({preference:"cloud",task,online:true,cloudConnected:false}).target,"deferred");
   }
 });
 
@@ -28,7 +29,7 @@ test("explicit Local preference retains local processing when online", () => {
 test("never claim local image-to-mesh parity for an uploaded reference", () => {
   assert.equal(selectExecutionRoute({preference:"auto",task:"image-to-3d",online:false,cloudConnected:true}).target,"deferred");
   assert.equal(selectExecutionRoute({preference:"local",task:"image-to-3d",online:true,cloudConnected:false}).target,"deferred");
-  assert.equal(selectExecutionRoute({preference:"local",task:"image-to-3d",online:true,cloudConnected:true}).target,"cloud");
+  assert.equal(selectExecutionRoute({preference:"local",task:"image-to-3d",online:true,cloudConnected:true}).target,"deferred");
 });
 
 test("Cloud network failures permit one local fallback without remote replay", async () => {
@@ -100,4 +101,41 @@ test("mobile-style foreground Cloud recovery checks back off without repeated ge
   assert.equal(cloudProbeDelayMs(false, 20), 60000);
   assert.equal(cloudProbeDelayMs(false, 1, 0.8), 4000);
   assert.equal(cloudProbeDelayMs(false, 1, 1.2), 6000);
+});
+
+test("Cloud-only runs no Local fallback even after a network error", async () => {
+  const route = selectExecutionRoute({preference:"cloud", task:"chat", online:true, cloudConnected:true});
+  assert.equal(route.target,"cloud");
+  assert.equal(route.fallbackAllowed,false);
+  let localCalls = 0;
+  await assert.rejects(runWithFallback(route, async () => {
+    throw new Error("Cloud API request failed");
+  }, async () => { localCalls++; return "wrong"; }), /Cloud API request failed/);
+  assert.equal(localCalls,0);
+});
+
+test("first-run Cloud/Local/Both choice survives simulated relaunch before downloads", () => {
+  const originalWindow = globalThis.window;
+  const storage = new Map();
+  globalThis.window = { localStorage: {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, String(value)),
+    removeItem: (key) => storage.delete(key),
+  } };
+  try {
+    for (const mode of ["cloud", "local", "auto"]) {
+      beginSetupPreparation(mode);
+      assert.equal(setupExecutionMode(), mode);
+      assert.equal(setupPreparationPending(), true);
+      completeSetupPreparation();
+      assert.equal(setupPreparationPending(), false);
+      assert.equal(setupExecutionMode(), mode);
+    }
+    storage.set("openmindai.setup.executionMode.v1", "invalid");
+    assert.equal(setupExecutionMode(), null, "never trust an invalid persisted execution mode");
+    assert.equal(setupPreparationPending(), false);
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
 });

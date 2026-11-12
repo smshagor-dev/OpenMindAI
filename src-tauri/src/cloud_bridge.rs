@@ -379,6 +379,88 @@ pub(crate) async fn cloud_request(
     .await
 }
 
+/// Selects only chat-completion models advertised as enabled by the user-owned
+/// Laravel Cloud account. The model cannot be overridden by an untrusted editor.
+fn preferred_coding_model(catalog: &Value) -> Option<String> {
+    let models = catalog.get("data")?.as_array()?;
+    let available: Vec<&str> = models
+        .iter()
+        .filter(|item| {
+            item.get("available").and_then(Value::as_bool) == Some(true)
+                && item.get("operation").and_then(Value::as_str) == Some("chat.completions")
+        })
+        .filter_map(|item| item.get("id").and_then(Value::as_str))
+        .filter(|id| !id.is_empty() && id.len() < 120)
+        .collect();
+    for id in ["openmindai-super", "openmindai-ultra", "openmindai-lite"] {
+        if available.contains(&id) {
+            return Some(id.to_string());
+        }
+    }
+    available.first().map(|id| (*id).to_string())
+}
+
+/// A read-only, authenticated preflight for the Coding Agent. In Both mode,
+/// failure here permits Local fallback BEFORE a Cloud completion POST is sent.
+pub(crate) async fn coding_cloud_model() -> Result<String, AppError> {
+    let token = secret_store::get_secret(CREDENTIAL_SLOT)?
+        .ok_or_else(|| failure("Sign in to Cloud before using a hosted Coding Agent"))?;
+    let catalog = decode(
+        client()?
+            .get(format!("{CLOUD_BASE}mobile/models"))
+            .timeout(Duration::from_secs(12))
+            .bearer_auth(token)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(|_| failure("Cloud model catalog is unreachable"))?,
+    )
+    .await?;
+    preferred_coding_model(&catalog)
+        .ok_or_else(|| failure("No hosted chat model is enabled for your Cloud account"))
+}
+
+/// Exactly one hosted POST. Ambiguous remote timeouts must never trigger a
+/// silent replay of a coding action on a different model.
+pub(crate) async fn coding_cloud_completion(
+    model: &str,
+    messages: &[Value],
+    max_tokens: i64,
+) -> Result<(u16, Value), AppError> {
+    if messages.is_empty() {
+        return Err(failure("Coding Agent requires messages"));
+    }
+    let token = secret_store::get_secret(CREDENTIAL_SLOT)?
+        .ok_or_else(|| failure("Cloud account disconnected before the Coding Agent request"))?;
+    let body = json!({
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "stream": false,
+    });
+    let size = serde_json::to_vec(&body).map_err(|_| failure("Invalid Coding Agent payload"))?;
+    if size.len() > 512_000 {
+        return Err(failure(
+            "Coding Agent context exceeds 512 KB; send less editor context",
+        ));
+    }
+    let response = client()?
+        .post(format!("{CLOUD_BASE}mobile/chat/completions"))
+        .timeout(Duration::from_secs(120))
+        .bearer_auth(token)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .body(size)
+        .send()
+        .await
+        .map_err(|_| failure("Hosted Coding Agent request failed; remote acceptance is unknown, so it was not retried"))?;
+    let data = decode(response).await?;
+    if data.pointer("/choices/0/message").is_none() {
+        return Err(failure("Cloud Coding Agent returned an invalid completion"));
+    }
+    Ok((200, data))
+}
+
 #[tauri::command]
 pub(crate) async fn local_gpu_request(
     path: String,
@@ -467,6 +549,21 @@ pub(crate) async fn cloud_download_mesh(asset_id: u64) -> Result<Value, AppError
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hosted_coding_model_uses_only_enabled_completion_models() {
+        let catalog = json!({"data": [
+            {"id":"openmindai-ultra","available":false,"operation":"chat.completions"},
+            {"id":"image-only","available":true,"operation":"images.generate"},
+            {"id":"openmindai-lite","available":true,"operation":"chat.completions"},
+            {"id":"openmindai-super","available":true,"operation":"chat.completions"}
+        ]});
+        assert_eq!(
+            preferred_coding_model(&catalog).as_deref(),
+            Some("openmindai-super")
+        );
+        assert!(preferred_coding_model(&json!({"data": []})).is_none());
+    }
+
     #[test]
     fn cloud_route_gate_rejects_secrets_and_path_traversal() {
         assert!(allowed_cloud_path(&Method::POST, "web-search"));

@@ -30,7 +30,9 @@ use uuid::Uuid;
 use crate::{
     agent_runtime::{self, AgentModelInfo, AgentPhase},
     app_error::AppError,
-    coding_control, AppState,
+    cloud_bridge, coding_control,
+    settings::SettingsRepository,
+    AppState,
 };
 
 pub const SERVICE_NAME: &str = "openmindai-coding-agent";
@@ -386,16 +388,48 @@ async fn route(app: &AppHandle, request: HttpRequest) -> HttpResponse {
     result.unwrap_or_else(|error| HttpResponse::error(500, error.to_string()))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodingExecutionMode {
+    Cloud,
+    Local,
+    Both,
+}
+
+fn coding_execution_preferences(app: &AppHandle) -> Result<(CodingExecutionMode, bool), AppError> {
+    let state = app.state::<AppState>();
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| AppError::internal("database lock poisoned"))?;
+    let preferences = SettingsRepository::new(&db).get_preferences()?;
+    let mode = match preferences.coding_agent_execution_mode.as_str() {
+        "cloud" => CodingExecutionMode::Cloud,
+        "local" => CodingExecutionMode::Local,
+        _ => CodingExecutionMode::Both,
+    };
+    Ok((mode, preferences.coding_enabled))
+}
+
 /// Identity, Agent Setup configuration and live runtime state (no model load).
 async fn agent_info(app: &AppHandle) -> Result<Value, AppError> {
     let status = agent_runtime::agent_status(app).await?;
+    let (execution_mode, enabled) = coding_execution_preferences(app)?;
     Ok(json!({
         "service": SERVICE_NAME,
         "instanceId": session().instance_id,
-        "configured": status.model.is_some(),
+        "configured": enabled && (execution_mode != CodingExecutionMode::Local || status.model.is_some()),
         "source": "Settings -> Agent Setup",
-        "codingEnabled": status.coding_enabled,
-        "model": status.model,
+        "executionMode": match execution_mode {
+            CodingExecutionMode::Cloud => "cloud",
+            CodingExecutionMode::Local => "local",
+            CodingExecutionMode::Both => "auto",
+        },
+        "codingEnabled": enabled,
+        "model": if execution_mode == CodingExecutionMode::Cloud {
+            json!({"id":"openmindai-cloud-coding-agent", "name":"OpenMindAI Cloud Coding Agent"})
+        } else {
+            json!(status.model)
+        },
         "contextSize": status.configured_context,
         "gpuLayers": status.gpu_layers,
         "parallelism": status.parallel_workers,
@@ -407,6 +441,18 @@ async fn agent_info(app: &AppHandle) -> Result<Value, AppError> {
 
 /// Starts loading the coding agent in the background and returns its status at once.
 async fn start(app: &AppHandle) -> Result<Value, AppError> {
+    let (mode, enabled) = coding_execution_preferences(app)?;
+    if !enabled {
+        return agent_info(app).await;
+    }
+    if mode != CodingExecutionMode::Local {
+        if cloud_bridge::coding_cloud_model().await.is_ok() {
+            return agent_info(app).await;
+        }
+        if mode == CodingExecutionMode::Cloud {
+            return agent_info(app).await;
+        }
+    }
     let context = agent_runtime::plan_agent_runtime(app)?;
     if let Some(plan) = context.plan.filter(|_| context.coding_enabled) {
         if agent_runtime::agent_status(app).await?.state != AgentPhase::Ready {
@@ -417,7 +463,28 @@ async fn start(app: &AppHandle) -> Result<Value, AppError> {
 }
 
 fn models(app: &AppHandle) -> Result<HttpResponse, AppError> {
+    let (mode, enabled) = coding_execution_preferences(app)?;
+    if !enabled {
+        return Ok(HttpResponse::error(403, agent_runtime::DISABLED_MESSAGE));
+    }
+    // A model alias represents authenticated Cloud inference. Actual hosted
+    // model identity is validated at request time against the user's catalog.
+    if mode == CodingExecutionMode::Cloud {
+        return Ok(HttpResponse::ok(json!({
+            "object": "list",
+            "data": [{"id": "openmindai-cloud-coding-agent",
+                "object": "model", "owned_by": "openmindai",
+                "meta": {"name": "OpenMindAI Cloud Coding Agent", "executionMode": "cloud"}}]
+        })));
+    }
     let Some(plan) = agent_runtime::plan_agent_runtime(app)?.plan else {
+        if mode == CodingExecutionMode::Both {
+            return Ok(HttpResponse::ok(json!({
+                "object": "list",
+                "data": [{"id":"openmindai-cloud-coding-agent", "object":"model",
+                    "owned_by":"openmindai", "meta":{"executionMode":"auto"}}]
+            })));
+        }
         return Ok(HttpResponse::error(503, agent_runtime::NO_AGENT_MESSAGE));
     };
     Ok(HttpResponse::ok(json!({
@@ -447,6 +514,37 @@ async fn chat(app: &AppHandle, raw_body: &[u8]) -> Result<HttpResponse, AppError
     };
     if messages.is_empty() {
         return Ok(HttpResponse::error(400, "messages must not be empty"));
+    }
+    let (mode, enabled) = coding_execution_preferences(app)?;
+    if !enabled {
+        return Ok(HttpResponse::error(403, agent_runtime::DISABLED_MESSAGE));
+    }
+    if mode != CodingExecutionMode::Local {
+        match cloud_bridge::coding_cloud_model().await {
+            Ok(model) => {
+                let max_tokens = requested_max_tokens(&request);
+                // The preflight completed before POST. Once Cloud receives a
+                // completion request we NEVER replay it on Local after error.
+                let (status, mut payload) =
+                    cloud_bridge::coding_cloud_completion(&model, &messages, max_tokens).await?;
+                if let Value::Object(object) = &mut payload {
+                    object.insert("openmindai".to_string(), json!({
+                        "route": "cloud-coding-agent",
+                        "model": model,
+                        "executionMode": if mode == CodingExecutionMode::Cloud {"cloud"} else {"auto"},
+                    }));
+                }
+                return Ok(HttpResponse {
+                    status,
+                    body: payload,
+                });
+            }
+            Err(error) if mode == CodingExecutionMode::Cloud => {
+                return Ok(HttpResponse::error(503, format!("Cloud Only: {error}")));
+            }
+            // Both uses Local only when the hosted preflight fails BEFORE POST.
+            Err(_) => {}
+        }
     }
 
     let context = agent_runtime::plan_agent_runtime(app)?;
