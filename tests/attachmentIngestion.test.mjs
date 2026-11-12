@@ -8,7 +8,12 @@ beforeEach(async () => { await app.mount(); });
 afterEach(async () => { await app.unmount(); });
 after(async () => { await app.dispose(); });
 function files(prefix, count, kind = "text") {
-  return Array.from({ length: count }, (_, index) => ({ attachmentDraft: { ...attachment(`${prefix}-${index}`), kind } }));
+  return Array.from({ length: count }, (_, index) => {
+    const attachmentDraft = { ...attachment(`${prefix}-${index}`), kind };
+    // Browser File objects always have name/size/type; the old mock omitted
+    // the name and falsely failed the PDF import progress assertion.
+    return { name: attachmentDraft.name, size: attachmentDraft.size, type: attachmentDraft.type, attachmentDraft };
+  });
 }
 async function start(selection) {
   let pending; await act(async () => { pending = app.props.addFiles(selection); }); return { pending };
