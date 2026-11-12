@@ -120,7 +120,7 @@ impl<'a> ChatRepository<'a> {
                 WHERE chat_message_fts MATCH ?2 AND m.role != 'system'
              )"
         };
-        let fts_query = format!("\\\"{}\\\"", query.replace('"', "\\"\\""));
+        let fts_query = format!("\"{}\"", query.replace('"', "\"\""));
         let (cursor_time, cursor_id) = match cursor {
             Some((time, id)) => (Some(time), Some(id)),
             None => (None, None),
