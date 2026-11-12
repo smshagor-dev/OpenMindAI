@@ -14,7 +14,7 @@
     "tauri": "tauri",
     "lint": "eslint .",
     "test:image": "node --experimental-strip-types --test tests/imageGeneration.test.mjs",
-    "test:pdf": "node --test tests/pdfIngestion.test.mjs",
+    "test:pdf": "node --test tests/pdfIngestion.test.mjs tests/pdfWorkBudget.test.mjs",
     "test:regeneration": "node --test tests/regeneration.test.mjs",
     "test:model-inventory": "node --test tests/modelInventory.test.mjs",
     "test:model-actions": "node --test tests/modelActions.test.mjs",

@@ -21,6 +21,7 @@ import type { ReactNode, RefObject } from "react";
 import type { ImageGenerationOptions, ModelRecord, RuntimeInventory } from "../types";
 import { formatBytes } from "../lib/format";
 import { attachmentContextStats, inferChatMode, type AttachmentDraft } from "../lib/chat";
+import type { PdfExtractionProgress } from "../lib/pdf";
 import { transcribeAudioBlob } from "../lib/media";
 import { api } from "../api";
 import { ModelSelector } from "./ModelSelector";
@@ -33,6 +34,8 @@ export function Composer(props: {
   imageOptions: ImageGenerationOptions;
   setImageOptions: (options: ImageGenerationOptions) => void;
   attachments: AttachmentDraft[];
+  pdfImportProgress?: (PdfExtractionProgress & { fileName: string }) | null;
+  onCancelPdfImport?: () => void;
   enterToSend: boolean;
   streaming: boolean;
   submitting: boolean;
@@ -234,6 +237,28 @@ export function Composer(props: {
       }}
     >
       <div className="composer-box">
+        {props.pdfImportProgress ? (
+          <div className="pdf-import-progress" role="status" aria-live="polite">
+            <span>
+              Importing {props.pdfImportProgress.fileName}:{" "}
+              {props.pdfImportProgress.phase === "reading" ? "reading text" : "scanned-page OCR"}{" "}
+              {props.pdfImportProgress.completed}/{props.pdfImportProgress.total} pages
+            </span>
+            <progress
+              aria-label="PDF import progress"
+              max={Math.max(1, props.pdfImportProgress.total)}
+              value={props.pdfImportProgress.completed}
+            />
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={props.onCancelPdfImport}
+              disabled={!props.onCancelPdfImport}
+            >
+              Cancel import
+            </button>
+          </div>
+        ) : null}
         {props.attachments.length ? (
           <div className="attachment-tray">
             {props.attachments.map((attachment) => {

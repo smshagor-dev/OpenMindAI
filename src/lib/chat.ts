@@ -1,7 +1,7 @@
 import type { Message } from "../types";
 import { formatBytes } from "./format";
 import { analyzeVideoFile, transcribeAudioFile } from "./media";
-import { extractPdfText } from "./pdf";
+import { extractPdfText, type PdfExtractionOptions, type PdfExtractionProgress } from "./pdf";
 import { isImageGenerationIntent } from "./imageGeneration";
 import {
   MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS,
@@ -155,7 +155,15 @@ export function mergeStreamingSnapshot(current: Message[], snapshot: Message[]) 
   });
 }
 
-export async function readAttachment(file: File): Promise<AttachmentDraft> {
+export interface AttachmentReadOptions {
+  signal?: PdfExtractionOptions["signal"];
+  onPdfProgress?: (progress: PdfExtractionProgress) => void;
+}
+
+export async function readAttachment(
+  file: File,
+  options: AttachmentReadOptions = {},
+): Promise<AttachmentDraft> {
   const kind = attachmentKind(file);
   const isTextLike =
     file.type.startsWith("text/") ||
@@ -197,7 +205,10 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
     ];
     contentPreview = `[Image attached: ${file.name}. The actual optimized image bytes are supplied to OpenMindAI Lens for this request.]`;
   } else if (kind === "pdf") {
-    const extracted = await extractPdfText(file);
+    const extracted = await extractPdfText(file, {
+      signal: options.signal,
+      onProgress: options.onPdfProgress,
+    });
     mediaItems = extracted.visionPages.map((page) => ({
       kind: "image",
       name: `${file.name} - page ${page.pageNumber}`,
@@ -213,7 +224,7 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
       extracted.visionPages.length
         ? `${extracted.visionPages.length} representative page(s) sent to Lens`
         : null,
-      extracted.truncated ? "text truncated to fit local chat context" : null,
+      extracted.truncated ? "text or scanned-page coverage limited for local chat context" : null,
     ]
       .filter(Boolean)
       .join(", ");

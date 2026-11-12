@@ -27,6 +27,7 @@ import type {
   WebResearchProgressEvent,
 } from "../types";
 import type { AttachmentDraft } from "../lib/chat";
+import type { PdfExtractionProgress } from "../lib/pdf";
 import type { CloudModel } from "../cloudApi";
 import { MessageItem } from "./MessageItem";
 import { ResearchProgress } from "./ResearchProgress";
@@ -59,6 +60,8 @@ export function ChatView(props: {
   imageOptions: ImageGenerationOptions;
   setImageOptions: (options: ImageGenerationOptions) => void;
   attachments: AttachmentDraft[];
+  pdfImportProgress?: (PdfExtractionProgress & { fileName: string }) | null;
+  onCancelPdfImport?: () => void;
   preferences: AppPreferences | null;
   activity: RealtimeActivity;
   webProgress: WebResearchProgressEvent | null;
@@ -130,6 +133,8 @@ export function ChatView(props: {
       imageOptions={props.imageOptions}
       setImageOptions={props.setImageOptions}
       attachments={props.attachments}
+      pdfImportProgress={props.pdfImportProgress}
+      onCancelPdfImport={props.onCancelPdfImport}
       enterToSend={props.enterToSend}
       streaming={props.streaming}
       submitting={props.submitting}
