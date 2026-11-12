@@ -40,7 +40,12 @@ export async function saveProjectBinaryCopy(projectId: string, fileId: string) {
   const link = document.createElement("a");
   // Names are display labels only. This prevents an older corrupted record
   // from inserting path segments into a browser's suggested download name.
-  link.download = file.name.replace(/[\\/\x00-\x1f\x7f]/g, "_") || "project-attachment";
+  link.download = [...file.name].map((character) => {
+    const code = character.charCodeAt(0);
+    return character === "/" || character === "\\" || code < 32 || code === 127
+      ? "_"
+      : character;
+  }).join("") || "project-attachment";
   link.href = url;
   try {
     document.body.appendChild(link);
