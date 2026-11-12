@@ -641,11 +641,20 @@ mod tests {
             let serialized = serde_json::to_string(&page).unwrap();
             assert!(!serialized.contains("LARGE_PRIVATE_CONTENT_NOT_FOR_SIDEBAR"));
             assert!(!serialized.contains("long-notes.md"));
-            assert!(serialized.len() < 16_000, "catalog unexpectedly included large files");
+            assert!(
+                serialized.len() < 16_000,
+                "catalog unexpectedly included large files"
+            );
             for summary in page.projects {
-                assert!(seen.insert(summary.id.clone()), "duplicate from timestamp-tied pages");
+                assert!(
+                    seen.insert(summary.id.clone()),
+                    "duplicate from timestamp-tied pages"
+                );
                 assert_eq!(summary.file_count, 1);
-                assert_eq!(summary.conversation_count, if summary.id == created_ids[0] { 1 } else { 0 });
+                assert_eq!(
+                    summary.conversation_count,
+                    if summary.id == created_ids[0] { 1 } else { 0 }
+                );
             }
             match page.next_cursor {
                 Some(next) => cursor = Some(next),
@@ -660,14 +669,20 @@ mod tests {
         // existing project chat-context behavior and metadata.
         let selected = repo.find_project(&created_ids[0]).unwrap();
         assert_eq!(selected.conversation_ids, vec![chat_id]);
-        assert_eq!(selected.files[0].content_text.as_deref(), Some(huge_text.as_str()));
+        assert_eq!(
+            selected.files[0].content_text.as_deref(),
+            Some(huge_text.as_str())
+        );
         assert!(repo
             .list_projects(Some("bad cursor"), 50)
             .is_err());
         assert!(repo
             .list_projects(Some("2026-01-01T00:00:00Z|not-a-uuid"), 50)
             .is_err());
-        assert_eq!(repo.list_projects(None, 100_000).unwrap().projects.len(), 100);
+        assert_eq!(
+            repo.list_projects(None, 100_000).unwrap().projects.len(),
+            100
+        );
     }
 
     #[test]
