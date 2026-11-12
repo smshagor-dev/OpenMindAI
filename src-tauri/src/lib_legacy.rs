@@ -58,7 +58,8 @@ use portable_root::{
     SetupState, RECOMMENDED_INITIAL_STORAGE_BYTES,
 };
 use projects::{
-    project_context_message, Project, ProjectFile, ProjectFileInput, ProjectRepository,
+    project_context_message, project_context_message_for_prompt, Project, ProjectFile,
+    ProjectFileInput, ProjectRepository,
 };
 use reqwest::Client;
 use runtime::{allocate_local_port, LlamaRuntimeManager, LlamaRuntimeStatus, RuntimeInventory};
@@ -1853,7 +1854,7 @@ async fn send_chat_message(
     let routing = resolve_conversation_model(&state, &conversation_id, &mode, trimmed)?;
     let model = routing.model;
     state.warm_start.note_foreground_request(&model.id);
-    sync_project_context(&state, &conversation_id)?;
+    sync_project_context_for_prompt(&state, &conversation_id, trimmed)?;
     let dataset_context = dataset_context::build_dataset_context(
         &state.root,
         trimmed,
@@ -1960,7 +1961,7 @@ async fn regenerate_message(
     let routing = resolve_conversation_model(&state, &conversation_id, &mode, &user.content)?;
     let model = routing.model;
     state.warm_start.note_foreground_request(&model.id);
-    sync_project_context(&state, &conversation_id)?;
+    sync_project_context_for_prompt(&state, &conversation_id, &user.content)?;
     let dataset_context = dataset_context::build_dataset_context(
         &state.root,
         &user.content,
@@ -2102,11 +2103,19 @@ fn sync_project_context_in_database(
     db: &Database,
     conversation_id: &str,
 ) -> Result<(), app_error::AppError> {
+    sync_project_context_in_database_for_prompt(db, conversation_id, None)
+}
+
+fn sync_project_context_in_database_for_prompt(
+    db: &Database,
+    conversation_id: &str,
+    prompt: Option<&str>,
+) -> Result<(), app_error::AppError> {
     let project = ProjectRepository::new(db).project_for_conversation(conversation_id)?;
     let content = match project.as_ref() {
         Some(project) => {
             let mut parts = Vec::new();
-            if let Some(base) = project_context_message(project) {
+            if let Some(base) = project_context_message_for_prompt(project, prompt) {
                 parts.push(base);
             }
             if let Some(workspace) = local_workspace::workspace_context_for_project(db, &project.id)? {
@@ -2138,15 +2147,16 @@ fn sync_project_context_for_project(
     Ok(())
 }
 
-fn sync_project_context(
+pub(crate) fn sync_project_context_for_prompt(
     state: &State<'_, AppState>,
     conversation_id: &str,
+    prompt: &str,
 ) -> Result<(), app_error::AppError> {
     let db = state
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-    sync_project_context_in_database(&db, conversation_id)
+    sync_project_context_in_database_for_prompt(&db, conversation_id, Some(prompt))
 }
 
 #[tauri::command]
