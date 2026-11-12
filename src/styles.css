@@ -2402,6 +2402,21 @@ button {
   text-align: center;
 }
 
+.search-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 2px 2px;
+  font-size: 12px;
+}
+
+.search-pagination .button-row {
+  display: flex;
+  gap: 8px;
+}
+
 .library-card {
   width: min(640px, 100%);
   max-height: 80vh;
