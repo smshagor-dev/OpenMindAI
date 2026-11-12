@@ -1,7 +1,7 @@
 import type { Message } from "../types";
 import { formatBytes } from "./format";
 import { analyzeVideoFile, transcribeAudioFile } from "./media";
-import { extractPdfText, type PdfExtractionProgress } from "./pdf";
+import { extractPdfText, type PdfExtractionOptions, type PdfExtractionProgress } from "./pdf";
 import { isImageGenerationIntent } from "./imageGeneration";
 import {
   MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS,
@@ -156,7 +156,7 @@ export function mergeStreamingSnapshot(current: Message[], snapshot: Message[]) 
 }
 
 export interface AttachmentReadOptions {
-  signal?: AbortSignal;
+  signal?: PdfExtractionOptions["signal"];
   onPdfProgress?: (progress: PdfExtractionProgress) => void;
 }
 
