@@ -83,6 +83,9 @@ jobs:
       - name: Auto routing and offline regression
         run: npm run test:routing
 
+      - name: Setup storage path validation and stale response regression
+        run: npm run test:setup-storage
+
       - name: Lint
         run: npm run lint
 
