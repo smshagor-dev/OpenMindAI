@@ -16,7 +16,7 @@ function deferred() {
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms) => new Promise((resolve) => globalThis.setTimeout(resolve, ms));
 
 test("chat search never fetches entire histories and ignores stale or failed searches", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chat-search-"));
