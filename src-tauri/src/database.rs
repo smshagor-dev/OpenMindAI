@@ -81,6 +81,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "011_message_regeneration",
         sql: include_str!("../migrations/011_message_regeneration.sql"),
     },
+    Migration {
+        number: 12,
+        name: "012_local_chat_search_fts",
+        sql: include_str!("../migrations/012_local_chat_search_fts.sql"),
+    },
 ];
 
 pub struct Database {
