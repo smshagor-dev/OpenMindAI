@@ -346,7 +346,15 @@ export function ProjectsWorkspace(props: {
 
       <section className="project-detail project-detail-v2">
         {error || catalogError || detailError ? (
-          <button className="error-banner project-error-banner" onClick={() => setError(null)}>
+          <button
+            className="error-banner project-error-banner"
+            onClick={() => {
+              setError(null);
+              if (catalogError || detailError) {
+                void refreshProjects(activeId).catch((caught) => setError(formatError(caught)));
+              }
+            }}
+          >
             <span>{error || catalogError || detailError}</span>
             <X size={14} />
           </button>
