@@ -61,6 +61,9 @@ jobs:
       - name: Chat draft failure recovery
         run: npm run test:drafts
 
+      - name: Project catalog paging and stale detail regression
+        run: npm run test:project-catalog
+
       - name: PDF ingestion fallback regression
         run: npm run test:pdf
       - name: Regeneration history preservation

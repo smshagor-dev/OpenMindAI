@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   Bot,
   BriefcaseBusiness,
@@ -25,6 +25,7 @@ import { formatBytes, formatError, formatTime } from "../lib/format";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ProjectLocalWorkspace } from "./ProjectLocalWorkspace";
 import { OpenFolderProjectButton } from "./OpenFolderProjectButton";
+import { useProjectCatalog } from "../lib/useProjectCatalog";
 
 const MAX_PROJECT_INSTRUCTIONS_CHARS = 20_000;
 
@@ -33,14 +34,16 @@ export function ProjectsWorkspace(props: {
   onOpenConversation: (id: string, draft?: string) => void;
   onCreateProjectChat: (project: Project) => Promise<Conversation>;
 }) {
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const {
+    projects, setProjects, activeId, setActiveId, activeProject, setActiveProject,
+    loading, detailLoading, loadingMore, nextCursor, loadMore, refreshProjects,
+    catalogError, detailError,
+  } = useProjectCatalog();
   const [activePane, setActivePane] = useState<"overview" | "work">("overview");
   const [workDraft, setWorkDraft] = useState("");
   const [draftName, setDraftName] = useState("");
   const [linkSearch, setLinkSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [addingFiles, setAddingFiles] = useState(false);
   const [draggingFiles, setDraggingFiles] = useState(false);
@@ -49,51 +52,11 @@ export function ProjectsWorkspace(props: {
   const [deleteFileTarget, setDeleteFileTarget] = useState<ProjectFile | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const refreshProjects = useCallback(async (preferredId?: string | null) => {
-    const next = await api.projects();
-    setProjects(next);
-    setActiveId((current) => {
-      const candidate = preferredId ?? current;
-      if (candidate && next.some((project) => project.id === candidate)) return candidate;
-      return next[0]?.id ?? null;
-    });
-    return next;
-  }, []);
-
-  useEffect(() => {
-    let alive = true;
-    void refreshProjects()
-      .catch((caught) => {
-        if (alive) setError(formatError(caught));
-      })
-      .finally(() => {
-        if (alive) setLoading(false);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [refreshProjects]);
-
-  const activeProject = useMemo(
-    () => projects.find((project) => project.id === activeId) ?? projects[0] ?? null,
-    [activeId, projects],
-  );
-
   const projectConversations = useMemo(() => {
     if (!activeProject) return [];
     const allowed = new Set(activeProject.conversationIds);
     return props.conversations.filter((conversation) => allowed.has(conversation.id));
   }, [activeProject, props.conversations]);
-
-  const conversationOwner = useMemo(() => {
-    const owners = new Map<string, string>();
-    for (const project of projects) {
-      for (const conversationId of project.conversationIds) {
-        if (!owners.has(conversationId)) owners.set(conversationId, project.name);
-      }
-    }
-    return owners;
-  }, [projects]);
 
   const linkableConversations = useMemo(() => {
     if (!activeProject) return [];
@@ -133,7 +96,7 @@ export function ProjectsWorkspace(props: {
     projectId: string,
     patch: Partial<Pick<Project, "name" | "instructions">>,
   ) => {
-    const current = projects.find((project) => project.id === projectId);
+    const current = activeProject?.id === projectId ? activeProject : null;
     if (!current) return;
     const nextName = patch.name ?? current.name;
     if (!nextName.trim()) {
@@ -148,7 +111,10 @@ export function ProjectsWorkspace(props: {
       await refreshProjects(projectId).catch(() => undefined);
       return;
     }
-    setProjects((items) => items.map((item) => (item.id === updated.id ? updated : item)));
+    setActiveProject(updated);
+    setProjects((items) => items.map((item) => item.id === updated.id
+      ? { ...item, name: updated.name, updatedAt: updated.updatedAt }
+      : item));
     setSavedAt(Date.now());
   };
 
@@ -280,7 +246,7 @@ export function ProjectsWorkspace(props: {
             <span className="projects-kicker">Workspace</span>
             <h2>Projects</h2>
           </div>
-          <span className="projects-count-badge">{projects.length}</span>
+          <span className="projects-count-badge">{projects.length}{nextCursor ? "+" : ""}</span>
         </div>
         <p className="projects-sidebar-copy">
           Keep chats, working files, and instructions together in one focused space.
@@ -339,7 +305,7 @@ export function ProjectsWorkspace(props: {
                 type="button"
                 key={project.id}
                 className={
-                  project.id === activeProject?.id
+                  project.id === activeId
                     ? "project-list-item project-list-item-v2 active"
                     : "project-list-item project-list-item-v2"
                 }
@@ -358,7 +324,7 @@ export function ProjectsWorkspace(props: {
                 <span className="project-list-copy">
                   <strong>{project.name}</strong>
                   <small>
-                    {project.conversationIds.length} chats · {project.files.length} files
+                    {project.conversationCount} chats · {project.fileCount} files
                   </small>
                 </span>
                 <small className="project-list-time">{formatTime(project.updatedAt)}</small>
@@ -366,17 +332,35 @@ export function ProjectsWorkspace(props: {
             ))
           )}
         </div>
+        {nextCursor ? (
+          <button
+            type="button"
+            className="ghost-button"
+            disabled={loadingMore}
+            onClick={() => void loadMore()}
+          >
+            {loadingMore ? "Loading more projects…" : "Load more projects"}
+          </button>
+        ) : null}
       </aside>
 
       <section className="project-detail project-detail-v2">
-        {error ? (
-          <button className="error-banner project-error-banner" onClick={() => setError(null)}>
-            <span>{error}</span>
+        {error || catalogError || detailError ? (
+          <button
+            className="error-banner project-error-banner"
+            onClick={() => {
+              setError(null);
+              if (catalogError || detailError) {
+                void refreshProjects(activeId).catch((caught) => setError(formatError(caught)));
+              }
+            }}
+          >
+            <span>{error || catalogError || detailError}</span>
             <X size={14} />
           </button>
         ) : null}
 
-        {loading ? (
+        {loading || (activeId !== null && detailLoading) ? (
           <div className="project-empty project-loading-detail">
             <LoaderCircle className="spin" size={30} />
             <h2>Loading your workspace</h2>
@@ -398,10 +382,11 @@ export function ProjectsWorkspace(props: {
                     aria-label="Project name"
                     onChange={(event) => {
                       const name = event.target.value;
+                      setActiveProject((project) =>
+                        project?.id === activeProject.id ? { ...project, name } : project,
+                      );
                       setProjects((items) =>
-                        items.map((item) =>
-                          item.id === activeProject.id ? { ...item, name } : item,
-                        ),
+                        items.map((item) => item.id === activeProject.id ? { ...item, name } : item),
                       );
                     }}
                     onBlur={(event) =>
@@ -520,10 +505,8 @@ export function ProjectsWorkspace(props: {
                     disabled={busyAction === "save-project"}
                     onChange={(event) => {
                       const instructions = event.target.value;
-                      setProjects((items) =>
-                        items.map((item) =>
-                          item.id === activeProject.id ? { ...item, instructions } : item,
-                        ),
+                      setActiveProject((project) =>
+                        project?.id === activeProject.id ? { ...project, instructions } : project,
                       );
                     }}
                     onBlur={(event) =>
@@ -618,7 +601,6 @@ export function ProjectsWorkspace(props: {
                           <div className="project-link-results">
                             {linkableConversations.length ? (
                               linkableConversations.map((conversation) => {
-                                const owner = conversationOwner.get(conversation.id);
                                 return (
                                   <button
                                     type="button"
@@ -629,9 +611,7 @@ export function ProjectsWorkspace(props: {
                                     <span>
                                       <strong>{conversation.title}</strong>
                                       <small>
-                                        {owner
-                                          ? `Move from ${owner}`
-                                          : `Updated ${formatTime(conversation.updatedAt)}`}
+                                        Updated {formatTime(conversation.updatedAt)} · move to this project
                                       </small>
                                     </span>
                                     {busyAction === `link-${conversation.id}` ? (
@@ -877,6 +857,10 @@ export function ProjectsWorkspace(props: {
               </div>
             )}
           </>
+        ) : projects.length ? (
+          <div className="project-empty" role="alert">
+            Could not open the selected project. Select it again or reopen Projects.
+          </div>
         ) : (
           <div className="project-empty project-empty-v2">
             <div className="project-empty-icon">

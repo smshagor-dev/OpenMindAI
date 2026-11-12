@@ -24,6 +24,24 @@ pub struct Project {
     pub files: Vec<ProjectFile>,
 }
 
+/// Lightweight catalog row: no instructions, conversations or file bodies.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSummary {
+    pub id: String,
+    pub name: String,
+    pub updated_at: String,
+    pub conversation_count: i64,
+    pub file_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectListPage {
+    pub projects: Vec<ProjectSummary>,
+    pub next_cursor: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectFile {
@@ -59,36 +77,69 @@ impl<'a> ProjectRepository<'a> {
         Self { database }
     }
 
-    pub fn list_projects(&self) -> Result<Vec<Project>, AppError> {
+    /// A single bounded metadata-only SQL query replaces the previous
+    /// N+1 conversation and full-file queries for every catalog entry.
+    /// A single selected project is loaded on demand via find_project.
+    pub fn list_projects(
+        &self,
+        cursor: Option<&str>,
+        requested_limit: i64,
+    ) -> Result<ProjectListPage, AppError> {
+        let limit = requested_limit.clamp(1, 100);
+        let cursor = match cursor {
+            Some(raw) => {
+                let (updated_at, id) = raw
+                    .split_once('|')
+                    .ok_or_else(|| AppError::internal("invalid project catalog cursor"))?;
+                if raw.len() > 128
+                    || chrono::DateTime::parse_from_rfc3339(updated_at).is_err()
+                    || Uuid::parse_str(id).is_err()
+                {
+                    return Err(AppError::internal("invalid project catalog cursor"));
+                }
+                Some((updated_at, id))
+            }
+            None => None,
+        };
+        let (after_time, after_id) = match cursor {
+            Some((time, id)) => (Some(time), Some(id)),
+            None => (None, None),
+        };
         let mut statement = self.database.connection().prepare(
-            "SELECT id, name, instructions, created_at, updated_at
-             FROM projects
-             ORDER BY updated_at DESC",
+            "SELECT p.id, p.name, p.updated_at,
+                    (SELECT COUNT(*) FROM project_conversations pc WHERE pc.project_id = p.id),
+                    (SELECT COUNT(*) FROM project_files pf WHERE pf.project_id = p.id)
+             FROM projects p
+             WHERE (?1 IS NULL OR p.updated_at < ?1
+                    OR (p.updated_at = ?1 AND p.id < ?2))
+             ORDER BY p.updated_at DESC, p.id DESC
+             LIMIT ?3",
         )?;
-        let rows = statement.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-            ))
+        let rows = statement.query_map(params![after_time, after_id, limit + 1], |row| {
+            Ok(ProjectSummary {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                updated_at: row.get(2)?,
+                conversation_count: row.get(3)?,
+                file_count: row.get(4)?,
+            })
         })?;
-
-        let mut projects = Vec::new();
-        for row in rows {
-            let (id, name, instructions, created_at, updated_at) = row?;
-            projects.push(Project {
-                conversation_ids: self.conversation_ids(&id)?,
-                files: self.list_files(&id)?,
-                id,
-                name,
-                instructions,
-                created_at,
-                updated_at,
-            });
-        }
-        Ok(projects)
+        let mut projects = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(AppError::from)?;
+        let has_more = projects.len() > limit as usize;
+        projects.truncate(limit as usize);
+        let next_cursor = if has_more {
+            projects
+                .last()
+                .map(|project| format!("{}|{}", project.updated_at, project.id))
+        } else {
+            None
+        };
+        Ok(ProjectListPage {
+            projects,
+            next_cursor,
+        })
     }
 
     pub fn create_project(&self, name: &str) -> Result<Project, AppError> {
@@ -537,6 +588,104 @@ mod tests {
     }
 
     #[test]
+    fn large_project_catalog_is_paged_without_serializing_file_contents() {
+        let database = Database::in_memory().unwrap();
+        let repo = ProjectRepository::new(&database);
+        let huge_text = "LARGE_PRIVATE_CONTENT_NOT_FOR_SIDEBAR ".repeat(3_000);
+        let mut created_ids = Vec::new();
+        for index in 0..125 {
+            let project = repo
+                .create_project(&format!("Project {index:03}"))
+                .unwrap();
+            database
+                .connection()
+                .execute(
+                    "INSERT INTO project_files
+                     (id, project_id, name, size_bytes, mime_type, content_text, status, added_at)
+                     VALUES (?1, ?2, 'long-notes.md', ?3, 'text/markdown', ?4, 'ready', '2026-01-01')",
+                    params![
+                        Uuid::new_v4().to_string(),
+                        project.id,
+                        huge_text.len() as i64,
+                        huge_text,
+                    ],
+                )
+                .unwrap();
+            database
+                .connection()
+                .execute(
+                    "UPDATE projects SET updated_at = ?1 WHERE id = ?2",
+                    params!["2026-01-01T00:00:00+00:00", project.id],
+                )
+                .unwrap();
+            created_ids.push(project.id);
+        }
+        let chat_id = Uuid::new_v4().to_string();
+        insert_conversation(&database, &chat_id, "Linked chat");
+        database
+            .connection()
+            .execute(
+                "INSERT INTO project_conversations (project_id, conversation_id, created_at)
+                 VALUES (?1, ?2, '2026-01-01')",
+                params![created_ids[0], chat_id],
+            )
+            .unwrap();
+
+        let mut cursor = None;
+        let mut seen = std::collections::HashSet::new();
+        let mut pages = 0;
+        loop {
+            let page = repo.list_projects(cursor.as_deref(), 50).unwrap();
+            assert!(page.projects.len() <= 50);
+            pages += 1;
+            let serialized = serde_json::to_string(&page).unwrap();
+            assert!(!serialized.contains("LARGE_PRIVATE_CONTENT_NOT_FOR_SIDEBAR"));
+            assert!(!serialized.contains("long-notes.md"));
+            assert!(
+                serialized.len() < 16_000,
+                "catalog unexpectedly included large files"
+            );
+            for summary in page.projects {
+                assert!(
+                    seen.insert(summary.id.clone()),
+                    "duplicate from timestamp-tied pages"
+                );
+                assert_eq!(summary.file_count, 1);
+                assert_eq!(
+                    summary.conversation_count,
+                    if summary.id == created_ids[0] { 1 } else { 0 }
+                );
+            }
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+            assert!(pages < 5, "catalog cursor did not reach the final page");
+        }
+        assert_eq!(pages, 3);
+        assert_eq!(seen.len(), 125);
+
+        // Only a requested detail query can expose the stored text, preserving
+        // existing project chat-context behavior and metadata.
+        let selected = repo.find_project(&created_ids[0]).unwrap();
+        assert_eq!(selected.conversation_ids, vec![chat_id]);
+        assert_eq!(
+            selected.files[0].content_text.as_deref(),
+            Some(huge_text.as_str())
+        );
+        assert!(repo
+            .list_projects(Some("bad cursor"), 50)
+            .is_err());
+        assert!(repo
+            .list_projects(Some("2026-01-01T00:00:00Z|not-a-uuid"), 50)
+            .is_err());
+        assert_eq!(
+            repo.list_projects(None, 100_000).unwrap().projects.len(),
+            100
+        );
+    }
+
+    #[test]
     fn project_crud_links_and_files() {
         let database = Database::in_memory().unwrap();
         let repo = ProjectRepository::new(&database);
@@ -561,14 +710,17 @@ mod tests {
             error: None,
         })
         .unwrap();
-        let listed = repo.list_projects().unwrap();
-        assert_eq!(listed[0].conversation_ids, vec!["c1"]);
-        assert_eq!(listed[0].files[0].name, "brief.md");
-        let context = project_context_message(&listed[0]).unwrap();
+        let listed = repo.list_projects(None, 50).unwrap();
+        assert_eq!(listed.projects[0].conversation_count, 1);
+        assert_eq!(listed.projects[0].file_count, 1);
+        let selected = repo.find_project(&project.id).unwrap();
+        assert_eq!(selected.conversation_ids, vec!["c1"]);
+        assert_eq!(selected.files[0].name, "brief.md");
+        let context = project_context_message(&selected).unwrap();
         assert!(context.contains("Ship the polished version."));
         repo.unlink_conversation(&project.id, "c1").unwrap();
         repo.delete_project(&project.id).unwrap();
-        assert!(repo.list_projects().unwrap().is_empty());
+        assert!(repo.list_projects(None, 50).unwrap().projects.is_empty());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   ArrowUp,
   CheckCircle2,
@@ -24,6 +24,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { OpenFolderProjectButton } from "./OpenFolderProjectButton";
 import { ProjectLocalWorkspace } from "./ProjectLocalWorkspace";
 import { CodingRunTimeline } from "./CodingRunTimeline";
+import { useProjectCatalog } from "../lib/useProjectCatalog";
 
 const MAX_PROJECT_INSTRUCTIONS_CHARS = 20_000;
 const QUICK_TASKS = [
@@ -62,48 +63,20 @@ export function WorkWorkspace(props: {
   onOpenConversation: (id: string, draft?: string) => void;
   onCreateProjectChat: (project: Project) => Promise<Conversation>;
 }) {
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const {
+    projects, setProjects, activeId, setActiveId, activeProject, setActiveProject,
+    loading, detailLoading, loadingMore, nextCursor, loadMore, refreshProjects,
+    catalogError, detailError,
+  } = useProjectCatalog();
   const [workDraft, setWorkDraft] = useState("");
   const [draftName, setDraftName] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [addingFiles, setAddingFiles] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const [deleteFileTarget, setDeleteFileTarget] = useState<ProjectFile | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  const refreshProjects = useCallback(async (preferredId?: string | null) => {
-    const next = await api.projects();
-    setProjects(next);
-    setActiveId((current) => {
-      const candidate = preferredId ?? current;
-      if (candidate && next.some((project) => project.id === candidate)) return candidate;
-      return next[0]?.id ?? null;
-    });
-    return next;
-  }, []);
-
-  useEffect(() => {
-    let alive = true;
-    void refreshProjects()
-      .catch((caught) => {
-        if (alive) setError(formatError(caught));
-      })
-      .finally(() => {
-        if (alive) setLoading(false);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [refreshProjects]);
-
-  const activeProject = useMemo(
-    () => projects.find((project) => project.id === activeId) ?? projects[0] ?? null,
-    [activeId, projects],
-  );
 
   const projectConversations = useMemo(() => {
     if (!activeProject) return [];
@@ -141,7 +114,7 @@ export function WorkWorkspace(props: {
     projectId: string,
     patch: Partial<Pick<Project, "name" | "instructions">>,
   ) => {
-    const current = projects.find((project) => project.id === projectId);
+    const current = activeProject?.id === projectId ? activeProject : null;
     if (!current) return;
     const nextName = patch.name ?? current.name;
     if (!nextName.trim()) {
@@ -156,7 +129,10 @@ export function WorkWorkspace(props: {
       await refreshProjects(projectId).catch(() => undefined);
       return;
     }
-    setProjects((items) => items.map((item) => (item.id === updated.id ? updated : item)));
+    setActiveProject(updated);
+    setProjects((items) => items.map((item) => item.id === updated.id
+      ? { ...item, name: updated.name, updatedAt: updated.updatedAt }
+      : item));
     setSavedAt(Date.now());
   };
 
@@ -252,9 +228,17 @@ export function WorkWorkspace(props: {
         }}
       />
 
-      {error ? (
-        <button className="error-banner cg-work-error" onClick={() => setError(null)}>
-          <span>{error}</span>
+      {error || catalogError || detailError ? (
+        <button
+            className="error-banner cg-work-error"
+            onClick={() => {
+              setError(null);
+              if (catalogError || detailError) {
+                void refreshProjects(activeId).catch((caught) => setError(formatError(caught)));
+              }
+            }}
+          >
+          <span>{error || catalogError || detailError}</span>
           <X size={14} />
         </button>
       ) : null}
@@ -267,7 +251,7 @@ export function WorkWorkspace(props: {
               <FolderKanban size={14} />
               <select
                 aria-label="Project context"
-                value={activeProject?.id ?? ""}
+                value={activeId ?? ""}
                 onChange={(event) => {
                   setActiveId(event.target.value || null);
                   setSavedAt(null);
@@ -289,7 +273,7 @@ export function WorkWorkspace(props: {
           <h1>What can I help you get done?</h1>
         </div>
 
-        {loading ? (
+        {loading || (activeId !== null && detailLoading) ? (
           <div className="cg-work-loading">
             <LoaderCircle className="spin" size={20} /> Loading your work context…
           </div>
@@ -471,10 +455,11 @@ export function WorkWorkspace(props: {
                     aria-label="Project name"
                     onChange={(event) => {
                       const name = event.target.value;
+                      setActiveProject((project) =>
+                        project?.id === activeProject.id ? { ...project, name } : project,
+                      );
                       setProjects((items) =>
-                        items.map((item) =>
-                          item.id === activeProject.id ? { ...item, name } : item,
-                        ),
+                        items.map((item) => item.id === activeProject.id ? { ...item, name } : item),
                       );
                     }}
                     onBlur={(event) =>
@@ -508,10 +493,8 @@ export function WorkWorkspace(props: {
                   placeholder="Add private instructions for this project…"
                   onChange={(event) => {
                     const instructions = event.target.value;
-                    setProjects((items) =>
-                      items.map((item) =>
-                        item.id === activeProject.id ? { ...item, instructions } : item,
-                      ),
+                    setActiveProject((project) =>
+                      project?.id === activeProject.id ? { ...project, instructions } : project,
                     );
                   }}
                   onBlur={(event) =>
@@ -642,12 +625,22 @@ export function WorkWorkspace(props: {
                   <span>
                     <strong>{project.name}</strong>
                     <small>
-                      {project.conversationIds.length} chats · {project.files.length} files
+                      {project.conversationCount} chats · {project.fileCount} files
                     </small>
                   </span>
                 </button>
               ))}
             </div>
+          ) : null}
+          {nextCursor ? (
+            <button
+              type="button"
+              className="ghost-button"
+              disabled={loadingMore}
+              onClick={() => void loadMore()}
+            >
+              {loadingMore ? "Loading more projects…" : "Load more projects"}
+            </button>
           ) : null}
         </div>
       </details>

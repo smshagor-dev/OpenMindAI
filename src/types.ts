@@ -407,6 +407,19 @@ export interface ProjectFile {
   addedAt: string;
 }
 
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  updatedAt: string;
+  conversationCount: number;
+  fileCount: number;
+}
+
+export interface ProjectListPage {
+  projects: ProjectSummary[];
+  nextCursor: string | null;
+}
+
 export interface Project {
   id: string;
   name: string;
