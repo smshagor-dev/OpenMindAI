@@ -684,9 +684,22 @@ async fn create_generation_artifact(
     // `state.hardware` is the startup placeholder (0 bytes RAM, no GPUs); the
     // memory and GPU checks need the completed hardware scan.
     let hardware = HardwareProfiler::for_inference(&state.hardware);
-    if let Some(report) =
-        artifacts::media_preflight::preflight_for_hardware(&state.root, artifact_kind, &hardware)?
-    {
+    let verification_root = state.root.clone();
+    let verification_kind = artifact_kind.to_owned();
+    // Rehashing a multi-gigabyte checkpoint is blocking filesystem I/O.
+    // Do not occupy a Tokio async worker or freeze unrelated chat commands.
+    let media_report = tokio::task::spawn_blocking(move || {
+        artifacts::media_preflight::preflight_for_hardware(
+            &verification_root,
+            &verification_kind,
+            &hardware,
+        )
+    })
+    .await
+    .map_err(|error| {
+        app_error::AppError::internal(format!("media integrity task failed: {error}"))
+    })??;
+    if let Some(report) = media_report {
         report.ensure_ready()?;
     }
     let (artifact, path) = {
