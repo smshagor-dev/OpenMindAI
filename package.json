@@ -34,6 +34,7 @@
     "check:release": "node scripts/check-release-readiness.mjs",
     "check:models": "node scripts/check-model-catalog.mjs",
     "test:routing": "node --experimental-strip-types --test tests/executionRouting.test.mjs",
+    "test:chat-search": "node --test tests/chatSearchPaging.test.mjs",
     "test:setup-storage": "node --test tests/setupStorageValidation.test.mjs"
   },
   "allowScripts": {

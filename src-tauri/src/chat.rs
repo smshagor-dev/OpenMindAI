@@ -37,6 +37,14 @@ pub struct ForkedConversation {
     pub messages: Vec<Message>,
 }
 
+/// Bounded server-side results; no message bodies are ever sent to search UI.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSearchPage {
+    pub conversations: Vec<Conversation>,
+    pub next_cursor: Option<String>,
+}
+
 const PROFILE_CONTEXT_MARKER: &str = "[open-mind-ai-profile-context]";
 const PROJECT_CONTEXT_MARKER: &str = "[open-mind-ai-project-context]";
 
@@ -58,6 +66,97 @@ impl<'a> ChatRepository<'a> {
         )?;
         let rows = statement.query_map([], map_conversation)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+    }
+
+    /// Searches chat titles and indexed local message text without materializing
+    /// every conversation history in the renderer. Result pages have a stable
+    /// (updated_at, id) ordering; the query is never interpolated into SQL.
+    pub fn search_conversations(
+        &self,
+        query: &str,
+        cursor: Option<&str>,
+        requested_limit: i64,
+    ) -> Result<ChatSearchPage, AppError> {
+        let query = query.trim();
+        if query.chars().count() > 256 {
+            return Err(AppError::internal("chat search query exceeds 256 characters"));
+        }
+        let limit = requested_limit.clamp(1, 40);
+        let cursor = match cursor {
+            Some(raw) => {
+                let (updated_at, id) = raw
+                    .split_once('|')
+                    .ok_or_else(|| AppError::internal("invalid chat search cursor"))?;
+                if raw.len() > 128
+                    || chrono::DateTime::parse_from_rfc3339(updated_at).is_err()
+                    || Uuid::parse_str(id).is_err()
+                {
+                    return Err(AppError::internal("invalid chat search cursor"));
+                }
+                Some((updated_at, id))
+            }
+            None => None,
+        };
+
+        // FTS5 trigram queries are exact quoted phrases. Even user-supplied
+        // quotes and wildcard characters are literal text, not FTS operators.
+        // Queries below three Unicode characters use a bounded-result SQLite
+        // substring fallback because trigram indexes cannot match 1-2 chars.
+        let search_condition = if query.is_empty() {
+            "1 = 1"
+        } else if query.chars().count() < 3 {
+            "instr(lower(c.title), lower(?1)) > 0
+             OR EXISTS (
+                SELECT 1 FROM messages m
+                WHERE m.conversation_id = c.id AND m.role != 'system'
+                  AND instr(lower(m.content), lower(?1)) > 0
+             )"
+        } else {
+            "instr(lower(c.title), lower(?1)) > 0
+             OR c.id IN (
+                SELECT m.conversation_id
+                FROM chat_message_fts
+                JOIN messages m ON m.rowid = chat_message_fts.rowid
+                WHERE chat_message_fts MATCH ?2 AND m.role != 'system'
+             )"
+        };
+        let fts_query = format!("\"{}\"", query.replace('"', "\"\""));
+        let (cursor_time, cursor_id) = match cursor {
+            Some((time, id)) => (Some(time), Some(id)),
+            None => (None, None),
+        };
+        let sql = format!(
+            "SELECT c.id, c.title, c.created_at, c.updated_at, c.archived_at,
+                    c.pinned, c.active_model_id
+             FROM conversations c
+             WHERE c.archived_at IS NULL
+               AND ({search_condition})
+               AND (?3 IS NULL OR c.updated_at < ?3
+                    OR (c.updated_at = ?3 AND c.id < ?4))
+             ORDER BY c.updated_at DESC, c.id DESC
+             LIMIT ?5"
+        );
+        let mut statement = self.database.connection().prepare(&sql)?;
+        let rows = statement.query_map(
+            params![query, fts_query, cursor_time, cursor_id, limit + 1],
+            map_conversation,
+        )?;
+        let mut conversations = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(AppError::from)?;
+        let has_more = conversations.len() > limit as usize;
+        conversations.truncate(limit as usize);
+        let next_cursor = if has_more {
+            conversations
+                .last()
+                .map(|chat| format!("{}|{}", chat.updated_at, chat.id))
+        } else {
+            None
+        };
+        Ok(ChatSearchPage {
+            conversations,
+            next_cursor,
+        })
     }
 
     pub fn create_conversation(&self, title: Option<&str>) -> Result<Conversation, AppError> {
@@ -754,6 +853,228 @@ mod tests {
         assert!(!messages
             .iter()
             .any(|message| message.content.starts_with(PROJECT_CONTEXT_MARKER)));
+    }
+
+    #[test]
+    fn search_230_chats_returns_bounded_pages_and_oldest_message_hits() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let mut oldest = String::new();
+        for index in 0..230 {
+            let conversation = repo
+                .create_conversation(Some(&format!("Report {index:03}")))
+                .unwrap();
+            if index == 0 {
+                oldest = conversation.id.clone();
+            }
+            let body = if index == 0 {
+                "RARE_STORED_ARCHIVE_MARKER in the very oldest chat".to_string()
+            } else {
+                format!("ordinary chat evidence {index:03}")
+            };
+            repo.add_message(&conversation.id, "user", &body, "completed", None)
+                .unwrap();
+            // Monotonic timestamps make page ordering deterministic.
+            let timestamp = format!(
+                "2026-01-01T{:02}:{:02}:{:02}+00:00",
+                index / 3600,
+                (index / 60) % 60,
+                index % 60
+            );
+            database
+                .connection()
+                .execute(
+                    "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+                    params![timestamp, conversation.id],
+                )
+                .unwrap();
+        }
+
+        let mut cursor = None;
+        let mut seen = std::collections::HashSet::new();
+        let mut pages = 0;
+        loop {
+            let page = repo
+                .search_conversations("", cursor.as_deref(), 40)
+                .unwrap();
+            assert!(page.conversations.len() <= 40);
+            pages += 1;
+            for chat in page.conversations {
+                assert!(seen.insert(chat.id), "duplicate chat across search pages");
+            }
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+            assert!(pages <= 10, "chat pagination stalled");
+        }
+        assert_eq!(pages, 6);
+        assert_eq!(seen.len(), 230);
+        assert!(seen.contains(&oldest));
+
+        let match_page = repo
+            .search_conversations("stored_archive", None, 40)
+            .unwrap();
+        assert_eq!(match_page.conversations.len(), 1);
+        assert_eq!(match_page.conversations[0].id, oldest);
+        assert!(match_page.next_cursor.is_none());
+        let no_match = repo.search_conversations("a-not-existing-token", None, 40).unwrap();
+        assert!(no_match.conversations.is_empty());
+        assert!(repo.search_conversations(&"x".repeat(257), None, 40).is_err());
+        assert!(repo
+            .search_conversations("", Some("not-a-real-cursor"), 40)
+            .is_err());
+    }
+
+    #[test]
+    fn chat_search_index_tracks_streams_edits_deletions_and_ignores_system_rows() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let chat = repo.create_conversation(Some("Session")).unwrap();
+        let original = repo
+            .add_message(
+                &chat.id,
+                "user",
+                "an ORIGINAL_TRIGRAM_SENTINEL inside a chat message",
+                "completed",
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            repo.search_conversations("trigram_sentinel", None, 40)
+                .unwrap()
+                .conversations
+                .len(),
+            1
+        );
+        // Streaming appends use UPDATE OF content; the trigger must refresh
+        // the indexed text for the next search without a manual index pass.
+        repo.append_message_chunk(&original.id, " NEW_STREAM_CHUNK").unwrap();
+        assert_eq!(
+            repo.search_conversations("stream_chunk", None, 40)
+                .unwrap()
+                .conversations
+                .len(),
+            1
+        );
+
+        // Pending/streaming assistant text is mutable and must not trigger a
+        // full FTS re-index on each token. It becomes searchable on completion.
+        let assistant = repo
+            .add_message(
+                &chat.id,
+                "assistant",
+                "INFLIGHT_NOT_INDEXED_TOKEN",
+                "streaming",
+                None,
+            )
+            .unwrap();
+        repo.append_message_chunk(&assistant.id, " MORE_STREAM_TEXT").unwrap();
+        assert!(repo
+            .search_conversations("inflight_not_indexed", None, 40)
+            .unwrap()
+            .conversations
+            .is_empty());
+        assert!(repo
+            .search_conversations("more_stream_text", None, 40)
+            .unwrap()
+            .conversations
+            .is_empty());
+        repo.set_message_status(&assistant.id, "completed").unwrap();
+        assert_eq!(
+            repo.search_conversations("inflight_not_indexed", None, 40)
+                .unwrap()
+                .conversations
+                .len(),
+            1
+        );
+
+        database
+            .connection()
+            .execute(
+                "UPDATE messages SET content = 'replaced evidence' WHERE id = ?1",
+                params![original.id],
+            )
+            .unwrap();
+        assert!(repo
+            .search_conversations("trigram_sentinel", None, 40)
+            .unwrap()
+            .conversations
+            .is_empty());
+        assert_eq!(
+            repo.search_conversations("placed ev", None, 40)
+                .unwrap()
+                .conversations
+                .len(),
+            1
+        );
+        // FTS syntax and wildcard-looking text must be treated literally.
+        assert!(repo.search_conversations("\" or *", None, 40).is_ok());
+        assert!(repo.search_conversations("zz%", None, 40).unwrap().conversations.is_empty());
+
+        repo.add_message(
+            &chat.id,
+            "system",
+            "SYSTEM_ONLY_SECRET_WORD",
+            "completed",
+            None,
+        )
+        .unwrap();
+        assert!(repo.search_conversations("system_only_secret", None, 40)
+            .unwrap()
+            .conversations
+            .is_empty());
+        assert_eq!(
+            repo.search_conversations("ss", None, 40)
+                .unwrap()
+                .conversations
+                .len(),
+            1,
+            "two-character queries still work with the SQL fallback"
+        );
+
+        repo.archive_conversation(&chat.id).unwrap();
+        assert!(repo.search_conversations("replaced", None, 40)
+            .unwrap()
+            .conversations
+            .is_empty());
+        repo.delete_conversation(&chat.id).unwrap();
+        assert!(repo.search_conversations("replaced", None, 40)
+            .unwrap()
+            .conversations
+            .is_empty());
+    }
+
+    #[test]
+    fn historical_chat_messages_become_searchable_on_database_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("data/database/openmindai.db");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(include_str!("../migrations/001_initial.sql"))
+                .unwrap();
+            conn.execute(
+                "INSERT INTO conversations (id, title, created_at, updated_at, pinned)
+                 VALUES ('preexisting', 'Old chat', '2026-01-01', '2026-01-01', 0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO messages (id, conversation_id, role, content, status, created_at, updated_at)
+                 VALUES ('old-message', 'preexisting', 'user', 'HISTORICAL_FTS_EVIDENCE_NOT_NEW',
+                         'completed', '2026-01-01', '2026-01-01')",
+                [],
+            )
+            .unwrap();
+        }
+        let migrated = Database::open(path).unwrap();
+        let page = ChatRepository::new(&migrated)
+            .search_conversations("historical_fts_evidence", None, 40)
+            .unwrap();
+        assert_eq!(page.conversations.len(), 1);
+        assert_eq!(page.conversations[0].id, "preexisting");
     }
 
     #[test]

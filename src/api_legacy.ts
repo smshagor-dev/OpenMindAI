@@ -4,6 +4,7 @@ import type {
   ImageGenerationOptions,
   ArtifactKind,
   Conversation,
+  ChatSearchPage,
   ForkedConversation,
   AppPreferences,
   DownloadStatus,
@@ -191,6 +192,8 @@ export const api = {
   checkStorageLocation: (path: string) =>
     call<StorageLocationCheck>("check_storage_location", { path }),
   conversations: () => call<Conversation[]>("list_conversations"),
+  searchConversations: (query: string, cursor?: string, limit = 40) =>
+    call<ChatSearchPage>("search_conversations", { query, cursor, limit }),
   createConversation: (title?: string) => call<Conversation>("create_conversation", { title }),
   forkConversationForEdit: (conversationId: string, messageId: string) =>
     call<ForkedConversation>("fork_conversation_for_edit", { conversationId, messageId }),
@@ -379,6 +382,8 @@ export const api = {
 };
 
 function browserFallback<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (command === "search_conversations")
+    return Promise.resolve({ conversations: [], nextCursor: null } as T);
   const now = new Date().toISOString();
   if (command === "get_portable_root") {
     return Promise.resolve({

@@ -45,6 +45,11 @@ export interface Conversation {
   activeModelId: string | null;
 }
 
+export interface ChatSearchPage {
+  conversations: Conversation[];
+  nextCursor: string | null;
+}
+
 export interface Message {
   id: string;
   conversationId: string;

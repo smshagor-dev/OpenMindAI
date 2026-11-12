@@ -1,13 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { MessageSquare } from "lucide-react";
 import { api } from "../api";
-import { userMessageDisplay } from "../lib/chat";
 import type { Conversation } from "../types";
 
-interface SearchEntry {
-  conversation: Conversation;
-  content: string;
-}
+const PAGE_SIZE = 40;
+const SEARCH_DEBOUNCE_MS = 250;
 
 export function ChatSearch(props: {
   open: boolean;
@@ -15,45 +12,76 @@ export function ChatSearch(props: {
   onSelect: (id: string) => void;
   onClose: () => void;
 }) {
-  const { open, conversations, onSelect, onClose } = props;
+  const { open, onSelect, onClose } = props;
   const [query, setQuery] = useState("");
-  const [entries, setEntries] = useState<SearchEntry[]>([]);
+  const [search, setSearch] = useState("");
+  const [results, setResults] = useState<Conversation[]>([]);
+  const [cursors, setCursors] = useState<(string | null)[]>([null]);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  // Increment immediately on edits/navigation, not only when an effect
+  // reruns: old replies cannot flash on screen during the debounce interval.
+  const requestVersion = useRef(0);
+
+  useEffect(() => {
+    if (!open) {
+      requestVersion.current += 1;
+      return;
+    }
+    setQuery("");
+    setSearch("");
+    setResults([]);
+    setPageIndex(0);
+    setCursors([null]);
+    setNextCursor(null);
+    setError(null);
+    const focus = window.setTimeout(() => inputRef.current?.focus(), 0);
+    return () => {
+      requestVersion.current += 1;
+      window.clearTimeout(focus);
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
-    setQuery("");
-    window.setTimeout(() => inputRef.current?.focus(), 0);
+    const timer = window.setTimeout(() => {
+      setSearch(query.trim());
+      setCursors([null]);
+      setPageIndex(0);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [open, query]);
 
+  useEffect(() => {
+    if (!open) return;
     let cancelled = false;
+    const version = ++requestVersion.current;
     setLoading(true);
-    void Promise.allSettled(
-      conversations.map(async (conversation) => {
-        const messages = await api.messages(conversation.id);
-        const searchable = messages
-          .filter((message) => message.role !== "system")
-          .map((message) =>
-            message.role === "user" ? userMessageDisplay(message.content).displayText : message.content,
-          )
-          .join("\n");
-        return { conversation, content: searchable } satisfies SearchEntry;
-      }),
-    ).then((results) => {
-      if (cancelled) return;
-      const loaded = results.flatMap((result, index) =>
-        result.status === "fulfilled"
-          ? [result.value]
-          : [{ conversation: conversations[index], content: "" }],
-      );
-      setEntries(loaded);
-      setLoading(false);
-    });
-
+    setError(null);
+    void api
+      .searchConversations(search, cursors[pageIndex] ?? undefined, PAGE_SIZE)
+      .then((page) => {
+        if (cancelled || version !== requestVersion.current) return;
+        setResults(page.conversations);
+        setNextCursor(page.nextCursor);
+      })
+      .catch((reason: unknown) => {
+        if (cancelled || version !== requestVersion.current) return;
+        setResults([]);
+        setNextCursor(null);
+        setError(String(reason));
+      })
+      .finally(() => {
+        if (!cancelled && version === requestVersion.current) setLoading(false);
+      });
     return () => {
       cancelled = true;
+      requestVersion.current += 1;
     };
-  }, [conversations, open]);
+  }, [open, search, pageIndex, cursors]);
 
   useEffect(() => {
     if (!open) return;
@@ -66,18 +94,6 @@ export function ChatSearch(props: {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [open, onClose]);
-
-  const results = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    const source = normalized
-      ? entries.filter(
-          ({ conversation, content }) =>
-            conversation.title.toLowerCase().includes(normalized) ||
-            content.toLowerCase().includes(normalized),
-        )
-      : entries;
-    return source.slice(0, 40);
-  }, [entries, query]);
 
   if (!open) return null;
 
@@ -95,15 +111,27 @@ export function ChatSearch(props: {
           className="search-input"
           placeholder="Search chat titles and messages..."
           value={query}
-          onChange={(event) => setQuery(event.target.value)}
+          maxLength={256}
+          onChange={(event) => {
+            requestVersion.current += 1;
+            setQuery(event.target.value);
+            setResults([]);
+            setNextCursor(null);
+            setLoading(true);
+            setError(null);
+          }}
         />
         <div className="search-results">
           {loading ? (
-            <p className="muted search-empty">Indexing local chat history...</p>
+            <p className="muted search-empty" role="status">Searching local chats...</p>
+          ) : error ? (
+            <p className="search-empty" role="alert">
+              Chat search failed: {error}
+            </p>
           ) : results.length === 0 ? (
             <p className="muted search-empty">No matching chats.</p>
           ) : (
-            results.map(({ conversation }) => (
+            results.map((conversation) => (
               <button
                 type="button"
                 className="search-result"
@@ -118,6 +146,35 @@ export function ChatSearch(props: {
               </button>
             ))
           )}
+        </div>
+        <div className="search-pagination" aria-label="Chat search pagination">
+          <span className="muted">Page {pageIndex + 1}</span>
+          <div className="button-row">
+            <button
+              type="button"
+              className="ghost-button"
+              disabled={loading || pageIndex === 0}
+              onClick={() => {
+                requestVersion.current += 1;
+                setPageIndex((page) => Math.max(0, page - 1));
+              }}
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              className="ghost-button"
+              disabled={loading || !nextCursor}
+              onClick={() => {
+                if (!nextCursor) return;
+                requestVersion.current += 1;
+                setCursors((items) => [...items.slice(0, pageIndex + 1), nextCursor]);
+                setPageIndex((page) => page + 1);
+              }}
+            >
+              Next
+            </button>
+          </div>
         </div>
       </div>
     </div>

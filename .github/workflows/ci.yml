@@ -86,6 +86,9 @@ jobs:
       - name: Setup storage path validation and stale response regression
         run: npm run test:setup-storage
 
+      - name: Indexed chat search pagination and stale result regression
+        run: npm run test:chat-search
+
       - name: Lint
         run: npm run lint
 
