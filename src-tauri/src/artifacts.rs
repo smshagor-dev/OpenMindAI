@@ -46,6 +46,16 @@ pub struct LibraryEntry {
     pub updated_at: String,
 }
 
+/// One bounded Library result page. A cursor refers to the final row on the
+/// current page, ordered by creation timestamp and artifact ID for stable ties.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryPage {
+    pub entries: Vec<LibraryEntry>,
+    pub next_cursor: Option<String>,
+    pub total_count: i64,
+}
+
 pub struct ArtifactRepository<'a> {
     database: &'a Database,
 }
@@ -137,21 +147,96 @@ impl<'a> ArtifactRepository<'a> {
             })
     }
 
-    /// Lists artifacts across every conversation, newest first, joined with the owning
-    /// conversation's title for display in the Library view.
-    pub fn list_all(&self, limit: i64) -> Result<Vec<LibraryEntry>, AppError> {
-        let mut statement = self.database.connection().prepare(
-            "SELECT artifacts.id, artifacts.conversation_id, conversations.title, artifacts.message_id,
-                    artifacts.name, artifacts.path, artifacts.mime_type, artifacts.kind, artifacts.size_bytes,
-                    artifacts.page_count, artifacts.status, artifacts.error, artifacts.created_at, artifacts.updated_at
-             FROM artifacts
-             JOIN conversations ON conversations.id = artifacts.conversation_id
-             ORDER BY artifacts.created_at DESC
-             LIMIT ?1",
+    /// Server-side filtered, keyset-paginated artifact listing. Applying filters
+    /// before LIMIT prevents older PDFs from disappearing behind newer images.
+    /// The cursor is a validated (timestamp, UUID) pair, never interpolated SQL.
+    pub fn list_page(
+        &self,
+        kind: Option<&str>,
+        search: Option<&str>,
+        cursor: Option<&str>,
+        requested_limit: i64,
+    ) -> Result<LibraryPage, AppError> {
+        let limit = requested_limit.clamp(1, 100);
+        let kind = kind.filter(|value| !value.is_empty() && *value != "all");
+        if kind.is_some_and(|value| {
+            !matches!(
+                value,
+                "text" | "markdown" | "pdf" | "docx" | "code" | "image" | "video" | "audio"
+            )
+        }) {
+            return Err(AppError::internal("invalid library artifact kind"));
+        }
+        let search = search.map(str::trim).filter(|value| !value.is_empty());
+        if search.is_some_and(|value| value.chars().count() > 256) {
+            return Err(AppError::internal("library search exceeds 256 characters"));
+        }
+        let cursor = match cursor {
+            Some(raw) => {
+                let (created_at, id) = raw
+                    .split_once('|')
+                    .ok_or_else(|| AppError::internal("invalid library cursor"))?;
+                if raw.len() > 128
+                    || chrono::DateTime::parse_from_rfc3339(created_at).is_err()
+                    || Uuid::parse_str(id).is_err()
+                {
+                    return Err(AppError::internal("invalid library cursor"));
+                }
+                Some((created_at, id))
+            }
+            None => None,
+        };
+        let cursor_time = cursor.map(|value| value.0);
+        let cursor_id = cursor.map(|value| value.1);
+
+        let total_count = self.database.connection().query_row(
+            "SELECT COUNT(*)
+             FROM artifacts AS a
+             JOIN conversations AS c ON c.id = a.conversation_id
+             WHERE (?1 IS NULL OR a.kind = ?1)
+               AND (?2 IS NULL OR instr(lower(a.name), lower(?2)) > 0
+                    OR instr(lower(c.title), lower(?2)) > 0)",
+            rusqlite::params![kind, search],
+            |row| row.get::<_, i64>(0),
         )?;
-        let rows = statement.query_map(rusqlite::params![limit], map_library_entry)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+
+        let mut statement = self.database.connection().prepare(
+            "SELECT a.id, a.conversation_id, c.title, a.message_id,
+                    a.name, a.path, a.mime_type, a.kind, a.size_bytes,
+                    a.page_count, a.status, a.error, a.created_at, a.updated_at
+             FROM artifacts AS a
+             JOIN conversations AS c ON c.id = a.conversation_id
+             WHERE (?1 IS NULL OR a.kind = ?1)
+               AND (?2 IS NULL OR instr(lower(a.name), lower(?2)) > 0
+                    OR instr(lower(c.title), lower(?2)) > 0)
+               AND (?3 IS NULL OR a.created_at < ?3
+                    OR (a.created_at = ?3 AND a.id < ?4))
+             ORDER BY a.created_at DESC, a.id DESC
+             LIMIT ?5",
+        )?;
+        let rows = statement.query_map(
+            rusqlite::params![kind, search, cursor_time, cursor_id, limit + 1],
+            map_library_entry,
+        )?;
+        let mut entries = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(AppError::from)?;
+        let has_more = entries.len() > limit as usize;
+        entries.truncate(limit as usize);
+        let next_cursor = if has_more {
+            entries
+                .last()
+                .map(|entry| format!("{}|{}", entry.created_at, entry.id))
+        } else {
+            None
+        };
+        Ok(LibraryPage {
+            entries,
+            next_cursor,
+            total_count,
+        })
     }
+
 }
 
 fn map_artifact(row: &rusqlite::Row<'_>) -> rusqlite::Result<Artifact> {
@@ -465,7 +550,9 @@ mod tests {
             )
             .unwrap();
 
-        let entries = artifacts.list_all(10).unwrap();
+        let page = artifacts.list_page(None, None, None, 10).unwrap();
+        let entries = page.entries;
+        assert_eq!(page.total_count, 2);
         assert_eq!(entries.len(), 2);
         // Newest first: `second` was created after `first`.
         assert_eq!(entries[0].id, second.id);
