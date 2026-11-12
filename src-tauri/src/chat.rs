@@ -959,6 +959,37 @@ mod tests {
             1
         );
 
+        // Pending/streaming assistant text is mutable and must not trigger a
+        // full FTS re-index on each token. It becomes searchable on completion.
+        let assistant = repo
+            .add_message(
+                &chat.id,
+                "assistant",
+                "INFLIGHT_NOT_INDEXED_TOKEN",
+                "streaming",
+                None,
+            )
+            .unwrap();
+        repo.append_message_chunk(&assistant.id, " MORE_STREAM_TEXT").unwrap();
+        assert!(repo
+            .search_conversations("inflight_not_indexed", None, 40)
+            .unwrap()
+            .conversations
+            .is_empty());
+        assert!(repo
+            .search_conversations("more_stream_text", None, 40)
+            .unwrap()
+            .conversations
+            .is_empty());
+        repo.set_message_status(&assistant.id, "completed").unwrap();
+        assert_eq!(
+            repo.search_conversations("inflight_not_indexed", None, 40)
+                .unwrap()
+                .conversations
+                .len(),
+            1
+        );
+
         database
             .connection()
             .execute(
