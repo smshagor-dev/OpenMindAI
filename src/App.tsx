@@ -256,6 +256,17 @@ export function App() {
     activePdfImport.current = null;
     setPdfImportProgress(null);
   }, []);
+  // Sidebar/Library/Search navigation changes the chat owner without clearing
+  // the attachment tray. In-flight PDF OCR must nevertheless stop rather than
+  // continue consuming CPU for an abandoned chat (including A -> B -> A).
+  const pdfImportOwner = useRef({ view, activeId });
+  useEffect(() => {
+    const prior = pdfImportOwner.current;
+    if (prior.view !== view || prior.activeId !== activeId) {
+      cancelPdfImport();
+    }
+    pdfImportOwner.current = { view, activeId };
+  }, [view, activeId, cancelPdfImport]);
   const draftRevision = useRef(0);
   const latestPrompt = useRef("");
   const discardedDraft = useRef(0);
