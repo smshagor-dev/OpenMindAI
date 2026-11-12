@@ -1,6 +1,5 @@
--- Index all conversation message bodies locally without duplicating their text
--- in the full-text index. SQLite's trigram tokenizer supports phrase/substring
--- matches, including words appearing in the middle of a larger word.
+-- Local-only trigram index backed by the existing messages table.
+-- Search indexes message bodies without duplicating their source text.
 CREATE VIRTUAL TABLE chat_message_fts USING fts5(
   content,
   content='messages',
@@ -8,24 +7,32 @@ CREATE VIRTUAL TABLE chat_message_fts USING fts5(
   tokenize='trigram'
 );
 
--- Keep the external-content index current across streaming chunks,
--- regeneration, destructive branch edits and cascaded chat deletion.
-CREATE TRIGGER chat_message_fts_insert AFTER INSERT ON messages BEGIN
+-- Streaming assistant messages update on every token chunk. Indexing each
+-- growing token prefix would re-tokenize the entire response O(n^2).
+-- Only index stable (non-pending, non-streaming) non-system messages.
+CREATE TRIGGER chat_message_fts_insert AFTER INSERT ON messages
+WHEN new.role != 'system' AND new.status NOT IN ('pending', 'streaming') BEGIN
   INSERT INTO chat_message_fts(rowid, content) VALUES (new.rowid, new.content);
 END;
 
-CREATE TRIGGER chat_message_fts_delete AFTER DELETE ON messages BEGIN
+CREATE TRIGGER chat_message_fts_delete AFTER DELETE ON messages
+WHEN old.role != 'system' AND old.status NOT IN ('pending', 'streaming') BEGIN
   INSERT INTO chat_message_fts(chat_message_fts, rowid, content)
   VALUES ('delete', old.rowid, old.content);
 END;
 
-CREATE TRIGGER chat_message_fts_update AFTER UPDATE OF content ON messages BEGIN
+CREATE TRIGGER chat_message_fts_update AFTER UPDATE OF content, status, role ON messages BEGIN
   INSERT INTO chat_message_fts(chat_message_fts, rowid, content)
-  VALUES ('delete', old.rowid, old.content);
-  INSERT INTO chat_message_fts(rowid, content) VALUES (new.rowid, new.content);
+  SELECT 'delete', old.rowid, old.content
+  WHERE old.role != 'system' AND old.status NOT IN ('pending', 'streaming');
+
+  INSERT INTO chat_message_fts(rowid, content)
+  SELECT new.rowid, new.content
+  WHERE new.role != 'system' AND new.status NOT IN ('pending', 'streaming');
 END;
 
--- Existing installations already have chat histories; rebuild once during
--- migration so older conversations are searchable without reading them all in
--- the React renderer. All statements are transactionally applied by Database.
-INSERT INTO chat_message_fts(chat_message_fts) VALUES ('rebuild');
+-- Backfill existing profiles once, transactionally, without performing
+-- a full-messages rebuild that would index system or in-flight text.
+INSERT INTO chat_message_fts(rowid, content)
+SELECT rowid, content FROM messages
+WHERE role != 'system' AND status NOT IN ('pending', 'streaming');
