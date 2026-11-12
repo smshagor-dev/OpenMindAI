@@ -24,6 +24,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { OpenFolderProjectButton } from "./OpenFolderProjectButton";
 import { ProjectLocalWorkspace } from "./ProjectLocalWorkspace";
 import { CodingRunTimeline } from "./CodingRunTimeline";
+import { attachProjectBinaryFile, saveProjectBinaryCopy } from "../lib/projectBinaryStorage";
 import { useProjectCatalog } from "../lib/useProjectCatalog";
 
 const MAX_PROJECT_INSTRUCTIONS_CHARS = 20_000;
@@ -158,16 +159,20 @@ export function WorkWorkspace(props: {
     try {
       for (const file of Array.from(files)) {
         try {
-          const ingestion = await ingestProjectFile(file);
-          await api.addProjectFile(
-            activeProject.id,
-            file.name,
-            file.size,
-            file.type || null,
-            ingestion.contentText,
-            ingestion.status,
-            ingestion.error,
-          );
+          if (file.size <= MAX_PROJECT_FILE_BYTES && !isTextFile(file)) {
+            await attachProjectBinaryFile(activeProject.id, file);
+          } else {
+            const ingestion = await ingestProjectFile(file);
+            await api.addProjectFile(
+              activeProject.id,
+              file.name,
+              file.size,
+              file.type || null,
+              ingestion.contentText,
+              ingestion.status,
+              ingestion.error,
+            );
+          }
         } catch (caught) {
           failures.push(`${file.name}: ${formatError(caught)}`);
         }
@@ -185,6 +190,11 @@ export function WorkWorkspace(props: {
     } finally {
       setAddingFiles(false);
     }
+  };
+
+  const saveBinaryCopy = async (file: ProjectFile) => {
+    if (!activeProject || file.status !== "attached") return;
+    await runAction(`save-file-${file.id}`, () => saveProjectBinaryCopy(activeProject.id, file.id));
   };
 
   const deleteFile = async () => {
@@ -535,7 +545,24 @@ export function WorkWorkspace(props: {
                           <small>
                             {formatBytes(file.sizeBytes)} · {formatFileStatus(file.status)}
                           </small>
+                          {file.sha256 ? (
+                            <small title={`SHA-256: ${file.sha256}`}>
+                              SHA-256 {file.sha256.slice(0, 12)}…
+                            </small>
+                          ) : null}
+                          {file.error ? <small>{file.error}</small> : null}
                         </span>
+                        {file.status === "attached" ? (
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            aria-label={`Save copy of ${file.name}`}
+                            disabled={busy}
+                            onClick={() => void saveBinaryCopy(file)}
+                          >
+                            {busyAction === `save-file-${file.id}` ? "Saving…" : "Save copy"}
+                          </button>
+                        ) : null}
                         <button
                           type="button"
                           title="Remove file"
@@ -730,7 +757,7 @@ async function ingestProjectFile(file: File): Promise<FileIngestion> {
     return {
       contentText: null,
       status: "tracked",
-      error: "Tracked locally. Text extraction is not available for this file type yet.",
+      error: "Metadata only: original bytes were not saved. Re-upload to attach this file.",
     };
   }
 
@@ -760,7 +787,8 @@ function isTextFile(file: File) {
 
 function formatFileStatus(status: ProjectFile["status"]) {
   if (status === "ready") return "Ready";
+  if (status === "attached") return "Attached binary";
   if (status === "skipped") return "Skipped";
   if (status === "failed") return "Failed";
-  return "Tracked";
+  return "Metadata only";
 }
