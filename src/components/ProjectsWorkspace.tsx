@@ -414,7 +414,7 @@ export function ProjectsWorkspace(props: {
                     </span>
                     <span className={contextReady ? "project-meta-ready" : ""}>
                       {contextReady ? <CheckCircle2 size={13} /> : <Sparkles size={13} />}
-                      {contextReady ? "Context ready" : "Add context"}
+                      {contextReady ? "Context available" : "Add context"}
                     </span>
                     <span>
                       <Clock3 size={13} /> {formatTime(activeProject.updatedAt)}
@@ -493,8 +493,8 @@ export function ProjectsWorkspace(props: {
                         <Pencil size={15} /> Project instructions
                       </h3>
                       <p>
-                        Applied privately to every chat in this project together with ready text
-                        files.
+                        Applied privately to each project chat. Up to eight relevant ready text
+                        files are selected for each request; others remain stored and searchable.
                       </p>
                     </div>
                     <span className="project-save-state">
@@ -537,7 +537,7 @@ export function ProjectsWorkspace(props: {
                     </span>
                     <span>
                       {readyFiles
-                        ? `${readyFiles} ready file${readyFiles === 1 ? "" : "s"} also included`
+                        ? `${readyFiles} ready text file${readyFiles === 1 ? "" : "s"} available · up to 8 selected per question`
                         : "No file context yet"}
                     </span>
                   </div>
@@ -658,8 +658,9 @@ export function ProjectsWorkspace(props: {
                           </span>
                         </h3>
                         <p>
-                          Text and code files become bounded local context. Other files stay tracked
-                          locally.
+                          Ready text and code files are stored for question-relevant selection.
+                          A maximum of eight files contributes excerpts per chat request; omitted
+                          files are disclosed in model context. Other file types are metadata-only.
                         </p>
                       </div>
                     </div>
