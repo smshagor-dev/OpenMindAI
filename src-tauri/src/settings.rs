@@ -28,6 +28,8 @@ pub struct AppPreferences {
     pub code_copy_buttons: bool,
     pub markdown_rendering: bool,
     pub default_performance_profile: String,
+    /// Compatibility only. This release has no usage-telemetry pipeline and
+    /// must never treat a historical stored true value as user consent.
     pub telemetry_enabled: bool,
     /// Compatibility field: this release always persists local chat history.
     pub save_chat_history: bool,
@@ -229,6 +231,19 @@ impl<'a> SettingsRepository<'a> {
                         params![Utc::now().to_rfc3339(), SETTINGS_KEY],
                     )?;
                 }
+                if preferences.telemetry_enabled {
+                    // The Privacy toggle historically saved an inert boolean.
+                    // Reset it so no later release can misinterpret it as valid
+                    // informed consent to data collection or transmission.
+                    self.database.connection().execute(
+                        "UPDATE app_settings
+                         SET value_json = json_set(value_json, '$.telemetryEnabled', json('false')),
+                             updated_at = ?1
+                         WHERE key = ?2",
+                        params![Utc::now().to_rfc3339(), SETTINGS_KEY],
+                    )?;
+                    preferences.telemetry_enabled = false;
+                }
                 if preferences.auto_download_model_updates {
                     // No scheduler implements this legacy preference. Update only
                     // this field so notification choices and future fields survive.
@@ -271,6 +286,10 @@ impl<'a> SettingsRepository<'a> {
             return Err(AppError::internal("Invalid Cloud/Local execution mode"));
         }
         let mut saved = preferences.clone();
+        // Telemetry consent cannot be solicited by this build: no collector
+        // or privacy flow implements this legacy flag. Do not persist true,
+        // including when an old UI/client sends it during an unrelated save.
+        saved.telemetry_enabled = false;
         if let Some(existing) = self.load_saved_preferences()? {
             // Ordinary preference saves (including older clients) cannot silently
             // dismiss the notice. Acknowledgment has a separate, narrow operation.
@@ -360,6 +379,64 @@ mod tests {
         let loaded = repo.get_preferences().unwrap();
         assert_eq!(loaded.theme, ThemeMode::Light);
         assert!(!loaded.enter_to_send);
+    }
+
+    #[test]
+    fn obsolete_telemetry_toggle_never_grants_or_persists_consent() {
+        let database = Database::in_memory().unwrap();
+        let repo = SettingsRepository::new(&database);
+        let mut requested = repo.get_preferences().unwrap();
+        requested.language = "Russian".to_string();
+        requested.telemetry_enabled = true;
+
+        // Older UI clients can still submit the compatibility field, but it
+        // must not enable a feature without an actual consent-gated collector.
+        let saved = repo.save_preferences(&requested).unwrap();
+        assert!(!saved.telemetry_enabled);
+        assert_eq!(saved.language, "Russian");
+        let stored: String = database
+            .connection()
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = ?1",
+                params![SETTINGS_KEY],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&stored)
+                .unwrap()["telemetryEnabled"],
+            false
+        );
+
+        // A profile saved by an older version may contain a phantom true.
+        // Loading corrects that value durably while preserving other choices.
+        database
+            .connection()
+            .execute(
+                "UPDATE app_settings
+                 SET value_json = json_set(value_json, '$.telemetryEnabled', json('true'))
+                 WHERE key = ?1",
+                params![SETTINGS_KEY],
+            )
+            .unwrap();
+        let normalized = repo.get_preferences().unwrap();
+        assert!(!normalized.telemetry_enabled);
+        assert_eq!(normalized.language, "Russian");
+        let reloaded = repo.get_preferences().unwrap();
+        assert!(!reloaded.telemetry_enabled);
+        let persisted: String = database
+            .connection()
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = ?1",
+                params![SETTINGS_KEY],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&persisted)
+                .unwrap()["telemetryEnabled"],
+            false
+        );
     }
 
     #[test]

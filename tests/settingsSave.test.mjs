@@ -33,12 +33,22 @@ test("production settings/profile saves retain drafts, show failures and allow r
     const { SettingsDialog } = await import(pathToFileURL(outfile));
     const { createRoot } = await import("react-dom/client");
     const defer = () => { let resolve, reject; const promise = new Promise((yes,no) => { resolve=yes; reject=no; }); return { promise, resolve, reject }; };
-    for (const section of ["general", "personalization", "network"]) {
+    for (const section of ["general", "personalization", "network", "privacy"]) {
       root = createRoot(dom.window.document.getElementById("root"));
       let pending = defer(); const requests = [];
       const save = value => { requests.push(value); return pending.promise; };
       const props = { initialSection: section, preferences: { language: "English", compactSidebar: false, confirmBeforeDelete: true, networkProxyMode: "direct", networkProxyUrl: "" }, userProfile: { fullName: "Fixture User", preferredName: "", email: "", avatarDataUrl: "", about: "", occupation: "", responseStyle: "", customInstructions: "" }, root: null, hardware: null, storage: null, models: [], runtime: null, runtimeStatus: null, performance: null, updatePreferences: save, updateUserProfile: save, refresh: () => {}, startRuntime: () => {}, stopRuntime: () => {}, runtimeAction: null, runtimeInstallStatus: null, runtimeInstalling: false, runtimeInstallError: null, installRuntime: () => {}, cancelRuntimeInstall: () => {} };
       await act(async () => root.render(React.createElement(SettingsDialog, props)));
+      if (section === "privacy") {
+        assert.match(dom.window.document.body.textContent, /Not available in this release/);
+        assert.match(dom.window.document.body.textContent, /previous switch had no runtime/);
+        assert.equal(
+          [...dom.window.document.querySelectorAll("label")]
+            .some((label) => /telemetry/i.test(label.textContent) && label.querySelector('input[type="checkbox"]')),
+          false,
+          "privacy must not present an interactive telemetry switch",
+        );
+      }
       const saveButton = () => dom.window.document.querySelector(".save-bar button");
       const clickSave = async () => { await act(async () => saveButton().click()); };
       await clickSave(); assert(saveButton().disabled);
