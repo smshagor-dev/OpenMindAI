@@ -254,7 +254,10 @@ export function ProjectsWorkspace(props: {
     }
   };
 
-  const readyFiles = activeProject?.files.filter((file) => file.status === "ready").length ?? 0;
+  const readyFiles =
+    activeProject?.files.filter(
+      (file) => file.status === "ready" && Boolean(file.contentText?.trim()),
+    ).length ?? 0;
   const contextReady = Boolean(activeProject?.instructions.trim()) || readyFiles > 0;
   const busy = busyAction !== null;
 
