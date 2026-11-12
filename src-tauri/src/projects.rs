@@ -632,6 +632,153 @@ mod tests {
     }
 
     #[test]
+    fn older_ninth_project_file_is_retrieved_for_relevant_question() {
+        let database = Database::in_memory().unwrap();
+        let repo = ProjectRepository::new(&database);
+        let project = repo.create_project("Architecture").unwrap();
+
+        for index in 0..12 {
+            let old = index == 0;
+            let name = if old {
+                "legacy-auth-rollback.md".to_string()
+            } else {
+                format!("new-module-{index:02}.txt")
+            };
+            let content = if old {
+                "AUTH_ROLLBACK_MARKER: the legacy authentication plan uses a reversible token swap."
+                    .to_string()
+            } else {
+                format!("UNRELATED_MARKER_{index} ordinary local module content")
+            };
+            let saved = repo
+                .add_file(&ProjectFileInput {
+                    project_id: project.id.clone(),
+                    name,
+                    size_bytes: content.len() as i64,
+                    mime_type: Some("text/plain".into()),
+                    content_text: Some(content),
+                    status: "ready".into(),
+                    error: None,
+                })
+                .unwrap();
+            database
+                .connection()
+                .execute(
+                    "UPDATE project_files SET added_at = ?1 WHERE id = ?2",
+                    params![format!("2026-01-01T00:00:{index:02}Z"), saved.id],
+                )
+                .unwrap();
+        }
+
+        let snapshot = repo.find_project(&project.id).unwrap();
+        assert_eq!(snapshot.files.len(), 12);
+        // Prove why the old fixed newest-first take(8) was incorrect.
+        let generic = project_context_message(&snapshot).unwrap();
+        assert!(!generic.contains("AUTH_ROLLBACK_MARKER"));
+
+        let relevant = project_context_message_for_prompt(
+            &snapshot,
+            Some("How does the legacy auth rollback plan work?"),
+        )
+        .unwrap();
+        assert!(relevant.contains("AUTH_ROLLBACK_MARKER"));
+        assert!(relevant.contains("legacy-auth-rollback.md"));
+        assert!(relevant.contains("8 of 12 ready text files included"));
+        assert!(relevant.contains("4 omitted"));
+        assert!(relevant.contains("Ready means stored and searchable"));
+        assert!(relevant.chars().count() <= 17_000);
+    }
+
+    #[test]
+    fn changed_question_reselects_stored_evidence_and_delete_is_immediate() {
+        let database = Database::in_memory().unwrap();
+        let repo = ProjectRepository::new(&database);
+        let project = repo.create_project("Research").unwrap();
+        let first = repo
+            .add_file(&ProjectFileInput {
+                project_id: project.id.clone(),
+                name: "older-robotics.txt".into(),
+                size_bytes: 30,
+                mime_type: Some("text/plain".into()),
+                content_text: Some("ROBOTICS_UNIQUE_MARKER navigation control".into()),
+                status: "ready".into(),
+                error: None,
+            })
+            .unwrap();
+        for index in 0..10 {
+            let body = format!("DATASET_MARKER_{index} ordinary notes");
+            repo.add_file(&ProjectFileInput {
+                project_id: project.id.clone(),
+                name: format!("dataset-{index}.txt"),
+                size_bytes: body.len() as i64,
+                mime_type: Some("text/plain".into()),
+                content_text: Some(body),
+                status: "ready".into(),
+                error: None,
+            })
+            .unwrap();
+        }
+        let project = repo.find_project(&project.id).unwrap();
+        let robot = project_context_message_for_prompt(&project, Some("robotics navigation"))
+            .unwrap();
+        assert!(robot.contains("ROBOTICS_UNIQUE_MARKER"));
+        let data = project_context_message_for_prompt(&project, Some("dataset-9 notes"))
+            .unwrap();
+        assert!(data.contains("DATASET_MARKER_9"));
+
+        repo.delete_file(&project.id, &first.id).unwrap();
+        let latest = repo.find_project(&project.id).unwrap();
+        let after_delete =
+            project_context_message_for_prompt(&latest, Some("robotics navigation")).unwrap();
+        assert!(!after_delete.contains("ROBOTICS_UNIQUE_MARKER"));
+
+        let replacement = repo
+            .add_file(&ProjectFileInput {
+                project_id: project.id.clone(),
+                name: "robotics-revised.txt".into(),
+                size_bytes: 24,
+                mime_type: Some("text/plain".into()),
+                content_text: Some("REVISED_ROBOTICS_MARKER updated sensors".into()),
+                status: "ready".into(),
+                error: None,
+            })
+            .unwrap();
+        let updated = repo.find_project(&project.id).unwrap();
+        let new_context =
+            project_context_message_for_prompt(&updated, Some("robotics sensors")).unwrap();
+        assert!(new_context.contains("REVISED_ROBOTICS_MARKER"));
+        assert!(!new_context.contains("ROBOTICS_UNIQUE_MARKER"));
+        assert_eq!(replacement.status, "ready");
+    }
+
+    #[test]
+    fn project_context_stays_within_budget_and_discloses_omitted_large_files() {
+        let database = Database::in_memory().unwrap();
+        let repo = ProjectRepository::new(&database);
+        let project = repo.create_project("Bounded Context").unwrap();
+        for index in 0..16 {
+            let body = format!("VECTOR_{index} {}", "λ".repeat(20_000));
+            repo.add_file(&ProjectFileInput {
+                project_id: project.id.clone(),
+                name: format!("vector-{index}.txt"),
+                size_bytes: body.len() as i64,
+                mime_type: Some("text/plain".into()),
+                content_text: Some(body),
+                status: "ready".into(),
+                error: None,
+            })
+            .unwrap();
+        }
+        let project = repo.find_project(&project.id).unwrap();
+        let context = project_context_message_for_prompt(&project, Some("vector")).unwrap();
+        let context_section = context.split_once("Project files:\n").unwrap().1;
+        assert!(context_section.chars().count() <= 16_000);
+        assert!(context_section.contains("omitted"));
+        assert!(context_section.contains("[truncated]"));
+        assert!(context.contains('λ'));
+    }
+
+    #[test]
     fn context_limits_count_unicode_characters_not_bytes() {
         let database = Database::in_memory().unwrap();
         let repo = ProjectRepository::new(&database);
