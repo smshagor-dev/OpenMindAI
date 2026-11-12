@@ -71,20 +71,60 @@ function FullSetupFlow(props: { pending: PendingSetup | null }) {
   const [selectedMode, setSelectedMode] = useState<ExecutionMode | null>(setupExecutionMode());
   const [path, setPath] = useState(props.pending?.root ?? DEFAULT_STORAGE_PATH);
   const [check, setCheck] = useState<StorageLocationCheck | null>(null);
+  const [checkingStorage, setCheckingStorage] = useState(false);
+  const [storageCheckError, setStorageCheckError] = useState<{ path: string; message: string } | null>(null);
+  const storageCheckVersion = useRef(0);
   const [profileName, setProfileName] = useState(props.pending?.profileName ?? "openmindai");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  // A stale check must never authorize a different path, even during the
+  // debounce interval or after switching from A to B and back to A.
+  const changeStoragePath = useCallback((next: string) => {
+    storageCheckVersion.current += 1;
+    setPath(next);
+    setCheck(null);
+    setCheckingStorage(false);
+    setStorageCheckError(null);
+  }, []);
+
   useEffect(() => {
     if (step !== "storage") return;
     let cancelled = false;
+    const version = ++storageCheckVersion.current;
+    setCheck(null);
+    setStorageCheckError(null);
+    if (!path.trim()) {
+      setCheckingStorage(false);
+      return () => {
+        cancelled = true;
+        storageCheckVersion.current += 1;
+      };
+    }
+    setCheckingStorage(true);
     const timer = window.setTimeout(() => {
-      void api.checkStorageLocation(path).then((result) => {
-        if (!cancelled) setCheck(result);
-      });
+      void api.checkStorageLocation(path)
+        .then((result) => {
+          if (cancelled || storageCheckVersion.current !== version) return;
+          if (result.path !== path) {
+            setCheck(null);
+            setStorageCheckError({ path, message: "Storage check returned a different path. Select this location again." });
+            return;
+          }
+          setCheck(result);
+        })
+        .catch((caught: unknown) => {
+          if (cancelled || storageCheckVersion.current !== version) return;
+          setCheck(null);
+          setStorageCheckError({ path, message: `Could not check storage: ${formatError(caught)}` });
+        })
+        .finally(() => {
+          if (!cancelled && storageCheckVersion.current === version) setCheckingStorage(false);
+        });
     }, 350);
     return () => {
       cancelled = true;
+      storageCheckVersion.current += 1;
       window.clearTimeout(timer);
     };
   }, [path, step]);
@@ -107,11 +147,11 @@ function FullSetupFlow(props: { pending: PendingSetup | null }) {
     if (!isTauri) return;
     try {
       const selected = await openFolderPicker({ multiple: false, directory: true });
-      if (typeof selected === "string") setPath(selected);
+      if (typeof selected === "string") changeStoragePath(selected);
     } catch (caught) {
       setError(formatError(caught));
     }
-  }, []);
+  }, [changeStoragePath]);
 
   const finishSetup = useCallback(async () => {
     setSubmitting(true);
@@ -183,9 +223,16 @@ function FullSetupFlow(props: { pending: PendingSetup | null }) {
   }
 
   if (step === "storage") {
-    const availableLabel = check?.availableBytes != null ? formatBytes(check.availableBytes) : null;
-    const recommendedLabel = check ? formatBytes(check.recommendedBytes) : null;
-    const lowSpace = check?.availableBytes != null && check.availableBytes < check.recommendedBytes;
+    // Ignore any previously rendered result before React's effect cleanup
+    // runs: a writable check is only valid for its exact selected path.
+    const currentCheck = check?.path === path ? check : null;
+    const currentError = storageCheckError?.path === path ? storageCheckError.message : null;
+    const availableLabel = currentCheck?.availableBytes != null ? formatBytes(currentCheck.availableBytes) : null;
+    const recommendedLabel = currentCheck ? formatBytes(currentCheck.recommendedBytes) : null;
+    const lowSpace = currentCheck?.availableBytes != null && currentCheck.availableBytes < currentCheck.recommendedBytes;
+    const checking = checkingStorage || (!!path.trim() && !currentCheck && !currentError);
+    const enoughSpace = selectedMode === "cloud" || !lowSpace;
+    const canContinue = !!selectedMode && !!path.trim() && !!currentCheck?.writable && enoughSpace && !checking;
     return (
       <div className="setup-step">
         <h1>Choose AI Storage</h1>
@@ -196,7 +243,7 @@ function FullSetupFlow(props: { pending: PendingSetup | null }) {
           <input
             type="text"
             value={path}
-            onChange={(event) => setPath(event.target.value)}
+            onChange={(event) => changeStoragePath(event.target.value)}
             spellCheck={false}
           />
           {isTauri ? (
@@ -205,14 +252,17 @@ function FullSetupFlow(props: { pending: PendingSetup | null }) {
             </button>
           ) : null}
         </div>
-        {check ? (
-          <p className={lowSpace ? "setup-warning" : "muted"}>
-            {check.writable ? "Location looks writable." : "This location may not be writable."}
-            {availableLabel ? ` Available: ${availableLabel}` : ""}
-            {recommendedLabel ? ` · Recommended: ${recommendedLabel}` : ""}
+        {checking ? <p className="muted" role="status">Checking selected storage location…</p> : null}
+        {currentCheck ? (
+          <p className={lowSpace || !currentCheck.writable ? "setup-warning" : "muted"}>
+            {currentCheck.writable ? "Location looks writable." : "This location is not writable. Choose another folder."}
+            {availableLabel ? ` Available: ${availableLabel}` : " Free space could not be measured; downloads will verify available space again."}
+            {recommendedLabel ? ` · Recommended for Local AI: ${recommendedLabel}` : ""}
+            {lowSpace && selectedMode !== "cloud" ? " More free space is needed for Local AI setup." : ""}
           </p>
         ) : null}
-        {error ? <p className="setup-warning">{error}</p> : null}
+        {currentError ? <p className="setup-warning" role="alert">{currentError}</p> : null}
+        {error ? <p className="setup-warning" role="alert">{error}</p> : null}
         <div className="setup-actions">
           <button type="button" className="ghost-button" onClick={() => setStep("execution")}>
             Back
@@ -220,8 +270,9 @@ function FullSetupFlow(props: { pending: PendingSetup | null }) {
           <button
             type="button"
             className="primary-button"
-            disabled={!path.trim()}
+            disabled={!canContinue}
             onClick={() => {
+              if (!canContinue) return;
               setError(null);
               setStep("profile");
             }}
