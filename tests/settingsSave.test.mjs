@@ -44,7 +44,7 @@ test("production settings/profile saves retain drafts, show failures and allow r
         assert.match(dom.window.document.body.textContent, /previous switch had no runtime/);
         assert.equal(
           [...dom.window.document.querySelectorAll("label")]
-            .some((label) => /Telemetry/.test(label.textContent) && label.querySelector('input[type="checkbox"]')),
+            .some((label) => /telemetry/i.test(label.textContent) && label.querySelector('input[type="checkbox"]')),
           false,
           "privacy must not present an interactive telemetry switch",
         );
