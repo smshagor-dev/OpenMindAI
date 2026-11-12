@@ -402,9 +402,18 @@ export interface ProjectFile {
   sizeBytes: number;
   mimeType: string | null;
   contentText: string | null;
-  status: "ready" | "tracked" | "skipped" | "failed";
+  status: "ready" | "attached" | "tracked" | "skipped" | "failed";
   error: string | null;
   addedAt: string;
+  sha256: string | null;
+}
+
+export interface ProjectBinaryFileDownload {
+  name: string;
+  mimeType: string | null;
+  sizeBytes: number;
+  sha256: string;
+  dataBase64: string;
 }
 
 export interface ProjectSummary {
