@@ -382,6 +382,64 @@ mod tests {
     }
 
     #[test]
+    fn obsolete_telemetry_toggle_never_grants_or_persists_consent() {
+        let database = Database::in_memory().unwrap();
+        let repo = SettingsRepository::new(&database);
+        let mut requested = repo.get_preferences().unwrap();
+        requested.language = "Russian".to_string();
+        requested.telemetry_enabled = true;
+
+        // Older UI clients can still submit the compatibility field, but it
+        // must not enable a feature without an actual consent-gated collector.
+        let saved = repo.save_preferences(&requested).unwrap();
+        assert!(!saved.telemetry_enabled);
+        assert_eq!(saved.language, "Russian");
+        let stored: String = database
+            .connection()
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = ?1",
+                params![SETTINGS_KEY],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&stored)
+                .unwrap()["telemetryEnabled"],
+            false
+        );
+
+        // A profile saved by an older version may contain a phantom true.
+        // Loading corrects that value durably while preserving other choices.
+        database
+            .connection()
+            .execute(
+                "UPDATE app_settings
+                 SET value_json = json_set(value_json, '$.telemetryEnabled', json('true'))
+                 WHERE key = ?1",
+                params![SETTINGS_KEY],
+            )
+            .unwrap();
+        let normalized = repo.get_preferences().unwrap();
+        assert!(!normalized.telemetry_enabled);
+        assert_eq!(normalized.language, "Russian");
+        let reloaded = repo.get_preferences().unwrap();
+        assert!(!reloaded.telemetry_enabled);
+        let persisted: String = database
+            .connection()
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = ?1",
+                params![SETTINGS_KEY],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&persisted)
+                .unwrap()["telemetryEnabled"],
+            false
+        );
+    }
+
+    #[test]
     fn old_preferences_json_loads_with_defaults() {
         let database = Database::in_memory().unwrap();
         let repo = SettingsRepository::new(&database);
