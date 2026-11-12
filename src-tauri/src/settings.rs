@@ -28,6 +28,8 @@ pub struct AppPreferences {
     pub code_copy_buttons: bool,
     pub markdown_rendering: bool,
     pub default_performance_profile: String,
+    /// Compatibility only. This release has no usage-telemetry pipeline and
+    /// must never treat a historical stored true value as user consent.
     pub telemetry_enabled: bool,
     /// Compatibility field: this release always persists local chat history.
     pub save_chat_history: bool,
@@ -229,6 +231,19 @@ impl<'a> SettingsRepository<'a> {
                         params![Utc::now().to_rfc3339(), SETTINGS_KEY],
                     )?;
                 }
+                if preferences.telemetry_enabled {
+                    // The Privacy toggle historically saved an inert boolean.
+                    // Reset it so no later release can misinterpret it as valid
+                    // informed consent to data collection or transmission.
+                    self.database.connection().execute(
+                        "UPDATE app_settings
+                         SET value_json = json_set(value_json, '$.telemetryEnabled', json('false')),
+                             updated_at = ?1
+                         WHERE key = ?2",
+                        params![Utc::now().to_rfc3339(), SETTINGS_KEY],
+                    )?;
+                    preferences.telemetry_enabled = false;
+                }
                 if preferences.auto_download_model_updates {
                     // No scheduler implements this legacy preference. Update only
                     // this field so notification choices and future fields survive.
@@ -271,6 +286,10 @@ impl<'a> SettingsRepository<'a> {
             return Err(AppError::internal("Invalid Cloud/Local execution mode"));
         }
         let mut saved = preferences.clone();
+        // Telemetry consent cannot be solicited by this build: no collector
+        // or privacy flow implements this legacy flag. Do not persist true,
+        // including when an old UI/client sends it during an unrelated save.
+        saved.telemetry_enabled = false;
         if let Some(existing) = self.load_saved_preferences()? {
             // Ordinary preference saves (including older clients) cannot silently
             // dismiss the notice. Acknowledgment has a separate, narrow operation.
