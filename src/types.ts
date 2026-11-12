@@ -384,6 +384,12 @@ export interface LibraryEntry {
   updatedAt: string;
 }
 
+export interface LibraryPage {
+  entries: LibraryEntry[];
+  nextCursor: string | null;
+  totalCount: number;
+}
+
 export interface ProjectFile {
   id: string;
   projectId: string;
