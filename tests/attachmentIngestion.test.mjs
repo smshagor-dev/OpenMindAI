@@ -79,6 +79,18 @@ test("opening another chat aborts pending PDF ingestion before it can populate t
   assert.equal(app.props.attachments.length, 0);
 });
 
+test("leaving chat for Tools cancels expensive PDF OCR instead of leaving background CPU work", async () => {
+  const gate = deferred();
+  const incoming = files("tools-switch-pdf", 1, "pdf");
+  incoming[0].gate = gate;
+  const request = await start(incoming);
+  assert.equal(incoming[0].readOptions.signal.aborted, false);
+  await app.openTools();
+  assert.equal(incoming[0].readOptions.signal.aborted, true);
+  await release(gate, request);
+  assert.equal(incoming[0].reads, 1);
+});
+
 test("navigation and explicit New chat discard both in-flight and queued old selections", async () => {
   const gate=deferred(),first=files("old",1),second=files("queued",1);first[0].gate=gate;
   const one=await start(first),two=await start(second);
