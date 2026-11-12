@@ -229,7 +229,15 @@ export function WorkWorkspace(props: {
       />
 
       {error || catalogError || detailError ? (
-        <button className="error-banner cg-work-error" onClick={() => setError(null)}>
+        <button
+            className="error-banner cg-work-error"
+            onClick={() => {
+              setError(null);
+              if (catalogError || detailError) {
+                void refreshProjects(activeId).catch((caught) => setError(formatError(caught)));
+              }
+            }}
+          >
           <span>{error || catalogError || detailError}</span>
           <X size={14} />
         </button>
