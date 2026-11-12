@@ -48,11 +48,11 @@ export interface PdfExtractionProgress {
 }
 
 export interface PdfExtractionOptions {
-  signal?: AbortSignal;
+  signal?: { readonly aborted: boolean };
   onProgress?: (progress: PdfExtractionProgress) => void;
 }
 
-function assertNotCancelled(signal?: AbortSignal) {
+function assertNotCancelled(signal?: PdfExtractionOptions["signal"]) {
   if (signal?.aborted) {
     throw new Error("PDF import cancelled.");
   }
@@ -260,7 +260,7 @@ async function selectablePageText(page: PDFPageProxy) {
   return lines.filter(Boolean).join("\n").trim();
 }
 
-async function renderPdfPage(page: PDFPageProxy, signal?: AbortSignal) {
+async function renderPdfPage(page: PDFPageProxy, signal?: PdfExtractionOptions["signal"]) {
   const base = page.getViewport({ scale: 1 });
   const scale = Math.min(2, MAX_RENDER_DIMENSION / Math.max(base.width, base.height));
   const viewport = page.getViewport({ scale: Math.max(0.5, scale) });
