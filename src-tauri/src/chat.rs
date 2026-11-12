@@ -37,6 +37,14 @@ pub struct ForkedConversation {
     pub messages: Vec<Message>,
 }
 
+/// Bounded server-side results; no message bodies are ever sent to search UI.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSearchPage {
+    pub conversations: Vec<Conversation>,
+    pub next_cursor: Option<String>,
+}
+
 const PROFILE_CONTEXT_MARKER: &str = "[open-mind-ai-profile-context]";
 const PROJECT_CONTEXT_MARKER: &str = "[open-mind-ai-project-context]";
 
@@ -58,6 +66,97 @@ impl<'a> ChatRepository<'a> {
         )?;
         let rows = statement.query_map([], map_conversation)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+    }
+
+    /// Searches chat titles and indexed local message text without materializing
+    /// every conversation history in the renderer. Result pages have a stable
+    /// (updated_at, id) ordering; the query is never interpolated into SQL.
+    pub fn search_conversations(
+        &self,
+        query: &str,
+        cursor: Option<&str>,
+        requested_limit: i64,
+    ) -> Result<ChatSearchPage, AppError> {
+        let query = query.trim();
+        if query.chars().count() > 256 {
+            return Err(AppError::internal("chat search query exceeds 256 characters"));
+        }
+        let limit = requested_limit.clamp(1, 40);
+        let cursor = match cursor {
+            Some(raw) => {
+                let (updated_at, id) = raw
+                    .split_once('|')
+                    .ok_or_else(|| AppError::internal("invalid chat search cursor"))?;
+                if raw.len() > 128
+                    || chrono::DateTime::parse_from_rfc3339(updated_at).is_err()
+                    || Uuid::parse_str(id).is_err()
+                {
+                    return Err(AppError::internal("invalid chat search cursor"));
+                }
+                Some((updated_at, id))
+            }
+            None => None,
+        };
+
+        // FTS5 trigram queries are exact quoted phrases. Even user-supplied
+        // quotes and wildcard characters are literal text, not FTS operators.
+        // Queries below three Unicode characters use a bounded-result SQLite
+        // substring fallback because trigram indexes cannot match 1-2 chars.
+        let search_condition = if query.is_empty() {
+            "1 = 1"
+        } else if query.chars().count() < 3 {
+            "instr(lower(c.title), lower(?1)) > 0
+             OR EXISTS (
+                SELECT 1 FROM messages m
+                WHERE m.conversation_id = c.id AND m.role != 'system'
+                  AND instr(lower(m.content), lower(?1)) > 0
+             )"
+        } else {
+            "instr(lower(c.title), lower(?1)) > 0
+             OR c.id IN (
+                SELECT m.conversation_id
+                FROM chat_message_fts
+                JOIN messages m ON m.rowid = chat_message_fts.rowid
+                WHERE chat_message_fts MATCH ?2 AND m.role != 'system'
+             )"
+        };
+        let fts_query = format!("\\\"{}\\\"", query.replace('"', "\\"\\""));
+        let (cursor_time, cursor_id) = match cursor {
+            Some((time, id)) => (Some(time), Some(id)),
+            None => (None, None),
+        };
+        let sql = format!(
+            "SELECT c.id, c.title, c.created_at, c.updated_at, c.archived_at,
+                    c.pinned, c.active_model_id
+             FROM conversations c
+             WHERE c.archived_at IS NULL
+               AND ({search_condition})
+               AND (?3 IS NULL OR c.updated_at < ?3
+                    OR (c.updated_at = ?3 AND c.id < ?4))
+             ORDER BY c.updated_at DESC, c.id DESC
+             LIMIT ?5"
+        );
+        let mut statement = self.database.connection().prepare(&sql)?;
+        let rows = statement.query_map(
+            params![query, fts_query, cursor_time, cursor_id, limit + 1],
+            map_conversation,
+        )?;
+        let mut conversations = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(AppError::from)?;
+        let has_more = conversations.len() > limit as usize;
+        conversations.truncate(limit as usize);
+        let next_cursor = if has_more {
+            conversations
+                .last()
+                .map(|chat| format!("{}|{}", chat.updated_at, chat.id))
+        } else {
+            None
+        };
+        Ok(ChatSearchPage {
+            conversations,
+            next_cursor,
+        })
     }
 
     pub fn create_conversation(&self, title: Option<&str>) -> Result<Conversation, AppError> {
