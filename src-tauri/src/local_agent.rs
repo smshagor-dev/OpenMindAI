@@ -1889,6 +1889,12 @@ Attached roots:\n{root_summary}"
         transcript,
         context_window_tokens,
         system_chars: system.chars().count(),
+        // The active persisted plan and project header are inserted outside
+        // the selected evidence sections; reserve their actual characters.
+        additional_user_chars: plan_text
+            .chars()
+            .count()
+            .saturating_add(context.project.name.chars().count()),
     });
     let user = format!(
         "Project: {}\nStep: {}/{}\nActive persisted plan:\n{}\n\nContext selection: selectedChars={}/{} compressed={}\nProject instructions:\n{}\n\nDiscovered repository context:\n{}\n\nWorkspace snapshot:\n{}\n\nRecent project chat:\n{}\n\nUser goal:\n{}\n\nRecent tool history:\n{}\n\nReturn the next single JSON action.",
