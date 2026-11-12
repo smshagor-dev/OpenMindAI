@@ -19,7 +19,7 @@ const deferred = () => {
   });
   return { promise, resolve, reject };
 };
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const delay = (ms) => new Promise((resolve) => globalThis.setTimeout(resolve, ms));
 
 test("first-run storage ignores stale A/B/A responses and exposes offline-drive errors", async () => {
   const directory = await mkdtemp(join(tmpdir(), "storage-preflight-"));
