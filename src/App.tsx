@@ -249,7 +249,7 @@ export function App() {
   const attachmentItems = useRef<AttachmentDraft[]>([]);
   const attachmentClearVersion = useRef(0);
   const attachmentQueue = useRef<Promise<void>>(Promise.resolve());
-  const activePdfImport = useRef<AbortController | null>(null);
+  const activePdfImport = useRef<{ abort: () => void; signal: { readonly aborted: boolean } } | null>(null);
   const [pdfImportProgress, setPdfImportProgress] = useState<(PdfExtractionProgress & { fileName: string }) | null>(null);
   const cancelPdfImport = useCallback(() => {
     activePdfImport.current?.abort();
@@ -961,7 +961,7 @@ export function App() {
           failures.add("Local vision supports at most 4 images in one request.");
           continue;
         }
-        const controller = kind === "pdf" ? new AbortController() : null;
+        const controller = kind === "pdf" ? new globalThis.AbortController() : null;
         if (controller) {
           activePdfImport.current = controller;
           setPdfImportProgress({ fileName: file.name, phase: "reading", completed: 0, total: 1 });
