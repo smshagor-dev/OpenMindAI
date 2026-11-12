@@ -62,6 +62,7 @@ import {
   type ChatMode,
 } from "./lib/chat";
 import { formatError } from "./lib/format";
+import type { PdfExtractionProgress } from "./lib/pdf";
 import { imageRendererPrompt, persistDirectImageRequest, plainImageRequest } from "./lib/imageGeneration";
 import { ConversationState } from "./lib/conversationState";
 
@@ -248,6 +249,13 @@ export function App() {
   const attachmentItems = useRef<AttachmentDraft[]>([]);
   const attachmentClearVersion = useRef(0);
   const attachmentQueue = useRef<Promise<void>>(Promise.resolve());
+  const activePdfImport = useRef<AbortController | null>(null);
+  const [pdfImportProgress, setPdfImportProgress] = useState<(PdfExtractionProgress & { fileName: string }) | null>(null);
+  const cancelPdfImport = useCallback(() => {
+    activePdfImport.current?.abort();
+    activePdfImport.current = null;
+    setPdfImportProgress(null);
+  }, []);
   const draftRevision = useRef(0);
   const latestPrompt = useRef("");
   const discardedDraft = useRef(0);
@@ -274,11 +282,14 @@ export function App() {
   }, [chatState, setPrompt]);
   const setAttachments = useCallback((change: SetStateAction<AttachmentDraft[]>) => {
     const next = typeof change === "function" ? change(attachmentItems.current) : change;
-    if (typeof change !== "function" && next.length === 0) attachmentClearVersion.current += 1;
+    if (typeof change !== "function" && next.length === 0) {
+      attachmentClearVersion.current += 1;
+      cancelPdfImport();
+    }
     attachmentItems.current = next;
     draftRevision.current += 1;
     setAttachmentsState(next);
-  }, []);
+  }, [cancelPdfImport]);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -950,9 +961,21 @@ export function App() {
           failures.add("Local vision supports at most 4 images in one request.");
           continue;
         }
+        const controller = kind === "pdf" ? new AbortController() : null;
+        if (controller) {
+          activePdfImport.current = controller;
+          setPdfImportProgress({ fileName: file.name, phase: "reading", completed: 0, total: 1 });
+        }
         try {
-          const attachment = await readAttachment(file);
-          if (!isCurrent()) return;
+          const attachment = await readAttachment(file, controller ? {
+            signal: controller.signal,
+            onPdfProgress: (progress) => {
+              if (isCurrent() && !controller.signal.aborted) {
+                setPdfImportProgress({ fileName: file.name, ...progress });
+              }
+            },
+          } : undefined);
+          if (!isCurrent() || controller?.signal.aborted) return;
           // Re-check after decoding: files may have been removed/restored meanwhile.
           const current = attachmentItems.current;
           if (current.length >= 8) {
@@ -964,8 +987,13 @@ export function App() {
             added = true;
           }
         } catch (error) {
-          if (!isCurrent()) return;
+          if (!isCurrent() || controller?.signal.aborted) return;
           failures.add(formatError(error));
+        } finally {
+          if (controller && activePdfImport.current === controller) {
+            activePdfImport.current = null;
+            setPdfImportProgress(null);
+          }
         }
       }
       if (!isCurrent()) return;
@@ -1515,6 +1543,8 @@ export function App() {
             imageOptions={imageOptions}
             setImageOptions={setImageOptions}
             attachments={attachments}
+            pdfImportProgress={pdfImportProgress}
+            onCancelPdfImport={cancelPdfImport}
             preferences={preferences}
             activity={activity}
             webProgress={webProgress?.conversationId === activeId ? webProgress : null}
@@ -1591,6 +1621,8 @@ export function App() {
               imageOptions={imageOptions}
               setImageOptions={setImageOptions}
               attachments={attachments}
+              pdfImportProgress={pdfImportProgress}
+              onCancelPdfImport={cancelPdfImport}
               preferences={preferences}
               activity={activity}
               webProgress={webProgress?.conversationId === activeId ? webProgress : null}
