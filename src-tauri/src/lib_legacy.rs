@@ -418,12 +418,30 @@ fn delete_message(message_id: String, state: State<AppState>) -> Result<(), app_
 }
 
 #[tauri::command]
-fn list_projects(state: State<AppState>) -> Result<Vec<Project>, app_error::AppError> {
+fn list_projects(
+    cursor: Option<String>,
+    limit: Option<i64>,
+    state: State<AppState>,
+) -> Result<projects::ProjectListPage, app_error::AppError> {
     let db = state
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-    ProjectRepository::new(&db).list_projects()
+    ProjectRepository::new(&db).list_projects(cursor.as_deref(), limit.unwrap_or(50))
+}
+
+/// Only the selected project's conversations and full text previews cross
+/// the Tauri IPC boundary. The catalog query never includes file bodies.
+#[tauri::command]
+fn get_project(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<Project, app_error::AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    ProjectRepository::new(&db).find_project(&project_id)
 }
 
 #[tauri::command]
@@ -2564,6 +2582,7 @@ pub fn run() {
             complete_message,
             delete_message,
             list_projects,
+            get_project,
             create_project,
             update_project,
             delete_project,
