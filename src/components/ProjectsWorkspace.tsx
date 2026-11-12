@@ -593,7 +593,6 @@ export function ProjectsWorkspace(props: {
                           <div className="project-link-results">
                             {linkableConversations.length ? (
                               linkableConversations.map((conversation) => {
-                                const owner = conversationOwner.get(conversation.id);
                                 return (
                                   <button
                                     type="button"
@@ -604,9 +603,7 @@ export function ProjectsWorkspace(props: {
                                     <span>
                                       <strong>{conversation.title}</strong>
                                       <small>
-                                        {owner
-                                          ? `Move from ${owner}`
-                                          : `Updated ${formatTime(conversation.updatedAt)}`}
+                                        Updated {formatTime(conversation.updatedAt)} · move to this project
                                       </small>
                                     </span>
                                     {busyAction === `link-${conversation.id}` ? (
