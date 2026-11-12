@@ -242,6 +242,9 @@ export async function createChatAppHarness() {
     async open(id) {
       await act(async () => context.sidebar.onOpenConversation(id));
     },
+    async openTools() {
+      await act(async () => context.sidebar.onOpenTools());
+    },
     async newChat() {
       await act(async () => context.sidebar.onNewChat());
     },
