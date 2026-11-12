@@ -22,7 +22,7 @@ await build({
         path: "api", namespace: "fixture",
       }));
       builder.onLoad({ filter: /.*/, namespace: "fixture" }, () => ({
-        contents: "export const api = globalThis.__projectBinaryApi;",
+        contents: "export const api = { addProjectBinaryFile: (...args) => globalThis.__projectBinaryApi.addProjectBinaryFile(...args), readProjectBinaryFile: (...args) => globalThis.__projectBinaryApi.readProjectBinaryFile(...args) };",
       }));
     },
   }],
