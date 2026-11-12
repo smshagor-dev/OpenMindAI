@@ -588,6 +588,89 @@ mod tests {
     }
 
     #[test]
+    fn large_project_catalog_is_paged_without_serializing_file_contents() {
+        let database = Database::in_memory().unwrap();
+        let repo = ProjectRepository::new(&database);
+        let huge_text = "LARGE_PRIVATE_CONTENT_NOT_FOR_SIDEBAR ".repeat(3_000);
+        let mut created_ids = Vec::new();
+        for index in 0..125 {
+            let project = repo
+                .create_project(&format!("Project {index:03}"))
+                .unwrap();
+            database
+                .connection()
+                .execute(
+                    "INSERT INTO project_files
+                     (id, project_id, name, size_bytes, mime_type, content_text, status, added_at)
+                     VALUES (?1, ?2, 'long-notes.md', ?3, 'text/markdown', ?4, 'ready', '2026-01-01')",
+                    params![
+                        Uuid::new_v4().to_string(),
+                        project.id,
+                        huge_text.len() as i64,
+                        huge_text,
+                    ],
+                )
+                .unwrap();
+            database
+                .connection()
+                .execute(
+                    "UPDATE projects SET updated_at = ?1 WHERE id = ?2",
+                    params!["2026-01-01T00:00:00+00:00", project.id],
+                )
+                .unwrap();
+            created_ids.push(project.id);
+        }
+        let chat_id = Uuid::new_v4().to_string();
+        insert_conversation(&database, &chat_id, "Linked chat");
+        database
+            .connection()
+            .execute(
+                "INSERT INTO project_conversations (project_id, conversation_id, created_at)
+                 VALUES (?1, ?2, '2026-01-01')",
+                params![created_ids[0], chat_id],
+            )
+            .unwrap();
+
+        let mut cursor = None;
+        let mut seen = std::collections::HashSet::new();
+        let mut pages = 0;
+        loop {
+            let page = repo.list_projects(cursor.as_deref(), 50).unwrap();
+            assert!(page.projects.len() <= 50);
+            pages += 1;
+            let serialized = serde_json::to_string(&page).unwrap();
+            assert!(!serialized.contains("LARGE_PRIVATE_CONTENT_NOT_FOR_SIDEBAR"));
+            assert!(!serialized.contains("long-notes.md"));
+            assert!(serialized.len() < 16_000, "catalog unexpectedly included large files");
+            for summary in page.projects {
+                assert!(seen.insert(summary.id.clone()), "duplicate from timestamp-tied pages");
+                assert_eq!(summary.file_count, 1);
+                assert_eq!(summary.conversation_count, if summary.id == created_ids[0] { 1 } else { 0 });
+            }
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+            assert!(pages < 5, "catalog cursor did not reach the final page");
+        }
+        assert_eq!(pages, 3);
+        assert_eq!(seen.len(), 125);
+
+        // Only a requested detail query can expose the stored text, preserving
+        // existing project chat-context behavior and metadata.
+        let selected = repo.find_project(&created_ids[0]).unwrap();
+        assert_eq!(selected.conversation_ids, vec![chat_id]);
+        assert_eq!(selected.files[0].content_text.as_deref(), Some(huge_text.as_str()));
+        assert!(repo
+            .list_projects(Some("bad cursor"), 50)
+            .is_err());
+        assert!(repo
+            .list_projects(Some("2026-01-01T00:00:00Z|not-a-uuid"), 50)
+            .is_err());
+        assert_eq!(repo.list_projects(None, 100_000).unwrap().projects.len(), 100);
+    }
+
+    #[test]
     fn project_crud_links_and_files() {
         let database = Database::in_memory().unwrap();
         let repo = ProjectRepository::new(&database);
