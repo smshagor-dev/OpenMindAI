@@ -35,7 +35,7 @@ use std::{
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
-use artifacts::{Artifact, ArtifactManager, ArtifactRepository, LibraryEntry};
+use artifacts::{Artifact, ArtifactManager, ArtifactRepository, LibraryPage};
 use chat::{ChatRepository, Conversation, Message};
 use database::Database;
 use github::{GithubAccount, GithubIssueSummary, GithubRepoSummary, GithubRepository};
@@ -1029,13 +1029,24 @@ fn list_artifacts(
 }
 
 #[tauri::command]
-fn list_library_entries(state: State<AppState>) -> Result<Vec<LibraryEntry>, app_error::AppError> {
+fn list_library_entries(
+    kind: Option<String>,
+    search: Option<String>,
+    cursor: Option<String>,
+    limit: Option<i64>,
+    state: State<AppState>,
+) -> Result<LibraryPage, app_error::AppError> {
     let db = state
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
     db.recover_stale_image_artifacts()?;
-    ArtifactRepository::new(&db).list_all(200)
+    ArtifactRepository::new(&db).list_page(
+        kind.as_deref(),
+        search.as_deref(),
+        cursor.as_deref(),
+        limit.unwrap_or(50),
+    )
 }
 
 #[tauri::command]

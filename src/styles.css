@@ -2432,6 +2432,40 @@ button {
   color: var(--text);
 }
 
+.library-search {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.library-search input {
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.library-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 0 4px;
+  font-size: 12px;
+}
+
+.library-pagination .button-row {
+  display: flex;
+  gap: 8px;
+}
+
 .library-list {
   display: flex;
   flex-direction: column;

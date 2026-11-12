@@ -72,9 +72,8 @@ pub(crate) fn build_prompt_context(input: PromptContextInput<'_>) -> PromptConte
     // prompt, while allowing larger real slots to include more tool evidence,
     // instructions, and repository context. No section can exceed the global
     // available input budget, even if its scaled cap is larger.
-    let scale = budget_chars
-        .saturating_add(BASE_SECTION_BUDGET_CHARS - 1)
-        / BASE_SECTION_BUDGET_CHARS;
+    let scale =
+        budget_chars.saturating_add(BASE_SECTION_BUDGET_CHARS - 1) / BASE_SECTION_BUDGET_CHARS;
     let caps = BASE_SECTION_CAPS.map(|cap| cap.saturating_mul(scale.max(1)));
     let weights = [30usize, 25, 22, 10, 8, 5];
     let lengths = raw
@@ -367,7 +366,10 @@ mod tests {
         let medium = build(65_536);
         let large = build(131_072);
 
-        assert!(small.selected_chars > 24_000, "32K slot must exceed the old ceiling");
+        assert!(
+            small.selected_chars > 24_000,
+            "32K slot must exceed the old ceiling"
+        );
         assert!(medium.budget_chars > small.budget_chars);
         assert!(large.budget_chars > medium.budget_chars);
         assert!(medium.selected_chars > small.selected_chars);
@@ -379,8 +381,7 @@ mod tests {
             // Same conservative three-character-per-token budget used by
             // production; preserve space for both JSON output and margin.
             let prompt_chars = pack.selected_chars + 7_000 + 3_000 + FIXED_USER_OVERHEAD_CHARS;
-            let input_token_upper_bound =
-                prompt_chars.div_ceil(CHARS_PER_TOKEN_ESTIMATE);
+            let input_token_upper_bound = prompt_chars.div_ceil(CHARS_PER_TOKEN_ESTIMATE);
             assert!(
                 input_token_upper_bound + pack.max_output_tokens + PROMPT_MARGIN_TOKENS <= slot,
                 "prompt did not fit the reported llama-server slot of {slot} tokens"
