@@ -724,10 +724,8 @@ mod tests {
             .unwrap();
         assert_eq!(record.status, "attached");
         assert_eq!(record.content_text, None);
-        assert_eq!(
-            record.sha256.as_deref(),
-            Some(format!("{:x}", Sha256::digest(&original)).as_str())
-        );
+        let expected_sha = format!("{:x}", Sha256::digest(&original));
+        assert_eq!(record.sha256.as_deref(), Some(expected_sha.as_str()));
         let listed = repo.list_projects(None, 50).unwrap();
         let json = serde_json::to_string(&listed).unwrap();
         assert!(!json.contains("diagram.png"));
@@ -819,7 +817,8 @@ mod tests {
                 data_base64: STANDARD.encode(&original),
             })
             .unwrap();
-        drop(repo);
+        // Only the database connection needs explicit closure before moving
+        // the portable root; the repository is a lightweight borrowed view.
         drop(database);
         let new_root = crate::portable_root::PortableRootManager::from_root(
             dir.path().join("relocated-root"),
