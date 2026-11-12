@@ -106,7 +106,7 @@ export async function createChatAppHarness() {
               chat: `export const attachmentMedia=items=>items.flatMap(item=>item.mediaItems),buildMessageContent=content=>content,
               inferChatMode=()=>globalThis.__chatDraftHarness.mode,isUntitledConversation=()=>false,attachmentContextStats=()=>({truncatedCount:0,omittedCount:0}),
               attachmentKind=file=>file.attachmentDraft?.kind??file.kind??"text",
-              readAttachment=async file=>{file.reads=(file.reads??0)+1;if(file.gate)await file.gate.promise;if(file.failure)throw file.failure;return file.attachmentDraft;},settledValue=result=>result.status==='fulfilled'?result.value:null,
+              readAttachment=async (file,options)=>{file.reads=(file.reads??0)+1;file.readOptions=options;if(file.gate)await file.gate.promise;if(file.failure)throw file.failure;return file.attachmentDraft;},settledValue=result=>result.status==='fulfilled'?result.value:null,
               titleFromPrompt=content=>content;`,
             };
             if (modules[path]) return { contents: modules[path], loader: "js" };
