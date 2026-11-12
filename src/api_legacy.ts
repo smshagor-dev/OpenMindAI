@@ -35,6 +35,7 @@ import type {
   PortableRootInfo,
   Project,
   ProjectFile,
+  ProjectListPage,
   RuntimeInventory,
   StorageSummary,
   UserProfile,
@@ -224,7 +225,9 @@ export const api = {
   completeMessage: (messageId: string, status: Message["status"]) =>
     call<void>("complete_message", { messageId, status }),
   deleteMessage: (messageId: string) => queueMessageDelete(messageId),
-  projects: () => call<Project[]>("list_projects"),
+  projects: (cursor?: string, limit = 50) =>
+    call<ProjectListPage>("list_projects", { cursor, limit }),
+  getProject: (projectId: string) => call<Project>("get_project", { projectId }),
   createProject: (name: string) => call<Project>("create_project", { name }),
   updateProject: (projectId: string, name: string, instructions: string) =>
     call<Project>("update_project", { projectId, name, instructions }),
@@ -464,7 +467,10 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
     } as T);
   }
   if (command === "delete_message") return Promise.resolve(undefined as T);
-  if (command === "list_projects") return Promise.resolve([] as T);
+  if (command === "list_projects")
+    return Promise.resolve({ projects: [], nextCursor: null } as T);
+  if (command === "get_project")
+    return Promise.reject(new Error("Project details require the desktop app."));
   if (command === "create_project" || command === "update_project") {
     return Promise.resolve({
       id: (args?.projectId as string) || crypto.randomUUID(),
