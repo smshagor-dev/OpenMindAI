@@ -127,7 +127,7 @@ pub(crate) async fn send_multimodal_chat_message(
         return Err(error);
     }
 
-    crate::sync_project_context(&state, &conversation_id)?;
+    crate::sync_project_context_for_prompt(&state, &conversation_id, trimmed)?;
     let dataset_context = crate::dataset_context::build_dataset_context(
         &state.root,
         &content,
@@ -202,7 +202,7 @@ pub(crate) async fn regenerate_multimodal_message(
     let mode = "vision";
     let routing = crate::resolve_conversation_model(&state, &conversation_id, mode, &user.content)?;
     let model = routing.model;
-    crate::sync_project_context(&state, &conversation_id)?;
+    crate::sync_project_context_for_prompt(&state, &conversation_id, &user.content)?;
     let dataset_context = crate::dataset_context::build_dataset_context(
         &state.root,
         &user.content,
