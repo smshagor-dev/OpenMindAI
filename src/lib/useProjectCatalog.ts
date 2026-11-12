@@ -20,13 +20,24 @@ export function useProjectCatalog() {
   const [detailRevision, setDetailRevision] = useState(0);
   const catalogVersion = useRef(0);
   const detailVersion = useRef(0);
+  const selectedIdRef = useRef(activeId);
+  selectedIdRef.current = activeId;
   const loadMoreInFlight = useRef(false);
 
   const refreshProjects = useCallback(async (preferredId?: string | null) => {
     const version = ++catalogVersion.current;
     const page = await api.projects();
     if (catalogVersion.current !== version) return page.projects;
-    setProjects(page.projects);
+    // A selected project from an older loaded page must remain visible after
+    // a mutation refresh resets the listing to the first page. Otherwise its
+    // select/side-menu option vanishes while its detail is still open.
+    const selectedId = preferredId === null ? null : preferredId ?? selectedIdRef.current;
+    setProjects((current) => {
+      const retained = selectedId && !page.projects.some((project) => project.id === selectedId)
+        ? current.find((project) => project.id === selectedId)
+        : null;
+      return retained ? [retained, ...page.projects] : page.projects;
+    });
     setNextCursor(page.nextCursor);
     setCatalogError(null);
     setActiveId((current) => {
