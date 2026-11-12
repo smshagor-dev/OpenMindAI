@@ -89,6 +89,9 @@ jobs:
       - name: Indexed chat search pagination and stale result regression
         run: npm run test:chat-search
 
+      - name: Project catalog paging and stale detail regression
+        run: npm run test:project-catalog
+
       - name: Lint
         run: npm run lint
 
