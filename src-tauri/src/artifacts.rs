@@ -562,6 +562,149 @@ mod tests {
     }
 
     #[test]
+    fn library_paginates_past_200_and_filters_old_documents_before_limit() {
+        let database = Database::in_memory().unwrap();
+        let chat_repo = crate::chat::ChatRepository::new(&database);
+        let conversation = chat_repo
+            .create_conversation(Some("Archive Chat"))
+            .unwrap();
+        let artifacts = ArtifactRepository::new(&database);
+
+        for index in 0..225 {
+            let is_pdf = index == 0 || index == 11;
+            let name = if is_pdf {
+                format!("archive-{index:03}.pdf")
+            } else {
+                format!("image-{index:03}.png")
+            };
+            let kind = if is_pdf { "pdf" } else { "image" };
+            let saved = artifacts
+                .create(
+                    &conversation.id,
+                    None,
+                    &name,
+                    &format!("generated/files/{name}"),
+                    if is_pdf { "application/pdf" } else { "image/png" },
+                    kind,
+                    "ready",
+                )
+                .unwrap();
+            // Deterministic timestamps make the oldest documents appear well
+            // after the first 200 newest rows, independent of runner speed.
+            let created = format!("2026-01-01T00:{:02}:{:02}.000+00:00", index / 60, index % 60);
+            database
+                .connection()
+                .execute(
+                    "UPDATE artifacts SET created_at = ?1 WHERE id = ?2",
+                    rusqlite::params![created, saved.id],
+                )
+                .unwrap();
+        }
+
+        let mut cursor = None;
+        let mut ids = std::collections::HashSet::new();
+        let mut seen = Vec::new();
+        let mut page_count = 0;
+        loop {
+            let page = artifacts.list_page(None, None, cursor.as_deref(), 50).unwrap();
+            assert_eq!(page.total_count, 225);
+            assert!(page.entries.len() <= 50);
+            page_count += 1;
+            for entry in page.entries {
+                assert!(ids.insert(entry.id), "a Library cursor returned a duplicate");
+                seen.push(entry.name);
+            }
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+            assert!(page_count < 10, "Library pagination never reached its end");
+        }
+        assert_eq!(page_count, 5);
+        assert_eq!(ids.len(), 225);
+        assert_eq!(seen.first().unwrap(), "image-224.png");
+        assert_eq!(seen.last().unwrap(), "archive-000.pdf");
+
+        let pdfs = artifacts.list_page(Some("pdf"), None, None, 50).unwrap();
+        assert_eq!(pdfs.total_count, 2);
+        assert_eq!(pdfs.entries.len(), 2);
+        assert!(pdfs.next_cursor.is_none());
+        assert_eq!(pdfs.entries[0].name, "archive-011.pdf");
+        assert_eq!(pdfs.entries[1].name, "archive-000.pdf");
+
+        let searched = artifacts
+            .list_page(Some("pdf"), Some("archive-000"), None, 50)
+            .unwrap();
+        assert_eq!(searched.total_count, 1);
+        assert_eq!(searched.entries[0].name, "archive-000.pdf");
+        let by_chat = artifacts
+            .list_page(Some("pdf"), Some("ARCHIVE CHAT"), None, 50)
+            .unwrap();
+        assert_eq!(by_chat.total_count, 2);
+        assert!(artifacts
+            .list_page(Some("pdf"), Some("missing"), None, 50)
+            .unwrap()
+            .entries
+            .is_empty());
+    }
+
+    #[test]
+    fn library_cursor_is_stable_for_identical_creation_timestamps() {
+        let database = Database::in_memory().unwrap();
+        let chat = crate::chat::ChatRepository::new(&database)
+            .create_conversation(Some("Same timestamp"))
+            .unwrap();
+        let artifacts = ArtifactRepository::new(&database);
+
+        for index in 0..34 {
+            let saved = artifacts
+                .create(
+                    &chat.id,
+                    None,
+                    &format!("item-{index}.md"),
+                    &format!("generated/files/item-{index}.md"),
+                    "text/markdown",
+                    "markdown",
+                    "ready",
+                )
+                .unwrap();
+            database
+                .connection()
+                .execute(
+                    "UPDATE artifacts SET created_at = ?1 WHERE id = ?2",
+                    rusqlite::params!["2026-01-01T00:00:00.000+00:00", saved.id],
+                )
+                .unwrap();
+        }
+        let mut cursor = None;
+        let mut ids = std::collections::HashSet::new();
+        loop {
+            let page = artifacts
+                .list_page(Some("markdown"), None, cursor.as_deref(), 7)
+                .unwrap();
+            assert_eq!(page.total_count, 34);
+            assert!(!page.entries.is_empty());
+            for entry in page.entries {
+                assert!(ids.insert(entry.id), "duplicate item with same timestamp");
+            }
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        assert_eq!(ids.len(), 34);
+        assert!(artifacts
+            .list_page(None, None, Some("unsafe-cursor"), 50)
+            .is_err());
+        assert!(artifacts
+            .list_page(None, None, Some("2026-01-01T00:00:00Z|not-a-uuid"), 50)
+            .is_err());
+        assert!(artifacts
+            .list_page(None, Some(&"a".repeat(257)), None, 50)
+            .is_err());
+    }
+
+    #[test]
     fn resolves_collision_free_destination_with_sanitized_name() {
         let temp = tempfile::tempdir().unwrap();
         let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
