@@ -702,11 +702,14 @@ export function SettingsDialog(props: {
               Temporary chats are not available. Changing other privacy settings does not
               stop local history storage or remove existing conversations.
             </p>
-            <ToggleRow
-              label="Telemetry"
-              checked={preferenceDraft.telemetryEnabled}
-              onChange={(value) => setPreference("telemetryEnabled", value)}
-            />
+            <Info label="Usage telemetry" value="Not available in this release" />
+            <p className="muted">
+              OpenMindAI does not currently offer a usage-telemetry service or
+              a telemetry consent control. The previous switch had no runtime
+              effect and has been removed. Local diagnostic logs, optional Cloud
+              connections and web search are separate features with their own
+              behavior and settings.
+            </p>
             <Info label="Data location" value={props.root?.root} />
             <SaveBar state={saveState} onSave={savePreferences} />
           </SettingsGroup>
