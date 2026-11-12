@@ -80,13 +80,13 @@ function FullSetupFlow(props: { pending: PendingSetup | null }) {
 
   // A stale check must never authorize a different path, even during the
   // debounce interval or after switching from A to B and back to A.
-  const changeStoragePath = (next: string) => {
+  const changeStoragePath = useCallback((next: string) => {
     storageCheckVersion.current += 1;
     setPath(next);
     setCheck(null);
     setCheckingStorage(false);
     setStorageCheckError(null);
-  };
+  }, []);
 
   useEffect(() => {
     if (step !== "storage") return;
@@ -151,7 +151,7 @@ function FullSetupFlow(props: { pending: PendingSetup | null }) {
     } catch (caught) {
       setError(formatError(caught));
     }
-  }, []);
+  }, [changeStoragePath]);
 
   const finishSetup = useCallback(async () => {
     setSubmitting(true);
