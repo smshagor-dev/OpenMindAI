@@ -24,7 +24,7 @@ import type {
   CacheClearResult,
   ModelCatalogReport,
   LaunchPlan,
-  LibraryEntry,
+  LibraryPage,
   LlamaRuntimeStatus,
   Message,
   ModelRecord,
@@ -370,7 +370,8 @@ export const api = {
     imageOptions: kind === "image" ? imageOptions : undefined,
   }),
   listArtifacts: (conversationId: string) => call<Artifact[]>("list_artifacts", { conversationId }),
-  listLibraryEntries: () => call<LibraryEntry[]>("list_library_entries"),
+  listLibraryEntries: (options: { kind?: ArtifactKind; search?: string; cursor?: string; limit?: number } = {}) =>
+    call<LibraryPage>("list_library_entries", options),
   openArtifact: (artifactId: string) => call<void>("open_artifact", { artifactId }),
   openExternalUrl: (url: string) => call<void>("open_external_url", { url }),
   revealArtifactInFolder: (artifactId: string) =>
@@ -520,8 +521,9 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
       updatedAt: now,
     } as T);
   }
-  if (command === "list_artifacts" || command === "list_library_entries")
-    return Promise.resolve([] as T);
+  if (command === "list_artifacts") return Promise.resolve([] as T);
+  if (command === "list_library_entries")
+    return Promise.resolve({ entries: [], nextCursor: null, totalCount: 0 } as T);
   if (command === "open_artifact" || command === "reveal_artifact_in_folder") {
     return Promise.resolve(undefined as T);
   }
