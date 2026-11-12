@@ -36,7 +36,7 @@ use std::{
 use std::os::windows::process::CommandExt;
 
 use artifacts::{Artifact, ArtifactManager, ArtifactRepository, LibraryPage};
-use chat::{ChatRepository, Conversation, Message};
+use chat::{ChatRepository, ChatSearchPage, Conversation, Message};
 use database::Database;
 use github::{GithubAccount, GithubIssueSummary, GithubRepoSummary, GithubRepository};
 use google::{GoogleCredentialsStatus, GoogleRepository};
@@ -337,6 +337,24 @@ fn list_messages(
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
     ChatRepository::new(&db).list_messages(&conversation_id)
+}
+
+#[tauri::command]
+fn search_conversations(
+    query: String,
+    cursor: Option<String>,
+    limit: Option<i64>,
+    state: State<AppState>,
+) -> Result<ChatSearchPage, app_error::AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    ChatRepository::new(&db).search_conversations(
+        &query,
+        cursor.as_deref(),
+        limit.unwrap_or(40),
+    )
 }
 
 #[tauri::command]
@@ -2539,6 +2557,7 @@ pub fn run() {
             archive_conversation,
             delete_conversation,
             list_messages,
+            search_conversations,
             add_user_message,
             create_streaming_assistant_message,
             append_message_chunk,
