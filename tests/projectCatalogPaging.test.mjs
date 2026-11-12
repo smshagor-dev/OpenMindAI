@@ -140,6 +140,9 @@ test("project catalog keeps file bodies out of sidebar, paginates and ignores st
     // project's text.
     await act(async () => catalog.refreshProjects());
     assert.equal(catalog.activeId, "p-124");
+    assert.equal(catalog.projects.length, 51, "first page plus retained selected project");
+    assert(catalog.projects.some((project) => project.id === "p-124"),
+      "selected project must remain in the dropdown after refreshing");
     assert.equal(catalog.activeProject, null);
     assert.equal(detailCalls.length, 4);
     await act(async () => detailCalls[3].resolve(detailFor("p-124")));
