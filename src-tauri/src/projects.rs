@@ -313,8 +313,18 @@ impl<'a> ProjectRepository<'a> {
 }
 
 pub fn project_context_message(project: &Project) -> Option<String> {
+    project_context_message_for_prompt(project, None)
+}
+
+/// Select relevant retained text evidence for this individual user request.
+/// Uploading a file marks it readable, not permanently included in every
+/// model prompt. Updates and idle project previews may use the generic view.
+pub fn project_context_message_for_prompt(
+    project: &Project,
+    prompt: Option<&str>,
+) -> Option<String> {
     let instructions = project.instructions.trim();
-    let file_context = project_file_context(&project.files);
+    let file_context = project_file_context(&project.files, prompt);
     if instructions.is_empty() && file_context.is_empty() {
         return None;
     }
@@ -371,47 +381,124 @@ fn sanitize_file_status(status: &str) -> &'static str {
     }
 }
 
-fn project_file_context(files: &[ProjectFile]) -> String {
+/// Each project file remains stored and addressable. Only the best-scoring
+/// subset is sent to a given model request, with an explicit omission count.
+fn project_file_context(files: &[ProjectFile], prompt: Option<&str>) -> String {
     const MAX_FILES: usize = 8;
     const MAX_FILE_CHARS: usize = 4_000;
     const MAX_TOTAL_CHARS: usize = 16_000;
+    // Reserve space for the selection/disclosure line, even at the full cap.
+    const MAX_SECTION_CHARS: usize = MAX_TOTAL_CHARS - 256;
 
-    let mut total_chars = 0usize;
-    let mut snippets = Vec::new();
-    for file in files
+    let terms = project_query_terms(prompt.unwrap_or(""));
+    let mut candidates = files
         .iter()
         .filter(|file| file.status == "ready")
         .filter_map(|file| {
             file.content_text
                 .as_deref()
-                .map(|content| (file, content.trim()))
+                .map(str::trim)
+                .filter(|content| !content.is_empty())
+                .map(|content| (file, content))
         })
-        .filter(|(_, content)| !content.is_empty())
-        .take(MAX_FILES)
-    {
-        if total_chars >= MAX_TOTAL_CHARS {
-            break;
-        }
-        let (file, content) = file;
-        let remaining = MAX_TOTAL_CHARS.saturating_sub(total_chars);
-        let limit = MAX_FILE_CHARS.min(remaining);
-        let content_chars = content.chars().count();
-        let snippet = take_chars(content, limit);
-        let snippet_chars = snippet.chars().count();
-        total_chars += snippet_chars;
-        let suffix = if snippet_chars < content_chars {
-            "\n[truncated]"
-        } else {
-            ""
-        };
-        let mime = file.mime_type.as_deref().unwrap_or("text/plain");
-        snippets.push(format!(
-            "--- {} ({}) ---\n{}{}",
-            file.name, mime, snippet, suffix
-        ));
+        .enumerate()
+        .map(|(recency, (file, content))| {
+            let score = project_file_relevance(&file.name, content, &terms);
+            (score, recency, file, content)
+        })
+        .collect::<Vec<_>>();
+
+    // Stable ordering: relevant older files win, then preserve the file-list's
+    // newest-first order when the query does not identify a specific file.
+    candidates.sort_by(|left, right| {
+        right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1))
+    });
+    if candidates.is_empty() {
+        return String::new();
     }
 
-    snippets.join("\n\n")
+    let total = candidates.len();
+    let mut sections = Vec::new();
+    let mut used_chars = 0usize;
+    for (_, _, file, content) in candidates.into_iter().take(MAX_FILES) {
+        let mime = file.mime_type.as_deref().unwrap_or("text/plain");
+        let header = format!("--- {} ({}) ---\n", file.name, mime);
+        let separator_chars = if sections.is_empty() { 0 } else { 2 };
+        let overhead = header.chars().count() + separator_chars;
+        if used_chars + overhead >= MAX_SECTION_CHARS {
+            break;
+        }
+        let capacity = (MAX_SECTION_CHARS - used_chars - overhead)
+            .saturating_sub("\n[truncated]".len())
+            .min(MAX_FILE_CHARS);
+        if capacity == 0 {
+            break;
+        }
+        let snippet = take_chars(content, capacity);
+        let truncated = snippet.chars().count() < content.chars().count();
+        let suffix = if truncated { "\n[truncated]" } else { "" };
+        let section = format!("{header}{snippet}{suffix}");
+        used_chars += section.chars().count() + separator_chars;
+        sections.push(section);
+    }
+
+    let selected = sections.len();
+    let omitted = total - selected;
+    let mut output = format!(
+        "[Project file selection: {selected} of {total} ready text files included for this request; {omitted} omitted. Ready means stored and searchable, not guaranteed in every prompt.]"
+    );
+    if !sections.is_empty() {
+        output.push_str("\n\n");
+        output.push_str(&sections.join("\n\n"));
+    }
+    // The total includes headers, truncation markers and the omission note.
+    take_chars(&output, MAX_TOTAL_CHARS)
+}
+
+/// Filename references rank above incidental body hits; older project files
+/// are eligible before any top-N limit is applied. Query terms are bounded to
+/// avoid scanning files repeatedly for an unbounded user-supplied query.
+fn project_query_terms(prompt: &str) -> Vec<String> {
+    let stop = [
+        "about", "could", "explain", "from", "give", "have", "help",
+        "into", "latest", "need", "please", "project", "show",
+        "tell", "that", "them", "there", "these", "this", "what",
+        "when", "where", "which", "with", "your",
+    ];
+    let mut terms = Vec::new();
+    for word in prompt
+        .to_lowercase()
+        .split(|character: char| !character.is_alphanumeric())
+    {
+        if word.chars().count() < 3 || word.chars().count() > 80 || stop.contains(&word) {
+            continue;
+        }
+        if !terms.iter().any(|existing| existing == word) {
+            terms.push(word.to_string());
+            if terms.len() >= 16 {
+                break;
+            }
+        }
+    }
+    terms
+}
+
+fn project_file_relevance(name: &str, content: &str, terms: &[String]) -> usize {
+    if terms.is_empty() {
+        return 0;
+    }
+    let name = name.to_lowercase();
+    let text = content.to_lowercase();
+    let mut score = 0usize;
+    for term in terms {
+        if name.contains(term) {
+            score += 20;
+        }
+        if text.contains(term) {
+            score += 3;
+        }
+    }
+    score
 }
 
 fn take_chars(content: &str, limit: usize) -> String {
@@ -542,6 +629,153 @@ mod tests {
                 error: None,
             })
             .is_err());
+    }
+
+    #[test]
+    fn older_ninth_project_file_is_retrieved_for_relevant_question() {
+        let database = Database::in_memory().unwrap();
+        let repo = ProjectRepository::new(&database);
+        let project = repo.create_project("Architecture").unwrap();
+
+        for index in 0..12 {
+            let old = index == 0;
+            let name = if old {
+                "legacy-auth-rollback.md".to_string()
+            } else {
+                format!("new-module-{index:02}.txt")
+            };
+            let content = if old {
+                "AUTH_ROLLBACK_MARKER: the legacy authentication plan uses a reversible token swap."
+                    .to_string()
+            } else {
+                format!("UNRELATED_MARKER_{index} ordinary local module content")
+            };
+            let saved = repo
+                .add_file(&ProjectFileInput {
+                    project_id: project.id.clone(),
+                    name,
+                    size_bytes: content.len() as i64,
+                    mime_type: Some("text/plain".into()),
+                    content_text: Some(content),
+                    status: "ready".into(),
+                    error: None,
+                })
+                .unwrap();
+            database
+                .connection()
+                .execute(
+                    "UPDATE project_files SET added_at = ?1 WHERE id = ?2",
+                    params![format!("2026-01-01T00:00:{index:02}Z"), saved.id],
+                )
+                .unwrap();
+        }
+
+        let snapshot = repo.find_project(&project.id).unwrap();
+        assert_eq!(snapshot.files.len(), 12);
+        // Prove why the old fixed newest-first take(8) was incorrect.
+        let generic = project_context_message(&snapshot).unwrap();
+        assert!(!generic.contains("AUTH_ROLLBACK_MARKER"));
+
+        let relevant = project_context_message_for_prompt(
+            &snapshot,
+            Some("How does the legacy auth rollback plan work?"),
+        )
+        .unwrap();
+        assert!(relevant.contains("AUTH_ROLLBACK_MARKER"));
+        assert!(relevant.contains("legacy-auth-rollback.md"));
+        assert!(relevant.contains("8 of 12 ready text files included"));
+        assert!(relevant.contains("4 omitted"));
+        assert!(relevant.contains("Ready means stored and searchable"));
+        assert!(relevant.chars().count() <= 17_000);
+    }
+
+    #[test]
+    fn changed_question_reselects_stored_evidence_and_delete_is_immediate() {
+        let database = Database::in_memory().unwrap();
+        let repo = ProjectRepository::new(&database);
+        let project = repo.create_project("Research").unwrap();
+        let first = repo
+            .add_file(&ProjectFileInput {
+                project_id: project.id.clone(),
+                name: "older-robotics.txt".into(),
+                size_bytes: 30,
+                mime_type: Some("text/plain".into()),
+                content_text: Some("ROBOTICS_UNIQUE_MARKER navigation control".into()),
+                status: "ready".into(),
+                error: None,
+            })
+            .unwrap();
+        for index in 0..10 {
+            let body = format!("DATASET_MARKER_{index} ordinary notes");
+            repo.add_file(&ProjectFileInput {
+                project_id: project.id.clone(),
+                name: format!("dataset-{index}.txt"),
+                size_bytes: body.len() as i64,
+                mime_type: Some("text/plain".into()),
+                content_text: Some(body),
+                status: "ready".into(),
+                error: None,
+            })
+            .unwrap();
+        }
+        let project = repo.find_project(&project.id).unwrap();
+        let robot = project_context_message_for_prompt(&project, Some("robotics navigation"))
+            .unwrap();
+        assert!(robot.contains("ROBOTICS_UNIQUE_MARKER"));
+        let data = project_context_message_for_prompt(&project, Some("dataset-9 notes"))
+            .unwrap();
+        assert!(data.contains("DATASET_MARKER_9"));
+
+        repo.delete_file(&project.id, &first.id).unwrap();
+        let latest = repo.find_project(&project.id).unwrap();
+        let after_delete =
+            project_context_message_for_prompt(&latest, Some("robotics navigation")).unwrap();
+        assert!(!after_delete.contains("ROBOTICS_UNIQUE_MARKER"));
+
+        let replacement = repo
+            .add_file(&ProjectFileInput {
+                project_id: project.id.clone(),
+                name: "robotics-revised.txt".into(),
+                size_bytes: 24,
+                mime_type: Some("text/plain".into()),
+                content_text: Some("REVISED_ROBOTICS_MARKER updated sensors".into()),
+                status: "ready".into(),
+                error: None,
+            })
+            .unwrap();
+        let updated = repo.find_project(&project.id).unwrap();
+        let new_context =
+            project_context_message_for_prompt(&updated, Some("robotics sensors")).unwrap();
+        assert!(new_context.contains("REVISED_ROBOTICS_MARKER"));
+        assert!(!new_context.contains("ROBOTICS_UNIQUE_MARKER"));
+        assert_eq!(replacement.status, "ready");
+    }
+
+    #[test]
+    fn project_context_stays_within_budget_and_discloses_omitted_large_files() {
+        let database = Database::in_memory().unwrap();
+        let repo = ProjectRepository::new(&database);
+        let project = repo.create_project("Bounded Context").unwrap();
+        for index in 0..16 {
+            let body = format!("VECTOR_{index} {}", "λ".repeat(20_000));
+            repo.add_file(&ProjectFileInput {
+                project_id: project.id.clone(),
+                name: format!("vector-{index}.txt"),
+                size_bytes: body.len() as i64,
+                mime_type: Some("text/plain".into()),
+                content_text: Some(body),
+                status: "ready".into(),
+                error: None,
+            })
+            .unwrap();
+        }
+        let project = repo.find_project(&project.id).unwrap();
+        let context = project_context_message_for_prompt(&project, Some("vector")).unwrap();
+        let context_section = context.split_once("Project files:\n").unwrap().1;
+        assert!(context_section.chars().count() <= 16_000);
+        assert!(context_section.contains("omitted"));
+        assert!(context_section.contains("[truncated]"));
+        assert!(context.contains('λ'));
     }
 
     #[test]
