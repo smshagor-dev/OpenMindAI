@@ -125,7 +125,7 @@ test("large selectable page ends extraction before opening later pages", async (
 
 test("explicit cancellation stops further page reads, releases decoder, and rejects import", async () => {
   const fx = fixture(250);
-  const abort = new AbortController();
+  const abort = new globalThis.AbortController();
   await assert.rejects(
     extractPdfText(file, {
       signal: abort.signal,
