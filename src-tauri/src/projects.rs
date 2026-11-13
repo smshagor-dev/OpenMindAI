@@ -1,4 +1,6 @@
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::Utc;
+use sha2::{Digest, Sha256};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -11,6 +13,8 @@ const MAX_PROJECT_FILE_NAME_CHARS: usize = 255;
 const MAX_PROJECT_FILE_TEXT_CHARS: usize = 120_000;
 const MAX_PROJECT_FILE_ERROR_CHARS: usize = 2_000;
 const MAX_PROJECT_MIME_TYPE_CHARS: usize = 255;
+/// Single-request IPC and SQLite BLOB bound; large files need a streaming API.
+const MAX_PROJECT_BINARY_BYTES: usize = 1_500_000;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,6 +58,8 @@ pub struct ProjectFile {
     pub status: String,
     pub error: Option<String>,
     pub added_at: String,
+    /// SHA-256 of retained binary bytes (absent for readable text and legacy metadata).
+    pub sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -66,6 +72,28 @@ pub struct ProjectFileInput {
     pub content_text: Option<String>,
     pub status: String,
     pub error: Option<String>,
+}
+
+/// Filename is display metadata, never an OS path. The encoded payload is
+/// accepted only on this dedicated bounded attachment endpoint.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectBinaryFileInput {
+    pub project_id: String,
+    pub name: String,
+    pub mime_type: Option<String>,
+    pub size_bytes: i64,
+    pub data_base64: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectBinaryFileDownload {
+    pub name: String,
+    pub mime_type: Option<String>,
+    pub size_bytes: i64,
+    pub sha256: String,
+    pub data_base64: String,
 }
 
 pub struct ProjectRepository<'a> {
@@ -270,6 +298,96 @@ impl<'a> ProjectRepository<'a> {
         self.find_file(&id)
     }
 
+    /// Stores original binary bytes with the portable SQLite profile.
+    /// No filesystem paths are built from names; database snapshots and
+    /// cascading deletes therefore include the exact payload automatically.
+    pub fn add_binary_file(
+        &self,
+        input: &ProjectBinaryFileInput,
+    ) -> Result<ProjectFile, AppError> {
+        if input.size_bytes < 0 || input.size_bytes as usize > MAX_PROJECT_BINARY_BYTES {
+            return Err(AppError::internal("binary project attachment exceeds 1.5 MB limit"));
+        }
+        // Reject overlong payloads *before* decoding to bound IPC allocations.
+        const MAX_ENCODED_BYTES: usize = MAX_PROJECT_BINARY_BYTES.div_ceil(3) * 4;
+        if input.data_base64.len() > MAX_ENCODED_BYTES {
+            return Err(AppError::internal("encoded project attachment exceeds size limit"));
+        }
+        let bytes = STANDARD
+            .decode(&input.data_base64)
+            .map_err(|_| AppError::internal("invalid project attachment base64"))?;
+        if bytes.len() != input.size_bytes as usize {
+            return Err(AppError::internal("binary attachment length does not match file size"));
+        }
+        let name = sanitize_file_name(&input.name)?;
+        if name == "." || name == ".." || name.contains('/') || name.contains('\\') {
+            return Err(AppError::internal("binary attachment name cannot contain path separators"));
+        }
+        let mime_type = sanitize_mime_type(input.mime_type.as_deref())?;
+        let digest = format!("{:x}", Sha256::digest(&bytes));
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let transaction = self.database.connection().unchecked_transaction()?;
+        transaction.execute(
+            "INSERT INTO project_files
+             (id, project_id, name, size_bytes, mime_type, content_text, status, error,
+              added_at, content_blob, content_sha256)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, 'attached', NULL, ?6, ?7, ?8)",
+            params![
+                id,
+                input.project_id,
+                name,
+                input.size_bytes,
+                mime_type.as_deref(),
+                now,
+                bytes,
+                digest
+            ],
+        )?;
+        transaction.execute(
+            "UPDATE projects SET updated_at = ?1 WHERE id = ?2",
+            params![now, input.project_id],
+        )?;
+        transaction.commit()?;
+        self.find_file(&id)
+    }
+
+    /// Returns bytes only for a file owned by this project. Verify every
+    /// read against the persisted SHA-256 to detect corruption or mismatch.
+    pub fn read_binary_file(
+        &self,
+        project_id: &str,
+        file_id: &str,
+    ) -> Result<ProjectBinaryFileDownload, AppError> {
+        let record: Option<(String, Option<String>, i64, Vec<u8>, String)> = self
+            .database
+            .connection()
+            .query_row(
+                "SELECT name, mime_type, size_bytes, content_blob, content_sha256
+                 FROM project_files
+                 WHERE id = ?1 AND project_id = ?2 AND status = 'attached'",
+                params![file_id, project_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .optional()?;
+        let (name, mime_type, size_bytes, bytes, expected) =
+            record.ok_or_else(|| AppError::internal("project attachment not found"))?;
+        if size_bytes < 0
+            || size_bytes as usize > MAX_PROJECT_BINARY_BYTES
+            || bytes.len() != size_bytes as usize
+            || format!("{:x}", Sha256::digest(&bytes)) != expected
+        {
+            return Err(AppError::internal("project attachment failed integrity verification"));
+        }
+        Ok(ProjectBinaryFileDownload {
+            name,
+            mime_type,
+            size_bytes,
+            sha256: expected,
+            data_base64: STANDARD.encode(&bytes),
+        })
+    }
+
     pub fn delete_file(&self, project_id: &str, file_id: &str) -> Result<(), AppError> {
         self.database.connection().execute(
             "DELETE FROM project_files WHERE project_id = ?1 AND id = ?2",
@@ -334,7 +452,7 @@ impl<'a> ProjectRepository<'a> {
 
     fn list_files(&self, project_id: &str) -> Result<Vec<ProjectFile>, AppError> {
         let mut statement = self.database.connection().prepare(
-            "SELECT id, project_id, name, size_bytes, mime_type, content_text, status, error, added_at
+            "SELECT id, project_id, name, size_bytes, mime_type, content_text, status, error, added_at, content_sha256
              FROM project_files
              WHERE project_id = ?1
              ORDER BY added_at DESC",
@@ -345,7 +463,7 @@ impl<'a> ProjectRepository<'a> {
 
     fn find_file(&self, id: &str) -> Result<ProjectFile, AppError> {
         self.database.connection().query_row(
-            "SELECT id, project_id, name, size_bytes, mime_type, content_text, status, error, added_at FROM project_files WHERE id = ?1",
+            "SELECT id, project_id, name, size_bytes, mime_type, content_text, status, error, added_at, content_sha256 FROM project_files WHERE id = ?1",
             params![id],
             map_project_file,
         ).map_err(AppError::from)
@@ -567,6 +685,7 @@ fn map_project_file(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectFile> {
         status: row.get(6)?,
         error: row.get(7)?,
         added_at: row.get(8)?,
+        sha256: row.get(9)?,
     })
 }
 
@@ -585,6 +704,142 @@ mod tests {
                 params![id, title],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn binary_attachment_is_verified_project_scoped_and_deleted_with_its_project() {
+        let database = Database::in_memory().unwrap();
+        let repo = ProjectRepository::new(&database);
+        let first = repo.create_project("Archives").unwrap();
+        let second = repo.create_project("Other").unwrap();
+        let original = vec![0, 255, 0x89, 0x50, 0x4e, 0x47, 0, 0, 19];
+        let record = repo
+            .add_binary_file(&ProjectBinaryFileInput {
+                project_id: first.id.clone(),
+                name: "diagram.png".to_string(),
+                size_bytes: original.len() as i64,
+                mime_type: Some("image/png".to_string()),
+                data_base64: STANDARD.encode(&original),
+            })
+            .unwrap();
+        assert_eq!(record.status, "attached");
+        assert_eq!(record.content_text, None);
+        let expected_sha = format!("{:x}", Sha256::digest(&original));
+        assert_eq!(record.sha256.as_deref(), Some(expected_sha.as_str()));
+        let listed = repo.list_projects(None, 50).unwrap();
+        let json = serde_json::to_string(&listed).unwrap();
+        assert!(!json.contains("diagram.png"));
+        assert!(!json.contains("iVBOR"));
+        let selected = repo.find_project(&first.id).unwrap();
+        assert_eq!(selected.files.len(), 1);
+        assert_eq!(selected.files[0].status, "attached");
+        let manifest = serde_json::to_string(&selected).unwrap();
+        assert!(!manifest.contains("dataBase64"));
+        assert!(!manifest.contains("contentBlob"));
+
+        let copy = repo.read_binary_file(&first.id, &record.id).unwrap();
+        assert_eq!(STANDARD.decode(copy.data_base64).unwrap(), original);
+        assert_eq!(copy.name, "diagram.png");
+        assert_eq!(copy.sha256, record.sha256.unwrap());
+        assert!(repo.read_binary_file(&second.id, &record.id).is_err());
+
+        // A corrupted payload is never returned to users as a verified copy.
+        database
+            .connection()
+            .execute(
+                "UPDATE project_files SET content_blob = ?1 WHERE id = ?2",
+                params![vec![1u8; 9], record.id],
+            )
+            .unwrap();
+        assert!(repo
+            .read_binary_file(&first.id, &record.id)
+            .unwrap_err()
+            .to_string()
+            .contains("integrity"));
+        repo.delete_project(&first.id).unwrap();
+        let leftovers: i64 = database
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM project_files WHERE id = ?1",
+                params![record.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(leftovers, 0, "cascading project deletion must remove binary blobs");
+        assert!(repo.read_binary_file(&first.id, &record.id).is_err());
+    }
+
+    #[test]
+    fn binary_upload_rejects_oversized_invalid_and_path_like_inputs() {
+        let database = Database::in_memory().unwrap();
+        let repo = ProjectRepository::new(&database);
+        let project = repo.create_project("Checks").unwrap();
+        let mut input = ProjectBinaryFileInput {
+            project_id: project.id.clone(),
+            name: "../outside.png".to_string(),
+            size_bytes: 3,
+            mime_type: Some("image/png".to_string()),
+            data_base64: STANDARD.encode([1u8, 2, 3]),
+        };
+        assert!(repo.add_binary_file(&input).is_err());
+        input.name = "valid.png".to_string();
+        input.size_bytes = 4;
+        assert!(repo.add_binary_file(&input).is_err(), "claimed size mismatch");
+        input.size_bytes = 3;
+        input.data_base64 = "%%%invalid%%%".to_string();
+        assert!(repo.add_binary_file(&input).is_err(), "invalid base64");
+        input.size_bytes = MAX_PROJECT_BINARY_BYTES as i64 + 1;
+        input.data_base64 = "AA==".to_string();
+        assert!(repo.add_binary_file(&input).is_err(), "oversized declared length");
+        input.size_bytes = 3;
+        input.data_base64 = "A".repeat(MAX_PROJECT_BINARY_BYTES.div_ceil(3) * 4 + 1);
+        assert!(repo.add_binary_file(&input).is_err(), "oversized encoded payload");
+        assert!(repo.find_project(&project.id).unwrap().files.is_empty());
+    }
+
+    #[test]
+    fn attached_bytes_survive_portable_move_and_database_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_root = crate::portable_root::PortableRootManager::from_root(
+            dir.path().join("old-portable-root"),
+        );
+        old_root.ensure_directories().unwrap();
+        let database = Database::open(old_root.database_path()).unwrap();
+        let repo = ProjectRepository::new(&database);
+        let project = repo.create_project("Portable").unwrap();
+        let original: Vec<u8> = (0..=255).cycle().take(64_000).collect();
+        let record = repo
+            .add_binary_file(&ProjectBinaryFileInput {
+                project_id: project.id.clone(),
+                name: "record.bin".to_string(),
+                size_bytes: original.len() as i64,
+                mime_type: Some("application/octet-stream".to_string()),
+                data_base64: STANDARD.encode(&original),
+            })
+            .unwrap();
+        // Only the database connection needs explicit closure before moving
+        // the portable root; the repository is a lightweight borrowed view.
+        drop(database);
+        let new_root = crate::portable_root::PortableRootManager::from_root(
+            dir.path().join("relocated-root"),
+        );
+        std::fs::rename(old_root.root(), new_root.root()).unwrap();
+        let relocated_database = Database::open(new_root.database_path()).unwrap();
+        let copied = ProjectRepository::new(&relocated_database)
+            .read_binary_file(&project.id, &record.id)
+            .unwrap();
+        assert_eq!(STANDARD.decode(copied.data_base64).unwrap(), original);
+
+        let backup = crate::maintenance::backup_database(&new_root, &relocated_database).unwrap();
+        let snapshot = new_root
+            .resolve_relative("backups")
+            .unwrap()
+            .join(backup.name);
+        let recovered = Database::open(snapshot).unwrap();
+        let restored_copy = ProjectRepository::new(&recovered)
+            .read_binary_file(&project.id, &record.id)
+            .unwrap();
+        assert_eq!(STANDARD.decode(restored_copy.data_base64).unwrap(), original);
     }
 
     #[test]

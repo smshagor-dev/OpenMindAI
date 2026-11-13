@@ -25,6 +25,7 @@ import { formatBytes, formatError, formatTime } from "../lib/format";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ProjectLocalWorkspace } from "./ProjectLocalWorkspace";
 import { OpenFolderProjectButton } from "./OpenFolderProjectButton";
+import { attachProjectBinaryFile, saveProjectBinaryCopy } from "../lib/projectBinaryStorage";
 import { useProjectCatalog } from "../lib/useProjectCatalog";
 
 const MAX_PROJECT_INSTRUCTIONS_CHARS = 20_000;
@@ -165,16 +166,20 @@ export function ProjectsWorkspace(props: {
     try {
       for (const file of Array.from(files)) {
         try {
-          const ingestion = await ingestProjectFile(file);
-          await api.addProjectFile(
-            activeProject.id,
-            file.name,
-            file.size,
-            file.type || null,
-            ingestion.contentText,
-            ingestion.status,
-            ingestion.error,
-          );
+          if (file.size <= MAX_PROJECT_FILE_BYTES && !isTextFile(file)) {
+            await attachProjectBinaryFile(activeProject.id, file);
+          } else {
+            const ingestion = await ingestProjectFile(file);
+            await api.addProjectFile(
+              activeProject.id,
+              file.name,
+              file.size,
+              file.type || null,
+              ingestion.contentText,
+              ingestion.status,
+              ingestion.error,
+            );
+          }
         } catch (caught) {
           failures.push(`${file.name}: ${formatError(caught)}`);
         }
@@ -193,6 +198,11 @@ export function ProjectsWorkspace(props: {
       setAddingFiles(false);
       setDraggingFiles(false);
     }
+  };
+
+  const saveBinaryCopy = async (file: ProjectFile) => {
+    if (!activeProject || file.status !== "attached") return;
+    await runAction(`save-file-${file.id}`, () => saveProjectBinaryCopy(activeProject.id, file.id));
   };
 
   const deleteFile = async () => {
@@ -643,7 +653,9 @@ export function ProjectsWorkspace(props: {
                         <p>
                           Ready text and code files are stored for question-relevant selection.
                           A maximum of eight files contributes excerpts per chat request; omitted
-                          files are disclosed in model context. Other file types are metadata-only.
+                          files are disclosed in model context. Binary files up to 1.5 MB are
+                          stored privately and can be saved as copies, but are not AI-readable.
+                          Legacy metadata-only entries need re-uploading.
                         </p>
                       </div>
                     </div>
@@ -692,6 +704,11 @@ export function ProjectsWorkspace(props: {
                                 {formatBytes(file.sizeBytes)}
                                 {file.mimeType ? ` · ${file.mimeType}` : ""}
                               </small>
+                              {file.sha256 ? (
+                                <small title={`SHA-256: ${file.sha256}`}>
+                                  Verified storage · SHA-256 {file.sha256.slice(0, 12)}…
+                                </small>
+                              ) : null}
                               {file.error ? (
                                 <small className="project-file-error">{file.error}</small>
                               ) : null}
@@ -701,6 +718,17 @@ export function ProjectsWorkspace(props: {
                             >
                               {formatFileStatus(file.status)}
                             </span>
+                            {file.status === "attached" ? (
+                              <button
+                                type="button"
+                                className="ghost-button"
+                                aria-label={`Save copy of ${file.name}`}
+                                disabled={busy}
+                                onClick={() => void saveBinaryCopy(file)}
+                              >
+                                {busyAction === `save-file-${file.id}` ? "Saving…" : "Save copy"}
+                              </button>
+                            ) : null}
                             <button
                               type="button"
                               title="Remove file"
@@ -972,7 +1000,7 @@ async function ingestProjectFile(file: File): Promise<FileIngestion> {
     return {
       contentText: null,
       status: "tracked",
-      error: "Tracked locally. Text extraction is not available for this file type yet.",
+      error: "Metadata only: original file bytes were not saved. Re-upload to attach them.",
     };
   }
 
@@ -1003,7 +1031,8 @@ function isTextFile(file: File) {
 
 function formatFileStatus(status: ProjectFile["status"]) {
   if (status === "ready") return "Ready";
+  if (status === "attached") return "Attached binary";
   if (status === "skipped") return "Skipped";
   if (status === "failed") return "Failed";
-  return "Tracked";
+  return "Metadata only";
 }

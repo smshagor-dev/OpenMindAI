@@ -58,8 +58,8 @@ use portable_root::{
     SetupState, RECOMMENDED_INITIAL_STORAGE_BYTES,
 };
 use projects::{
-    project_context_message, project_context_message_for_prompt, Project, ProjectFile,
-    ProjectFileInput, ProjectRepository,
+    project_context_message, project_context_message_for_prompt, Project, ProjectBinaryFileDownload,
+    ProjectBinaryFileInput, ProjectFile, ProjectFileInput, ProjectRepository,
 };
 use reqwest::Client;
 use runtime::{allocate_local_port, LlamaRuntimeManager, LlamaRuntimeStatus, RuntimeInventory};
@@ -528,6 +528,33 @@ fn add_project_file(
     let project = repo.find_project(&input.project_id)?;
     sync_project_context_for_project(&db, &project)?;
     Ok(file)
+}
+
+/// Binary uploads are stored in the portable database; original file names
+/// never become operating-system paths.
+#[tauri::command]
+fn add_project_binary_file(
+    input: ProjectBinaryFileInput,
+    state: State<AppState>,
+) -> Result<ProjectFile, app_error::AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    ProjectRepository::new(&db).add_binary_file(&input)
+}
+
+#[tauri::command]
+fn read_project_binary_file(
+    project_id: String,
+    file_id: String,
+    state: State<AppState>,
+) -> Result<ProjectBinaryFileDownload, app_error::AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    ProjectRepository::new(&db).read_binary_file(&project_id, &file_id)
 }
 
 #[tauri::command]
@@ -2589,6 +2616,8 @@ pub fn run() {
             link_project_conversation,
             unlink_project_conversation,
             add_project_file,
+            add_project_binary_file,
+            read_project_binary_file,
             delete_project_file,
             create_text_artifact,
             create_document_artifact,

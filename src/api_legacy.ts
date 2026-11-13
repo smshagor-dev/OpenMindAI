@@ -35,6 +35,7 @@ import type {
   PortableRootInfo,
   Project,
   ProjectFile,
+  ProjectBinaryFileDownload,
   ProjectListPage,
   RuntimeInventory,
   StorageSummary,
@@ -256,6 +257,17 @@ export const api = {
         error,
       },
     }),
+  addProjectBinaryFile: (
+    projectId: string,
+    name: string,
+    sizeBytes: number,
+    mimeType: string | null,
+    dataBase64: string,
+  ) => call<ProjectFile>("add_project_binary_file", {
+    input: { projectId, name, sizeBytes, mimeType, dataBase64 },
+  }),
+  readProjectBinaryFile: (projectId: string, fileId: string) =>
+    call<ProjectBinaryFileDownload>("read_project_binary_file", { projectId, fileId }),
   deleteProjectFile: (projectId: string, fileId: string) =>
     call<void>("delete_project_file", { projectId, fileId }),
   hardware: () => call<HardwareProfile>("detect_hardware"),
@@ -471,6 +483,8 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
     return Promise.resolve({ projects: [], nextCursor: null } as T);
   if (command === "get_project")
     return Promise.reject(new Error("Project details require the desktop app."));
+  if (command === "add_project_binary_file" || command === "read_project_binary_file")
+    return Promise.reject(new Error("Binary project attachments require the desktop app."));
   if (command === "create_project" || command === "update_project") {
     return Promise.resolve({
       id: (args?.projectId as string) || crypto.randomUUID(),

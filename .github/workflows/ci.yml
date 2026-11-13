@@ -64,6 +64,9 @@ jobs:
       - name: Project catalog paging and stale detail regression
         run: npm run test:project-catalog
 
+      - name: Project binary persistence and recovery regression
+        run: npm run test:project-binary
+
       - name: PDF ingestion fallback regression
         run: npm run test:pdf
       - name: Regeneration history preservation
