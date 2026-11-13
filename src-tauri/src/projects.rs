@@ -96,6 +96,8 @@ pub struct ProjectBinaryFileDownload {
     pub data_base64: String,
 }
 
+type BinaryProjectFileRow = (String, Option<String>, i64, Vec<u8>, String);
+
 pub struct ProjectRepository<'a> {
     database: &'a Database,
 }
@@ -359,7 +361,7 @@ impl<'a> ProjectRepository<'a> {
         project_id: &str,
         file_id: &str,
     ) -> Result<ProjectBinaryFileDownload, AppError> {
-        let record: Option<(String, Option<String>, i64, Vec<u8>, String)> = self
+        let record: Option<BinaryProjectFileRow> = self
             .database
             .connection()
             .query_row(
