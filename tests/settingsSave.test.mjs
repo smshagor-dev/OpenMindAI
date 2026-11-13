@@ -39,6 +39,20 @@ test("production settings/profile saves retain drafts, show failures and allow r
       const save = value => { requests.push(value); return pending.promise; };
       const props = { initialSection: section, preferences: { language: "English", compactSidebar: false, confirmBeforeDelete: true, networkProxyMode: "direct", networkProxyUrl: "" }, userProfile: { fullName: "Fixture User", preferredName: "", email: "", avatarDataUrl: "", about: "", occupation: "", responseStyle: "", customInstructions: "" }, root: null, hardware: null, storage: null, models: [], runtime: null, runtimeStatus: null, performance: null, updatePreferences: save, updateUserProfile: save, refresh: () => {}, startRuntime: () => {}, stopRuntime: () => {}, runtimeAction: null, runtimeInstallStatus: null, runtimeInstalling: false, runtimeInstallError: null, installRuntime: () => {}, cancelRuntimeInstall: () => {} };
       await act(async () => root.render(React.createElement(SettingsDialog, props)));
+      if (section === "network") {
+        props.preferences.networkProxyMode = "manual";
+        props.preferences.networkProxyUrl = "http://proxy.example:3128/";
+        props.preferences.networkProxyCredentialId = "synthetic-reference";
+        await act(async () => root.unmount());
+        root = createRoot(dom.window.document.getElementById("root"));
+        await act(async () => root.render(React.createElement(SettingsDialog, props)));
+        const proxyInput = [...dom.window.document.querySelectorAll("label")].find(label => label.textContent.includes("Proxy address")).querySelector("input");
+        assert.equal(proxyInput.type, "password", "entered proxy userinfo must be masked");
+        assert.equal(proxyInput.value, "http://proxy.example:3128/");
+        const unlink = [...dom.window.document.querySelectorAll("button")].find(button => button.textContent.includes("Stop using saved proxy"));
+        assert.ok(unlink);
+        await act(async () => unlink.click());
+      }
       if (section === "privacy") {
         assert.match(dom.window.document.body.textContent, /Not available in this release/);
         assert.match(dom.window.document.body.textContent, /previous switch had no runtime/);
@@ -58,6 +72,7 @@ test("production settings/profile saves retain drafts, show failures and allow r
         assert(saveButton().disabled, "editing must not permit a duplicate pending save");
       }
       await clickSave(); assert.equal(requests.length, 1);
+      if (section === "network") assert.equal(requests[0].networkProxyCredentialId, null);
       await act(async () => pending.reject(new Error("fixture disk unavailable")));
       assert(!saveButton().disabled);
       assert.match(dom.window.document.querySelector('[role="alert"]').textContent, /fixture disk unavailable/);

@@ -641,8 +641,7 @@ fn normalize_proxy_url(value: &str) -> Result<Url, String> {
     } else {
         format!("http://{value}")
     };
-    let url = Url::parse(&with_scheme)
-        .map_err(|error| format!("Proxy address \"{value}\" is not valid: {error}"))?;
+    let url = Url::parse(&with_scheme).map_err(|_| "Invalid proxy address".to_string())?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err(format!(
             "Proxy scheme \"{}\" is not supported; use an http:// or https:// proxy",
@@ -650,7 +649,7 @@ fn normalize_proxy_url(value: &str) -> Result<Url, String> {
         ));
     }
     if url.host_str().is_none_or(str::is_empty) {
-        return Err(format!("Proxy address \"{value}\" has no host"));
+        return Err("Proxy address has no host".to_string());
     }
     Ok(url)
 }
