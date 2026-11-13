@@ -350,8 +350,50 @@ export function userMessageDisplay(content: string): UserMessageDisplay {
   };
 }
 
+// Only explicit output commands outrank attachment analysis and topic keywords.
+// Keep explanatory/search prose out of this fast path.
+function explicitMediaMode(text: string): ChatMode | null {
+  const command = text.replace(/^(?:please\s+|(?:can|could|would) you (?:please )?)/, "");
+  const action = /^(create|make|generate|design|render|draw|paint|illustrate|sketch|animate)\b\s*(.*)/.exec(command);
+  if (action) {
+    const object = /\b(image|photo|photograph|picture|artwork|graphic|poster|logo|thumbnail|illustration|wallpaper|banner|icon|video|animation|voiceover|voice|narration|speech|tts|music|sound|sfx|soundscape|ambience|pdf|document|report|proposal|resume|cv|letter|contract|outline|function|script|code|tutorial|guide|explanation|comparison|summary)\b/.exec(action[2]);
+    if (object && action[2].slice(0, object.index).trim().split(/\s+/).length <= 7) {
+      const noun = object[1];
+      if (/^(video|animation)$/.test(noun)) return "video";
+      if (/^(voiceover|voice|narration|speech|tts)$/.test(noun)) return "voice";
+      if (/^(music|sound|sfx|soundscape|ambience)$/.test(noun)) return "sound";
+      if (/^(image|photo|photograph|picture|artwork|graphic|poster|logo|thumbnail|illustration|wallpaper|banner|icon)$/.test(noun) && isImageGenerationIntent(command)) return "image";
+      return null;
+    }
+    if (/^(draw|paint|illustrate|sketch)$/.test(action[1]) && isImageGenerationIntent(command)) return "image";
+  }
+  if (/^(?:пожалуйста[, ]+)?(?:создай|создайте|сгенерируй|сгенерируйте|сделай|сделайте|нарисуй|нарисуйте)\s+/u.test(command)) {
+    const object = /(?:изображени[ея]|картинк[уаие]|фото|рисунок|логотип|постер|баннер|видео|анимаци[юя]|озвучк[уа]|голос|речь|музык[уа]|звук|отчёт|отчет|документ|код|функци[юя])/u.exec(command);
+    if (object) {
+      if (/^(видео|анимаци)/u.test(object[0])) return "video";
+      if (/^(озвучк|голос|речь)/u.test(object[0])) return "voice";
+      if (/^(музык|звук)/u.test(object[0])) return "sound";
+      if (/^(изображени|картинк|фото|рисунок|логотип|постер|баннер)/u.test(object[0]) && isImageGenerationIntent(command)) return "image";
+      return null;
+    }
+  }
+  if (!/(কীভাবে|কিভাবে|ব্যাখ্যা|সম্পর্কে)/u.test(command) &&
+      /(?:তৈরি\s*(?:করো|করুন|করে\s*দাও)|বানাও|বানান|জেনারেট\s*(?:করো|করুন)|আঁকো|আঁকুন)/u.test(command)) {
+    const object = Array.from(command.matchAll(/(?:ছবি|ইমেজ|ফটো|চিত্র|পোস্টার|লোগো|ভিডিও|অ্যানিমেশন|ভয়েসওভার|ভয়েসওভার|ভয়েস|ভয়েস|কণ্ঠ|বর্ণনা|মিউজিক|সঙ্গীত|সংগীত|সাউন্ড|শব্দ|রিপোর্ট|ডকুমেন্ট|কোড|ফাংশন)/gu)).find((match) => !/^(?:র|ের)(?:\s|$)/u.test(command.slice((match.index ?? 0) + match[0].length)));
+    if (object) {
+      if (/^(ভিডিও|অ্যানিমেশন)/u.test(object[0])) return "video";
+      if (/^(ভয়েস|ভয়েস|কণ্ঠ|বর্ণনা)/u.test(object[0])) return "voice";
+      if (/^(মিউজিক|সঙ্গীত|সংগীত|সাউন্ড|শব্দ)/u.test(object[0])) return "sound";
+      if (/^(ছবি|ইমেজ|ফটো|চিত্র|পোস্টার|লোগো)/u.test(object[0]) && isImageGenerationIntent(command)) return "image";
+    }
+  }
+  return null;
+}
+
 export function inferChatMode(prompt: string, attachments: AttachmentDraft[]): ChatMode {
-  const text = prompt.toLowerCase().normalize("NFKC");
+  const text = prompt.trim().toLowerCase().normalize("NFKC");
+  const explicitOutput = explicitMediaMode(text);
+  if (explicitOutput) return explicitOutput;
   if (attachments.some((attachment) => attachment.mediaItems.length > 0)) return "vision";
   if (attachments.some((attachment) => attachment.kind === "pdf")) return "pdf";
   // Prioritize explicit research intent over generic words such as "search".

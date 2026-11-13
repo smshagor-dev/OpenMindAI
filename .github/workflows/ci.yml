@@ -40,6 +40,9 @@ jobs:
       - name: Model catalog
         run: npm run check:models
 
+      - name: Explicit media command routing
+        run: npm run test:chat-routing
+
       - name: Image generation routing
         run: npm run test:image
 

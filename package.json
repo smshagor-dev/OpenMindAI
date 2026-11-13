@@ -13,6 +13,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "lint": "eslint .",
+    "test:chat-routing": "node --test tests/chatModeRouting.test.mjs",
     "test:image": "node --experimental-strip-types --test tests/imageGeneration.test.mjs",
     "test:pdf": "node --test tests/pdfIngestion.test.mjs tests/pdfWorkBudget.test.mjs",
     "test:regeneration": "node --test tests/regeneration.test.mjs",
