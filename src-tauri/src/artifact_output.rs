@@ -1,3 +1,6 @@
+#[path = "pdf_integrity.rs"]
+mod pdf_integrity;
+
 use crate::app_error::AppError;
 use cap_std::{
     ambient_authority,
@@ -96,6 +99,9 @@ impl StagedOutput {
             return Err(AppError::ArtifactGenerationFailed(
                 "Output signature does not match the requested artifact type".into(),
             ));
+        }
+        if kind == "pdf" {
+            pdf_integrity::validate(&mut source)?;
         }
         self.publish(source)
     }
@@ -224,12 +230,10 @@ mod tests {
         assert!(!output.path.starts_with(root.path()));
         assert!(!output.path.starts_with(outside.path()));
         let private_path = output.path.clone();
-        fs::write(&private_path, b"%PDF-fixture").unwrap();
+        let pdf = pdf_integrity::fixture_pdf();
+        fs::write(&private_path, &pdf).unwrap();
         output.commit_for("pdf").unwrap();
-        assert_eq!(
-            fs::read(held.join(id).join("report.pdf")).unwrap(),
-            b"%PDF-fixture"
-        );
+        assert_eq!(fs::read(held.join(id).join("report.pdf")).unwrap(), pdf);
         drop(output);
         assert!(!private_path.exists());
         assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
@@ -289,8 +293,9 @@ mod tests {
     #[test]
     fn every_rendered_kind_keeps_its_extension_and_publishes_matching_bytes() {
         let root = tempfile::tempdir().unwrap();
+        let pdf = pdf_integrity::fixture_pdf();
         for (kind, name, bytes) in [
-            ("pdf", "doc.pdf", &b"%PDF-fixture"[..]),
+            ("pdf", "doc.pdf", pdf.as_slice()),
             ("docx", "doc.docx", &b"PK\x03\x04fixture"[..]),
             ("image", "image.png", &b"\x89PNG\r\n\x1a\nfixture"[..]),
             ("audio", "audio.wav", &b"RIFF0000WAVEfixture"[..]),
@@ -308,6 +313,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn corrupt_pdf_with_correct_magic_is_not_published_and_staging_is_cleaned() {
+        let root = tempfile::tempdir().unwrap();
+        let (dir, id) = reserve_directory(root.path(), Path::new("generated")).unwrap();
+        let output = StagedOutput::from_reserved(dir, "corrupt.pdf").unwrap();
+        let private = output.path.clone();
+        fs::write(&private, b"%PDF-fake\n%%EOF").unwrap();
+        assert!(output.commit_for("pdf").is_err());
+        assert!(!root
+            .path()
+            .join("generated")
+            .join(id)
+            .join("corrupt.pdf")
+            .exists());
+        drop(output);
+        assert!(!private.exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn final_and_staging_links_are_rejected_without_touching_their_targets() {
@@ -320,7 +343,7 @@ mod tests {
         std::os::unix::fs::symlink(&sentinel, &output.path).unwrap();
         assert!(output.commit_for("pdf").is_err());
         fs::remove_file(&output.path).unwrap();
-        fs::write(&output.path, b"%PDF-new").unwrap();
+        fs::write(&output.path, pdf_integrity::fixture_pdf()).unwrap();
         std::os::unix::fs::symlink(
             &sentinel,
             root.path().join("generated").join(&id).join("doc.pdf"),

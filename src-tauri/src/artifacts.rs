@@ -811,9 +811,15 @@ mod tests {
         assert!(!output.path.starts_with(root.root()));
         let destination = root.resolve_relative(&relative).unwrap();
         assert!(!destination.exists());
-        fs::write(&output.path, b"%PDF-fixture").unwrap();
-        assert_eq!(output.commit_for("pdf").unwrap(), 12);
-        assert_eq!(fs::read(&destination).unwrap(), b"%PDF-fixture");
+        crate::document_generator::generate_pdf(
+            "# Report\n\nPublished bytes",
+            "Report",
+            &output.path,
+        )
+        .unwrap();
+        let bytes = fs::read(&output.path).unwrap();
+        assert_eq!(output.commit_for("pdf").unwrap(), bytes.len() as i64);
+        assert_eq!(fs::read(&destination).unwrap(), bytes);
         let private = output.path.clone();
         drop(output);
         assert!(!private.exists());

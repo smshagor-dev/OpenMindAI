@@ -559,7 +559,9 @@ fn docx_paragraph(xml: &mut String, text: &str, size: u32, bold: bool, mono: boo
     if mono {
         xml.push_str("<w:rFonts w:ascii=\"Consolas\" w:hAnsi=\"Consolas\"/>");
     }
-    xml.push_str(&format!("<w:sz w:val=\"{size}\"/></w:rPr><w:t xml:space=\"preserve\">"));
+    xml.push_str(&format!(
+        "<w:sz w:val=\"{size}\"/></w:rPr><w:t xml:space=\"preserve\">"
+    ));
     xml.push_str(&docx_xml_text(text));
     xml.push_str("</w:t></w:r></w:p>");
 }
@@ -568,7 +570,13 @@ fn docx_table_row(xml: &mut String, cells: &[String], columns: usize, header: bo
     xml.push_str("<w:tr>");
     for index in 0..columns {
         xml.push_str("<w:tc><w:tcPr><w:tcW w:w=\"0\" w:type=\"auto\"/></w:tcPr>");
-        docx_paragraph(xml, cells.get(index).map_or("", String::as_str), 20, header, false);
+        docx_paragraph(
+            xml,
+            cells.get(index).map_or("", String::as_str),
+            20,
+            header,
+            false,
+        );
         xml.push_str("</w:tc>");
     }
     xml.push_str("</w:tr>");
@@ -594,7 +602,13 @@ fn docx_block(xml: &mut String, block: Block) {
         }
         Block::OrderedList { start, items } => {
             for (index, item) in items.into_iter().enumerate() {
-                docx_paragraph(xml, &format!("{}.  {item}", start + index as u64), 22, false, false);
+                docx_paragraph(
+                    xml,
+                    &format!("{}.  {item}", start + index as u64),
+                    22,
+                    false,
+                    false,
+                );
             }
         }
         Block::Code { code } => {
@@ -622,9 +636,7 @@ fn docx_block(xml: &mut String, block: Block) {
 }
 
 fn word_document_xml(blocks: Vec<Block>, title: &str) -> String {
-    let mut xml = String::from(
-        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
-    );
+    let mut xml = String::from(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#);
     xml.push_str(r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>"#);
     docx_paragraph(&mut xml, title, 36, true, false);
     docx_paragraph(&mut xml, "", 22, false, false);
@@ -719,6 +731,29 @@ mod tests {
     }
 
     #[test]
+    fn multi_page_unicode_export_passes_structural_publication_gate() {
+        let root = tempfile::tempdir().unwrap();
+        let (directory, id) = crate::artifact_output::reserve_directory(
+            root.path(),
+            std::path::Path::new("generated"),
+        )
+        .unwrap();
+        let output =
+            crate::artifact_output::StagedOutput::from_reserved(directory, "report.pdf").unwrap();
+        let body = (0..12)
+            .map(|index| format!("# Section {index}\n\nEnglish বাংলা Русский\n\n{SAMPLE_MARKDOWN}\n"))
+            .collect::<String>();
+        let meta = generate_pdf(&body, "Multilingual report", &output.path).unwrap();
+        assert!(meta.page_count > 1);
+        let expected = std::fs::read(&output.path).unwrap();
+        assert_eq!(output.commit_for("pdf").unwrap(), expected.len() as i64);
+        assert_eq!(
+            std::fs::read(root.path().join("generated").join(id).join("report.pdf")).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
     fn generates_real_docx_document() {
         let temp = tempfile::tempdir().unwrap();
         let dest = temp.path().join("report.docx");
@@ -736,10 +771,8 @@ mod tests {
             assert!(archive.by_name(path).is_ok(), "{path} must exist");
         }
         let mut xml = String::new();
-        std::io::Read::read_to_string(
-            &mut archive.by_name("word/document.xml").unwrap(),
-            &mut xml,
-        ).unwrap();
+        std::io::Read::read_to_string(&mut archive.by_name("word/document.xml").unwrap(), &mut xml)
+            .unwrap();
         assert!(xml.contains("<w:tbl>"));
         assert!(xml.contains("Report Title"));
         assert!(xml.contains("fn main() {}"));
@@ -755,10 +788,8 @@ mod tests {
         generate_docx("**Bangla বাংলা & quotes**", "A <B> & \"C\"", &dest).unwrap();
         let mut zip = zip::ZipArchive::new(std::fs::File::open(dest).unwrap()).unwrap();
         let mut xml = String::new();
-        std::io::Read::read_to_string(
-            &mut zip.by_name("word/document.xml").unwrap(),
-            &mut xml,
-        ).unwrap();
+        std::io::Read::read_to_string(&mut zip.by_name("word/document.xml").unwrap(), &mut xml)
+            .unwrap();
         assert!(xml.contains("A &lt;B&gt; &amp; &quot;C&quot;"));
         assert!(xml.contains("Bangla বাংলা &amp; quotes"));
         assert!(!xml.contains("<unsafe>"));

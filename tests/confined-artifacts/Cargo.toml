@@ -12,3 +12,5 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3"
+
+lopdf = { version = "=0.44.0", default-features = false }
