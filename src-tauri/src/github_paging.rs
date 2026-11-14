@@ -88,6 +88,8 @@ mod tests {
                         Err(error) => panic!("{error}"),
                     }
                 };
+                // Accepted sockets may inherit O_NONBLOCK on macOS.
+                socket.set_nonblocking(false).unwrap();
                 socket
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
@@ -120,6 +122,26 @@ mod tests {
         );
         h
     }
+    #[test]
+    fn accepted_socket_waits_for_delayed_headers() {
+        let (url, worker) = fixture(vec![(200, "[]".into())]);
+        let address = url
+            .strip_prefix("http://")
+            .unwrap()
+            .split('/')
+            .next()
+            .unwrap();
+        let mut socket = std::net::TcpStream::connect(address).unwrap();
+        std::thread::sleep(Duration::from_millis(25));
+        socket
+            .write_all(b"GET /items HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        socket.read_to_string(&mut response).unwrap();
+        assert!(response.ends_with("[]"));
+        assert_eq!(worker.join().unwrap().len(), 1);
+    }
+
     #[tokio::test]
     async fn retrieves_later_pages_with_filters_auth_and_no_duplicate_ids() {
         let (url, worker) = fixture(vec![
