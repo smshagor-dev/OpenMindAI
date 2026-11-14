@@ -184,6 +184,22 @@ jobs:
       - run: cargo clippy --locked --manifest-path tests/oauth-callback/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --locked --manifest-path tests/oauth-callback/Cargo.toml
 
+  confined-backups:
+    name: Confined database backups (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --manifest-path tests/confined-backups/Cargo.toml -- --check
+      - run: cargo clippy --locked --manifest-path tests/confined-backups/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path tests/confined-backups/Cargo.toml
+
   lockfile:
     name: Cargo lockfile consistency
     runs-on: ubuntu-22.04

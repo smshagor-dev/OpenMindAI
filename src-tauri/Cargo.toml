@@ -23,6 +23,7 @@ cxx-build = "1.0"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+tempfile = "3"
 base64 = "0.22"
 cap-std = "=4.0.3"
 chrono = { version = "0.4", features = ["serde"] }
@@ -97,7 +98,6 @@ windows = { version = "0.61.3", features = [
 windows-registry = "0.5"
 
 [dev-dependencies]
-tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 
 [patch.crates-io]

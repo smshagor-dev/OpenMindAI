@@ -14,9 +14,20 @@ Implemented:
   pathname replacement after its capability was acquired. Relative internal links
   work; cap-std rejects absolute links even if their target is inside the root.
 
+Additional backup checkpoint (2026-11-14):
+
+- SQLite VACUUM now targets a private OS temporary directory. The selected root
+  is opened as a capability first; backups/ is opened beneath it and held through
+  exclusive pending-file creation, streaming copy, sync, rename and cleanup.
+  Stable external links and parent/root pathname replacement are exercised by
+  the actual writer. Failed streaming copies clean through the same held handle.
+- Existing frozen-time/concurrent/collision backup cases and committed WAL data
+  are covered. Ten focused Linux tests and strict focused Clippy passed locally;
+  native Windows/macOS tests are pending. See CONFINED_DATABASE_BACKUPS.md.
+
 Not complete; do not close #394:
 
-- PDF/DOCX exports, external media renderers, SQLite VACUUM backup and other
+- PDF/DOCX exports, external media renderers and other
   path-based writers still need capability-safe staging/publication. Their path
   resolution now rejects stable external links, but it is not a TOCTOU defense.
 - The configured root/ancestor identity must remain trusted until its capability
