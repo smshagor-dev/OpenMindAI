@@ -132,6 +132,7 @@ mod pdf_ocr;
 mod process_ownership;
 mod runtime_guards;
 mod speech_runtime;
+mod text_artifact_save;
 mod vision_batch;
 mod warm_start;
 

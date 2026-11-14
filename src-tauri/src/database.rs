@@ -107,9 +107,14 @@ impl Database {
         let connection = Connection::open(path)?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
-        register_artifact_cleanup(&connection, artifact_root)?;
+        register_artifact_cleanup(&connection, artifact_root.clone())?;
         let mut database = Self { connection };
         database.migrate()?;
+        if let Some(root) = artifact_root {
+            if let Err(error) = crate::text_artifact_save::recover(database.connection(), &root) {
+                tracing::warn!(%error,"text export recovery deferred; journal preserved");
+            }
+        }
         crate::connected_action_ledger::recover_interrupted(database.connection())?;
         database.recover_interrupted_chat_messages()?;
         database.recover_stale_image_artifacts()?;

@@ -355,6 +355,7 @@ impl PortableRootManager {
 
     /// Create a fresh text output through directory capabilities. Existing
     /// files are never truncated, and actual opens stay beneath the root.
+    #[cfg(test)]
     pub fn write_new_relative(
         &self,
         relative: impl AsRef<Path>,

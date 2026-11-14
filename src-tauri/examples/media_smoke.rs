@@ -32,6 +32,8 @@ mod net;
 mod portable_root;
 #[path = "../src/process_ownership.rs"]
 mod process_ownership;
+#[path = "../src/text_artifact_save.rs"]
+mod text_artifact_save;
 #[path = "../src/voice_runtime.rs"]
 mod voice_runtime;
 

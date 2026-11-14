@@ -601,21 +601,14 @@ fn create_text_artifact(
     let manager = ArtifactManager::new(&state.root);
     let (_path, filename_final, relative) =
         manager.resolve_destination(&kind, filename.as_deref(), &fallback_title)?;
-    state.root.write_new_relative(&relative, content.as_bytes())?;
-    let size = content.len() as i64;
-
-    let artifacts = ArtifactRepository::new(&db);
-    let artifact = artifacts.create(
-        &conversation_id,
-        message_id.as_deref(),
-        &filename_final,
-        &relative,
-        artifacts::mime_type_for(&kind),
-        &kind,
-        "generating",
+    let id = crate::text_artifact_save::save(
+        db.connection(), state.root.root(), crate::text_artifact_save::TextArtifactWrite {
+            conversation_id: &conversation_id, message_id: message_id.as_deref(),
+            name: &filename_final, relative: &relative,
+            mime_type: artifacts::mime_type_for(&kind), kind: &kind, content: content.as_bytes(),
+        },
     )?;
-    artifacts.set_ready(&artifact.id, size, None)?;
-    artifacts.find(&artifact.id)
+    ArtifactRepository::new(&db).find(&id)
 }
 
 #[tauri::command]
