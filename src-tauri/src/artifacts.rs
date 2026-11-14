@@ -89,6 +89,33 @@ impl<'a> ArtifactRepository<'a> {
         self.find(&id)
     }
 
+    /// Finalize under the application's database mutex. A deleted owner cannot
+    /// leave an unregistered document published by a detached worker.
+    pub fn finish_document(
+        &self,
+        id: &str,
+        output: &crate::artifact_output::StagedOutput,
+        result: Result<(Option<i64>, i64), AppError>,
+    ) -> Result<Artifact, AppError> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            self.database.connection(),
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        if let Err(error) = self.find(id) {
+            if matches!(&error, AppError::ArtifactNotFound(_)) {
+                output.discard_publication()?;
+            }
+            return Err(error);
+        }
+        match result {
+            Ok((pages, size)) => self.set_ready(id, size, pages)?,
+            Err(error) => self.set_failed(id, &error.to_string())?,
+        }
+        let updated = self.find(id)?;
+        tx.commit()?;
+        Ok(updated)
+    }
+
     pub fn set_ready(
         &self,
         id: &str,
@@ -432,6 +459,39 @@ fn sanitize_filename(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deleted_conversation_does_not_leave_a_late_document_output() {
+        let root = tempfile::tempdir().unwrap();
+        let database = Database::in_memory().unwrap();
+        let chats = crate::chat::ChatRepository::new(&database);
+        let conversation = chats.create_conversation(Some("Export owner")).unwrap();
+        let repo = ArtifactRepository::new(&database);
+        let (directory, id) =
+            crate::artifact_output::reserve_directory(root.path(), Path::new("generated")).unwrap();
+        let relative = format!("generated/{id}/file.txt");
+        let output =
+            crate::artifact_output::StagedOutput::from_reserved(directory, "file.txt").unwrap();
+        let artifact = repo
+            .create(
+                &conversation.id,
+                None,
+                "file.txt",
+                &relative,
+                "text/plain",
+                "text",
+                "generating",
+            )
+            .unwrap();
+        fs::write(&output.path, b"late rendered content").unwrap();
+        let size = output.commit(false).unwrap();
+        chats.delete_conversation(&conversation.id).unwrap();
+        assert!(matches!(
+            repo.finish_document(&artifact.id, &output, Ok((None, size))),
+            Err(AppError::ArtifactNotFound(_))
+        ));
+        assert!(!root.path().join(relative).exists());
+    }
 
     #[test]
     fn creates_lists_and_updates_artifacts() {

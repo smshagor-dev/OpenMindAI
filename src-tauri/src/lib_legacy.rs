@@ -629,6 +629,9 @@ async fn create_document_artifact(
         ));
     }
 
+    // Reserve before creating a row/staging directory: cancelled queued calls
+    // cannot strand a generating artifact. No DB mutex crosses this await.
+    let permit = crate::document_jobs::reserve().await?;
     let (artifact, output, document_title) = {
         let db = state
             .database
@@ -658,38 +661,47 @@ async fn create_document_artifact(
     };
 
     let path = output.path.clone();
-    app.emit("artifact:started", &artifact)
-        .map_err(|error| app_error::AppError::internal(error.to_string()))?;
+    if let Err(error) = app.emit("artifact:started", &artifact) {
+        tracing::warn!(artifact_id = %artifact.id, %error, "document start event could not be delivered");
+    }
 
-    let generation_result = match kind.as_str() {
-        "pdf" => document_generator::generate_pdf(&content, &document_title, &path)
-            .map(|meta| Some(meta.page_count)),
-        "docx" => document_generator::generate_docx(&content, &document_title, &path).map(|_| None),
-        _ => unreachable!(),
-    };
-
-    let generation_result = generation_result.and_then(|pages| output.commit_for(&kind).map(|size| (pages, size)));
-    let db = state
-        .database
-        .lock()
-        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-    let artifacts = ArtifactRepository::new(&db);
-    let updated = match generation_result {
-        Ok((page_count, size)) => {
-            artifacts.set_ready(&artifact.id, size, page_count)?;
-            artifacts.find(&artifact.id)?
+    let worker_app = app.clone();
+    let worker_id = artifact.id.clone();
+    let result = crate::document_jobs::run(permit, move || {
+        let generation_result = crate::document_jobs::render(|| {
+            let generated = match kind.as_str() {
+            "pdf" => document_generator::generate_pdf(&content, &document_title, &path)
+                .map(|meta| Some(meta.page_count)),
+            "docx" => document_generator::generate_docx(&content, &document_title, &path).map(|_| None),
+            _ => unreachable!(),
+        };
+            generated.and_then(|pages| output.commit_for(&kind).map(|size| (pages, size)))
+        });
+        // The worker owns completion, including when an IPC caller disappears.
+        let state = worker_app.state::<AppState>();
+        let updated = {
+            let db = state.database.lock().map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+            let artifacts = ArtifactRepository::new(&db);
+            artifacts.finish_document(&worker_id, &output, generation_result)?
+        };
+        // Window notification failure must not turn a completed export into a failed one.
+        if let Err(error) = worker_app.emit("artifact:done", &updated) {
+            tracing::warn!(artifact_id = %worker_id, %error, "document completion event could not be delivered");
         }
-        Err(error) => {
+        Ok(updated)
+    }).await;
+    if let Err(error) = &result {
+        // A worker panic must not leave a permanent generating row. Never
+        // overwrite an already committed ready/failed outcome on a later error.
+        let db = state.database.lock().map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+        let artifacts = ArtifactRepository::new(&db);
+        if artifacts.find(&artifact.id)?.status == "generating" {
             artifacts.set_failed(&artifact.id, &error.to_string())?;
-            artifacts.find(&artifact.id)?
+            let updated = artifacts.find(&artifact.id)?;
+            let _ = app.emit("artifact:done", &updated);
         }
-    };
-    drop(db);
-
-    app.emit("artifact:done", &updated)
-        .map_err(|error| app_error::AppError::internal(error.to_string()))?;
-
-    Ok(updated)
+    }
+    result
 }
 
 #[derive(Clone, serde::Serialize)]
