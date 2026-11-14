@@ -23,6 +23,7 @@ mod runtime;
 mod runtime_install;
 mod sampling;
 mod settings;
+mod proxy_credentials;
 mod storage;
 mod voice_runtime;
 mod web_provider_config;
@@ -2278,7 +2279,10 @@ fn save_app_preferences(
         return Err(app_error::AppError::internal("invalid performance profile"));
     }
     let saved = SettingsRepository::new(&db).save_preferences(&preferences)?;
-    net::apply_proxy_settings(&saved.network_proxy_mode, &saved.network_proxy_url);
+    let proxy_url = if saved.network_proxy_mode == "manual" {
+        proxy_credentials::restore(&saved.network_proxy_url, saved.network_proxy_credential_id.as_deref(), github::secret_store::get_secret)?
+    } else { saved.network_proxy_url.clone() };
+    net::apply_proxy_settings(&saved.network_proxy_mode, &proxy_url);
     Ok(saved)
 }
 
@@ -2528,11 +2532,18 @@ pub fn run() {
         .unwrap_or_else(|| root.database_path());
     let database =
         Database::open(database_path.clone()).expect("failed to initialize SQLite database");
-    match SettingsRepository::new(&database).get_preferences() {
-        Ok(preferences) => net::apply_proxy_settings(
-            &preferences.network_proxy_mode,
-            &preferences.network_proxy_url,
-        ),
+    match SettingsRepository::new(&database).get_preferences().and_then(|preferences| {
+        let url = if preferences.network_proxy_mode == "manual" {
+            proxy_credentials::restore(&preferences.network_proxy_url, preferences.network_proxy_credential_id.as_deref(), github::secret_store::get_secret)?
+        } else { preferences.network_proxy_url.clone() };
+        Ok((preferences, url))
+    }) {
+        Ok((preferences, url)) => net::apply_proxy_settings(&preferences.network_proxy_mode, &url),
+        Err(app_error::AppError::SecretStoreFailed(_)) => {
+            // No direct-network fallback when a configured credential cannot be recovered.
+            tracing::warn!("proxy credential store unavailable; remote networking blocked until settings are repaired");
+            net::apply_proxy_settings("manual", "http://127.0.0.1:0");
+        }
         Err(error) => {
             tracing::warn!(%error, "could not load network preferences; connecting directly");
             net::apply_proxy_settings("direct", "");

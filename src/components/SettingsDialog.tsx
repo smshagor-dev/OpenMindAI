@@ -775,10 +775,17 @@ export function SettingsDialog(props: {
             </label>
             {preferenceDraft.networkProxyMode === "manual" ? (
               <TextRow
-                label="Proxy address"
+                type="password"
+                label="Proxy address (credentials hidden)"
                 value={preferenceDraft.networkProxyUrl}
-                onChange={(value) => setPreference("networkProxyUrl", value)}
+                onChange={(value) => {
+                  setPreference("networkProxyUrl", value);
+                  setPreference("networkProxyCredentialId", null);
+                }}
               />
+            ) : null}
+            {preferenceDraft.networkProxyCredentialId ? (
+              <button type="button" onClick={() => setPreference("networkProxyCredentialId", null)}>Stop using saved proxy credentials on save</button>
             ) : null}
             <p className="muted">
               Model, dataset and runtime downloads (including GitHub releases), app updates and
@@ -790,7 +797,7 @@ export function SettingsDialog(props: {
                 ? " Uses HTTPS_PROXY / HTTP_PROXY when set, otherwise the Windows proxy settings."
                 : null}
               {preferenceDraft.networkProxyMode === "manual"
-                ? " Use host:port or http://user:password@host:port."
+                ? " Use host:port or http://user:password@host:port. Credentials are kept in this OS credential store and are not included in portable preferences."
                 : null}
               {" The local AI runtime and other local network addresses are always reached directly."}
             </p>
@@ -887,12 +894,12 @@ export function SelectRow(props: {
   );
 }
 
-function TextRow(props: { label: string; value: string; onChange: (value: string) => void }) {
+function TextRow(props: { label: string; value: string; type?: "text" | "password"; onChange: (value: string) => void }) {
   return (
     <label className="setting-row">
       <span>{props.label}</span>
       <input
-        type="text"
+        type={props.type ?? "text"}
         value={props.value}
         onChange={(event) => props.onChange(event.target.value)}
       />

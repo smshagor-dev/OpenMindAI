@@ -535,6 +535,7 @@ export interface AppPreferences {
   /** How downloads and online services reach the internet. */
   networkProxyMode: "direct" | "manual" | "system";
   networkProxyUrl: string;
+  networkProxyCredentialId?: string | null;
 }
 
 /** Live state of the Agent Setup coding agent (desktop OpenAgent and VS Code). */

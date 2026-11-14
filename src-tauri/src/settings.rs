@@ -74,6 +74,7 @@ pub struct AppPreferences {
     /// "direct" (default: ignore the PC proxy), "manual" or "system"; see net.rs.
     pub network_proxy_mode: String,
     pub network_proxy_url: String,
+    pub network_proxy_credential_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -182,6 +183,7 @@ impl Default for AppPreferences {
             coding_autonomy: "bounded".to_string(),
             network_proxy_mode: "direct".to_string(),
             network_proxy_url: String::new(),
+            network_proxy_credential_id: None,
         }
     }
 }
@@ -216,6 +218,23 @@ impl<'a> SettingsRepository<'a> {
     pub fn get_preferences(&self) -> Result<AppPreferences, AppError> {
         match self.load_saved_preferences()? {
             Some(mut preferences) => {
+                let serialized = serde_json::to_value(&preferences)
+                    .map_err(|_| AppError::internal("Invalid preferences"))?;
+                let mut sanitized = serialized.clone();
+                crate::proxy_credentials::protect(
+                    &mut sanitized,
+                    Some(&serialized),
+                    crate::github::secret_store::set_secret,
+                )?;
+                if sanitized != serialized {
+                    crate::proxy_credentials::migrate(
+                        self.database.connection(),
+                        &serialized,
+                        &sanitized,
+                    )?;
+                    preferences = serde_json::from_value(sanitized)
+                        .map_err(|_| AppError::internal("Invalid preferences"))?;
+                }
                 if !preferences.save_chat_history {
                     // The old flag never stopped persistence. Correct the reported
                     // state and keep a durable, visible notice; do not delete chats.
@@ -281,7 +300,8 @@ impl<'a> SettingsRepository<'a> {
             ));
         }
         if !["auto", "local", "cloud"].contains(&preferences.ai_execution_mode.as_str())
-            || !["auto", "local", "cloud"].contains(&preferences.coding_agent_execution_mode.as_str())
+            || !["auto", "local", "cloud"]
+                .contains(&preferences.coding_agent_execution_mode.as_str())
         {
             return Err(AppError::internal("Invalid Cloud/Local execution mode"));
         }
@@ -296,8 +316,23 @@ impl<'a> SettingsRepository<'a> {
             saved.chat_history_notice_required |=
                 existing.chat_history_notice_required || !existing.save_chat_history;
         }
-        self.save_json(SETTINGS_KEY, &saved)?;
-        Ok(saved)
+        let previous = self
+            .load_saved_preferences()?
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|_| AppError::internal("Invalid preferences"))?;
+        let mut sanitized =
+            serde_json::to_value(&saved).map_err(|_| AppError::internal("Invalid preferences"))?;
+        crate::proxy_credentials::protect(
+            &mut sanitized,
+            previous.as_ref(),
+            crate::github::secret_store::set_secret,
+        )?;
+        self.database
+            .connection()
+            .execute_batch("PRAGMA secure_delete = ON;")?;
+        self.save_json(SETTINGS_KEY, &sanitized)?;
+        serde_json::from_value(sanitized).map_err(|_| AppError::internal("Invalid preferences"))
     }
 
     pub fn acknowledge_chat_history_notice(&self) -> Result<AppPreferences, AppError> {
@@ -403,8 +438,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&stored)
-                .unwrap()["telemetryEnabled"],
+            serde_json::from_str::<serde_json::Value>(&stored).unwrap()["telemetryEnabled"],
             false
         );
 
@@ -433,8 +467,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&persisted)
-                .unwrap()["telemetryEnabled"],
+            serde_json::from_str::<serde_json::Value>(&persisted).unwrap()["telemetryEnabled"],
             false
         );
     }
