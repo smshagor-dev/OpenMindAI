@@ -1,9 +1,11 @@
 //! Portable path checks and capability-confined creation of new text outputs.
 use crate::app_error::AppError;
+#[cfg(test)]
 use cap_std::{ambient_authority, fs::Dir};
+#[cfg(test)]
+use std::io::Write;
 use std::{
-    fs,
-    io::{self, Write},
+    fs, io,
     path::{Component, Path, PathBuf},
 };
 
@@ -58,12 +60,14 @@ pub(super) fn resolve(root: &Path, path: &Path) -> Result<PathBuf, AppError> {
     Ok(joined)
 }
 
+#[cfg(test)]
 pub(super) fn write_new(root: &Path, path: &Path, bytes: &[u8]) -> Result<(), AppError> {
     relative(path)?;
     let root = Dir::open_ambient_dir(root, ambient_authority())?;
     write_new_at(&root, path, bytes)
 }
 
+#[cfg(test)]
 fn write_new_at(root: &Dir, path: &Path, bytes: &[u8]) -> Result<(), AppError> {
     let parent_path = path
         .parent()
