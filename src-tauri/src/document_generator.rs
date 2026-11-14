@@ -780,6 +780,26 @@ mod tests {
     }
 
     #[test]
+    fn unicode_table_docx_export_passes_package_publication_gate() {
+        let root = tempfile::tempdir().unwrap();
+        let (directory, id) = crate::artifact_output::reserve_directory(
+            root.path(),
+            std::path::Path::new("generated"),
+        )
+        .unwrap();
+        let output =
+            crate::artifact_output::StagedOutput::from_reserved(directory, "report.docx").unwrap();
+        let body = format!("# English বাংলা Русский\n\n{SAMPLE_MARKDOWN}");
+        generate_docx(&body, "Unicode & table report", &output.path).unwrap();
+        let expected = std::fs::read(&output.path).unwrap();
+        assert_eq!(output.commit_for("docx").unwrap(), expected.len() as i64);
+        assert_eq!(
+            std::fs::read(root.path().join("generated").join(id).join("report.docx")).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
     fn docx_escapes_untrusted_text_and_preserves_unicode() {
         let temp = tempfile::tempdir().unwrap();
         let dest = temp.path().join("escaped.docx");
