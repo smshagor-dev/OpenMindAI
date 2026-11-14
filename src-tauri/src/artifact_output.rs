@@ -177,6 +177,28 @@ mod tests {
         }
     }
 
+    // Windows directory handles can deny rename/delete sharing entirely. That
+    // is also fail-closed containment: assert the OS denial and exercise normal
+    // publication through the still-held directory rather than ignoring it.
+    fn replace_parent(parent: &Path, moved: &Path, outside: &Path) -> PathBuf {
+        match fs::rename(parent, moved) {
+            Ok(()) => {
+                directory_link(parent, outside);
+                moved.to_owned()
+            }
+            Err(error) => {
+                #[cfg(windows)]
+                {
+                    assert!(matches!(error.raw_os_error(), Some(5 | 32)), "{error}");
+                    assert!(parent.is_dir());
+                    parent.to_owned()
+                }
+                #[cfg(not(windows))]
+                panic!("directory replacement failed: {error}");
+            }
+        }
+    }
+
     #[test]
     fn external_parent_cannot_receive_a_reservation() {
         let root = tempfile::tempdir().unwrap();
@@ -195,12 +217,9 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         let (directory, id) =
             reserve_directory(root.path(), Path::new("generated/exports")).unwrap();
-        fs::rename(
-            root.path().join("generated/exports"),
-            root.path().join("held-exports"),
-        )
-        .unwrap();
-        directory_link(&root.path().join("generated/exports"), outside.path());
+        let parent = root.path().join("generated/exports");
+        let moved = root.path().join("held-exports");
+        let held = replace_parent(&parent, &moved, outside.path());
         let output = StagedOutput::from_reserved(directory, "report.pdf").unwrap();
         assert!(!output.path.starts_with(root.path()));
         assert!(!output.path.starts_with(outside.path()));
@@ -208,14 +227,16 @@ mod tests {
         fs::write(&private_path, b"%PDF-fixture").unwrap();
         output.commit_for("pdf").unwrap();
         assert_eq!(
-            fs::read(root.path().join("held-exports").join(id).join("report.pdf")).unwrap(),
+            fs::read(held.join(id).join("report.pdf")).unwrap(),
             b"%PDF-fixture"
         );
         drop(output);
         assert!(!private_path.exists());
         assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
         #[cfg(windows)]
-        fs::remove_dir(root.path().join("generated/exports")).unwrap();
+        if held == moved {
+            fs::remove_dir(parent).unwrap();
+        }
     }
 
     #[test]
@@ -227,18 +248,19 @@ mod tests {
         let (directory, id) = reserve_directory(&root, Path::new("generated/images")).unwrap();
         let output = StagedOutput::from_reserved(directory, "image.png").unwrap();
         let moved = container.path().join("held-root");
-        fs::rename(&root, &moved).unwrap();
-        directory_link(&root, outside.path());
+        let held = replace_parent(&root, &moved, outside.path());
         fs::write(&output.path, b"\x89PNG\r\n\x1a\nfixture").unwrap();
         output.commit_for("image").unwrap();
-        assert!(moved
+        assert!(held
             .join("generated/images")
             .join(id)
             .join("image.png")
             .is_file());
         assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
         #[cfg(windows)]
-        fs::remove_dir(&root).unwrap();
+        if held == moved {
+            fs::remove_dir(&root).unwrap();
+        }
     }
 
     #[test]

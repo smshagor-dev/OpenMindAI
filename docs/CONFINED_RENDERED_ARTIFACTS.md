@@ -52,3 +52,15 @@ validation (#347). Publication does not make a changed nominal root path readabl
 
 Paused checkpoint: code and tests are committed/published; no branch writer
 remains active after this run. Resume only after checking newer branch activity.
+
+Native CI follow-up: first-head Linux/macOS focused renderer jobs passed. Windows
+failed because the test demanded rename of a directory held open without delete
+sharing (ERROR_ACCESS_DENIED/ERROR_SHARING_VIOLATION). The revised fixture asserts
+those exact OS denials, then still tests successful publication/rollback through
+the held original directory; where rename succeeds it substitutes the outside
+junction and checks the moved directory. It does not claim Windows performed a
+replacement when the OS prevented it. The same fixture repair covers three backup
+tests inherited from #507. The full Linux suite also exposed maintenance's fixture
+dropping its TempDir before backup; it now retains the guard through each test.
+These repairs need fresh native CI. Focused renderer/backup Linux suites each pass
+10 tests and strict Clippy after the repair; full local maintenance is not compiled.
