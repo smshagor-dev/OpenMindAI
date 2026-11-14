@@ -1,0 +1,15 @@
+[package]
+name = "openmind-confined-backups-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[lib]
+path = "lib.rs"
+[dependencies]
+cap-std = "=4.0.3"
+chrono = "0.4"
+uuid = { version = "1", features = ["v4"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+rusqlite = { version = "0.32", features = ["bundled"] }
+tempfile = "3"
