@@ -234,24 +234,13 @@ pub async fn fetch_account(client: &Client, token: &str) -> Result<GithubAccount
 }
 
 pub async fn fetch_repos(client: &Client, token: &str) -> Result<Vec<GithubRepoSummary>, AppError> {
-    let response = client
-        .get("https://api.github.com/user/repos?sort=updated&per_page=50")
-        .headers(auth_headers(token)?)
-        .send()
-        .await
-        .map_err(|error| AppError::GithubApiError(error.to_string()))?;
-
-    if !response.status().is_success() {
-        return Err(AppError::GithubApiError(format!(
-            "GitHub request failed (status {})",
-            response.status()
-        )));
-    }
-
-    let repos: Vec<GithubRepoResponse> = response
-        .json()
-        .await
-        .map_err(|error| AppError::GithubApiError(error.to_string()))?;
+    let repos: Vec<GithubRepoResponse> = crate::github_paging::collect(
+        client,
+        "https://api.github.com/user/repos?sort=updated",
+        auth_headers(token)?,
+        |repo: &GithubRepoResponse| repo.id,
+    )
+    .await?;
 
     Ok(repos
         .into_iter()
@@ -273,31 +262,29 @@ pub async fn fetch_issues(
     token: &str,
     repo_full_name: &str,
 ) -> Result<Vec<GithubIssueSummary>, AppError> {
-    if !repo_full_name.contains('/') || repo_full_name.contains("..") {
+    let parts: Vec<_> = repo_full_name.split('/').collect();
+    if parts.len() != 2
+        || parts.iter().any(|part| {
+            part.is_empty()
+                || *part == "."
+                || *part == ".."
+                || !part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        })
+    {
         return Err(AppError::GithubApiError(
             "invalid repository name".to_string(),
         ));
     }
-    let url =
-        format!("https://api.github.com/repos/{repo_full_name}/issues?state=open&per_page=30");
-    let response = client
-        .get(url)
-        .headers(auth_headers(token)?)
-        .send()
-        .await
-        .map_err(|error| AppError::GithubApiError(error.to_string()))?;
-
-    if !response.status().is_success() {
-        return Err(AppError::GithubApiError(format!(
-            "GitHub request failed (status {})",
-            response.status()
-        )));
-    }
-
-    let issues: Vec<GithubIssueResponse> = response
-        .json()
-        .await
-        .map_err(|error| AppError::GithubApiError(error.to_string()))?;
+    let endpoint = format!("https://api.github.com/repos/{repo_full_name}/issues?state=open");
+    let issues: Vec<GithubIssueResponse> = crate::github_paging::collect(
+        client,
+        &endpoint,
+        auth_headers(token)?,
+        |issue: &GithubIssueResponse| issue.id,
+    )
+    .await?;
 
     Ok(issues
         .into_iter()
