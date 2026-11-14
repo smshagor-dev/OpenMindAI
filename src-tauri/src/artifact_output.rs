@@ -10,6 +10,7 @@ use std::{
     fs,
     io::{self, Read, Seek, SeekFrom},
     path::{Component, Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 /// Create beneath an acquired root capability; never create via a checked path.
@@ -40,6 +41,7 @@ pub fn reserve_directory(root: &Path, relative: &Path) -> Result<(Dir, String), 
 
 pub struct StagedOutput {
     directory: Dir,
+    published: AtomicBool,
     final_name: String,
     pub path: PathBuf,
     _staging: tempfile::TempDir,
@@ -62,6 +64,7 @@ impl StagedOutput {
             .tempdir()?;
         Ok(Self {
             directory,
+            published: AtomicBool::new(false),
             final_name: name.to_owned(),
             path: staging.path().join(name),
             _staging: staging,
@@ -111,6 +114,22 @@ impl StagedOutput {
         self.publish(self.source(allow_empty)?)
     }
 
+    /// Undo only a final entry actually published by this owner, e.g. when its
+    /// conversation was deleted while rendering. Never remove a collision.
+    pub fn discard_publication(&self) -> Result<(), AppError> {
+        if self.published.load(Ordering::Acquire) {
+            match self.directory.remove_file(&self.final_name) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            #[cfg(unix)]
+            self.directory.open(".")?.sync_all()?;
+            self.published.store(false, Ordering::Release);
+        }
+        Ok(())
+    }
+
     fn publish(&self, mut source: fs::File) -> Result<i64, AppError> {
         let size = source.metadata()?.len();
         let temporary = format!(".pending-{}", uuid::Uuid::new_v4());
@@ -144,6 +163,7 @@ impl StagedOutput {
             }
             self.directory
                 .rename(&temporary, &self.directory, &self.final_name)?;
+            self.published.store(true, Ordering::Release);
             #[cfg(unix)]
             self.directory.open(".")?.sync_all()?;
             Ok(())
@@ -203,6 +223,23 @@ mod tests {
                 panic!("directory replacement failed: {error}");
             }
         }
+    }
+
+    #[test]
+    fn discard_removes_only_its_published_entry_and_preserves_collisions() {
+        let root = tempfile::tempdir().unwrap();
+        let (directory, id) = reserve_directory(root.path(), Path::new("generated")).unwrap();
+        let output = StagedOutput::from_reserved(directory, "file.txt").unwrap();
+        let final_path = root.path().join("generated").join(id).join("file.txt");
+        fs::write(&final_path, b"other owner").unwrap();
+        output.discard_publication().unwrap();
+        assert_eq!(fs::read(&final_path).unwrap(), b"other owner");
+        fs::remove_file(&final_path).unwrap();
+        fs::write(&output.path, b"published text").unwrap();
+        output.commit(false).unwrap();
+        output.discard_publication().unwrap();
+        output.discard_publication().unwrap();
+        assert!(!final_path.exists());
     }
 
     #[test]

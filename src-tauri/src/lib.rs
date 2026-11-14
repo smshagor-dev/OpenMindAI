@@ -101,6 +101,7 @@ mod connector_stabilization;
 mod database_backup;
 mod dataset_context;
 mod dataset_download;
+mod document_jobs;
 mod folder_opener;
 mod github_paging;
 mod github_workspace;

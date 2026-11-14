@@ -124,13 +124,9 @@ fn native_eligible(request: &StreamRequest<'_>) -> Result<bool, AppError> {
         return Ok(false);
     };
     let content = message.content.to_ascii_lowercase();
-    if content.contains("[mode: web search]")
+    Ok(!(content.contains("[mode: web search]")
         || content.contains("[mode: deep research]")
-        || content.contains("data:image/")
-    {
-        return Ok(false);
-    }
-    Ok(true)
+        || content.contains("data:image/")))
 }
 
 fn prepare_native_request(request: &StreamRequest<'_>) -> Result<PreparedNativeRequest, AppError> {
