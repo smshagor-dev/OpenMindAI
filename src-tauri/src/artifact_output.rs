@@ -1,17 +1,32 @@
 use crate::app_error::AppError;
+use cap_std::{
+    ambient_authority,
+    fs::{Dir, OpenOptions},
+};
 use std::{
     fs,
-    io::Read,
-    path::{Path, PathBuf},
+    io::{self, Read, Seek, SeekFrom},
+    path::{Component, Path, PathBuf},
 };
 
-pub fn reserve_directory(parent: &Path) -> Result<(PathBuf, String), AppError> {
+/// Create beneath an acquired root capability; never create via a checked path.
+pub fn reserve_directory(root: &Path, relative: &Path) -> Result<(Dir, String), AppError> {
+    if relative
+        .components()
+        .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
+    {
+        return Err(AppError::internal(
+            "Artifact output path must stay beneath its root",
+        ));
+    }
+    let root = Dir::open_ambient_dir(root, ambient_authority())?;
+    root.create_dir_all(relative)?;
+    let parent = root.open_dir(relative)?;
     for _ in 0..16 {
         let id = uuid::Uuid::new_v4().to_string();
-        let path = parent.join(&id);
-        match fs::create_dir(&path) {
-            Ok(()) => return Ok((path, id)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+        match parent.create_dir(&id) {
+            Ok(()) => return Ok((parent.open_dir(&id)?, id)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error.into()),
         }
     }
@@ -21,22 +36,54 @@ pub fn reserve_directory(parent: &Path) -> Result<(PathBuf, String), AppError> {
 }
 
 pub struct StagedOutput {
-    final_path: PathBuf,
+    directory: Dir,
+    final_name: String,
     pub path: PathBuf,
+    _staging: tempfile::TempDir,
 }
 impl StagedOutput {
-    pub fn new(final_path: &Path) -> Self {
-        let name = final_path.file_name().unwrap_or_default().to_string_lossy();
-        Self {
-            final_path: final_path.to_path_buf(),
-            path: final_path.with_file_name(format!(".pending-{name}")),
+    pub fn from_reserved(directory: Dir, name: &str) -> Result<Self, AppError> {
+        if name.is_empty()
+            || name.contains(['/', '\\', ':'])
+            || !matches!(
+                Path::new(name).components().next(),
+                Some(Component::Normal(_))
+            )
+        {
+            return Err(AppError::internal(
+                "Artifact filename must be one normal component",
+            ));
         }
+        let staging = tempfile::Builder::new()
+            .prefix("openmind-render-")
+            .tempdir()?;
+        Ok(Self {
+            directory,
+            final_name: name.to_owned(),
+            path: staging.path().join(name),
+            _staging: staging,
+        })
     }
+
+    fn source(&self, allow_empty: bool) -> Result<fs::File, AppError> {
+        let metadata = fs::symlink_metadata(&self.path)?;
+        if !metadata.is_file() || (!allow_empty && metadata.len() == 0) {
+            return Err(AppError::ArtifactGenerationFailed(
+                "Renderer did not produce a complete regular output file".into(),
+            ));
+        }
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.path)?;
+        file.sync_all()?;
+        Ok(file)
+    }
+
     pub fn commit_for(&self, kind: &str) -> Result<i64, AppError> {
+        let mut source = self.source(false)?;
         let mut header = Vec::new();
-        fs::File::open(&self.path)?
-            .take(12)
-            .read_to_end(&mut header)?;
+        (&mut source).take(12).read_to_end(&mut header)?;
         let valid = match kind {
             "pdf" => header.starts_with(b"%PDF-"),
             "docx" => header.starts_with(b"PK\x03\x04"),
@@ -50,41 +97,245 @@ impl StagedOutput {
                 "Output signature does not match the requested artifact type".into(),
             ));
         }
-        self.commit(false)
+        self.publish(source)
     }
 
+    #[cfg(test)]
     pub fn commit(&self, allow_empty: bool) -> Result<i64, AppError> {
-        let metadata = fs::symlink_metadata(&self.path)?;
-        if !metadata.is_file() || (!allow_empty && metadata.len() == 0) {
-            return Err(AppError::ArtifactGenerationFailed(
-                "Renderer did not produce a complete regular output file".into(),
-            ));
-        }
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&self.path)?;
-        file.sync_all()?;
-        drop(file);
-        // The destination belongs to our exclusively reserved UUID directory.
-        if self.final_path.symlink_metadata().is_ok() {
-            return Err(AppError::internal("Artifact destination already exists"));
-        }
-        fs::rename(&self.path, &self.final_path)?;
-        #[cfg(unix)]
-        fs::File::open(self.final_path.parent().unwrap())?.sync_all()?;
-        Ok(metadata.len() as i64)
+        self.publish(self.source(allow_empty)?)
     }
-}
-impl Drop for StagedOutput {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+
+    fn publish(&self, mut source: fs::File) -> Result<i64, AppError> {
+        let size = source.metadata()?.len();
+        let temporary = format!(".pending-{}", uuid::Uuid::new_v4());
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use cap_std::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut output = self.directory.open_with(&temporary, &options)?;
+        let result = (|| -> io::Result<()> {
+            source.seek(SeekFrom::Start(0))?;
+            if io::copy(&mut source.take(size), &mut output)? != size {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "Staged artifact changed during publication",
+                ));
+            }
+            output.sync_all()?;
+            drop(output);
+            match self.directory.symlink_metadata(&self.final_name) {
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "Artifact destination already exists",
+                    ))
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            self.directory
+                .rename(&temporary, &self.directory, &self.final_name)?;
+            #[cfg(unix)]
+            self.directory.open(".")?.sync_all()?;
+            Ok(())
+        })();
+        let _ = self.directory.remove_file(&temporary);
+        result?;
+        i64::try_from(size).map_err(|_| AppError::internal("Artifact size exceeds supported range"))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn reserve_fixture_directory(parent: &Path) -> Result<(PathBuf, String), AppError> {
+        let (_, id) = reserve_directory(parent, Path::new("."))?;
+        Ok((parent.join(&id), id))
+    }
+    fn stage_fixture(final_path: &Path) -> StagedOutput {
+        let directory =
+            Dir::open_ambient_dir(final_path.parent().unwrap(), ambient_authority()).unwrap();
+        StagedOutput::from_reserved(directory, final_path.file_name().unwrap().to_str().unwrap())
+            .unwrap()
+    }
+
+    fn directory_link(link: &Path, target: &Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        {
+            let result = std::process::Command::new("pwsh").args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:TEST_LINK -Target $env:TEST_TARGET -ErrorAction Stop | Out-Null"])
+                .env("TEST_LINK", link).env("TEST_TARGET", target).output().unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+    }
+
+    // Windows directory handles can deny rename/delete sharing entirely. That
+    // is also fail-closed containment: assert the OS denial and exercise normal
+    // publication through the still-held directory rather than ignoring it.
+    fn replace_parent(parent: &Path, moved: &Path, outside: &Path) -> PathBuf {
+        match fs::rename(parent, moved) {
+            Ok(()) => {
+                directory_link(parent, outside);
+                moved.to_owned()
+            }
+            Err(error) => {
+                #[cfg(windows)]
+                {
+                    assert!(matches!(error.raw_os_error(), Some(5 | 32)), "{error}");
+                    assert!(parent.is_dir());
+                    parent.to_owned()
+                }
+                #[cfg(not(windows))]
+                panic!("directory replacement failed: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn external_parent_cannot_receive_a_reservation() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("generated")).unwrap();
+        directory_link(&root.path().join("generated/exports"), outside.path());
+        assert!(reserve_directory(root.path(), Path::new("generated/exports")).is_err());
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+        #[cfg(windows)]
+        fs::remove_dir(root.path().join("generated/exports")).unwrap();
+    }
+
+    #[test]
+    fn rendering_and_publication_survive_parent_path_replacement_without_escape() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let (directory, id) =
+            reserve_directory(root.path(), Path::new("generated/exports")).unwrap();
+        let parent = root.path().join("generated/exports");
+        let moved = root.path().join("held-exports");
+        let held = replace_parent(&parent, &moved, outside.path());
+        let output = StagedOutput::from_reserved(directory, "report.pdf").unwrap();
+        assert!(!output.path.starts_with(root.path()));
+        assert!(!output.path.starts_with(outside.path()));
+        let private_path = output.path.clone();
+        fs::write(&private_path, b"%PDF-fixture").unwrap();
+        output.commit_for("pdf").unwrap();
+        assert_eq!(
+            fs::read(held.join(id).join("report.pdf")).unwrap(),
+            b"%PDF-fixture"
+        );
+        drop(output);
+        assert!(!private_path.exists());
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+        #[cfg(windows)]
+        if held == moved {
+            fs::remove_dir(parent).unwrap();
+        }
+    }
+
+    #[test]
+    fn root_replacement_cannot_redirect_an_already_reserved_artifact() {
+        let container = tempfile::tempdir().unwrap();
+        let root = container.path().join("root");
+        fs::create_dir(&root).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let (directory, id) = reserve_directory(&root, Path::new("generated/images")).unwrap();
+        let output = StagedOutput::from_reserved(directory, "image.png").unwrap();
+        let moved = container.path().join("held-root");
+        let held = replace_parent(&root, &moved, outside.path());
+        fs::write(&output.path, b"\x89PNG\r\n\x1a\nfixture").unwrap();
+        output.commit_for("image").unwrap();
+        assert!(held
+            .join("generated/images")
+            .join(id)
+            .join("image.png")
+            .is_file());
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+        #[cfg(windows)]
+        if held == moved {
+            fs::remove_dir(&root).unwrap();
+        }
+    }
+
+    #[test]
+    fn traversal_and_path_shaped_filenames_are_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        for path in ["../escape", "/absolute", "generated/../../escape"] {
+            assert!(reserve_directory(root.path(), Path::new(path)).is_err());
+        }
+        let (directory, _) = reserve_directory(root.path(), Path::new("generated")).unwrap();
+        for name in [
+            "",
+            ".",
+            "..",
+            "../outside",
+            "nested/file",
+            "..\\outside",
+            "C:\\outside",
+        ] {
+            assert!(
+                StagedOutput::from_reserved(directory.open_dir(".").unwrap(), name).is_err(),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_rendered_kind_keeps_its_extension_and_publishes_matching_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        for (kind, name, bytes) in [
+            ("pdf", "doc.pdf", &b"%PDF-fixture"[..]),
+            ("docx", "doc.docx", &b"PK\x03\x04fixture"[..]),
+            ("image", "image.png", &b"\x89PNG\r\n\x1a\nfixture"[..]),
+            ("audio", "audio.wav", &b"RIFF0000WAVEfixture"[..]),
+            ("video", "video.webm", &b"\x1a\x45\xdf\xa3fixture"[..]),
+        ] {
+            let (directory, id) = reserve_directory(root.path(), Path::new("generated")).unwrap();
+            let output = StagedOutput::from_reserved(directory, name).unwrap();
+            assert_eq!(output.path.extension(), Path::new(name).extension());
+            fs::write(&output.path, bytes).unwrap();
+            assert_eq!(output.commit_for(kind).unwrap(), bytes.len() as i64);
+            assert_eq!(
+                fs::read(root.path().join("generated").join(id).join(name)).unwrap(),
+                bytes
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn final_and_staging_links_are_rejected_without_touching_their_targets() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let sentinel = outside.path().join("target.pdf");
+        fs::write(&sentinel, b"%PDF-preserve").unwrap();
+        let (directory, id) = reserve_directory(root.path(), Path::new("generated")).unwrap();
+        let output = StagedOutput::from_reserved(directory, "doc.pdf").unwrap();
+        std::os::unix::fs::symlink(&sentinel, &output.path).unwrap();
+        assert!(output.commit_for("pdf").is_err());
+        fs::remove_file(&output.path).unwrap();
+        fs::write(&output.path, b"%PDF-new").unwrap();
+        std::os::unix::fs::symlink(
+            &sentinel,
+            root.path().join("generated").join(&id).join("doc.pdf"),
+        )
+        .unwrap();
+        assert!(output.commit_for("pdf").is_err());
+        assert_eq!(fs::read(sentinel).unwrap(), b"%PDF-preserve");
+        assert_eq!(
+            fs::read_dir(root.path().join("generated").join(id))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
     #[test]
     fn parallel_requests_with_identical_names_have_independent_bytes_for_every_kind() {
         let root = tempfile::tempdir().unwrap();
@@ -94,9 +345,9 @@ mod tests {
                 for index in 0..8 {
                     let parent = root.path();
                     handles.push(scope.spawn(move || {
-                        let (dir, _) = reserve_directory(parent).unwrap();
+                        let (dir, _) = reserve_fixture_directory(parent).unwrap();
                         let final_path = dir.join(format!("same-title.{extension}"));
-                        let output = StagedOutput::new(&final_path);
+                        let output = stage_fixture(&final_path);
                         let bytes = format!("{extension}-{index}");
                         fs::write(&output.path, &bytes).unwrap();
                         assert!(!final_path.exists());
@@ -116,14 +367,14 @@ mod tests {
     #[test]
     fn failed_or_empty_outputs_do_not_publish_or_remove_a_sibling() {
         let temp = tempfile::tempdir().unwrap();
-        let (one, _) = reserve_directory(temp.path()).unwrap();
-        let (two, _) = reserve_directory(temp.path()).unwrap();
+        let (one, _) = reserve_fixture_directory(temp.path()).unwrap();
+        let (two, _) = reserve_fixture_directory(temp.path()).unwrap();
         let good = two.join("same.png");
         fs::write(&good, b"keep").unwrap();
         let final_path = one.join("same.png");
         let pending;
         {
-            let output = StagedOutput::new(&final_path);
+            let output = stage_fixture(&final_path);
             pending = output.path.clone();
             fs::write(&output.path, b"").unwrap();
             assert!(output.commit(false).is_err());
@@ -132,7 +383,7 @@ mod tests {
         assert!(!pending.exists());
         assert!(!final_path.exists());
         assert_eq!(fs::read(&good).unwrap(), b"keep");
-        let output = StagedOutput::new(&final_path);
+        let output = stage_fixture(&final_path);
         fs::write(&output.path, b"complete").unwrap();
         fs::write(&final_path, b"already published").unwrap();
         assert!(output.commit(false).is_err());
@@ -142,7 +393,7 @@ mod tests {
     fn signature_mismatch_cannot_be_published_as_ready_media() {
         let temp = tempfile::tempdir().unwrap();
         let final_path = temp.path().join("image.png");
-        let output = StagedOutput::new(&final_path);
+        let output = stage_fixture(&final_path);
         fs::write(&output.path, b"not a PNG").unwrap();
         assert!(output.commit_for("image").is_err());
         assert!(!final_path.exists());

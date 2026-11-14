@@ -10,6 +10,8 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 [dev-dependencies]
+tracing = "0.1"
+serde_json = "1"
 cap-std = "=4.0.3"
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }

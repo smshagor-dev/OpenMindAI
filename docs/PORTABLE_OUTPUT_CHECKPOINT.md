@@ -25,11 +25,20 @@ Additional backup checkpoint (2026-11-14):
   are covered. Ten focused Linux tests and strict focused Clippy passed locally;
   native Windows/macOS tests are pending. See CONFINED_DATABASE_BACKUPS.md.
 
+Additional renderer checkpoint (2026-11-14):
+
+- PDF/DOCX, image/video/voice and soundscape render into private OS temporary
+  directories, preserving extensions. UUID destinations are reserved through
+  directory capabilities; the same held child handles publish and clean up
+  streamed/synced pending output, without reopening portable destination paths.
+- Ten actual-module Linux tests and strict focused Clippy passed. The old writer
+  fails the outside-write regression. Native three-OS harness/integration CI is
+  pending; see CONFINED_RENDERED_ARTIFACTS.md for assumptions and limitations.
+
 Not complete; do not close #394:
 
-- PDF/DOCX exports, external media renderers and other
-  path-based writers still need capability-safe staging/publication. Their path
-  resolution now rejects stable external links, but it is not a TOCTOU defense.
+- Other path-based writers still need review and capability-safe publication.
+  Path validation alone remains insufficient against replacement races.
 - The configured root/ancestor identity must remain trusted until its capability
   is opened. The manager does not retain a lifetime root handle yet.
 - Output cleanup/publication and later path-based reads need further review.

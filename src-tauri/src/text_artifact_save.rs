@@ -1,10 +1,10 @@
 //! Roll back ordinary text-export failures through the held destination handle.
-//! SQLite and filesystem commits are separate: process/power loss still needs a journal.
+//! Durable intents bridge a process interruption between filesystem and SQLite commits.
 use crate::app_error::AppError;
 use cap_std::{ambient_authority, fs::Dir};
-use rusqlite::{params, Connection, Transaction, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::{
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Component, Path},
 };
 
@@ -26,6 +26,190 @@ pub(crate) fn save(
     save_with(connection, root, input, |file, content| {
         file.write_all(content)
     })
+}
+
+const JOURNAL: &str = "generated/files/.text-export-journal";
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Intent {
+    id: String,
+    relative: String,
+}
+
+fn sync_dir(dir: &Dir) -> io::Result<()> {
+    #[cfg(unix)]
+    dir.open(".")?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
+}
+fn lock(journal: &Dir) -> Result<std::fs::File, AppError> {
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = journal.open_with("writer.lock", &options)?.into_std();
+    if !file.metadata()?.is_file() {
+        return Err(AppError::internal("text export lock is not a regular file"));
+    }
+    file.lock()?;
+    Ok(file)
+}
+fn validate_intent(intent: &Intent) -> Result<(), AppError> {
+    if uuid::Uuid::parse_str(&intent.id).is_err() {
+        return Err(AppError::internal("invalid text intent identity"));
+    }
+    let path = Path::new(&intent.relative);
+    if !path.starts_with("generated/files")
+        || path.components().count() != 4
+        || path
+            .components()
+            .any(|p| !matches!(p, Component::Normal(_)))
+    {
+        return Err(AppError::internal("invalid text intent path"));
+    }
+    Ok(())
+}
+fn write_intent(journal: &Dir, intent: &Intent) -> Result<(), AppError> {
+    validate_intent(intent)?;
+    let name = format!("{}.json", intent.id);
+    let pending = format!("{}.new", intent.id);
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = journal.open_with(&pending, &options)?;
+    let result = (|| -> Result<(), AppError> {
+        file.write_all(
+            &serde_json::to_vec(intent).map_err(|e| AppError::internal(e.to_string()))?,
+        )?;
+        file.sync_all()?;
+        drop(file);
+        journal.rename(&pending, journal, &name)?;
+        sync_dir(journal)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = journal.remove_file(&pending);
+    }
+    result
+}
+fn forget(journal: &Dir, id: &str) -> io::Result<()> {
+    journal.remove_file(format!("{id}.json"))?;
+    sync_dir(journal)
+}
+fn remove_if_present(parent: &Dir, name: &str) -> io::Result<()> {
+    match parent.remove_file(name) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
+/// Called after opening/migrating the DB. Lock ordering matches save: OS lock,
+/// then SQLite writer transaction. Recovery never races a live exporting process.
+pub(crate) fn recover(connection: &Connection, root: &Path) -> Result<usize, AppError> {
+    let root = Dir::open_ambient_dir(root, ambient_authority())?;
+    let journal = match root.open_dir(JOURNAL) {
+        Ok(dir) => dir,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    let _lock = lock(&journal)?;
+    let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
+    let mut recovered = 0;
+    let mut failure = None;
+    for entry in journal.entries()? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let path = Path::new(&name);
+        let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if uuid::Uuid::parse_str(id).is_err() {
+            continue;
+        }
+        let result = (|| -> Result<(), AppError> {
+            if path.extension().is_some_and(|s| s == "new") {
+                journal.remove_file(&name)?;
+                sync_dir(&journal)?;
+                return Ok(());
+            }
+            if !path.extension().is_some_and(|s| s == "json") {
+                return Ok(());
+            }
+            if !entry.file_type()?.is_file() {
+                return Err(AppError::internal("text intent is not a regular file"));
+            }
+            let mut file = journal.open(&name)?;
+            let mut bytes = Vec::new();
+            (&mut file).take(65537).read_to_end(&mut bytes)?;
+            if bytes.len() > 65536 {
+                return Err(AppError::internal("oversized text intent"));
+            }
+            let intent: Intent = serde_json::from_slice(&bytes)
+                .map_err(|_| AppError::internal("malformed text intent"))?;
+            validate_intent(&intent)?;
+            if intent.id != id {
+                return Err(AppError::internal("text intent identity mismatch"));
+            }
+            let row: Option<(String, String)> = tx
+                .query_row("SELECT path,status FROM artifacts WHERE id=?1", [id], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .optional()?;
+            if let Some((relative, status)) = &row {
+                if relative != &intent.relative || status != "ready" {
+                    return Err(AppError::internal(
+                        "text intent conflicts with registered artifact",
+                    ));
+                }
+            }
+            let path = Path::new(&intent.relative);
+            let parent = match root.open_dir(path.parent().unwrap()) {
+                Ok(parent) => Some(parent),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                Err(e) => return Err(e.into()),
+            };
+            if let Some(parent) = parent {
+                remove_if_present(&parent, &format!(".pending-{id}"))?;
+                if row.is_none() {
+                    remove_if_present(&parent, path.file_name().unwrap().to_str().unwrap())?;
+                }
+                sync_dir(&parent)?;
+            }
+            drop(file);
+            forget(&journal, id)?;
+            recovered += 1;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            failure = Some(error);
+        }
+    }
+    tx.commit()?;
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    Ok(recovered)
+}
+#[cfg(test)]
+fn checkpoint(stage: &str) {
+    if std::env::var("OPENMIND_TEST_TEXT_CRASH_STAGE")
+        .ok()
+        .as_deref()
+        == Some(stage)
+    {
+        let root = std::env::var_os("OPENMIND_TEST_TEXT_CRASH_ROOT").unwrap();
+        std::fs::write(Path::new(&root).join("paused"), stage).unwrap();
+        loop {
+            std::thread::park_timeout(std::time::Duration::from_secs(1));
+        }
+    }
 }
 
 struct OutputRollback {
@@ -55,6 +239,7 @@ impl OutputRollback {
         if let Some(error) = failure {
             return Err(error);
         }
+        sync_dir(&self.parent)?;
         self.armed = false;
         Ok(())
     }
@@ -88,6 +273,11 @@ fn save_with(
         .file_name()
         .and_then(|part| part.to_str())
         .ok_or_else(|| AppError::internal("text artifact has no filename"))?;
+    let root = Dir::open_ambient_dir(root, ambient_authority())?;
+    root.create_dir_all(JOURNAL)?;
+    let journal = root.open_dir(JOURNAL)?;
+    sync_dir(&root.open_dir("generated/files")?)?;
+    let _lock = lock(&journal)?;
     let tx = Transaction::new_unchecked(connection, TransactionBehavior::Immediate)?;
     let owner_exists: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM conversations WHERE id=?1)",
@@ -118,7 +308,6 @@ fn save_with(
     // Insert and validate constraints before opening any output. The ready row
     // remains invisible to other connections until publication and commit succeed.
     tx.execute("INSERT INTO artifacts (id,conversation_id,message_id,name,path,mime_type,kind,size_bytes,page_count,status,error,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,NULL,'ready',NULL,?9,?9)", params![id,input.conversation_id,input.message_id,input.name,input.relative,input.mime_type,input.kind,size,now])?;
-    let root = Dir::open_ambient_dir(root, ambient_authority())?;
     let mut output = OutputRollback {
         parent: root.open_dir(relative.parent().unwrap())?,
         name: name.to_owned(),
@@ -127,6 +316,28 @@ fn save_with(
         published: false,
         armed: true,
     };
+    // Verify collision-free entries before persisting authority to clean them.
+    // Same-user mutations after this point remain outside the trust boundary.
+    for name in [&output.name, &output.pending] {
+        match output.parent.symlink_metadata(name) {
+            Ok(_) => {
+                return Err(AppError::internal(
+                    "text artifact destination already exists",
+                ))
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    write_intent(
+        &journal,
+        &Intent {
+            id: id.clone(),
+            relative: input.relative.to_owned(),
+        },
+    )?;
+    #[cfg(test)]
+    checkpoint("intent");
     let result = (|| -> Result<(), AppError> {
         let mut options = cap_std::fs::OpenOptions::new();
         options.write(true).create_new(true);
@@ -138,6 +349,8 @@ fn save_with(
         let mut file = output.parent.open_with(&output.pending, &options)?;
         output.pending_created = true;
         write(&mut file, input.content)?;
+        #[cfg(test)]
+        checkpoint("write");
         file.sync_all()?;
         drop(file);
         match output.parent.symlink_metadata(&output.name) {
@@ -155,9 +368,13 @@ fn save_with(
             .parent
             .rename(&output.pending, &output.parent, &output.name)?;
         output.published = true;
+        #[cfg(test)]
+        checkpoint("rename");
         #[cfg(unix)]
         output.parent.open(".")?.sync_all()?;
         tx.commit()?;
+        #[cfg(test)]
+        checkpoint("commit");
         Ok(())
     })();
     if let Err(error) = result {
@@ -166,9 +383,15 @@ fn save_with(
                 "{error}; text artifact cleanup also failed: {cleanup}"
             )));
         }
+        forget(&journal, &id)?;
         return Err(error);
     }
     output.armed = false;
+    // A committed row/output remains valid even if intent cleanup fails; next
+    // recovery retains it. Do not report an export failure after commit.
+    if let Err(error) = forget(&journal, &id) {
+        tracing::warn!(%error,"text export intent cleanup deferred");
+    }
     Ok(id)
 }
 
@@ -211,6 +434,149 @@ mod tests {
             0
         );
     }
+    #[test]
+    fn crash_writer_child() {
+        let Some(root) = std::env::var_os("OPENMIND_TEST_TEXT_CRASH_ROOT") else {
+            return;
+        };
+        let root = Path::new(&root);
+        if std::env::var("OPENMIND_TEST_TEXT_MODE").ok().as_deref() == Some("probe") {
+            let dir = Dir::open_ambient_dir(root.join(JOURNAL), ambient_authority()).unwrap();
+            let mut options = cap_std::fs::OpenOptions::new();
+            options.read(true).write(true);
+            let file = dir.open_with("writer.lock", &options).unwrap().into_std();
+            assert!(matches!(
+                file.try_lock(),
+                Err(std::fs::TryLockError::WouldBlock)
+            ));
+            return;
+        }
+        let db = Connection::open(root.join("fixture.db")).unwrap();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        save(&db, root, input()).unwrap();
+    }
+    #[test]
+    fn killed_process_recovers_uncommitted_outputs_and_preserves_committed_bytes() {
+        use std::{
+            process::Command,
+            time::{Duration, Instant},
+        };
+        for stage in ["intent", "write", "rename", "commit"] {
+            let (root, db) = fixture();
+            drop(db);
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "text_artifact_save::tests::crash_writer_child",
+                    "--nocapture",
+                ])
+                .env("OPENMIND_TEST_TEXT_CRASH_ROOT", root.path())
+                .env("OPENMIND_TEST_TEXT_CRASH_STAGE", stage)
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !root.path().join("paused").exists() {
+                if let Some(status) = child.try_wait().unwrap() {
+                    panic!("child exited before {stage}: {status}");
+                }
+                if Instant::now() > deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("child never reached {stage}");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let probe = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "text_artifact_save::tests::crash_writer_child",
+                    "--nocapture",
+                ])
+                .env("OPENMIND_TEST_TEXT_CRASH_ROOT", root.path())
+                .env("OPENMIND_TEST_TEXT_MODE", "probe")
+                .status()
+                .unwrap();
+            assert!(probe.success(), "cross-process recovery exclusion failed");
+            child.kill().unwrap();
+            child.wait().unwrap();
+            let db = Connection::open(root.path().join("fixture.db")).unwrap();
+            assert_eq!(recover(&db, root.path()).unwrap(), 1);
+            let count = db
+                .query_row("SELECT count(*) FROM artifacts", [], |r| r.get::<_, i64>(0))
+                .unwrap();
+            if stage == "commit" {
+                assert_eq!(count, 1);
+                assert_eq!(
+                    fs::read(root.path().join(input().relative)).unwrap(),
+                    input().content
+                );
+            } else {
+                assert_eq!(count, 0);
+                assert_empty(root.path(), &db);
+            }
+            assert_eq!(
+                recover(&db, root.path()).unwrap(),
+                0,
+                "recovery must be idempotent"
+            );
+            assert_eq!(
+                fs::read_dir(root.path().join(JOURNAL)).unwrap().count(),
+                1,
+                "only lock remains"
+            );
+        }
+    }
+    #[test]
+    fn malformed_or_conflicting_intents_do_not_delete_user_files() {
+        let (root, db) = fixture();
+        let journal_path = root.path().join(JOURNAL);
+        fs::create_dir_all(&journal_path).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        fs::write(outside.path(), b"sentinel").unwrap();
+        fs::write(
+            journal_path.join(format!("{id}.json")),
+            serde_json::to_vec(&Intent {
+                id: id.clone(),
+                relative: outside.path().to_string_lossy().into_owned(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(recover(&db, root.path()).is_err());
+        assert_eq!(fs::read(outside.path()).unwrap(), b"sentinel");
+        assert!(journal_path.join(format!("{id}.json")).exists());
+        let partial = uuid::Uuid::new_v4().to_string();
+        fs::write(journal_path.join(format!("{partial}.new")), b"incomplete").unwrap();
+        assert!(recover(&db, root.path()).is_err());
+        assert!(!journal_path.join(format!("{partial}.new")).exists());
+    }
+
+    #[test]
+    fn conflicting_registered_identity_is_preserved_for_review() {
+        let (root, db) = fixture();
+        let journal_path = root.path().join(JOURNAL);
+        fs::create_dir_all(&journal_path).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        fs::write(root.path().join(input().relative), b"existing user bytes").unwrap();
+        db.execute("INSERT INTO artifacts(id,conversation_id,name,path,mime_type,kind,status,created_at,updated_at) VALUES(?1,'owner','other','generated/files/other/other.txt','text/plain','text','ready','now','now')",[&id]).unwrap();
+        fs::write(
+            journal_path.join(format!("{id}.json")),
+            serde_json::to_vec(&Intent {
+                id: id.clone(),
+                relative: input().relative.into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(recover(&db, root.path()).is_err());
+        assert_eq!(
+            fs::read(root.path().join(input().relative)).unwrap(),
+            b"existing user bytes"
+        );
+        assert!(journal_path.join(format!("{id}.json")).exists());
+    }
+
     #[test]
     fn success_publishes_exact_bytes_and_ready_metadata_including_empty_text() {
         for content in [b"exact text\n".as_slice(), b""] {
