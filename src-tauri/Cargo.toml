@@ -34,6 +34,7 @@ futures-util = "0.3"
 hound = "3.5"
 lopdf = { version = "=0.44.0", default-features = false }
 printpdf = "0.12.6"
+roxmltree = "=0.21.1"
 pulldown-cmark = "0.13.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls"] }
 rusqlite = { version = "0.32", features = ["bundled", "chrono", "functions"] }

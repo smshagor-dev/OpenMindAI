@@ -4281,6 +4281,7 @@ dependencies = [
  "printpdf",
  "pulldown-cmark",
  "reqwest 0.12.28",
+ "roxmltree",
  "rusqlite",
  "serde",
  "serde_json",
