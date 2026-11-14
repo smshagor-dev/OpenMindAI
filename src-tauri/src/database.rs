@@ -1,17 +1,16 @@
-use std::{
-    io,
-    path::{Component, Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
+
+#[path = "artifact_cleanup.rs"]
+mod artifact_cleanup;
 
 use chrono::{Duration, Utc};
-use rusqlite::{functions::FunctionFlags, params, Connection, Error as SqliteError};
+use rusqlite::{params, Connection};
 use uuid::Uuid;
 
 use crate::app_error::AppError;
 use crate::portable_root::CURRENT_SCHEMA_VERSION;
 
 const SCHEMA_VERSION_KEY: &str = "schema.version";
-const ARTIFACT_DELETE_FUNCTION: &str = "openmind_delete_artifact";
 
 struct Migration {
     number: u32,
@@ -353,54 +352,7 @@ fn register_artifact_cleanup(
     connection: &Connection,
     root: Option<PathBuf>,
 ) -> Result<(), AppError> {
-    connection.create_scalar_function(
-        ARTIFACT_DELETE_FUNCTION,
-        1,
-        FunctionFlags::SQLITE_UTF8,
-        move |context| {
-            let relative: String = context.get(0)?;
-            let Some(root) = root.as_ref() else {
-                return Ok(0_i64);
-            };
-            let relative_path = Path::new(&relative);
-            let unsafe_path = relative_path.is_absolute()
-                || !relative_path.starts_with("generated")
-                || relative_path.components().any(|component| {
-                    matches!(
-                        component,
-                        Component::ParentDir | Component::RootDir | Component::Prefix(_)
-                    )
-                });
-            if unsafe_path {
-                return Err(SqliteError::UserFunctionError(Box::new(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "artifact cleanup path escaped the generated directory",
-                ))));
-            }
-
-            let path = root.join(relative_path);
-            if !path.exists() {
-                return Ok(0_i64);
-            }
-            let canonical_root = std::fs::canonicalize(root)
-                .map_err(|error| SqliteError::UserFunctionError(Box::new(error)))?;
-            let canonical_path = std::fs::canonicalize(&path)
-                .map_err(|error| SqliteError::UserFunctionError(Box::new(error)))?;
-            if !canonical_path.starts_with(&canonical_root) {
-                return Err(SqliteError::UserFunctionError(Box::new(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "artifact cleanup resolved outside the portable root",
-                ))));
-            }
-
-            match std::fs::remove_file(&path) {
-                Ok(()) => Ok(1_i64),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(0_i64),
-                Err(error) => Err(SqliteError::UserFunctionError(Box::new(error))),
-            }
-        },
-    )?;
-    Ok(())
+    artifact_cleanup::register(connection, root.as_deref()).map_err(AppError::from)
 }
 
 #[cfg(test)]
