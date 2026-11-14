@@ -120,8 +120,8 @@ pub fn run_diagnostics(
         ("mediaMotion", "OpenMindAI Motion", "video"),
         ("mediaSpeak", "OpenMindAI Speak", "audio"),
     ] {
-        let report =
-            media_preflight::preflight_for_hardware_fast(root, kind, hardware)?.ok_or_else(|| {
+        let report = media_preflight::preflight_for_hardware_fast(root, kind, hardware)?
+            .ok_or_else(|| {
                 AppError::internal(format!("no media preflight configured for {kind}"))
             })?;
         let detail = report.issue_summary();
@@ -259,17 +259,17 @@ pub fn open_folder_in_root(root: &PortableRootManager, relative: &str) -> Result
 mod tests {
     use super::*;
 
-    fn setup() -> (PortableRootManager, Database) {
+    fn setup() -> (tempfile::TempDir, PortableRootManager, Database) {
         let temp = tempfile::tempdir().unwrap();
         let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
         root.ensure_directories().unwrap();
         let database = Database::open(root.database_path()).unwrap();
-        (root, database)
+        (temp, root, database)
     }
 
     #[test]
     fn healthy_setup_reports_ok_storage_and_database() {
-        let (root, database) = setup();
+        let (_temp, root, database) = setup();
         let hardware = crate::hardware::HardwareProfiler::detect();
         let runtime = LlamaRuntimeManager::new(root.clone());
 
@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn backup_produces_a_valid_openable_database() {
-        let (root, database) = setup();
+        let (_temp, root, database) = setup();
         let info = backup_database(&root, &database).unwrap();
 
         let backup_path = root.resolve_relative("backups").unwrap().join(&info.name);

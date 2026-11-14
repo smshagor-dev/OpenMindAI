@@ -157,6 +157,25 @@ mod tests {
         fs::remove_dir(root.path().join("backups")).unwrap();
     }
 
+    fn replace_parent(parent: &Path, moved: &Path, outside: &Path) -> std::path::PathBuf {
+        match fs::rename(parent, moved) {
+            Ok(()) => {
+                external_link(parent, outside);
+                moved.to_owned()
+            }
+            Err(error) => {
+                #[cfg(windows)]
+                {
+                    assert!(matches!(error.raw_os_error(), Some(5 | 32)), "{error}");
+                    assert!(parent.is_dir());
+                    parent.to_owned()
+                }
+                #[cfg(not(windows))]
+                panic!("directory replacement failed: {error}");
+            }
+        }
+    }
+
     #[test]
     fn parent_path_replacement_cannot_redirect_publication_or_cleanup() {
         let root = tempfile::tempdir().unwrap();
@@ -164,26 +183,20 @@ mod tests {
         let connection = source(&root.path().join("source.db"));
         let root_handle = Dir::open_ambient_dir(root.path(), ambient_authority()).unwrap();
         let directory = open_backups(&root_handle).unwrap();
-        fs::rename(
-            root.path().join("backups"),
-            root.path().join("held-backups"),
-        )
-        .unwrap();
-        external_link(&root.path().join("backups"), outside.path());
+        let parent = root.path().join("backups");
+        let moved = root.path().join("held-backups");
+        let held = replace_parent(&parent, &moved, outside.path());
         let (name, _) = create_at(&connection, &directory, "held", Uuid::new_v4).unwrap();
-        assert_snapshot(&root.path().join("held-backups").join(&name));
+        assert_snapshot(&held.join(&name));
         connection.execute_batch("BEGIN").unwrap();
         assert!(create_at(&connection, &directory, "failure", Uuid::new_v4).is_err());
         connection.execute_batch("ROLLBACK").unwrap();
-        assert_eq!(
-            fs::read_dir(root.path().join("held-backups"))
-                .unwrap()
-                .count(),
-            1
-        );
+        assert_eq!(fs::read_dir(&held).unwrap().count(), 1);
         assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
         #[cfg(windows)]
-        fs::remove_dir(root.path().join("backups")).unwrap();
+        if held == moved {
+            fs::remove_dir(parent).unwrap();
+        }
     }
 
     #[test]
@@ -195,14 +208,15 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         let connection = source(&container.path().join("source.db"));
         let root_handle = Dir::open_ambient_dir(&root, ambient_authority()).unwrap();
-        fs::rename(&root, &moved).unwrap();
-        external_link(&root, outside.path());
+        let held = replace_parent(&root, &moved, outside.path());
         let directory = open_backups(&root_handle).unwrap();
         let (name, _) = create_at(&connection, &directory, "root-held", Uuid::new_v4).unwrap();
-        assert_snapshot(&moved.join("backups").join(name));
+        assert_snapshot(&held.join("backups").join(name));
         assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
         #[cfg(windows)]
-        fs::remove_dir(&root).unwrap();
+        if held == moved {
+            fs::remove_dir(&root).unwrap();
+        }
     }
 
     #[cfg(unix)]
@@ -251,9 +265,10 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         let root_handle = Dir::open_ambient_dir(root.path(), ambient_authority()).unwrap();
         let directory = open_backups(&root_handle).unwrap();
-        fs::rename(root.path().join("backups"), root.path().join("held")).unwrap();
-        external_link(&root.path().join("backups"), outside.path());
-        fs::write(root.path().join("held/existing.db"), b"preserve").unwrap();
+        let parent = root.path().join("backups");
+        let moved = root.path().join("held");
+        let held = replace_parent(&parent, &moved, outside.path());
+        fs::write(held.join("existing.db"), b"preserve").unwrap();
         assert!(publish_at(
             &mut BrokenReader(false),
             &directory,
@@ -262,14 +277,13 @@ mod tests {
             4096
         )
         .is_err());
-        assert_eq!(fs::read_dir(root.path().join("held")).unwrap().count(), 1);
-        assert_eq!(
-            fs::read(root.path().join("held/existing.db")).unwrap(),
-            b"preserve"
-        );
+        assert_eq!(fs::read_dir(&held).unwrap().count(), 1);
+        assert_eq!(fs::read(held.join("existing.db")).unwrap(), b"preserve");
         assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
         #[cfg(windows)]
-        fs::remove_dir(root.path().join("backups")).unwrap();
+        if held == moved {
+            fs::remove_dir(parent).unwrap();
+        }
     }
 
     #[test]

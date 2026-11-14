@@ -1,4 +1,6 @@
-use std::{fs, path::PathBuf};
+#[cfg(test)]
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use serde::Serialize;
@@ -236,7 +238,6 @@ impl<'a> ArtifactRepository<'a> {
             total_count,
         })
     }
-
 }
 
 fn map_artifact(row: &rusqlite::Row<'_>) -> rusqlite::Result<Artifact> {
@@ -280,6 +281,13 @@ pub struct ArtifactManager<'a> {
     root: &'a PortableRootManager,
 }
 
+struct ArtifactDestination {
+    directory: cap_std::fs::Dir,
+    path: PathBuf,
+    filename: String,
+    relative: String,
+}
+
 impl<'a> ArtifactManager<'a> {
     pub fn new(root: &'a PortableRootManager) -> Self {
         Self { root }
@@ -293,6 +301,32 @@ impl<'a> ArtifactManager<'a> {
         filename_hint: Option<&str>,
         fallback_title: &str,
     ) -> Result<(PathBuf, String, String), AppError> {
+        let destination = self.reserve_destination(kind, filename_hint, fallback_title)?;
+        Ok((destination.path, destination.filename, destination.relative))
+    }
+
+    /// Renderers receive a private staging path and retain a confined destination
+    /// handle from reservation through publication; no portable path is reopened.
+    pub fn stage_destination(
+        &self,
+        kind: &str,
+        filename_hint: Option<&str>,
+        fallback_title: &str,
+    ) -> Result<(crate::artifact_output::StagedOutput, String, String), AppError> {
+        let destination = self.reserve_destination(kind, filename_hint, fallback_title)?;
+        let output = crate::artifact_output::StagedOutput::from_reserved(
+            destination.directory,
+            &destination.filename,
+        )?;
+        Ok((output, destination.filename, destination.relative))
+    }
+
+    fn reserve_destination(
+        &self,
+        kind: &str,
+        filename_hint: Option<&str>,
+        fallback_title: &str,
+    ) -> Result<ArtifactDestination, AppError> {
         let subdir = match kind {
             "pdf" | "docx" => "generated/exports",
             "image" => "generated/images",
@@ -300,8 +334,6 @@ impl<'a> ArtifactManager<'a> {
             "video" => "generated/video",
             _ => "generated/files",
         };
-        let dir = self.root.resolve_relative(subdir)?;
-        fs::create_dir_all(&dir)?;
 
         let (stem, extension) = match filename_hint.filter(|hint| !hint.trim().is_empty()) {
             Some(hint) => split_stem_extension(hint, kind),
@@ -316,11 +348,22 @@ impl<'a> ArtifactManager<'a> {
             stem
         };
 
-        let (directory, reservation) = crate::artifact_output::reserve_directory(&dir)?;
+        let (directory, reservation) =
+            crate::artifact_output::reserve_directory(self.root.root(), Path::new(subdir))?;
         let filename = format!("{stem}.{extension}");
-        let path = directory.join(&filename);
+        let path = self
+            .root
+            .root()
+            .join(subdir)
+            .join(&reservation)
+            .join(&filename);
         let relative = format!("{subdir}/{reservation}/{filename}");
-        Ok((path, filename, relative))
+        Ok(ArtifactDestination {
+            directory,
+            path,
+            filename,
+            relative,
+        })
     }
 }
 
@@ -565,9 +608,7 @@ mod tests {
     fn library_paginates_past_200_and_filters_old_documents_before_limit() {
         let database = Database::in_memory().unwrap();
         let chat_repo = crate::chat::ChatRepository::new(&database);
-        let conversation = chat_repo
-            .create_conversation(Some("Archive Chat"))
-            .unwrap();
+        let conversation = chat_repo.create_conversation(Some("Archive Chat")).unwrap();
         let artifacts = ArtifactRepository::new(&database);
 
         for index in 0..225 {
@@ -584,14 +625,22 @@ mod tests {
                     None,
                     &name,
                     &format!("generated/files/{name}"),
-                    if is_pdf { "application/pdf" } else { "image/png" },
+                    if is_pdf {
+                        "application/pdf"
+                    } else {
+                        "image/png"
+                    },
                     kind,
                     "ready",
                 )
                 .unwrap();
             // Deterministic timestamps make the oldest documents appear well
             // after the first 200 newest rows, independent of runner speed.
-            let created = format!("2026-01-01T00:{:02}:{:02}.000+00:00", index / 60, index % 60);
+            let created = format!(
+                "2026-01-01T00:{:02}:{:02}.000+00:00",
+                index / 60,
+                index % 60
+            );
             database
                 .connection()
                 .execute(
@@ -606,12 +655,17 @@ mod tests {
         let mut seen = Vec::new();
         let mut page_count = 0;
         loop {
-            let page = artifacts.list_page(None, None, cursor.as_deref(), 50).unwrap();
+            let page = artifacts
+                .list_page(None, None, cursor.as_deref(), 50)
+                .unwrap();
             assert_eq!(page.total_count, 225);
             assert!(page.entries.len() <= 50);
             page_count += 1;
             for entry in page.entries {
-                assert!(ids.insert(entry.id), "a Library cursor returned a duplicate");
+                assert!(
+                    ids.insert(entry.id),
+                    "a Library cursor returned a duplicate"
+                );
                 seen.push(entry.name);
             }
             match page.next_cursor {
@@ -741,6 +795,31 @@ mod tests {
         assert!(relative.starts_with("generated/exports/"));
         assert!(relative.ends_with("/Quarterly-Research-Summary.pdf"));
     }
+    #[test]
+    fn rendered_destinations_keep_private_staging_and_portable_metadata_separate() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let manager = ArtifactManager::new(&root);
+        let (output, filename, relative) = manager
+            .stage_destination("pdf", Some("Project Report!!.pdf"), "fallback")
+            .unwrap();
+        assert_eq!(filename, "Project-Report.pdf");
+        assert!(relative.starts_with("generated/exports/"));
+        assert!(relative.ends_with("/Project-Report.pdf"));
+        assert_eq!(output.path.file_name().unwrap(), filename.as_str());
+        assert!(!output.path.starts_with(root.root()));
+        let destination = root.resolve_relative(&relative).unwrap();
+        assert!(!destination.exists());
+        fs::write(&output.path, b"%PDF-fixture").unwrap();
+        assert_eq!(output.commit_for("pdf").unwrap(), 12);
+        assert_eq!(fs::read(&destination).unwrap(), b"%PDF-fixture");
+        let private = output.path.clone();
+        drop(output);
+        assert!(!private.exists());
+        assert!(destination.is_file());
+    }
+
     #[test]
     fn reserved_text_outputs_publish_through_portable_capabilities() {
         let dir = tempfile::tempdir().unwrap();
