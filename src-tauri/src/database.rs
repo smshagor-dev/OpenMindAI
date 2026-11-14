@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 #[path = "artifact_cleanup.rs"]
 mod artifact_cleanup;
+#[path = "media_index_cleanup.rs"]
+mod media_index_cleanup;
 
 use chrono::{Duration, Utc};
 use rusqlite::{params, Connection};
@@ -90,10 +92,16 @@ const MIGRATIONS: &[Migration] = &[
         name: "013_project_binary_attachments",
         sql: include_str!("../migrations/013_project_binary_attachments.sql"),
     },
+    Migration {
+        number: 14,
+        name: "014_deleted_media_indexes",
+        sql: include_str!("../migrations/014_deleted_media_indexes.sql"),
+    },
 ];
 
 pub struct Database {
     connection: Connection,
+    media_root: Option<cap_std::fs::Dir>,
 }
 
 impl Database {
@@ -107,7 +115,14 @@ impl Database {
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         register_artifact_cleanup(&connection, artifact_root.clone())?;
-        let mut database = Self { connection };
+        let media_root = artifact_root
+            .as_ref()
+            .map(|root| cap_std::fs::Dir::open_ambient_dir(root, cap_std::ambient_authority()))
+            .transpose()?;
+        let mut database = Self {
+            connection,
+            media_root,
+        };
         database.migrate()?;
         if let Some(root) = artifact_root {
             if let Err(error) = crate::text_artifact_save::recover(database.connection(), &root) {
@@ -121,6 +136,7 @@ impl Database {
         database.recover_interrupted_openagent_steps()?;
         database.recover_interrupted_restore_events()?;
         database.ensure_local_profile()?;
+        database.cleanup_deleted_media_indexes();
         Ok(database)
     }
 
@@ -132,10 +148,21 @@ impl Database {
         // SQL function as a no-op so the production trigger remains testable
         // without granting tests arbitrary filesystem deletion authority.
         register_artifact_cleanup(&connection, None)?;
-        let mut database = Self { connection };
+        let mut database = Self {
+            connection,
+            media_root: None,
+        };
         database.migrate()?;
         database.ensure_local_profile()?;
         Ok(database)
+    }
+
+    pub fn cleanup_deleted_media_indexes(&self) {
+        if let Some(root) = &self.media_root {
+            if let Err(error) = media_index_cleanup::drain(&self.connection, root) {
+                tracing::warn!(%error, "deleted media index cleanup deferred");
+            }
+        }
     }
 
     pub fn connection(&self) -> &Connection {
