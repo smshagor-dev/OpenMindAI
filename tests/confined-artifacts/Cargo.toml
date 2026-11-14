@@ -14,3 +14,6 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3"
 
 lopdf = { version = "=0.44.0", default-features = false }
+
+roxmltree = "=0.21.1"
+zip = { version = "=9.0.4", default-features = false, features = ["deflate-flate2-zlib-rs"] }

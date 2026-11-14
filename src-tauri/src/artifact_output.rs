@@ -1,3 +1,5 @@
+#[path = "docx_integrity.rs"]
+mod docx_integrity;
 #[path = "pdf_integrity.rs"]
 mod pdf_integrity;
 
@@ -102,6 +104,9 @@ impl StagedOutput {
         }
         if kind == "pdf" {
             pdf_integrity::validate(&mut source)?;
+        }
+        if kind == "docx" {
+            docx_integrity::validate(&mut source)?;
         }
         self.publish(source)
     }
@@ -294,9 +299,10 @@ mod tests {
     fn every_rendered_kind_keeps_its_extension_and_publishes_matching_bytes() {
         let root = tempfile::tempdir().unwrap();
         let pdf = pdf_integrity::fixture_pdf();
+        let docx = docx_integrity::fixture_docx();
         for (kind, name, bytes) in [
             ("pdf", "doc.pdf", pdf.as_slice()),
-            ("docx", "doc.docx", &b"PK\x03\x04fixture"[..]),
+            ("docx", "doc.docx", docx.as_slice()),
             ("image", "image.png", &b"\x89PNG\r\n\x1a\nfixture"[..]),
             ("audio", "audio.wav", &b"RIFF0000WAVEfixture"[..]),
             ("video", "video.webm", &b"\x1a\x45\xdf\xa3fixture"[..]),
@@ -326,6 +332,24 @@ mod tests {
             .join("generated")
             .join(id)
             .join("corrupt.pdf")
+            .exists());
+        drop(output);
+        assert!(!private.exists());
+    }
+
+    #[test]
+    fn corrupt_docx_with_correct_magic_is_not_published_and_staging_is_cleaned() {
+        let root = tempfile::tempdir().unwrap();
+        let (dir, id) = reserve_directory(root.path(), Path::new("generated")).unwrap();
+        let output = StagedOutput::from_reserved(dir, "bad.docx").unwrap();
+        let private = output.path.clone();
+        fs::write(&private, b"PK\x03\x04fake").unwrap();
+        assert!(output.commit_for("docx").is_err());
+        assert!(!root
+            .path()
+            .join("generated")
+            .join(id)
+            .join("bad.docx")
             .exists());
         drop(output);
         assert!(!private.exists());
