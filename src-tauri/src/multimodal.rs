@@ -477,7 +477,7 @@ pub(crate) async fn create_soundscape_artifact(
         "preparing OpenMindAI Soundscape generation"
     );
 
-    let (artifact, path) = {
+    let (artifact, output) = {
         let db = state
             .database
             .lock()
@@ -487,8 +487,8 @@ pub(crate) async fn create_soundscape_artifact(
             .map(|conversation| conversation.title)
             .unwrap_or_else(|_| "soundscape".to_string());
         let manager = ArtifactManager::new(&state.root);
-        let (path, filename, relative) =
-            manager.resolve_destination("audio", Some("soundscape.wav"), &fallback_title)?;
+        let (output, filename, relative) =
+            manager.stage_destination("audio", Some("soundscape.wav"), &fallback_title)?;
         let artifacts = ArtifactRepository::new(&db);
         let artifact = artifacts.create(
             &conversation_id,
@@ -499,10 +499,9 @@ pub(crate) async fn create_soundscape_artifact(
             "audio",
             "generating",
         )?;
-        (artifact, path)
+        (artifact, output)
     };
 
-    let output = crate::artifact_output::StagedOutput::new(&path);
     let path = output.path.clone();
     app.emit("artifact:started", &artifact)
         .map_err(|error| AppError::internal(error.to_string()))?;

@@ -636,7 +636,7 @@ async fn create_document_artifact(
         ));
     }
 
-    let (artifact, path, document_title) = {
+    let (artifact, output, document_title) = {
         let db = state
             .database
             .lock()
@@ -648,8 +648,8 @@ async fn create_document_artifact(
                 .unwrap_or_else(|_| "document".to_string())
         });
         let manager = ArtifactManager::new(&state.root);
-        let (path, filename_final, relative) =
-            manager.resolve_destination(&kind, filename.as_deref(), &fallback_title)?;
+        let (output, filename_final, relative) =
+            manager.stage_destination(&kind, filename.as_deref(), &fallback_title)?;
         let artifacts = ArtifactRepository::new(&db);
         let artifact = artifacts.create(
             &conversation_id,
@@ -661,10 +661,9 @@ async fn create_document_artifact(
             "generating",
         )?;
         let document_title = title.unwrap_or_else(|| artifact.name.clone());
-        (artifact, path, document_title)
+        (artifact, output, document_title)
     };
 
-    let output = crate::artifact_output::StagedOutput::new(&path);
     let path = output.path.clone();
     app.emit("artifact:started", &artifact)
         .map_err(|error| app_error::AppError::internal(error.to_string()))?;
@@ -767,7 +766,7 @@ async fn create_generation_artifact(
     if let Some(report) = media_report {
         report.ensure_ready()?;
     }
-    let (artifact, path) = {
+    let (artifact, output) = {
         let db = state
             .database
             .lock()
@@ -777,8 +776,8 @@ async fn create_generation_artifact(
             .map(|conversation| conversation.title)
             .unwrap_or_else(|_| "generation".to_string());
         let manager = ArtifactManager::new(&state.root);
-        let (path, filename_final, relative) =
-            manager.resolve_destination(artifact_kind, None, &fallback_title)?;
+        let (output, filename_final, relative) =
+            manager.stage_destination(artifact_kind, None, &fallback_title)?;
         let artifacts = ArtifactRepository::new(&db);
         let artifact = artifacts.create(
             &conversation_id,
@@ -789,7 +788,7 @@ async fn create_generation_artifact(
             artifact_kind,
             "generating",
         )?;
-        (artifact, path)
+        (artifact, output)
     };
 
     let image_job = if kind == "image" {
@@ -798,7 +797,6 @@ async fn create_generation_artifact(
         None
     };
 
-    let output = crate::artifact_output::StagedOutput::new(&path);
     let path = output.path.clone();
     app.emit("artifact:started", &artifact)
         .map_err(|error| app_error::AppError::internal(error.to_string()))?;
