@@ -229,6 +229,47 @@ impl ImageRenderOptions {
     }
 }
 
+// Renderer stdout/stderr is untrusted and may echo the user's private prompt.
+// Redact before returning diagnostics to the UI; argv exposure is tracked separately.
+fn redact_renderer_diagnostics(detail: String, secrets: &[&str]) -> String {
+    let mut safe = detail;
+    for secret in secrets {
+        if !secret.is_empty() {
+            safe = safe.replace(secret, "[redacted prompt]");
+        }
+    }
+    safe
+}
+
+#[cfg(test)]
+mod renderer_diagnostic_privacy_tests {
+    use super::redact_renderer_diagnostics;
+
+    #[test]
+    fn removes_image_and_negative_prompt_from_renderer_errors() {
+        let prompt = "SENTINEL private image request";
+        let negative = "SENTINEL private negative request";
+        let stderr = format!("failed for {prompt}; negative={negative}");
+        let sanitized = redact_renderer_diagnostics(stderr, &[prompt, negative]);
+        assert!(!sanitized.contains("SENTINEL"));
+        assert!(sanitized.contains("[redacted prompt]"));
+    }
+
+    #[test]
+    fn empty_secret_does_not_modify_diagnostics() {
+        assert_eq!(redact_renderer_diagnostics("failed".into(), &[""]), "failed");
+    }
+
+    #[test]
+    fn video_prompt_is_removed_from_renderer_errors() {
+        let prompt = "SENTINEL video context";
+        let sanitized = redact_renderer_diagnostics(
+            format!("renderer rejected {prompt}"), &[prompt],
+        );
+        assert!(!sanitized.contains(prompt));
+    }
+}
+
 // Keep the render's independent progress callback alongside its existing inputs.
 #[allow(clippy::too_many_arguments)]
 pub async fn generate_image(
@@ -357,7 +398,10 @@ pub async fn generate_image(
     })?;
 
     if !output.status.success() {
-        let detail = process_error_detail(&output.stdout, &output.stderr);
+        let detail = redact_renderer_diagnostics(
+            process_error_detail(&output.stdout, &output.stderr),
+            &[prompt, options.negative_prompt.as_deref().unwrap_or("").trim()],
+        );
         return Err(AppError::ArtifactGenerationFailed(format!(
             "stable-diffusion.cpp exited with {}: {detail}",
             output.status
@@ -500,7 +544,10 @@ pub async fn generate_video(
     })?;
 
     if !output.status.success() {
-        let detail = process_error_detail(&output.stdout, &output.stderr);
+        let detail = redact_renderer_diagnostics(
+            process_error_detail(&output.stdout, &output.stderr),
+            &[prompt],
+        );
         return Err(AppError::ArtifactGenerationFailed(format!(
             "stable-diffusion.cpp video generation exited with {}: {detail}",
             output.status
