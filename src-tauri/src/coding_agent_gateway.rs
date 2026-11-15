@@ -316,6 +316,7 @@ fn reason_phrase(status: u16) -> &'static str {
         411 => "Length Required",
         413 => "Payload Too Large",
         431 => "Request Header Fields Too Large",
+        501 => "Not Implemented",
         502 => "Bad Gateway",
         503 => "Service Unavailable",
         _ => "Internal Server Error",
@@ -502,6 +503,23 @@ fn models(app: &AppHandle) -> Result<HttpResponse, AppError> {
     })))
 }
 
+/// This gateway currently returns one buffered JSON completion. Reject SSE
+/// requests before model selection or any cloud/local upstream invocation;
+/// falsely returning JSON to a streaming client violates its wire protocol.
+fn streaming_mode_error(request: &Map<String, Value>) -> Option<HttpResponse> {
+    match request.get("stream") {
+        None | Some(Value::Bool(false)) => None,
+        Some(Value::Bool(true)) => Some(HttpResponse::error(
+            501,
+            "Streaming chat completions (stream: true, SSE) are not implemented by this local coding-agent gateway. Retry with stream: false for one JSON response.",
+        )),
+        Some(_) => Some(HttpResponse::error(
+            400,
+            "stream must be a JSON boolean (true or false)",
+        )),
+    }
+}
+
 async fn chat(app: &AppHandle, raw_body: &[u8]) -> Result<HttpResponse, AppError> {
     let Ok(Value::Object(request)) = serde_json::from_slice::<Value>(raw_body) else {
         return Ok(HttpResponse::error(
@@ -514,6 +532,9 @@ async fn chat(app: &AppHandle, raw_body: &[u8]) -> Result<HttpResponse, AppError
     };
     if messages.is_empty() {
         return Ok(HttpResponse::error(400, "messages must not be empty"));
+    }
+    if let Some(error) = streaming_mode_error(&request) {
+        return Ok(error);
     }
     let (mode, enabled) = coding_execution_preferences(app)?;
     if !enabled {
@@ -820,6 +841,33 @@ async fn post_with_retry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn streaming_requests_fail_explicitly_before_any_upstream_call() {
+        let absent = Map::new();
+        assert!(streaming_mode_error(&absent).is_none());
+        let mut request = Map::new();
+        request.insert("stream".to_string(), json!(false));
+        assert!(streaming_mode_error(&request).is_none());
+
+        request.insert("stream".to_string(), json!(true));
+        let response = streaming_mode_error(&request).unwrap();
+        assert_eq!(response.status, 501);
+        assert_eq!(reason_phrase(response.status), "Not Implemented");
+        let message = response.body["error"]["message"].as_str().unwrap();
+        assert!(message.contains("stream: true"));
+        assert!(message.contains("stream: false"));
+
+        for bad in [json!("true"), json!(null), json!(1), json!({})] {
+            request.insert("stream".to_string(), bad);
+            let response = streaming_mode_error(&request).unwrap();
+            assert_eq!(response.status, 400);
+            assert!(response.body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("boolean"));
+        }
+    }
 
     #[test]
     fn parses_request_head_with_lowercase_headers() {
