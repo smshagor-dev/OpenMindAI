@@ -1,5 +1,7 @@
 use std::{
     fs,
+    future::Future,
+    io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -224,6 +226,7 @@ impl RuntimeInstaller {
             .as_ref()
         {
             token.cancel();
+            self.set_state(RuntimeInstallState::Cancelled, None)?;
         }
         self.status()
     }
@@ -249,18 +252,20 @@ impl RuntimeInstaller {
 
         let os = target_os();
         let arch = target_arch();
-        let releases =
-            match fetch_recent_releases(&self.client).await {
-                Ok(releases) => releases,
-                Err(error) => {
-                    *self.cancel_token.lock().map_err(|_| {
-                        AppError::internal("runtime install cancel lock poisoned")
-                    })? = None;
-                    let message = error.to_string();
-                    self.set_state(RuntimeInstallState::Failed, Some(message))?;
-                    return Err(error);
+        let releases = match cancelable(&token, fetch_recent_releases(&self.client)).await {
+            Ok(releases) => releases,
+            Err(error) => {
+                *self.cancel_token.lock().map_err(|_| {
+                    AppError::internal("runtime install cancel lock poisoned")
+                })? = None;
+                if token.is_cancelled() {
+                    self.set_state(RuntimeInstallState::Cancelled, None)?;
+                } else {
+                    self.set_state(RuntimeInstallState::Failed, Some(error.to_string()))?;
                 }
-            };
+                return Err(error);
+            }
+        };
         let mut last_error: Option<AppError> = None;
         for backend in preferred_backend_order(hardware) {
             let Some(pattern) = catalog_pattern(os, arch, &backend) else {
@@ -314,6 +319,7 @@ impl RuntimeInstaller {
         releases: &[GithubRelease],
         token: &CancellationToken,
     ) -> Result<RuntimeInstallStatus, AppError> {
+        check_cancel(token)?;
         self.update_status(|status| {
             status.state = RuntimeInstallState::Resolving;
             status.backend = Some(backend.clone());
@@ -383,6 +389,7 @@ impl RuntimeInstaller {
             )));
         }
 
+        check_cancel(token)?;
         self.set_state(RuntimeInstallState::Verifying, None)?;
         let part_size = fs::metadata(&part_path)?.len();
         if part_size != asset.size {
@@ -402,14 +409,31 @@ impl RuntimeInstaller {
             )));
         }
 
+        check_cancel(token)?;
         fs::rename(&part_path, &archive_path)?;
 
         self.set_state(RuntimeInstallState::Extracting, None)?;
         let staging_dir = temp_dir.join(format!("{}.extract", asset.name));
         ensure_contained(self.root.root(), &staging_dir)?;
-        let installed = install_runtime_archive(&archive_path, &staging_dir, &install_dir);
+        // Extraction is CPU/IO-heavy and synchronous: run it off Tokio's
+        // executor so the Cancel command can arrive during archive reads.
+        let install_token = token.clone();
+        let archive_for_worker = archive_path.clone();
+        let staging_for_worker = staging_dir.clone();
+        let destination_for_worker = install_dir.clone();
+        let installed = tokio::task::spawn_blocking(move || {
+            install_runtime_archive(
+                &archive_for_worker,
+                &staging_for_worker,
+                &destination_for_worker,
+                &install_token,
+            )
+        })
+        .await
+        .map_err(|error| AppError::internal(format!("runtime extraction task failed: {error}")))?;
         fs::remove_file(&archive_path).ok();
         installed?;
+        check_cancel(token)?;
 
         let server = find_binary(&install_dir, "llama-server");
         let cli = find_binary(&install_dir, "llama-cli");
@@ -437,12 +461,14 @@ impl RuntimeInstaller {
             status: RuntimeStatus::Available,
         };
         let manifest_path = manifest_dir.join(format!("llama-{slug}-{}.json", release.tag_name));
+        check_cancel(token)?;
         fs::write(
             &manifest_path,
             serde_json::to_string_pretty(&manifest)
                 .map_err(|error| AppError::internal(error.to_string()))?,
         )?;
 
+        check_cancel(token)?;
         self.update_status(|status| {
             status.state = RuntimeInstallState::Completed;
             status.percentage = Some(100.0);
@@ -472,6 +498,56 @@ impl RuntimeInstaller {
     }
 }
 
+fn cancellation_error() -> AppError {
+    AppError::RuntimeInstallFailed("runtime install cancelled".to_string())
+}
+
+fn check_cancel(token: &CancellationToken) -> Result<(), AppError> {
+    if token.is_cancelled() {
+        Err(cancellation_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Await release lookup without blocking Cancel on a slow HTTP request.
+async fn cancelable<T>(
+    token: &CancellationToken,
+    future: impl Future<Output = Result<T, AppError>>,
+) -> Result<T, AppError> {
+    tokio::select! {
+        biased;
+        _ = token.cancelled() => Err(cancellation_error()),
+        result = future => result,
+    }
+}
+
+/// A compressed archive may be several gigabytes. Checking the token at each
+/// source read/seek lets ZIP and tar extraction stop without waiting for
+/// the whole archive, even when all work is on a blocking executor thread.
+struct CancellationReader<R> {
+    inner: R,
+    token: CancellationToken,
+}
+
+impl<R: Read> Read for CancellationReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.token.is_cancelled() {
+            return Err(io::Error::other("runtime install cancelled"));
+        }
+        self.inner.read(buf)
+    }
+}
+
+impl<R: Seek> Seek for CancellationReader<R> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        if self.token.is_cancelled() {
+            return Err(io::Error::other("runtime install cancelled"));
+        }
+        self.inner.seek(pos)
+    }
+}
+
 async fn fetch_recent_releases(client: &Client) -> Result<Vec<GithubRelease>, AppError> {
     crate::net::send_with_retry(
         || {
@@ -498,12 +574,15 @@ fn install_runtime_archive(
     archive_path: &Path,
     staging_dir: &Path,
     install_dir: &Path,
+    token: &CancellationToken,
 ) -> Result<(), AppError> {
+    check_cancel(token)?;
     if staging_dir.exists() {
         fs::remove_dir_all(staging_dir)?;
     }
     fs::create_dir_all(staging_dir)?;
-    let staged = extract_archive(archive_path, staging_dir).and_then(|()| {
+    let staged = extract_archive(archive_path, staging_dir, token).and_then(|()| {
+        check_cancel(token)?;
         if has_runtime_binary(staging_dir) {
             Ok(())
         } else {
@@ -513,6 +592,11 @@ fn install_runtime_archive(
         }
     });
     if let Err(error) = staged {
+        fs::remove_dir_all(staging_dir).ok();
+        return Err(error);
+    }
+
+    if let Err(error) = check_cancel(token) {
         fs::remove_dir_all(staging_dir).ok();
         return Err(error);
     }
@@ -528,6 +612,9 @@ fn install_runtime_archive(
     if let Some(parent) = install_dir.parent() {
         fs::create_dir_all(parent)?;
     }
+    // Promotion follows a final cancellation check; a canceled extraction
+    // must never replace a working installation.
+    check_cancel(token)?;
     fs::rename(staging_dir, install_dir)?;
     Ok(())
 }
@@ -537,14 +624,23 @@ fn has_runtime_binary(dir: &Path) -> bool {
     find_binary(dir, "llama-server").is_some()
 }
 
-fn extract_archive(archive_path: &Path, dest_dir: &Path) -> Result<(), AppError> {
+fn extract_archive(
+    archive_path: &Path,
+    dest_dir: &Path,
+    token: &CancellationToken,
+) -> Result<(), AppError> {
+    check_cancel(token)?;
     let name = archive_path
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("");
     if name.ends_with(".zip") {
         let file = fs::File::open(archive_path)?;
-        let mut archive = zip::ZipArchive::new(file)
+        let reader = CancellationReader {
+            inner: file,
+            token: token.clone(),
+        };
+        let mut archive = zip::ZipArchive::new(reader)
             .map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?;
         validate_runtime_zip_archive(
             &mut archive,
@@ -554,11 +650,17 @@ fn extract_archive(archive_path: &Path, dest_dir: &Path) -> Result<(), AppError>
         archive
             .extract(dest_dir)
             .map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?;
+        check_cancel(token)?;
     } else if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
         let file = fs::File::open(archive_path)?;
-        let decoder = flate2::read::GzDecoder::new(file);
+        let reader = CancellationReader {
+            inner: file,
+            token: token.clone(),
+        };
+        let decoder = flate2::read::GzDecoder::new(reader);
         let mut archive = tar::Archive::new(decoder);
         archive.unpack(dest_dir)?;
+        check_cancel(token)?;
     } else {
         return Err(AppError::RuntimeInstallFailed(format!(
             "unsupported archive format: {name}"
@@ -680,6 +782,73 @@ fn ensure_executable(_path: &Path) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancel_interrupts_pending_release_lookup() {
+        let token = CancellationToken::new();
+        token.cancel();
+        let pending = std::future::pending::<Result<(), AppError>>();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            cancelable(&token, pending),
+        )
+        .await
+        .expect("cancellation must unblock the metadata lookup");
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+    }
+
+    #[test]
+    fn cancelled_compressed_reader_rejects_reads_and_seeks() {
+        let token = CancellationToken::new();
+        let mut reader = CancellationReader {
+            inner: std::io::Cursor::new(b"fixture".to_vec()),
+            token: token.clone(),
+        };
+        let mut data = [0_u8; 3];
+        assert_eq!(reader.read(&mut data).unwrap(), 3);
+        token.cancel();
+        assert!(reader.read(&mut data).is_err());
+        assert!(reader.seek(SeekFrom::Start(0)).is_err());
+    }
+
+    #[test]
+    fn cancelling_before_extraction_preserves_existing_runtime_and_no_staging() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("runtime.zip");
+        zip_with(&archive, &[("llama-server.exe", b"new runtime")]);
+        let install = temp.path().join("installed");
+        fs::create_dir(&install).unwrap();
+        fs::write(install.join("llama-server.exe"), b"current runtime").unwrap();
+        let stage = temp.path().join("stage");
+        let token = CancellationToken::new();
+        token.cancel();
+        assert!(install_runtime_archive(&archive, &stage, &install, &token).is_err());
+        assert_eq!(fs::read(install.join("llama-server.exe")).unwrap(), b"current runtime");
+        assert!(!stage.exists());
+    }
+
+    #[test]
+    fn cancelled_zip_and_tar_extraction_rejects_private_staging() {
+        let temp = tempfile::tempdir().unwrap();
+        let zip = temp.path().join("runtime.zip");
+        zip_with(&zip, &[("llama-server.exe", b"server")]);
+        let token = CancellationToken::new();
+        token.cancel();
+        assert!(extract_archive(&zip, &temp.path().join("zip-stage"), &token).is_err());
+
+        let tar = temp.path().join("runtime.tar.gz");
+        let file = fs::File::create(&tar).unwrap();
+        let writer = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut builder = tar::Builder::new(writer);
+        let content = b"server";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(content.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        builder.append_data(&mut header, "llama-server", &content[..]).unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+        assert!(extract_archive(&tar, &temp.path().join("tar-stage"), &token).is_err());
+    }
 
     fn test_asset(name: &str, digest: Option<&str>) -> GithubAsset {
         GithubAsset {
@@ -856,7 +1025,7 @@ mod tests {
         let staging = temp.path().join("temp/runtime.zip.extract");
         let install = temp.path().join("runtimes/llama/vulkan/b1");
 
-        install_runtime_archive(&archive, &staging, &install).unwrap();
+        install_runtime_archive(&archive, &staging, &install, &CancellationToken::new()).unwrap();
 
         assert!(install.join("bin/llama-server.exe").is_file());
         assert!(!staging.exists(), "staging directory must not be left behind");
@@ -870,7 +1039,7 @@ mod tests {
         let staging = temp.path().join("staging");
         let install = temp.path().join("runtimes/llama/vulkan/b1");
 
-        assert!(install_runtime_archive(&archive, &staging, &install).is_err());
+        assert!(install_runtime_archive(&archive, &staging, &install, &CancellationToken::new()).is_err());
         assert!(!install.exists());
         assert!(!staging.exists());
     }
@@ -883,7 +1052,7 @@ mod tests {
         let staging = temp.path().join("staging");
         let install = temp.path().join("runtimes/llama/vulkan/b1");
 
-        let error = install_runtime_archive(&archive, &staging, &install)
+        let error = install_runtime_archive(&archive, &staging, &install, &CancellationToken::new())
             .unwrap_err()
             .to_string();
 
@@ -899,7 +1068,7 @@ mod tests {
         zip_with(&archive, &[("bin/llama-cli.exe", b"cli")]);
         let target = temp.path().join("runtimes/llama/cpu/b1");
         let staged = temp.path().join("staged");
-        assert!(install_runtime_archive(&archive, &staged, &target).is_err());
+        assert!(install_runtime_archive(&archive, &staged, &target, &CancellationToken::new()).is_err());
         assert!(!target.exists());
         assert!(!staged.exists());
     }
@@ -914,7 +1083,7 @@ mod tests {
         zip_with(&archive, &[("llama-server.exe", b"freshly downloaded")]);
         let staging = temp.path().join("staging");
 
-        install_runtime_archive(&archive, &staging, &install).unwrap();
+        install_runtime_archive(&archive, &staging, &install, &CancellationToken::new()).unwrap();
 
         assert_eq!(
             fs::read(install.join("llama-server.exe")).unwrap(),
@@ -932,7 +1101,7 @@ mod tests {
         let archive = temp.path().join("runtime.zip");
         zip_with(&archive, &[("llama-server.exe", b"server")]);
 
-        install_runtime_archive(&archive, &temp.path().join("staging"), &install).unwrap();
+        install_runtime_archive(&archive, &temp.path().join("staging"), &install, &CancellationToken::new()).unwrap();
 
         assert!(install.join("llama-server.exe").is_file());
         assert!(!install.join("partial.dll").exists());
@@ -1000,7 +1169,7 @@ mod tests {
         }
         let dest = temp.path().join("extracted");
         fs::create_dir_all(&dest).unwrap();
-        extract_archive(&archive_path, &dest).unwrap();
+        extract_archive(&archive_path, &dest, &CancellationToken::new()).unwrap();
         assert!(dest.join("bin").join("llama-server.exe").is_file());
     }
 
@@ -1024,7 +1193,7 @@ mod tests {
         }
         let dest = temp.path().join("extracted");
         fs::create_dir_all(&dest).unwrap();
-        extract_archive(&archive_path, &dest).unwrap();
+        extract_archive(&archive_path, &dest, &CancellationToken::new()).unwrap();
         assert!(dest.join("bin").join("llama-server").is_file());
     }
 
