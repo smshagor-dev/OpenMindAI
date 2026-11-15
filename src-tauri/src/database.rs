@@ -136,6 +136,14 @@ impl Database {
         database.recover_interrupted_openagent_steps()?;
         database.recover_interrupted_restore_events()?;
         database.ensure_local_profile()?;
+        if let Some(root) = &database.media_root {
+            if let Err(error) = media_index_cleanup::queue_legacy_orphans(
+                database.connection(),
+                root,
+            ) {
+                tracing::warn!(%error, "legacy media index discovery deferred");
+            }
+        }
         database.cleanup_deleted_media_indexes();
         Ok(database)
     }
