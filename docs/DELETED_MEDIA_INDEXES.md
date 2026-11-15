@@ -32,17 +32,20 @@ errors log a warning and can be retried on a subsequent open. Enumeration can
 take time for large legacy directories; SQLite writer locks are held only for
 each bounded liveness/queue batch, not the entire directory scan.
 
-Four focused new regressions cover legacy orphan recovery and shared preservation,
-rollback, multi-batch recovery/idempotence and Unix symlink safety. These were
-added but not locally compiled or run; three-OS CI is required.
+Five focused new regressions cover legacy orphan recovery and shared preservation,
+rollback, multi-batch recovery/idempotence, cross-connection writer exclusion and
+Unix symlink safety. These were added but not locally compiled or run; three-OS
+CI is required.
 
 ## Remaining work and retention limits
 
 This is deliberately partial; keep #362 OPEN. Content-addressed image blobs remain
 on disk, including shared images and unreferenced images. Safe reference accounting,
 unreferenced blob discovery, failed-upload blob rollback and branch-copy media
-semantics still need implementation/tests. Pre-migration deleted indexes are now discovered on startup when enumeration succeeds. Other delete entry points are captured by the trigger but
-may await restart for cleanup if they do not invoke the repository drain methods.
+semantics still need implementation/tests. Pre-migration deleted indexes are now
+queued at startup when enumeration succeeds. Other delete entry points are
+captured by the trigger but may await restart when they do not call repository
+drain methods.
 
 Tombstones are retained to retry late publication by older processes and crashes;
 they contain IDs only but grow indefinitely, and draining currently scans them all

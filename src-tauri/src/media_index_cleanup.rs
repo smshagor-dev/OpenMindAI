@@ -207,8 +207,10 @@ mod tests {
     #[test]
     fn legacy_discovery_never_queues_uncommitted_deletion() {
         let (temp, db, root) = fixture();
-        db.execute_batch("BEGIN IMMEDIATE; DELETE FROM messages WHERE id='00000000-0000-4000-8000-000000000001';")
-            .unwrap();
+        db.execute_batch(
+            "BEGIN IMMEDIATE; DELETE FROM messages WHERE id='00000000-0000-4000-8000-000000000001';",
+        )
+        .unwrap();
         assert_eq!(queue_legacy_orphans(&db, &root).unwrap(), 0);
         db.execute_batch("ROLLBACK").unwrap();
         assert!(index(&temp, A));
@@ -239,6 +241,26 @@ mod tests {
         assert!(index(&temp, B));
     }
 
+    #[test]
+    fn legacy_recovery_waits_for_cross_connection_writer_before_queueing() {
+        let (temp, db, root) = fixture();
+        fs::write(
+            temp.path().join(format!("data/media-index/{C}.json")),
+            b"untracked",
+        )
+        .unwrap();
+        let writer = Connection::open(temp.path().join("test.db")).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+        db.busy_timeout(std::time::Duration::ZERO).unwrap();
+        assert!(queue_legacy_orphans(&db, &root).is_err());
+        assert!(!tombstone(&db, C));
+        assert!(index(&temp, C));
+        writer.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(queue_legacy_orphans(&db, &root).unwrap(), 1);
+        drain(&db, &root).unwrap();
+        assert!(!index(&temp, C));
+    }
+
     #[cfg(unix)]
     #[test]
     fn legacy_orphan_symlink_is_unlinked_without_following_external_target() {
@@ -253,7 +275,10 @@ mod tests {
         .unwrap();
         assert_eq!(queue_legacy_orphans(&db, &root).unwrap(), 1);
         drain(&db, &root).unwrap();
-        assert!(fs::symlink_metadata(temp.path().join(format!("data/media-index/{C}.json"))).is_err());
+        assert!(
+            fs::symlink_metadata(temp.path().join(format!("data/media-index/{C}.json")))
+                .is_err()
+        );
         assert_eq!(fs::read(target).unwrap(), b"must survive");
     }
 
