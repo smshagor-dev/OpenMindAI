@@ -357,7 +357,7 @@ pub async fn generate_image(
     })?;
 
     if !output.status.success() {
-        let detail = process_error_detail(&output.stdout, &output.stderr);
+        let detail = process_error_detail(&output.stdout, &output.stderr, &[prompt, options.negative_prompt.as_deref().unwrap_or("")]);
         return Err(AppError::ArtifactGenerationFailed(format!(
             "stable-diffusion.cpp exited with {}: {detail}",
             output.status
@@ -500,7 +500,7 @@ pub async fn generate_video(
     })?;
 
     if !output.status.success() {
-        let detail = process_error_detail(&output.stdout, &output.stderr);
+        let detail = process_error_detail(&output.stdout, &output.stderr, &[prompt]);
         return Err(AppError::ArtifactGenerationFailed(format!(
             "stable-diffusion.cpp video generation exited with {}: {detail}",
             output.status
@@ -1228,13 +1228,18 @@ fn parse_sampling_step(line: &str, expected_total: u32) -> Option<u32> {
     None
 }
 
-fn process_error_detail(stdout: &[u8], stderr: &[u8]) -> String {
+fn process_error_detail(stdout: &[u8], stderr: &[u8], sensitive: &[&str]) -> String {
     let mut combined = String::from_utf8_lossy(stderr).trim().to_string();
     if combined.is_empty() {
         combined = String::from_utf8_lossy(stdout).trim().to_string();
     }
     if combined.is_empty() {
         return "no process output".to_string();
+    }
+    // The renderer may echo its command line or input on failure. Scrub before
+    // truncating, otherwise the truncated suffix could expose prompt fragments.
+    for secret in sensitive.iter().copied().filter(|secret| !secret.is_empty()) {
+        combined = combined.replace(secret, "[redacted prompt]");
     }
     let chars = combined.chars().collect::<Vec<_>>();
     let start = chars.len().saturating_sub(4_000);
@@ -1275,6 +1280,23 @@ fn hide_console_window(_command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn renderer_errors_redact_private_prompts_before_display() {
+        let prompt = "private sentinel image request";
+        let negative = "private negative sentinel";
+        let stderr = format!("error: -p {prompt} --negative-prompt {negative}");
+        let detail = process_error_detail(b"", stderr.as_bytes(), &[prompt, negative]);
+        assert!(!detail.contains(prompt));
+        assert!(!detail.contains(negative));
+        assert!(detail.contains("[redacted prompt]"));
+    }
+
+    #[test]
+    fn renderer_errors_keep_non_sensitive_diagnostics() {
+        assert_eq!(process_error_detail(b"missing model", b"", &["secret"]), "missing model");
+    }
+
+
     use crate::hardware::{BackendProfile, CpuProfile, GpuInfo, MemoryProfile};
 
     fn hardware(vendor: Option<GpuVendor>, vram: Option<u64>) -> HardwareProfile {
