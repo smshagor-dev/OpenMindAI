@@ -152,6 +152,31 @@ test("complete small scanned document preserves OCR and representative vision be
   fx.assertClean();
 });
 
+
+test("OCR stops after the first full text-budget batch and reports unread later pages", async () => {
+  const fx = fixture(12, () => "", async (_command, { pages }) =>
+    pages.map(page => ({ pageNumber: page.pageNumber, text: "X".repeat(25_000) })));
+  const result = await extractPdfText(file);
+  assert.equal(fx.calls.length, 1, "no second OCR invocation after text budget is filled");
+  assert.deepEqual(fx.calls[0], [1, 2, 3, 4]);
+  assert.deepEqual(result.unreadPages, [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  assert(result.truncated);
+  assert.match(result.warnings.join(" "), /PDF text budget reached/);
+  assert(result.text.length <= 20_000);
+  assert.equal(result.visionPages.length, 0);
+  fx.assertClean();
+});
+
+test("short OCR output continues into later batches", async () => {
+  const fx = fixture(10, () => "", async (_command, { pages }) =>
+    pages.map(page => ({ pageNumber: page.pageNumber, text: "short text" })));
+  const result = await extractPdfText(file);
+  assert.equal(fx.calls.length, 3);
+  assert.equal(result.unreadPages.length, 0);
+  assert(!result.warnings.some(warning => warning.includes("text budget reached")));
+  fx.assertClean();
+});
+
 test.after(async () => {
   globalThis.document = originalDocument;
   delete globalThis.__pdf;
