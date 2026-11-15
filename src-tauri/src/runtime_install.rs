@@ -303,6 +303,10 @@ impl RuntimeInstaller {
             .cancel_token
             .lock()
             .map_err(|_| AppError::internal("runtime install cancel lock poisoned"))? = None;
+        if token.is_cancelled() {
+            self.set_state(RuntimeInstallState::Cancelled, None)?;
+            return Err(cancellation_error());
+        }
         let message = last_error
             .map(|error| error.to_string())
             .unwrap_or_else(|| {
@@ -613,8 +617,11 @@ fn install_runtime_archive(
         fs::create_dir_all(parent)?;
     }
     // Promotion follows a final cancellation check; a canceled extraction
-    // must never replace a working installation.
-    check_cancel(token)?;
+    // must never replace a working installation or leave staged files behind.
+    if let Err(error) = check_cancel(token) {
+        fs::remove_dir_all(staging_dir).ok();
+        return Err(error);
+    }
     fs::rename(staging_dir, install_dir)?;
     Ok(())
 }
@@ -823,7 +830,10 @@ mod tests {
         let token = CancellationToken::new();
         token.cancel();
         assert!(install_runtime_archive(&archive, &stage, &install, &token).is_err());
-        assert_eq!(fs::read(install.join("llama-server.exe")).unwrap(), b"current runtime");
+        assert_eq!(
+            fs::read(install.join("llama-server.exe")).unwrap(),
+            b"current runtime"
+        );
         assert!(!stage.exists());
     }
 
@@ -845,7 +855,9 @@ mod tests {
         header.set_size(content.len() as u64);
         header.set_mode(0o755);
         header.set_cksum();
-        builder.append_data(&mut header, "llama-server", &content[..]).unwrap();
+        builder
+            .append_data(&mut header, "llama-server", &content[..])
+            .unwrap();
         builder.into_inner().unwrap().finish().unwrap();
         assert!(extract_archive(&tar, &temp.path().join("tar-stage"), &token).is_err());
     }
