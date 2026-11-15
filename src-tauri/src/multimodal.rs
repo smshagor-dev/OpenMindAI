@@ -116,7 +116,30 @@ pub(crate) async fn send_multimodal_chat_message(
         (user, assistant)
     };
 
-    if let Err(error) = save_media_index(&state.root, &user.id, &persisted) {
+    let index_result = (|| {
+        let db = state
+            .database
+            .lock()
+            .map_err(|_| AppError::internal("database lock poisoned"))?;
+        let tx = db.connection().unchecked_transaction()?;
+        // Take the SQLite writer lock before testing liveness, including across
+        // processes. Deletion cannot commit between this check and publication.
+        tx.execute("UPDATE messages SET id = id WHERE id = ?1", [&user.id])?;
+        let live: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM messages WHERE id = ?1)",
+            [&user.id],
+            |row| row.get(0),
+        )?;
+        if !live {
+            return Err(AppError::internal(
+                "message was deleted before media publication",
+            ));
+        }
+        save_media_index(&state.root, &user.id, &persisted)?;
+        tx.commit()?;
+        Ok::<(), AppError>(())
+    })();
+    if let Err(error) = index_result {
         let db = state
             .database
             .lock()

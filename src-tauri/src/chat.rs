@@ -314,6 +314,7 @@ impl<'a> ChatRepository<'a> {
         if changed == 0 {
             return Err(AppError::internal(format!("conversation not found: {id}")));
         }
+        self.database.cleanup_deleted_media_indexes();
         Ok(())
     }
 
@@ -558,6 +559,7 @@ impl<'a> ChatRepository<'a> {
                 "message not found: {message_id}"
             )));
         }
+        self.database.cleanup_deleted_media_indexes();
         Ok(())
     }
 
@@ -634,6 +636,33 @@ fn map_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durable_database_deletes_message_indexes_and_retries_after_reopen() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("data/database/openmind_ai.db");
+        let directory = temp.path().join("data/media-index");
+        std::fs::create_dir_all(&directory).unwrap();
+        let database = Database::open(path.clone()).unwrap();
+        let repo = ChatRepository::new(&database);
+        let chat = repo.create_conversation(Some("Private images")).unwrap();
+        let user = repo.add_message(&chat.id, "user", "image", "completed", None).unwrap();
+        let index = directory.join(format!("{}.json", user.id));
+        std::fs::write(&index, b"private image reference").unwrap();
+        repo.delete_message(&user.id).unwrap();
+        assert!(!index.exists());
+        // Simulate an older process recreating an index after deletion.
+        std::fs::write(&index, b"late index").unwrap();
+        drop(database);
+        let reopened = Database::open(path).unwrap();
+        assert!(!index.exists());
+        let repo = ChatRepository::new(&reopened);
+        let second = repo.add_message(&chat.id, "user", "image", "completed", None).unwrap();
+        let second_index = directory.join(format!("{}.json", second.id));
+        std::fs::write(&second_index, b"private image reference").unwrap();
+        repo.delete_conversation(&chat.id).unwrap();
+        assert!(!second_index.exists());
+    }
 
     #[test]
     fn persists_conversation_and_messages() {
