@@ -27,6 +27,24 @@ const MAX_TTS_CHARS: usize = 12_000;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 const WAV_HEADER_BYTES: u64 = 44;
 
+/// This installed Kokoro package only configures the English af_heart voice.
+/// Reject scripts it cannot pronounce instead of producing misleading audio.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn validate_narration_language(text: &str) -> Result<(), AppError> {
+    let unsupported = text.chars().any(|ch| matches!(ch as u32,
+        0x0400..=0x052f | 0x0900..=0x097f | 0x0980..=0x09ff |
+        0x0600..=0x06ff | 0x4e00..=0x9fff | 0x3040..=0x30ff |
+        0xac00..=0xd7af | 0x0e00..=0x0e7f
+    ));
+    if unsupported {
+        return Err(AppError::ArtifactGenerationFailed(
+            "The installed Kokoro af_heart voice supports English narration only; this text contains an unsupported writing system. Select English text or install a compatible multilingual voice when available.".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub async fn generate_voice(
     root: &PortableRootManager,
@@ -61,6 +79,8 @@ pub async fn generate_voice(
             "voice narration is too long; maximum is {MAX_TTS_CHARS} characters"
         )));
     }
+
+    validate_narration_language(text)?;
 
     let model_path = canonical_file_under_root(root, model_path, "Kokoro model")?;
     let voices_dir = canonical_dir_under_root(root, voices_dir, "Kokoro voices")?;
@@ -820,5 +840,29 @@ mod tests {
         let path = temp.path().join("voice.wav");
         fs::write(&path, vec![0_u8; 128]).unwrap();
         assert!(validate_wav(&path).is_err());
+    }
+}
+
+
+#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
+mod narration_language_tests {
+    use super::validate_narration_language;
+
+    #[test]
+    fn english_narration_and_punctuation_are_allowed() {
+        assert!(validate_narration_language("Hello, world! 2026 — ready.").is_ok());
+    }
+
+    #[test]
+    fn unsupported_scripts_fail_before_model_or_output_access() {
+        for text in ["বাংলা", "Привет", "नमस्ते", "مرحبا", "你好", "こんにちは"] {
+            let error = validate_narration_language(text).unwrap_err();
+            assert!(error.to_string().contains("English narration only"));
+        }
+    }
+
+    #[test]
+    fn mixed_script_narration_is_rejected() {
+        assert!(validate_narration_language("Hello বাংলা").is_err());
     }
 }
