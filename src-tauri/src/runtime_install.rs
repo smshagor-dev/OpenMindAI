@@ -1051,7 +1051,9 @@ mod tests {
         let staging = temp.path().join("staging");
         let install = temp.path().join("runtimes/llama/vulkan/b1");
 
-        assert!(install_runtime_archive(&archive, &staging, &install, &CancellationToken::new()).is_err());
+        assert!(
+            install_runtime_archive(&archive, &staging, &install, &CancellationToken::new()).is_err()
+        );
         assert!(!install.exists());
         assert!(!staging.exists());
     }
@@ -1113,7 +1115,13 @@ mod tests {
         let archive = temp.path().join("runtime.zip");
         zip_with(&archive, &[("llama-server.exe", b"server")]);
 
-        install_runtime_archive(&archive, &temp.path().join("staging"), &install, &CancellationToken::new()).unwrap();
+        install_runtime_archive(
+            &archive,
+            &temp.path().join("staging"),
+            &install,
+            &CancellationToken::new(),
+        )
+        .unwrap();
 
         assert!(install.join("llama-server.exe").is_file());
         assert!(!install.join("partial.dll").exists());
