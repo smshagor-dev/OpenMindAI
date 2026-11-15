@@ -717,12 +717,21 @@ export function SettingsDialog(props: {
 
         {activeSection === "shortcuts" && (
           <SettingsGroup title="Shortcuts">
-            <Info label="New chat" value="Ctrl+N" />
-            <Info label="Search chats" value="Ctrl+K" />
-            <Info label="Settings" value="Ctrl+," />
-            <Info label="Send" value="Enter / Ctrl+Enter" />
-            <Info label="New line" value="Shift+Enter" />
-            <Info label="Stop generation" value="Esc" />
+            {preferenceDraft?.showShortcutHints ? (
+              <>
+                <Info label="New chat" value="Ctrl+N" />
+                <Info label="Search chats" value="Ctrl+K" />
+                <Info label="Settings" value="Ctrl+," />
+                <Info label="Send" value="Enter / Ctrl+Enter" />
+                <Info label="New line" value="Shift+Enter" />
+                <Info label="Stop generation" value="Esc" />
+              </>
+            ) : (
+              <p className="muted" role="status">
+                Optional shortcut hints are hidden. Keyboard shortcuts still work.
+                Enable Show shortcut hints in Appearance to display this reference.
+              </p>
+            )}
           </SettingsGroup>
         )}
 
