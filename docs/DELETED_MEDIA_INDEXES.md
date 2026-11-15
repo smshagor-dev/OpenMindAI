@@ -20,13 +20,28 @@ Focused Clippy -D warnings, formatting, locked root metadata and diff checks pas
 A native Database/ChatRepository deletion/reopen test is added but was NOT locally
 run; full app and Windows/macOS CI remain required. No desktop smoke test.
 
+## Legacy recovery on database open
+
+Before ordinary tombstone draining, startup scans canonical UUID.json names in
+the retained media-index directory and checks each against live SQLite messages.
+It queues missing IDs in durable tombstones in batches of 128, committing each
+batch before any unlink. The existing drain then deletes only orphan indexes;
+live/reused message IDs and shared image blobs remain untouched. Unknown file
+names are ignored rather than treated as filesystem deletion authority. Startup
+errors log a warning and can be retried on a subsequent open. Enumeration can
+take time for large legacy directories; SQLite writer locks are held only for
+each bounded liveness/queue batch, not the entire directory scan.
+
+Four focused new regressions cover legacy orphan recovery and shared preservation,
+rollback, multi-batch recovery/idempotence and Unix symlink safety. These were
+added but not locally compiled or run; three-OS CI is required.
+
 ## Remaining work and retention limits
 
 This is deliberately partial; keep #362 OPEN. Content-addressed image blobs remain
 on disk, including shared images and unreferenced images. Safe reference accounting,
-legacy orphan/index discovery, failed-upload blob rollback and branch-copy media
-semantics still need implementation/tests. Old deleted indexes without tombstones
-are not discovered here. Other delete entry points are captured by the trigger but
+unreferenced blob discovery, failed-upload blob rollback and branch-copy media
+semantics still need implementation/tests. Pre-migration deleted indexes are now discovered on startup when enumeration succeeds. Other delete entry points are captured by the trigger but
 may await restart for cleanup if they do not invoke the repository drain methods.
 
 Tombstones are retained to retry late publication by older processes and crashes;

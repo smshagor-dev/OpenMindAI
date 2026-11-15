@@ -45,6 +45,76 @@ pub fn drain(db: &Connection, root: &Dir) -> Result<()> {
     tx.commit()?;
     Ok(())
 }
+
+/// During startup, discover pre-migration indexes whose message was deleted
+/// before migration 014 could record a tombstone. Queue names durably BEFORE
+/// draining: a crash must never lose the replay protection for a late writer.
+///
+/// Enumerate through the retained directory capability. The filesystem walk
+/// does not hold the SQLite writer lock; small batches acquire it only while
+/// testing message liveness and inserting tombstones. This cannot remove a
+/// newly-created or shared live message's index.
+pub fn queue_legacy_orphans(db: &Connection, root: &Dir) -> Result<usize> {
+    if !db.is_autocommit() {
+        return Ok(0);
+    }
+    let directory = match root.open_dir("data/media-index") {
+        Ok(dir) => dir,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.into()),
+    };
+    const BATCH_SIZE: usize = 128;
+    let mut candidates = Vec::with_capacity(BATCH_SIZE);
+    let mut queued = 0usize;
+    for entry in directory.entries()? {
+        let entry = entry?;
+        let filename = entry.file_name();
+        let Some(filename) = filename.to_str() else {
+            continue;
+        };
+        let Some(message_id) = filename.strip_suffix(".json") else {
+            continue;
+        };
+        // No arbitrary filesystem names become deletion authority. The
+        // subsequent drain unlinks, never follows, the final entry.
+        if !canonical_uuid(message_id) {
+            continue;
+        }
+        candidates.push(message_id.to_owned());
+        if candidates.len() == BATCH_SIZE {
+            queued += queue_candidate_batch(db, &candidates)?;
+            candidates.clear();
+        }
+    }
+    if !candidates.is_empty() {
+        queued += queue_candidate_batch(db, &candidates)?;
+    }
+    Ok(queued)
+}
+
+fn queue_candidate_batch(db: &Connection, candidates: &[String]) -> Result<usize> {
+    let tx = db.unchecked_transaction()?;
+    // Match the cooperating publisher's SQLite write lock, so a message
+    // cannot be inserted between our liveness check and durable tombstone.
+    tx.execute("DELETE FROM deleted_media_indexes WHERE 0", [])?;
+    let mut queued = 0usize;
+    for message_id in candidates {
+        let live: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM messages WHERE id = ?1)",
+            [message_id.as_str()],
+            |row| row.get(0),
+        )?;
+        if !live {
+            queued += tx.execute(
+                "INSERT OR IGNORE INTO deleted_media_indexes(message_id) VALUES(?1)",
+                [message_id.as_str()],
+            )?;
+        }
+    }
+    tx.commit()?;
+    Ok(queued)
+}
+
 fn canonical_uuid(id: &str) -> bool {
     id.len() == 36
         && id.bytes().enumerate().all(|(i, b)| {
@@ -91,6 +161,102 @@ mod tests {
             .join(format!("data/media-index/{id}.json"))
             .exists()
     }
+
+    const C: &str = "00000000-0000-4000-8000-000000000003";
+
+    fn tombstone(db: &Connection, id: &str) -> bool {
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM deleted_media_indexes WHERE message_id=?1)",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn untracked_legacy_orphan_is_queued_before_unlink_and_shared_media_survives() {
+        let (temp, db, root) = fixture();
+        fs::write(
+            temp.path().join(format!("data/media-index/{C}.json")),
+            b"legacy private index",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("data/media-index/not-a-uuid.json"),
+            b"unrelated",
+        )
+        .unwrap();
+
+        assert_eq!(queue_legacy_orphans(&db, &root).unwrap(), 1);
+        assert!(index(&temp, C), "queue first; never unlink before commit");
+        assert!(tombstone(&db, C));
+        assert!(!tombstone(&db, A));
+        assert!(!tombstone(&db, B));
+        drain(&db, &root).unwrap();
+        assert!(!index(&temp, C));
+        assert!(index(&temp, A));
+        assert!(index(&temp, B));
+        assert!(temp.path().join("data/media-index/not-a-uuid.json").exists());
+        assert_eq!(
+            fs::read(temp.path().join("data/media/shared.png")).unwrap(),
+            b"shared bytes"
+        );
+        assert!(tombstone(&db, C), "late publication remains retryable");
+    }
+
+    #[test]
+    fn legacy_discovery_never_queues_uncommitted_deletion() {
+        let (temp, db, root) = fixture();
+        db.execute_batch("BEGIN IMMEDIATE; DELETE FROM messages WHERE id='00000000-0000-4000-8000-000000000001';")
+            .unwrap();
+        assert_eq!(queue_legacy_orphans(&db, &root).unwrap(), 0);
+        db.execute_batch("ROLLBACK").unwrap();
+        assert!(index(&temp, A));
+        assert!(!tombstone(&db, A));
+        assert_eq!(queue_legacy_orphans(&db, &root).unwrap(), 0);
+    }
+
+    #[test]
+    fn legacy_discovery_scans_multiple_bounded_batches() {
+        let (temp, db, root) = fixture();
+        for suffix in 10..275u32 {
+            let id = format!("00000000-0000-4000-8000-{suffix:012x}");
+            fs::write(
+                temp.path().join(format!("data/media-index/{id}.json")),
+                b"old",
+            )
+            .unwrap();
+        }
+        assert_eq!(queue_legacy_orphans(&db, &root).unwrap(), 265);
+        assert_eq!(queue_legacy_orphans(&db, &root).unwrap(), 0);
+        drain(&db, &root).unwrap();
+        for suffix in 10..275u32 {
+            let id = format!("00000000-0000-4000-8000-{suffix:012x}");
+            assert!(!index(&temp, &id));
+            assert!(tombstone(&db, &id));
+        }
+        assert!(index(&temp, A));
+        assert!(index(&temp, B));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_orphan_symlink_is_unlinked_without_following_external_target() {
+        let (temp, db, root) = fixture();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("private.json");
+        fs::write(&target, b"must survive").unwrap();
+        std::os::unix::fs::symlink(
+            &target,
+            temp.path().join(format!("data/media-index/{C}.json")),
+        )
+        .unwrap();
+        assert_eq!(queue_legacy_orphans(&db, &root).unwrap(), 1);
+        drain(&db, &root).unwrap();
+        assert!(fs::symlink_metadata(temp.path().join(format!("data/media-index/{C}.json"))).is_err());
+        assert_eq!(fs::read(target).unwrap(), b"must survive");
+    }
+
     #[test]
     fn committed_delete_removes_only_its_index_and_preserves_shared_blob() {
         let (temp, db, root) = fixture();
