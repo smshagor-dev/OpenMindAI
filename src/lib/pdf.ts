@@ -128,6 +128,10 @@ export async function extractPdfText(
     const startedOcrAt = Date.now();
     let completedOcr = 0;
     let stoppedForTime = false;
+    let stoppedForTextBudget = false;
+    // Keep OCR work proportional to the maximum text that can enter the prompt.
+    // A later OCR batch cannot improve the bounded text preview once full.
+    let extractedChars = pageTexts.reduce((sum, text) => sum + text.length, 0);
     options.onProgress?.({ phase: "ocr", completed: 0, total: ocrPages.length });
 
     for (let offset = 0; offset < ocrPages.length; offset += OCR_BATCH_SIZE) {
@@ -167,7 +171,14 @@ export async function extractPdfText(
             const visual = result.text.trim();
             if (!visual) continue;
             const existing = pageTexts[result.pageNumber - 1].trim();
-            pageTexts[result.pageNumber - 1] = [existing, visual].filter(Boolean).join("\n");
+            // Never retain unbounded native OCR output when the chat budget is
+            // already exhausted. A small remainder is enough to mark the page
+            // as partially extracted without holding the full OCR result.
+            const remaining = Math.max(0, MAX_EXTRACTED_CHARS - extractedChars);
+            if (!remaining) continue;
+            const bounded = Array.from(visual).slice(0, remaining).join("");
+            pageTexts[result.pageNumber - 1] = [existing, bounded].filter(Boolean).join("\n");
+            extractedChars += bounded.length;
             unreadPages.delete(result.pageNumber);
           }
         } catch (error) {
@@ -182,6 +193,10 @@ export async function extractPdfText(
         completed: completedOcr,
         total: ocrPages.length,
       });
+      if (extractedChars >= MAX_EXTRACTED_CHARS && offset + batchNumbers.length < ocrPages.length) {
+        stoppedForTextBudget = true;
+        break;
+      }
     }
     assertNotCancelled(options.signal);
     const missing = [...unreadPages, ...deferred].sort((a, b) => a - b);
@@ -192,6 +207,9 @@ export async function extractPdfText(
       ] : []),
       ...(deferred.length ? [
         `OCR work budget reached: ${deferred.length} scanned page(s) were not analyzed (pages ${deferred.join(", ")}). Split the PDF or import a smaller section to retrieve their contents.`,
+      ] : []),
+      ...(stoppedForTextBudget ? [
+        "PDF text budget reached. Later scanned pages were not OCR-analyzed; import a smaller section for additional coverage.",
       ] : []),
       ...(stoppedForTime ? [
         "PDF OCR time budget reached. Remaining scanned pages were not analyzed; import a smaller section for additional coverage.",
@@ -225,7 +243,7 @@ export async function extractPdfText(
       chunks.push(pageChunk);
       currentLength += pageChunk.length;
     }
-    if (deferred.length || stoppedForTime) truncated = true;
+    if (deferred.length || stoppedForTime || stoppedForTextBudget) truncated = true;
 
     return {
       text: chunks.join("").trim(),
