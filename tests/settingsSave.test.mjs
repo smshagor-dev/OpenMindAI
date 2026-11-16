@@ -33,7 +33,7 @@ test("production settings/profile saves retain drafts, show failures and allow r
     const { SettingsDialog } = await import(pathToFileURL(outfile));
     const { createRoot } = await import("react-dom/client");
     const defer = () => { let resolve, reject; const promise = new Promise((yes,no) => { resolve=yes; reject=no; }); return { promise, resolve, reject }; };
-    for (const section of ["general", "personalization", "network", "privacy"]) {
+    for (const section of ["general", "personalization", "network", "privacy", "capabilities"]) {
       root = createRoot(dom.window.document.getElementById("root"));
       let pending = defer(); const requests = [];
       const save = value => { requests.push(value); return pending.promise; };
@@ -61,6 +61,16 @@ test("production settings/profile saves retain drafts, show failures and allow r
             .some((label) => /telemetry/i.test(label.textContent) && label.querySelector('input[type="checkbox"]')),
           false,
           "privacy must not present an interactive telemetry switch",
+        );
+      }
+      if (section === "capabilities") {
+        assert.match(dom.window.document.body.textContent, /Thinking mode/);
+        assert.match(dom.window.document.body.textContent, /previous Thinking mode switch only saved a preference/);
+        assert.equal(
+          [...dom.window.document.querySelectorAll("label")]
+            .some(label => /Thinking mode/i.test(label.textContent) && label.querySelector('input[type="checkbox"]')),
+          false,
+          "unsupported thinking control must not pretend to affect inference",
         );
       }
       const saveButton = () => dom.window.document.querySelector(".save-bar button");
