@@ -48,9 +48,24 @@ pub struct StagedOutput {
     pub path: PathBuf,
     _staging: tempfile::TempDir,
 }
+/// Reject names that Windows interprets as devices or normalizes to another
+/// destination. Apply on every platform so portable artifacts remain portable.
+fn unsafe_portable_filename(name: &str) -> bool {
+    if name.ends_with(['.', ' ']) || name.chars().any(|ch| ch.is_control()) {
+        return true;
+    }
+    let stem = name.split('.').next().unwrap_or("").trim_end_matches(' ');
+    let upper = stem.to_ascii_uppercase();
+    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (upper.len() == 4
+            && (upper.starts_with("COM") || upper.starts_with("LPT"))
+            && matches!(upper.as_bytes()[3], b'1'..=b'9'))
+}
+
 impl StagedOutput {
     pub fn from_reserved(directory: Dir, name: &str) -> Result<Self, AppError> {
         if name.is_empty()
+            || unsafe_portable_filename(name)
             || name.contains(['/', '\\', ':'])
             || !matches!(
                 Path::new(name).components().next(),
@@ -306,6 +321,18 @@ mod tests {
         #[cfg(windows)]
         if held == moved {
             fs::remove_dir(&root).unwrap();
+        }
+    }
+
+    #[test]
+    fn reserved_windows_device_names_and_normalized_aliases_are_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        let (directory, _) = reserve_directory(root.path(), Path::new("generated")).unwrap();
+        for name in ["CON", "con.txt", "PRN.pdf", "aux", "NUL.docx", "COM1.txt", "lpt9", "report.", "report ", "bad\\nname"] {
+            assert!(StagedOutput::from_reserved(directory.open_dir(".").unwrap(), name).is_err(), "{name:?}");
+        }
+        for name in ["company.txt", "com0.txt", "report.v1.pdf"] {
+            assert!(StagedOutput::from_reserved(directory.open_dir(".").unwrap(), name).is_ok(), "{name:?}");
         }
     }
 
