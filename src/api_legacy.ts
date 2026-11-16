@@ -208,6 +208,8 @@ export const api = {
   activateModel: (conversationId: string, modelId: string) =>
     call<LlamaRuntimeStatus>("activate_model", { conversationId, modelId }),
   archiveConversation: (id: string) => call<void>("archive_conversation", { id }),
+  listArchivedConversations: (limit = 100) => call<Conversation[]>("list_archived_conversations", { limit }),
+  restoreConversation: (id: string) => call<void>("restore_conversation", { id }),
   deleteConversation: async (id: string) => {
     await flushPendingMessageDeletes();
     return call<void>("delete_conversation", { id });
