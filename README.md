@@ -39,26 +39,17 @@ v4.0.0 is the maintenance release for the current OpenMindAI 3.x desktop line. I
 
 | Platform | Package |
 | --- | --- |
-| IOS | [openmindai-mobile.ipa](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/openmindai-mobile.ipa) |
-| IOS | [Runner.app.zip](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/Runner.app.zip) |
+| Android | [Get it on Google Play](https://play.google.com/store/apps/details?id=com.openmindai.mobile) |
+| Android | [Get it on RuStore](https://www.rustore.ru/catalog/app/com.openmindai.mobile) |
 | Linux | [OpenMindAI_4.0.0_amd64.AppImage](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_amd64.AppImage) |
 | Linux | [OpenMindAI_4.0.0_amd64.deb](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_amd64.deb) |
-| Linux | [OpenMindAI_4.0.0_i386.AppImage](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_i386.AppImage) |
-| Linux | [OpenMindAI_4.0.0_i386.deb](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_i386.deb) |
-| MacOS | [OpenMindAI_4.0.0_aarch64.dmg](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_aarch64.dmg) |
-| MacOS | [OpenMindAI_4.0.0_universal.dmg](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_universal.dmg) |
-| MacOS | [OpenMindAI_4.0.0_x64.dmg](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x64.dmg) |
-| Mobile | [app-arm64-v8a-release.apk](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/app-arm64-v8a-release.apk) |
-| Mobile | [app-armeabi-v7a-release.apk](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/app-armeabi-v7a-release.apk) |
-| Mobile | [app-x86_64-release.apk](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/app-x86_64-release.apk) |
-| Windows | [OpenMindAI_4.0.0_x64_en-US.msi](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x64_en-US.msi) |
+| macOS | [OpenMindAI-Setup.command](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI-Setup.command) |
 | Windows | [OpenMindAI_4.0.0_x64-setup.exe](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x64-setup.exe) |
-| Windows | [OpenMindAI_4.0.0_x86_en-US.msi](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x86_en-US.msi) |
 | Windows | [OpenMindAI_4.0.0_x86-setup.exe](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x86-setup.exe) |
 
-These packages are staged for the **v4.0.0 draft release**; download links become public after publication. Android build metadata reports app version `0.0.1`; these are companion mobile builds included with desktop `v4.0.0`. iOS installation requires compatible signing and provisioning.
+The links above point to the published v4.0.0 release assets and the Android app's Google Play and RuStore listings. macOS installation uses the `.command` setup script; iOS packages and direct mobile APK downloads are not listed here.
 
-`release-output-SHA256SUMS.txt` covers all application packages. Original platform checksums are attached as `Windows-SHA256SUMS.txt` and `MacOS-SHA256SUMS.txt`, alongside Android `output-metadata.json`.
+`release-output-SHA256SUMS.txt` and platform-specific checksum files, when available, can be found among the release assets.
 
 ### What changed in v4.0.0
 
@@ -91,11 +82,19 @@ OpenMindAI runs supported open-weight language models locally and stores convers
 
 The chat system supports streamed responses, cancellation, model selection, conversation history, message regeneration, editing, attachments, and local context persistence.
 
+Switching chats keeps an in-flight generation attached to its original conversation. The visible chat shows only its own messages, artifacts, activity, and research progress; delayed history reads cannot replace a newer view. A background generation notice lets you return to its chat or stop that specific generation. The composer’s Stop control targets the visible chat only. New sends, regeneration, and model selection wait while the shared runtime is busy. Optional Socket.IO activity events must include `conversationId` (and may include `detail`); untagged broadcasts are ignored.
+
+Editing an earlier user prompt opens a separate chat named with an `(edited)` suffix. Its earlier text history, model selection, conversation settings and project membership are copied in one database transaction; the edited turn and later replies are excluded. The original chat remains available even when the new request fails, is cancelled or is interrupted. If the branch cannot be created, no partial branch is saved.
+
+Attachments, generated files and their ownership stay in the original chat. Reattach files required for the edited prompt. The replacement request and any newly generated files belong to the new chat. Retrying a failed replacement continues in that new chat. The separate Regenerate operation is not changed by this edit fix.
+
 ### Thinking, vision, search, and research modes
 
 OpenMindAI can route different requests through specialized local flows. Image attachments can be passed to compatible local vision models, while Web Search and Deep Research modes can retrieve current public web evidence and provide it to the local model as external context.
 
 Web retrieval is treated as untrusted data rather than executable instruction, and current-source claims should remain grounded in retrieved evidence.
+
+Scanned PDF OCR uses the exact enabled, ready Lens checkpoint declared by its installed catalog package. A different Qwen-VL model is not used as a fallback. The associated package projector is validated and passed explicitly to the runtime; missing or mismatched package metadata prompts validation or reinstallation in Settings → Models.
 
 ### Model and runtime management
 
@@ -112,7 +111,11 @@ The application includes a local model catalog and lifecycle management for:
 - runtime start, stop, and health state;
 - model update checks.
 
+Model update notifications are optional. Model downloads require manual confirmation in **Settings → Models**; automatic model downloading is not available. Older saved automatic model download preferences are corrected to disabled without changing notification or application update choices.
+
 Large model downloads remain explicit user actions.
+
+Runtime process recovery is platform-specific. Windows uses a kill-on-close Job Object; Linux uses a parent-death signal. macOS isolates runtime process groups and records the process start time, executable path and Darwin process generation. After a crash or forced exit, macOS runtimes may remain alive until the next OpenMindAI launch, when the startup sweep reaps only matching recorded processes whose previous owner is gone. Unrelated processes are not selected by name or port. If an owner or child cannot be inspected, or generation-checked signalling is unavailable or denied, cleanup is skipped and its record is retained for retry. Other operating systems have normal-exit cleanup but no automatic orphan sweep.
 
 ### Hardware-aware execution
 
@@ -164,6 +167,8 @@ The agent uses the configured local OpenMindAI model/runtime rather than requiri
 Filesystem and terminal access are deliberately separated from ordinary chat capability.
 
 Attached project folders can be used as scoped workspaces. Broader **Full PC + Terminal** access must be explicitly approved before the project can execute terminal commands through that permission path. Direct local file mutations also use approval checks in the desktop backend.
+
+In **Risk based** and **Always ask** modes, every shell command requires approval of the exact action, including isolated commands that look like inspection. A command prefix cannot establish that the entire shell string is read-only. Structured inspection tools such as file reads, directory listings, text search, Git status and Git diff remain available without a shell approval. **Trusted workspace** mode retains its explicit permission to run shell commands; host-access and sandbox restrictions still apply. Shell commands are treated as potential workspace mutations for recovery checkpoints.
 
 The agent avoids interactive command flows and uses bounded execution, command-length limits, output limits, timeouts, duplicate-action protection, failure budgets, and validation requirements to reduce runaway behavior.
 
@@ -277,6 +282,8 @@ OpenMindAI separates the desktop application from the user's AI data. The select
 
 This makes it possible to keep a large AI environment on a secondary drive or external SSD and reduces the risk of losing models or history when the desktop application is updated or reinstalled.
 
+Local dataset context validates manifest paths and confines reads to each dataset directory. Unsafe paths, linked external targets, malformed manifests and oversized text files are skipped. See [dataset context boundaries and limits](docs/dataset-context-containment.md).
+
 ### Portable mode
 
 When an `openmindai.marker` file is present at the portable root, OpenMindAI can resolve its data location relative to that root. This avoids coupling a portable installation to one fixed Windows drive letter and makes external-drive workflows more reliable.
@@ -341,9 +348,13 @@ npm run tauri dev
 
 ```bash
 npm run check:version
+npm run test:conversations
+npm run test:drafts
 npm run lint
 npm run build
 ```
+
+The draft regression suite mounts the production React `App` in jsdom with native/API and presentation doubles. It covers delayed failures, navigation, explicit clearing, attachment changes, edit forks, new-chat creation and image-artifact failures. It does not require a model download or a native desktop session.
 
 ### Rust validation
 
@@ -352,6 +363,14 @@ cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml --all-features
 ```
+
+The isolated ownership suite compiles the production process module without Tauri or model dependencies:
+
+```bash
+cargo test --locked --manifest-path tests/process-ownership/Cargo.toml
+```
+
+CI runs it on Windows, Linux and macOS. macOS integration tests launch a stand-in owner and runtime processes, exit or force-kill the owner, then start a fresh recovery process and verify that unrelated processes survive. These tests exercise native process lifecycle handling rather than model inference.
 
 ### Production build
 
@@ -404,6 +423,12 @@ Key controls include:
 - `npm audit`, `cargo audit`, and CodeQL security checks.
 
 See [`SECURITY.md`](SECURITY.md) and [`.github/workflows/security.yml`](.github/workflows/security.yml).
+
+### Local chat history
+
+This release stores conversations, attachments and generated files on the local device. Privacy settings report that behavior rather than offering an unsupported history-off switch. Temporary chats are not implemented.
+
+The earlier `Save chat history locally` switch did not stop storage. Existing off preferences are corrected to the actual storage state, and affected users see a persistent notice until they explicitly acknowledge it. Ordinary settings saves cannot dismiss that notice. New requests to turn history saving off are rejected with an explanation. This correction does not erase existing chats or files; it does not introduce a non-persistent session mode.
 
 ## Release Pipeline
 
@@ -483,6 +508,8 @@ Before opening a pull request, run the same core checks used by CI:
 ```bash
 npm ci
 npm run check:version
+npm run test:conversations
+npm run test:drafts
 npm run lint
 npm run build
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check

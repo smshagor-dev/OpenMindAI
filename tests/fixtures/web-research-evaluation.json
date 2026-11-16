@@ -1,0 +1,35 @@
+{
+  "cases": [
+    {
+      "id": "offline-fixture",
+      "results": [
+        {
+          "url": "https://example.org/reference"
+        }
+      ],
+      "expected_relevant_urls": [
+        "https://example.org/reference"
+      ],
+      "claims": [
+        {
+          "label": "supported",
+          "cited": true
+        },
+        {
+          "label": "unverifiable",
+          "cited": false
+        }
+      ],
+      "provider_attempts": [
+        {
+          "usable_results": false
+        },
+        {
+          "usable_results": true
+        }
+      ],
+      "latency_ms": 125,
+      "cancelled": false
+    }
+  ]
+}

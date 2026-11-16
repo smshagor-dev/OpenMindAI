@@ -1,3 +1,9 @@
+mod cloud_bridge;
+mod connected_action_ledger;
+mod private_descriptor;
+#[cfg(any(windows, test))]
+mod sandbox_capture;
+mod studio_outbox;
 extern crate tauri as tauri_crate;
 
 #[macro_export]
@@ -5,6 +11,22 @@ macro_rules! openmind_generate_handler {
     ($($command:ident),* $(,)?) => {
         $crate::tauri_crate::generate_handler![
             $($command),*,
+            cloud_connect,
+            cloud_login,
+            cloud_disconnect,
+            cloud_status,
+            cloud_request,
+            cloud_download_mesh,
+            cloud_begin_regeneration,
+            studio_outbox_recover,
+            studio_outbox_list,
+            studio_outbox_enqueue,
+            studio_outbox_claim,
+            studio_outbox_finish,
+            studio_outbox_retry,
+            local_gpu_request,
+            local_gpu_start,
+            local_gpu_stop,
             prepare_default_chat_runtime,
             reveal_main_window,
             transcribe_audio,
@@ -62,6 +84,7 @@ mod tauri {
 }
 
 mod agent_runtime;
+mod artifact_output;
 mod coding_agent_gateway;
 mod coding_ast;
 mod coding_control;
@@ -75,13 +98,20 @@ mod connected_agent;
 mod connector_ecosystem;
 mod connector_input_guard;
 mod connector_stabilization;
+mod database_backup;
 mod dataset_context;
 mod dataset_download;
+mod document_jobs;
+mod folder_opener;
+mod github_paging;
 mod github_workspace;
 mod google_workspace;
+mod installation_file;
 mod isolated_runtime;
 mod local_agent;
 mod local_workspace;
+mod mcp_response;
+mod model_discovery;
 mod multimodal;
 #[cfg(feature = "native-cxx-llama")]
 pub mod native_bridge;
@@ -93,6 +123,8 @@ pub mod native_runtime;
 pub mod native_stream;
 #[cfg(feature = "native-cxx-llama")]
 pub mod native_supervisor;
+mod oauth_callback;
+mod oauth_refresh;
 mod openagent_parallel;
 mod openagent_prompt_context;
 mod openagent_runs;
@@ -101,10 +133,15 @@ mod pdf_ocr;
 mod process_ownership;
 mod runtime_guards;
 mod speech_runtime;
+mod text_artifact_save;
 mod vision_batch;
 mod warm_start;
 
 pub(crate) use agent_runtime::{coding_agent_status, start_coding_agent};
+pub(crate) use cloud_bridge::{
+    cloud_begin_regeneration, cloud_connect, cloud_disconnect, cloud_download_mesh, cloud_login,
+    cloud_request, cloud_status, local_gpu_request, local_gpu_start, local_gpu_stop,
+};
 pub(crate) use coding_control::{approve_coding_action, coding_run_snapshot, reject_coding_action};
 pub(crate) use coding_eval::run_coding_qualification;
 pub(crate) use connected_agent::{
@@ -139,6 +176,10 @@ pub(crate) use multimodal::{
 pub(crate) use openagent_runs::{list_openagent_runs, openagent_run_details};
 pub(crate) use openagent_security::openagent_sandbox_capability;
 pub(crate) use pdf_ocr::ocr_pdf_pages;
+pub(crate) use studio_outbox::{
+    studio_outbox_claim, studio_outbox_enqueue, studio_outbox_finish, studio_outbox_list,
+    studio_outbox_recover, studio_outbox_retry,
+};
 pub(crate) use warm_start::{prepare_default_chat_runtime, reveal_main_window};
 
 include!("lib_legacy.rs");

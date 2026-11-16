@@ -42,7 +42,7 @@ OpenMindAI/
 └─ ...existing React/Tauri UI
 ```
 
-The next application phase should route both the existing backend and this native backend behind one model router. Do not duplicate model ownership in React, Tauri commands, and C++.
+The next integration task is to route both the existing backend and this native backend behind one model router. Do not duplicate model ownership in React, Tauri commands, and C++.
 
 ## Build prerequisites
 

@@ -3,9 +3,16 @@ use std::collections::VecDeque;
 const CHARS_PER_TOKEN_ESTIMATE: usize = 3;
 const PROMPT_MARGIN_TOKENS: usize = 256;
 const MIN_OUTPUT_TOKENS: usize = 640;
-const MAX_OUTPUT_TOKENS: usize = 1_536;
+// Large slots must leave enough generation room for structured multi-action JSON.
+// Small slots retain the proportional cap to avoid starving prompt evidence.
+const MAX_OUTPUT_TOKENS: usize = 4_096;
 const FIXED_USER_OVERHEAD_CHARS: usize = 900;
-const MAX_SELECTED_CONTEXT_CHARS: usize = 24_000;
+// The legacy 24K-character hard ceiling discarded evidence even in 64K/128K
+// llama-server slots. Keep section priorities, but scale caps with the actual
+// per-request slot size instead of an unrelated fixed global maximum.
+const BASE_SECTION_BUDGET_CHARS: usize = 24_000;
+const BASE_SECTION_CAPS: [usize; 6] = [6_000, 8_000, 10_000, 5_000, 5_000, 5_000];
+const MAX_MODEL_CONTEXT_TOKENS: usize = 131_072;
 
 pub(crate) struct PromptContextInput<'a> {
     pub project_instructions: &'a str,
@@ -14,8 +21,12 @@ pub(crate) struct PromptContextInput<'a> {
     pub conversation_context: &'a str,
     pub goal: &'a str,
     pub transcript: &'a VecDeque<String>,
+    /// Actual llama-server tokens available in this request's slot, not
+    /// configured total model context shared by multiple parallel slots.
     pub context_window_tokens: usize,
     pub system_chars: usize,
+    /// Variable user-message text outside the selected context (e.g. plan).
+    pub additional_user_chars: usize,
 }
 
 pub(crate) struct PromptContextPack {
@@ -32,7 +43,9 @@ pub(crate) struct PromptContextPack {
 }
 
 pub(crate) fn build_prompt_context(input: PromptContextInput<'_>) -> PromptContextPack {
-    let context_window_tokens = input.context_window_tokens.clamp(4_096, 32_768);
+    // Never round a smaller real slot up: the caller already resolved the
+    // runtime's /props n_ctx or divided configured context across workers.
+    let context_window_tokens = input.context_window_tokens.min(MAX_MODEL_CONTEXT_TOKENS);
     let max_output_tokens = (context_window_tokens / 6).clamp(MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS);
     let input_tokens = context_window_tokens
         .saturating_sub(max_output_tokens)
@@ -40,8 +53,8 @@ pub(crate) fn build_prompt_context(input: PromptContextInput<'_>) -> PromptConte
     let budget_chars = input_tokens
         .saturating_mul(CHARS_PER_TOKEN_ESTIMATE)
         .saturating_sub(input.system_chars)
-        .saturating_sub(FIXED_USER_OVERHEAD_CHARS)
-        .min(MAX_SELECTED_CONTEXT_CHARS);
+        .saturating_sub(input.additional_user_chars)
+        .saturating_sub(FIXED_USER_OVERHEAD_CHARS);
 
     let transcript_raw = input
         .transcript
@@ -57,7 +70,13 @@ pub(crate) fn build_prompt_context(input: PromptContextInput<'_>) -> PromptConte
         input.conversation_context,
         input.workspace_context,
     ];
-    let caps = [6_000usize, 8_000, 10_000, 5_000, 5_000, 5_000];
+    // Preserve the per-section priorities of the original small-window
+    // prompt, while allowing larger real slots to include more tool evidence,
+    // instructions, and repository context. No section can exceed the global
+    // available input budget, even if its scaled cap is larger.
+    let scale =
+        budget_chars.saturating_add(BASE_SECTION_BUDGET_CHARS - 1) / BASE_SECTION_BUDGET_CHARS;
+    let caps = BASE_SECTION_CAPS.map(|cap| cap.saturating_mul(scale.max(1)));
     let weights = [30usize, 25, 22, 10, 8, 5];
     let lengths = raw
         .iter()
@@ -272,6 +291,7 @@ mod tests {
             transcript,
             context_window_tokens: window,
             system_chars: 7_000,
+            additional_user_chars: 0,
         }
     }
 
@@ -317,6 +337,133 @@ mod tests {
 
         assert!(large.budget_chars > small.budget_chars);
         assert!(large.selected_chars >= small.selected_chars);
+    }
+
+    #[test]
+    fn real_32k_64k_and_128k_slots_retained_context_grows() {
+        let mut transcript = VecDeque::new();
+        for index in 0..100 {
+            transcript.push_back(format!("tool-result-{index} {}", "t".repeat(9_000)));
+        }
+        let repository = "repository evidence ".repeat(18_000);
+        let instructions = "workspace policy ".repeat(9_000);
+        let workspace = "workspace snapshot ".repeat(9_000);
+        let conversation = "previous conversation ".repeat(9_000);
+        let goal = "repair the failing code while retaining current user constraints".repeat(140);
+
+        let build = |slot| {
+            build_prompt_context(PromptContextInput {
+                project_instructions: &instructions,
+                repository_context: &repository,
+                workspace_context: &workspace,
+                conversation_context: &conversation,
+                goal: &goal,
+                transcript: &transcript,
+                context_window_tokens: slot,
+                system_chars: 7_000,
+                additional_user_chars: 3_000,
+            })
+        };
+        let small = build(32_768);
+        let medium = build(65_536);
+        let large = build(131_072);
+
+        assert!(
+            small.selected_chars > 24_000,
+            "32K slot must exceed the old ceiling"
+        );
+        assert!(medium.budget_chars > small.budget_chars);
+        assert!(large.budget_chars > medium.budget_chars);
+        assert!(medium.selected_chars > small.selected_chars);
+        assert!(large.selected_chars > medium.selected_chars);
+
+        for (slot, pack) in [(32_768, small), (65_536, medium), (131_072, large)] {
+            assert!(pack.selected_chars <= pack.budget_chars);
+            assert!(pack.max_output_tokens <= MAX_OUTPUT_TOKENS);
+            // Same conservative three-character-per-token budget used by
+            // production; preserve space for both JSON output and margin.
+            let prompt_chars = pack.selected_chars + 7_000 + 3_000 + FIXED_USER_OVERHEAD_CHARS;
+            let input_token_upper_bound = prompt_chars.div_ceil(CHARS_PER_TOKEN_ESTIMATE);
+            assert!(
+                input_token_upper_bound + pack.max_output_tokens + PROMPT_MARGIN_TOKENS <= slot,
+                "prompt did not fit the reported llama-server slot of {slot} tokens"
+            );
+        }
+    }
+
+    #[test]
+    fn actual_parallel_slot_size_limits_prompt_not_configured_model_total() {
+        let transcript = VecDeque::from(["latest run evidence ".repeat(25_000)]);
+        let repository = "repository evidence ".repeat(14_000);
+        let configured = 131_072;
+        let (shared_slot, source) = crate::agent_runtime::effective_context(None, configured, 4);
+        assert_eq!(source, "estimate");
+        assert_eq!(shared_slot, 32_768);
+        let (reported_slot, source) =
+            crate::agent_runtime::effective_context(Some(65_536), configured, 4);
+        assert_eq!(source, "runtime");
+        assert_eq!(reported_slot, 65_536);
+        let shared = build_prompt_context(input(
+            "fix workspace",
+            &repository,
+            &transcript,
+            shared_slot as usize,
+        ));
+        let reported = build_prompt_context(input(
+            "fix workspace",
+            &repository,
+            &transcript,
+            reported_slot as usize,
+        ));
+        assert!(reported.selected_chars > shared.selected_chars);
+        assert!(shared.selected_chars <= shared.budget_chars);
+        assert!(reported.selected_chars <= reported.budget_chars);
+    }
+
+    #[test]
+    fn variable_plan_overhead_is_excluded_from_context_selection() {
+        let transcript = VecDeque::from(["large tool output ".repeat(20_000)]);
+        let repository = "large repository context ".repeat(16_000);
+        let baseline = build_prompt_context(input("repair", &repository, &transcript, 65_536));
+        let mut with_plan_input = input("repair", &repository, &transcript, 65_536);
+        with_plan_input.additional_user_chars = 40_000;
+        let with_plan = build_prompt_context(with_plan_input);
+        assert_eq!(baseline.budget_chars - with_plan.budget_chars, 40_000);
+        assert!(with_plan.selected_chars < baseline.selected_chars);
+        assert!(with_plan.selected_chars <= with_plan.budget_chars);
+    }
+
+    #[test]
+    fn structured_output_reservation_scales_without_overcommitting_real_slots() {
+        let transcript = VecDeque::from(["tool evidence ".repeat(40_000)]);
+        let repository = "repository evidence ".repeat(30_000);
+        let mut previous_output = 0;
+        for slot in [4_096usize, 8_192, 32_768, 65_536, 131_072] {
+            let pack = build_prompt_context(input(
+                "produce a valid multi-action JSON decision",
+                &repository,
+                &transcript,
+                slot,
+            ));
+            assert!(pack.max_output_tokens >= previous_output);
+            assert!(pack.max_output_tokens <= MAX_OUTPUT_TOKENS);
+            assert!(pack.selected_chars <= pack.budget_chars);
+            let overhead = 7_000 + FIXED_USER_OVERHEAD_CHARS;
+            let estimated_input_tokens =
+                (pack.selected_chars + overhead).div_ceil(CHARS_PER_TOKEN_ESTIMATE);
+            assert!(
+                estimated_input_tokens + pack.max_output_tokens + PROMPT_MARGIN_TOKENS <= slot,
+                "output reservation exceeds actual slot {slot}"
+            );
+            previous_output = pack.max_output_tokens;
+        }
+        let large = build_prompt_context(input(
+            "produce a valid multi-action JSON decision",
+            &repository,
+            &transcript,
+            65_536,
+        ));
+        assert_eq!(large.max_output_tokens, 4_096);
     }
 
     #[test]

@@ -1,8 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Artifact,
+  ImageGenerationOptions,
   ArtifactKind,
   Conversation,
+  ChatSearchPage,
+  ForkedConversation,
   AppPreferences,
   DownloadStatus,
   DatasetDownloadStatus,
@@ -15,13 +18,14 @@ import type {
   SetupState,
   StorageLocationCheck,
   RuntimeInstallStatus,
+  DiffusionRuntimeStatus,
   DiagnosticReport,
   RepairSummary,
   BackupInfo,
   CacheClearResult,
   ModelCatalogReport,
   LaunchPlan,
-  LibraryEntry,
+  LibraryPage,
   LlamaRuntimeStatus,
   Message,
   ModelRecord,
@@ -31,6 +35,8 @@ import type {
   PortableRootInfo,
   Project,
   ProjectFile,
+  ProjectBinaryFileDownload,
+  ProjectListPage,
   RuntimeInventory,
   StorageSummary,
   UserProfile,
@@ -110,9 +116,8 @@ function queueMessageDelete(messageId: string) {
       });
     }, 0);
   }
-  // Edit/resend currently awaits every delete call. Resolve immediately so
-  // all branch IDs can be collected in one event-loop turn; send/regenerate
-  // explicitly flush the queue before creating any replacement message.
+  // Collect explicit deletes in one event-loop turn; sends/regenerations flush
+  // them before creating messages. Prompt editing uses a separate fork command.
   return Promise.resolve();
 }
 
@@ -189,7 +194,11 @@ export const api = {
   checkStorageLocation: (path: string) =>
     call<StorageLocationCheck>("check_storage_location", { path }),
   conversations: () => call<Conversation[]>("list_conversations"),
+  searchConversations: (query: string, cursor?: string, limit = 40) =>
+    call<ChatSearchPage>("search_conversations", { query, cursor, limit }),
   createConversation: (title?: string) => call<Conversation>("create_conversation", { title }),
+  forkConversationForEdit: (conversationId: string, messageId: string) =>
+    call<ForkedConversation>("fork_conversation_for_edit", { conversationId, messageId }),
   renameConversation: (id: string, title: string) =>
     call<void>("rename_conversation", { id, title }),
   pinConversation: (id: string, pinned: boolean) =>
@@ -199,6 +208,8 @@ export const api = {
   activateModel: (conversationId: string, modelId: string) =>
     call<LlamaRuntimeStatus>("activate_model", { conversationId, modelId }),
   archiveConversation: (id: string) => call<void>("archive_conversation", { id }),
+  listArchivedConversations: (limit = 100) => call<Conversation[]>("list_archived_conversations", { limit }),
+  restoreConversation: (id: string) => call<void>("restore_conversation", { id }),
   deleteConversation: async (id: string) => {
     await flushPendingMessageDeletes();
     return call<void>("delete_conversation", { id });
@@ -217,7 +228,9 @@ export const api = {
   completeMessage: (messageId: string, status: Message["status"]) =>
     call<void>("complete_message", { messageId, status }),
   deleteMessage: (messageId: string) => queueMessageDelete(messageId),
-  projects: () => call<Project[]>("list_projects"),
+  projects: (cursor?: string, limit = 50) =>
+    call<ProjectListPage>("list_projects", { cursor, limit }),
+  getProject: (projectId: string) => call<Project>("get_project", { projectId }),
   createProject: (name: string) => call<Project>("create_project", { name }),
   updateProject: (projectId: string, name: string, instructions: string) =>
     call<Project>("update_project", { projectId, name, instructions }),
@@ -246,6 +259,17 @@ export const api = {
         error,
       },
     }),
+  addProjectBinaryFile: (
+    projectId: string,
+    name: string,
+    sizeBytes: number,
+    mimeType: string | null,
+    dataBase64: string,
+  ) => call<ProjectFile>("add_project_binary_file", {
+    input: { projectId, name, sizeBytes, mimeType, dataBase64 },
+  }),
+  readProjectBinaryFile: (projectId: string, fileId: string) =>
+    call<ProjectBinaryFileDownload>("read_project_binary_file", { projectId, fileId }),
   deleteProjectFile: (projectId: string, fileId: string) =>
     call<void>("delete_project_file", { projectId, fileId }),
   hardware: () => call<HardwareProfile>("detect_hardware"),
@@ -278,6 +302,8 @@ export const api = {
   runtimeStatus: () => call<LlamaRuntimeStatus>("get_llama_runtime_status"),
   runtimeInventory: () => call<RuntimeInventory>("get_llama_runtime_inventory"),
   runtimeInstallStatus: () => call<RuntimeInstallStatus>("get_runtime_install_status"),
+  diffusionRuntimeStatus: () => call<DiffusionRuntimeStatus>("get_diffusion_runtime_status"),
+  installDiffusionRuntime: () => call<DiffusionRuntimeStatus>("install_diffusion_runtime"),
   installRecommendedRuntime: () => call<RuntimeInstallStatus>("install_recommended_runtime"),
   cancelRuntimeInstall: () => call<RuntimeInstallStatus>("cancel_runtime_install"),
   startRuntime: () => call<LlamaRuntimeStatus>("start_llama_runtime"),
@@ -305,9 +331,12 @@ export const api = {
     return call<Message>("regenerate_message", { conversationId, assistantMessageId, mode });
   },
   cancelGeneration: (conversationId: string) => call<void>("cancel_generation", { conversationId }),
+  cancelImageGeneration: (artifactId: string) =>
+    call<boolean>("cancel_image_generation", { artifactId }),
   preferences: () => call<AppPreferences>("get_app_preferences"),
   savePreferences: (preferences: AppPreferences) =>
     call<AppPreferences>("save_app_preferences", { preferences }),
+  acknowledgeChatHistoryNotice: () => call<AppPreferences>("acknowledge_chat_history_notice"),
   networkProxyForUrl: (url: string) => call<string | null>("network_proxy_for_url", { url }),
   userProfile: () => call<UserProfile>("get_user_profile"),
   saveUserProfile: (profile: UserProfile) => call<UserProfile>("save_user_profile", { profile }),
@@ -350,9 +379,19 @@ export const api = {
     messageId: string | null,
     kind: "image" | "video" | "voice",
     prompt: string,
-  ) => call<Artifact>("create_generation_artifact", { conversationId, messageId, kind, prompt }),
+    useCpu = false,
+    imageOptions?: ImageGenerationOptions,
+  ) => call<Artifact>("create_generation_artifact", {
+    conversationId,
+    messageId,
+    kind,
+    prompt,
+    useCpu,
+    imageOptions: kind === "image" ? imageOptions : undefined,
+  }),
   listArtifacts: (conversationId: string) => call<Artifact[]>("list_artifacts", { conversationId }),
-  listLibraryEntries: () => call<LibraryEntry[]>("list_library_entries"),
+  listLibraryEntries: (options: { kind?: ArtifactKind; search?: string; cursor?: string; limit?: number } = {}) =>
+    call<LibraryPage>("list_library_entries", options),
   openArtifact: (artifactId: string) => call<void>("open_artifact", { artifactId }),
   openExternalUrl: (url: string) => call<void>("open_external_url", { url }),
   revealArtifactInFolder: (artifactId: string) =>
@@ -360,6 +399,8 @@ export const api = {
 };
 
 function browserFallback<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (command === "search_conversations")
+    return Promise.resolve({ conversations: [], nextCursor: null } as T);
   const now = new Date().toISOString();
   if (command === "get_portable_root") {
     return Promise.resolve({
@@ -409,7 +450,25 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
       activeModelId: null,
     } as T);
   }
+  if (command === "fork_conversation_for_edit") {
+    return Promise.reject(new Error("Editing earlier messages requires the desktop app. Your original chat is unchanged."));
+  }
   if (command === "list_messages") return Promise.resolve([] as T);
+  if (command === "add_user_message" || command === "create_streaming_assistant_message") {
+    return Promise.resolve({
+      id: crypto.randomUUID(),
+      conversationId: (args?.conversationId as string) ?? "",
+      role: command === "add_user_message" ? "user" : "assistant",
+      content: command === "add_user_message" ? ((args?.content as string) ?? "") : "",
+      status: command === "add_user_message" ? "completed" : "streaming",
+      modelId: null,
+      createdAt: now,
+      updatedAt: now,
+    } as T);
+  }
+  if (command === "append_message_chunk" || command === "complete_message") {
+    return Promise.resolve(undefined as T);
+  }
   if (command === "set_conversation_model") {
     return Promise.resolve({
       id: (args?.id as string) ?? crypto.randomUUID(),
@@ -422,7 +481,12 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
     } as T);
   }
   if (command === "delete_message") return Promise.resolve(undefined as T);
-  if (command === "list_projects") return Promise.resolve([] as T);
+  if (command === "list_projects")
+    return Promise.resolve({ projects: [], nextCursor: null } as T);
+  if (command === "get_project")
+    return Promise.reject(new Error("Project details require the desktop app."));
+  if (command === "add_project_binary_file" || command === "read_project_binary_file")
+    return Promise.reject(new Error("Binary project attachments require the desktop app."));
   if (command === "create_project" || command === "update_project") {
     return Promise.resolve({
       id: (args?.projectId as string) || crypto.randomUUID(),
@@ -475,17 +539,18 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
       kind: artifactKind,
       sizeBytes: content.length || prompt.length,
       pageCount: null,
-      status: command === "create_generation_artifact" && kind !== "image" ? "failed" : "ready",
+      status: command === "create_generation_artifact" ? "failed" : "ready",
       error:
-        command === "create_generation_artifact" && kind !== "image"
-          ? "Local media runtime connector is not available in browser preview."
+        command === "create_generation_artifact"
+          ? "Local media rendering requires the OpenMindAI desktop app; no image was generated in browser preview."
           : null,
       createdAt: now,
       updatedAt: now,
     } as T);
   }
-  if (command === "list_artifacts" || command === "list_library_entries")
-    return Promise.resolve([] as T);
+  if (command === "list_artifacts") return Promise.resolve([] as T);
+  if (command === "list_library_entries")
+    return Promise.resolve({ entries: [], nextCursor: null, totalCount: 0 } as T);
   if (command === "open_artifact" || command === "reveal_artifact_in_folder") {
     return Promise.resolve(undefined as T);
   }
@@ -584,6 +649,20 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
           : null,
       error: null,
     } as T);
+  }
+  if (command === "get_diffusion_runtime_status") {
+    return Promise.resolve({
+      state: "browserPreview",
+      backend: null,
+      version: null,
+      detail: "Image renderer installation is only available in the desktop application.",
+      downloadedBytes: 0,
+      totalBytes: null,
+      percentage: null,
+    } as T);
+  }
+  if (command === "install_diffusion_runtime") {
+    return Promise.reject(new Error("Install the image renderer from the OpenMindAI desktop app."));
   }
   if (command === "get_llama_runtime_inventory") {
     return Promise.resolve({ runtimes: [], selected: null, serverState: "stopped" } as T);
@@ -686,7 +765,22 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
       ],
     } as T);
   }
+  if (command === "acknowledge_chat_history_notice") {
+    return browserFallback<T>("get_app_preferences");
+  }
   if (command === "get_app_preferences" || command === "save_app_preferences") {
+    if (
+      command === "save_app_preferences" &&
+      (args?.preferences as { autoDownloadModelUpdates?: unknown } | undefined)?.autoDownloadModelUpdates === true
+    ) {
+      return Promise.reject(new Error("Automatic model downloading is not available. Confirm model downloads manually in Settings → Models."));
+    }
+    if (
+      command === "save_app_preferences" &&
+      (args?.preferences as { saveChatHistory?: unknown } | undefined)?.saveChatHistory === false
+    ) {
+      return Promise.reject(new Error("This version saves chat history locally. Temporary chats are not supported."));
+    }
     return Promise.resolve({
       theme: "light",
       language: "English",
@@ -699,10 +793,12 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
       defaultPerformanceProfile: "Auto",
       telemetryEnabled: false,
       saveChatHistory: true,
+      chatHistoryNoticeRequired: false,
       localRuntimeAutostart: true,
       confirmBeforeDelete: true,
       webSearchEnabled: true,
       deepResearchEnabled: true,
+      webSearchPreferredProvider: "auto",
       thinkingModeEnabled: true,
       typingIndicatorEnabled: true,
       socketRealtimeEnabled: false,

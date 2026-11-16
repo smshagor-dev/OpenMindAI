@@ -7,9 +7,9 @@
   padding: 28px;
   overflow: auto;
   background:
-    radial-gradient(circle at 50% 38%, rgba(124, 92, 255, 0.08), transparent 34%),
-    #090909;
-  color: #f5f5f5;
+    radial-gradient(circle at 50% 38%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 34%),
+    var(--bg);
+  color: var(--text);
   opacity: 1;
   transition: opacity 180ms ease;
 }
@@ -22,10 +22,10 @@
 .startup-panel {
   width: min(560px, 100%);
   padding: 30px;
-  border: 1px solid rgba(255, 255, 255, 0.09);
+  border: 1px solid var(--border-strong);
   border-radius: 20px;
-  background: rgba(20, 20, 20, 0.96);
-  box-shadow: 0 26px 80px rgba(0, 0, 0, 0.38);
+  background: var(--surface-2);
+  box-shadow: 0 26px 80px rgb(0 0 0 / 16%);
 }
 
 .startup-brand {
@@ -56,7 +56,7 @@
 .startup-headline p,
 .startup-step-copy small,
 .startup-local-note {
-  color: #929292;
+  color: var(--muted);
 }
 
 .startup-brand span {
@@ -92,20 +92,20 @@
   height: 5px;
   overflow: hidden;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--border-strong);
 }
 
 .startup-progress-track span {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: #7c5cff;
+  background: var(--accent);
   transition: width 260ms ease;
 }
 
 .startup-progress small {
   min-width: 34px;
-  color: #a7a7a7;
+  color: var(--muted);
   font-size: 11px;
   text-align: right;
 }
@@ -126,7 +126,7 @@
 }
 
 .startup-step-loading {
-  background: rgba(255, 255, 255, 0.045);
+  background: color-mix(in srgb, var(--surface) 75%, var(--bg));
 }
 
 .startup-step-icon {
@@ -135,17 +135,17 @@
   width: 32px;
   height: 32px;
   border-radius: 9px;
-  background: rgba(255, 255, 255, 0.055);
-  color: #a5a5a5;
+  background: var(--surface);
+  color: var(--muted);
 }
 
 .startup-step-loading .startup-step-icon {
-  color: #d6ccff;
-  background: rgba(124, 92, 255, 0.14);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
 }
 
 .startup-step-done .startup-step-icon {
-  color: #94ddb7;
+  color: var(--success);
 }
 
 .startup-step-copy {
@@ -172,22 +172,22 @@
 .startup-step-state {
   display: grid;
   place-items: center;
-  color: #696969;
+  color: var(--muted);
 }
 
 .startup-step-done .startup-step-state {
-  color: #5fc891;
+  color: var(--success);
 }
 
 .startup-step-warning .startup-step-state {
-  color: #d6a25f;
+  color: var(--warning);
 }
 
 .startup-step-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #4d4d4d;
+  background: var(--border-strong);
 }
 
 .startup-spin {
@@ -203,7 +203,7 @@
 .startup-local-note {
   margin: 20px 0 0;
   padding-top: 16px;
-  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  border-top: 1px solid var(--border);
   font-size: 11px;
   text-align: center;
 }

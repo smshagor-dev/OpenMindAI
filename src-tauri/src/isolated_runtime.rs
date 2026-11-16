@@ -507,20 +507,13 @@ async fn run_windows_sandbox(
     let config_path = control_dir.join("run.wsb");
 
     let encoded_command = powershell_encoded_command(command);
-    let launcher = format!(
-        "$ErrorActionPreference = 'Stop'\r\n\
-         $stdout = 'C:\\OpenMindControl\\stdout.txt'\r\n\
-         $stderr = 'C:\\OpenMindControl\\stderr.txt'\r\n\
-         $result = 'C:\\OpenMindControl\\result.json'\r\n\
-         try {{\r\n\
-           $process = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand','{encoded_command}') -WorkingDirectory '{}' -RedirectStandardOutput $stdout -RedirectStandardError $stderr -Wait -PassThru\r\n\
-           @{{ exitCode = [int]$process.ExitCode }} | ConvertTo-Json -Compress | Set-Content -LiteralPath $result -Encoding UTF8\r\n\
-         }} catch {{\r\n\
-           $_ | Out-String | Set-Content -LiteralPath $stderr -Encoding UTF8\r\n\
-           @{{ exitCode = 1 }} | ConvertTo-Json -Compress | Set-Content -LiteralPath $result -Encoding UTF8\r\n\
-         }}\r\n\
-         shutdown.exe /s /t 0 /f\r\n",
-        powershell_single_quote(&sandbox_cwd)
+    let launcher = crate::sandbox_capture::launcher(
+        &encoded_command,
+        &sandbox_cwd,
+        "C:\\OpenMindControl",
+        max_output_chars,
+        timeout_secs.saturating_mul(1000),
+        true,
     );
     fs::write(&launcher_path, launcher.as_bytes())?;
 
@@ -577,20 +570,25 @@ async fn run_windows_sandbox(
         sleep(Duration::from_millis(200)).await;
     }
 
-    let result_raw = fs::read_to_string(&result_path)?;
-    let result_raw = result_raw.trim_start_matches('\u{feff}');
-    let result: WindowsSandboxResult = serde_json::from_str(result_raw)
-        .map_err(|error| AppError::internal(format!("invalid Windows Sandbox result: {error}")))?;
-    let mut stdout = fs::read_to_string(&stdout_path).unwrap_or_default();
-    let stderr = fs::read_to_string(&stderr_path).unwrap_or_default();
+    let captured = (|| -> Result<_, AppError> {
+        let raw = crate::sandbox_capture::read_result(&result_path)?;
+        let result: WindowsSandboxResult = serde_json::from_str(&raw).map_err(|error| {
+            AppError::internal(format!("invalid Windows Sandbox result: {error}"))
+        })?;
+        let stdout = crate::sandbox_capture::read_output(&stdout_path, max_output_chars)?;
+        let stderr = crate::sandbox_capture::read_output(&stderr_path, max_output_chars)?;
+        Ok((result, stdout, stderr))
+    })();
+    if captured.is_err() {
+        runtime_guards::terminate_process_tree(&mut child).await;
+        let _ = fs::remove_dir_all(&control_dir);
+    }
+    let (result, (mut stdout, stdout_truncated), (stderr, stderr_truncated)) = captured?;
     let marker = take_cwd_marker(&mut stdout);
     let resolved_cwd = marker
         .as_deref()
         .and_then(|value| translate_windows_sandbox_cwd(workspace_root, value))
         .unwrap_or_else(|| display_path(cwd));
-    let (stdout, stdout_truncated) = truncate_chars(&stdout, max_output_chars);
-    let (stderr, stderr_truncated) = truncate_chars(&stderr, max_output_chars);
-
     if tokio::time::timeout(Duration::from_secs(15), child.wait())
         .await
         .is_err()
@@ -605,8 +603,8 @@ async fn run_windows_sandbox(
         stdout,
         stderr,
         duration_ms: started.elapsed().as_millis(),
-        timed_out: false,
-        truncated: stdout_truncated || stderr_truncated,
+        timed_out: result.timed_out,
+        truncated: result.truncated || stdout_truncated || stderr_truncated,
         backend: "Windows Sandbox".to_string(),
         isolated: true,
         network_disabled: true,
@@ -753,7 +751,10 @@ fn powershell_wrapper(command: &str) -> String {
 
 #[cfg(target_os = "windows")]
 fn powershell_encoded_command(command: &str) -> String {
-    let script = powershell_wrapper(command);
+    let script = format!(
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); {}",
+        powershell_wrapper(command)
+    );
     let bytes = script
         .encode_utf16()
         .flat_map(u16::to_le_bytes)
@@ -817,11 +818,6 @@ fn sandbox_profile_escape(value: &str) -> String {
 }
 
 #[cfg(target_os = "windows")]
-fn powershell_single_quote(value: &str) -> String {
-    value.replace('\'', "''")
-}
-
-#[cfg(target_os = "windows")]
 fn xml_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -846,6 +842,8 @@ fn display_path(path: &Path) -> String {
 #[serde(rename_all = "camelCase")]
 struct WindowsSandboxResult {
     exit_code: i32,
+    truncated: bool,
+    timed_out: bool,
 }
 
 #[cfg(test)]

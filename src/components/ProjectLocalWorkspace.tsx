@@ -20,7 +20,7 @@ import {
   Trash2,
   Unplug,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   localWorkspaceApi,
   type ProjectLocalAccessStatus,
@@ -29,7 +29,9 @@ import {
   type WorkspaceEntry,
 } from "../lib/localWorkspace";
 import { formatBytes, formatError } from "../lib/format";
+import { WorkspaceDirectoryGate } from "../lib/workspaceDirectoryGate";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { confirmWorkspaceDiscard } from "../lib/workspaceDiscardGuard";
 import "../projects-local-workspace.css";
 
 export function ProjectLocalWorkspace(props: { projectId: string; projectName: string }) {
@@ -38,12 +40,16 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
   const [currentPath, setCurrentPath] = useState("");
   const [locationInput, setLocationInput] = useState("");
   const [entries, setEntries] = useState<WorkspaceEntry[]>([]);
+  const [listedAt, setListedAt] = useState<{ projectId: string; rootId: string | null; path: string } | null>(null);
+  const [directoryPending, setDirectoryPending] = useState(false);
+  const directoryGate = useRef(new WorkspaceDirectoryGate());
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editorPath, setEditorPath] = useState<string | null>(null);
   const [editorContent, setEditorContent] = useState("");
   const [editorOriginal, setEditorOriginal] = useState("");
+  const [editorRevision, setEditorRevision] = useState<string | null>(null);
   const [newItemKind, setNewItemKind] = useState<"file" | "directory" | null>(null);
   const [newItemName, setNewItemName] = useState("");
   const [renameTarget, setRenameTarget] = useState<WorkspaceEntry | null>(null);
@@ -60,46 +66,58 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
     [activeRootId, status],
   );
   const editorDirty = editorPath !== null && editorContent !== editorOriginal;
+  const listingIsCurrent = activeRoot !== null && listedAt?.projectId === props.projectId &&
+    listedAt.rootId === activeRoot.id && listedAt.path === currentPath &&
+    directoryGate.current.isDisplayed(props.projectId, activeRoot.id, currentPath);
+  const visibleEntries = listingIsCurrent ? entries : [];
+  const isCurrentListing = () => Boolean(activeRoot &&
+    directoryGate.current.isDisplayed(props.projectId, activeRoot.id, currentPath));
 
-  const loadStatus = useCallback(async () => {
-    const next = await localWorkspaceApi.status(props.projectId);
-    setStatus(next);
-    setActiveRootId((current) => {
-      if (current && next.roots.some((root) => root.id === current)) return current;
-      return next.roots[0]?.id ?? null;
-    });
-    return next;
-  }, [props.projectId]);
+  const loadStatus = useCallback(
+    () => localWorkspaceApi.status(props.projectId),
+    [props.projectId],
+  );
 
   const loadDirectory = useCallback(
     async (rootId: string | null, path: string) => {
-      if (!rootId && !isAbsoluteLike(path)) {
-        setEntries([]);
-        return;
+      const request = directoryGate.current.begin(props.projectId, rootId, path);
+      if (!request) return;
+      setDirectoryPending(true);
+      setListedAt(null);
+      setEntries([]);
+      setError(null);
+      try {
+        const next = await localWorkspaceApi.listDirectory(props.projectId, rootId, path);
+        if (!directoryGate.current.accept(request)) return;
+        setEntries(next);
+        setListedAt({ projectId: props.projectId, rootId, path });
+        setCurrentPath(path);
+        setLocationInput(path || activeRoot?.path || "");
+      } catch (caught) {
+        if (directoryGate.current.isCurrent(request)) setError(formatError(caught));
+      } finally {
+        if (directoryGate.current.isCurrent(request)) setDirectoryPending(false);
       }
-      const next = await localWorkspaceApi.listDirectory(props.projectId, rootId, path);
-      setEntries(next);
-      setCurrentPath(path);
-      setLocationInput(path || activeRoot?.path || "");
     },
     [activeRoot?.path, props.projectId],
   );
 
   useEffect(() => {
     let alive = true;
+    const gate = directoryGate.current;
+    directoryGate.current.select(props.projectId, null);
+    setStatus(null);
+    setActiveRootId(null);
+    setEntries([]);
+    setListedAt(null);
+    setDirectoryPending(false);
     setLoading(true);
     setError(null);
     void loadStatus()
       .then((next) => {
         if (!alive) return;
-        const root = next.roots[0];
-        if (root) {
-          setTerminalCwd(root.path);
-          return localWorkspaceApi.listDirectory(props.projectId, root.id, "").then((items) => {
-            if (alive) setEntries(items);
-          });
-        }
-        setEntries([]);
+        setStatus(next);
+        setActiveRootId(next.roots[0]?.id ?? null);
       })
       .catch((caught) => {
         if (alive) setError(formatError(caught));
@@ -109,14 +127,22 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
       });
     return () => {
       alive = false;
+      gate.select(props.projectId, null);
     };
   }, [loadStatus, props.projectId]);
 
   useEffect(() => {
+    directoryGate.current.select(props.projectId, activeRoot?.id ?? null);
+    setEntries([]);
+    setListedAt(null);
+    setDirectoryPending(Boolean(activeRoot));
+    setRenameTarget(null);
+    setDeleteTarget(null);
+    setNewItemKind(null);
+    setNewItemName("");
     if (!activeRoot) {
       setCurrentPath("");
       setLocationInput("");
-      setEntries([]);
       return;
     }
     setCurrentPath("");
@@ -125,8 +151,9 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
     setEditorPath(null);
     setEditorContent("");
     setEditorOriginal("");
-    void loadDirectory(activeRoot.id, "").catch((caught) => setError(formatError(caught)));
-  }, [activeRoot?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    setEditorRevision(null);
+    void loadDirectory(activeRoot.id, "");
+  }, [activeRoot?.id, activeRoot?.path, loadDirectory, props.projectId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const run = async <T,>(key: string, action: () => Promise<T>): Promise<T | undefined> => {
     if (busy) return undefined;
@@ -143,6 +170,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
   };
 
   const attachFolder = async () => {
+    if (editorDirty && !window.confirm("Discard unsaved editor changes before attaching another folder?")) return;
     const selected = await open({
       directory: true,
       multiple: false,
@@ -155,18 +183,26 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
     const root =
       next.roots.find((item) => sameDisplayPath(item.path, selected)) ??
       next.roots[next.roots.length - 1];
-    if (root) setActiveRootId(root.id);
+    if (root) {
+      directoryGate.current.select(props.projectId, root.id);
+      setListedAt(null);
+      setActiveRootId(root.id);
+    }
   };
 
   const detachFolder = async () => {
     if (!detachTarget) return;
+    if (editorDirty && !window.confirm("Discard unsaved editor changes before detaching this folder?")) return;
     const next = await run("detach", () =>
       localWorkspaceApi.detachFolder(props.projectId, detachTarget.id),
     );
     if (!next) return;
+    directoryGate.current.select(props.projectId, null);
+    setListedAt(null);
     setStatus(next);
     setDetachTarget(null);
     setEditorPath(null);
+    setEditorRevision(null);
   };
 
   const enableFullAccess = async () => {
@@ -191,10 +227,11 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
   };
 
   const openEntry = async (entry: WorkspaceEntry) => {
-    if (!activeRoot) return;
+    if (!activeRoot || !isCurrentListing() || !visibleEntries.includes(entry)) return;
     if (entry.kind === "directory") {
       if (editorDirty && !window.confirm("Discard unsaved editor changes and open this folder?")) return;
       setEditorPath(null);
+      setEditorRevision(null);
       await run("navigate", () => loadDirectory(activeRoot.id, entry.relativePath));
       return;
     }
@@ -203,51 +240,60 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
     const file = await run("read-file", () =>
       localWorkspaceApi.readFile(props.projectId, activeRoot.id, entry.relativePath),
     );
-    if (!file) return;
+    if (!file || !directoryGate.current.isDisplayed(props.projectId, activeRoot.id, currentPath)) return;
     setEditorPath(entry.relativePath);
     setEditorContent(file.content);
     setEditorOriginal(file.content);
+    setEditorRevision(file.revisionSha256);
   };
 
   const saveEditor = async () => {
-    if (!activeRoot || !editorPath || !editorDirty) return;
+    if (!activeRoot || !editorPath || !editorDirty || !editorRevision || !isCurrentListing()) return;
+    // Keep later edits dirty if the user types again while this save is pending.
+    const submittedContent = editorContent;
     const saved = await run("save-file", () =>
       localWorkspaceApi.writeFile(
         props.projectId,
         activeRoot.id,
         editorPath,
-        editorContent,
+        submittedContent,
         true,
+        editorRevision,
       ),
     );
-    if (!saved) return;
-    setEditorOriginal(editorContent);
+    if (!saved || !directoryGate.current.isDisplayed(props.projectId, activeRoot.id, currentPath)) return;
+    setEditorOriginal(submittedContent);
+    setEditorRevision(saved.revisionSha256);
     await loadDirectory(activeRoot.id, currentPath).catch(() => undefined);
   };
 
   const createItem = async () => {
-    if (!activeRoot || !newItemKind) return;
+    if (!activeRoot || !newItemKind || !isCurrentListing()) return;
     const name = newItemName.trim();
     if (!name) return;
+    if (newItemKind === "file" && !confirmWorkspaceDiscard(editorDirty, "create and open another file")) return;
     const path = joinWorkspacePath(currentPath, name);
     const created = await run(`create-${newItemKind}`, () =>
       newItemKind === "directory"
         ? localWorkspaceApi.createDirectory(props.projectId, activeRoot.id, path, true)
         : localWorkspaceApi.writeFile(props.projectId, activeRoot.id, path, "", true),
     );
-    if (!created) return;
+    if (!created || !directoryGate.current.isDisplayed(props.projectId, activeRoot.id, currentPath)) return;
     setNewItemKind(null);
     setNewItemName("");
     await loadDirectory(activeRoot.id, currentPath).catch(() => undefined);
-    if (newItemKind === "file") {
+    if (newItemKind === "file" && "revisionSha256" in created &&
+        typeof created.revisionSha256 === "string" &&
+        directoryGate.current.isDisplayed(props.projectId, activeRoot.id, currentPath)) {
       setEditorPath(path);
       setEditorContent("");
       setEditorOriginal("");
+      setEditorRevision(created.revisionSha256);
     }
   };
 
   const renameItem = async () => {
-    if (!activeRoot || !renameTarget) return;
+    if (!activeRoot || !renameTarget || !isCurrentListing() || !visibleEntries.includes(renameTarget)) return;
     const nextName = renameValue.trim();
     if (!nextName) return;
     const parent = parentWorkspacePath(renameTarget.relativePath);
@@ -261,7 +307,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
         true,
       ),
     );
-    if (!moved) return;
+    if (!moved || !directoryGate.current.isDisplayed(props.projectId, activeRoot.id, currentPath)) return;
     if (editorPath === renameTarget.relativePath) setEditorPath(targetPath);
     setRenameTarget(null);
     setRenameValue("");
@@ -269,7 +315,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
   };
 
   const deleteItem = async () => {
-    if (!activeRoot || !deleteTarget) return;
+    if (!activeRoot || !deleteTarget || !isCurrentListing() || !visibleEntries.includes(deleteTarget)) return;
     const removed = await run("delete-path", async () => {
       await localWorkspaceApi.deletePath(
         props.projectId,
@@ -279,28 +325,35 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
       );
       return true;
     });
-    if (!removed) return;
+    if (!removed || !directoryGate.current.isDisplayed(props.projectId, activeRoot.id, currentPath)) return;
     if (editorPath === deleteTarget.relativePath) {
       setEditorPath(null);
       setEditorContent("");
       setEditorOriginal("");
+      setEditorRevision(null);
     }
     setDeleteTarget(null);
     await loadDirectory(activeRoot.id, currentPath).catch(() => undefined);
   };
 
   const goToLocation = async () => {
-    if (!activeRoot) return;
+    if (!activeRoot || !isCurrentListing()) return;
     const raw = locationInput.trim();
     if (!raw) return;
+    if (!confirmWorkspaceDiscard(editorDirty, "navigate to another folder")) return;
+    setEditorPath(null);
+    setEditorRevision(null);
     let path = raw;
     if (!status?.fullPcAccess && sameDisplayPath(raw, activeRoot.path)) path = "";
     await run("go", () => loadDirectory(activeRoot.id, path));
   };
 
   const goUp = async () => {
-    if (!activeRoot) return;
+    if (!activeRoot || !isCurrentListing()) return;
     if (!currentPath) return;
+    if (!confirmWorkspaceDiscard(editorDirty, "navigate to the parent folder")) return;
+    setEditorPath(null);
+    setEditorRevision(null);
     const parent = parentWorkspacePath(currentPath);
     await run("navigate", () => loadDirectory(activeRoot.id, parent));
   };
@@ -363,7 +416,15 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
                 aria-selected={root.id === activeRoot?.id}
                 className={root.id === activeRoot?.id ? "local-root-tab active" : "local-root-tab"}
                 key={root.id}
-                onClick={() => setActiveRootId(root.id)}
+                onClick={() => {
+                  if (root.id === activeRoot?.id) return;
+                  if (!confirmWorkspaceDiscard(editorDirty, "switch attached folders")) return;
+                  directoryGate.current.select(props.projectId, root.id);
+                  setEntries([]);
+                  setListedAt(null);
+                  setDirectoryPending(true);
+                  setActiveRootId(root.id);
+                }}
               >
                 <FolderOpen size={15} />
                 <span><strong>{root.label}</strong><small>{root.exists ? (root.writable ? "Read / write" : "Read only") : "Unavailable"}</small></span>
@@ -428,9 +489,11 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
                 ) : null}
 
                 <div className="local-entry-list">
-                  {busy === "navigate" || busy === "go" ? (
+                  {directoryPending || busy === "navigate" || busy === "go" ? (
                     <div className="local-entry-empty"><LoaderCircle className="spin" size={18} /> Reading folder…</div>
-                  ) : entries.length ? entries.map((entry) => (
+                  ) : !listingIsCurrent ? (
+                    <div className="local-entry-empty"><FolderOpen size={19} /> Folder contents unavailable. Refresh to retry.</div>
+                  ) : visibleEntries.length ? visibleEntries.map((entry) => (
                     <div className="local-entry-row" key={`${entry.kind}-${entry.path}`}>
                       <button type="button" className="local-entry-open" onClick={() => void openEntry(entry)}>
                         {entry.kind === "directory" ? <Folder size={16} /> : <FileCode2 size={16} />}
@@ -592,10 +655,6 @@ function parentWorkspacePath(path: string) {
   if (lastSlash === 0) return normalized.slice(0, 1);
   const parent = normalized.slice(0, lastSlash);
   return /^[A-Za-z]:$/.test(parent) ? `${parent}\\` : parent;
-}
-
-function isAbsoluteLike(path: string) {
-  return path.startsWith("/") || path.startsWith("\\\\") || /^[A-Za-z]:[\\/]/.test(path);
 }
 
 function sameDisplayPath(left: string, right: string) {

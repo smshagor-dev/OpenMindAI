@@ -5,6 +5,7 @@ pub use legacy::{
     ActiveGenerations, InferenceMedia, InferenceMode, StreamChunkEvent, StreamDoneEvent,
     StreamRequest, StreamStartedEvent,
 };
+pub(crate) use legacy::{probe_web_providers, ProviderHealthReport};
 
 #[cfg(feature = "native-cxx-llama")]
 pub use legacy::InferenceMetrics;

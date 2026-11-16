@@ -82,7 +82,7 @@ jobs:
 
       - name: Cache pinned llama.cpp CPU build
         id: llama-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: vendor/llama.cpp/build
           key: llama-${{ runner.os }}-${{ env.LLAMA_CPP_COMMIT }}-cpu-shared-v2
@@ -202,7 +202,7 @@ jobs:
 
       - name: Upload native model smoke report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native-model-smoke-linux
           path: native-model-smoke.json
@@ -210,7 +210,7 @@ jobs:
           retention-days: 7
 
       - name: Setup Go for native service integration
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: services/inference-api/go.mod
           cache: false
@@ -235,7 +235,7 @@ jobs:
         run: go test -race ./...
 
       - name: Setup Python for adapter integration
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 

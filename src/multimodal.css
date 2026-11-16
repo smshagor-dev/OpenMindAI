@@ -42,11 +42,5 @@
 }
 
 .composer-note-error {
-  color: #c43c35;
-}
-
-@media (prefers-color-scheme: dark) {
-  .composer-note-error {
-    color: #ff8d86;
-  }
+  color: var(--status-error);
 }

@@ -2,10 +2,17 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::{
-    allocate_local_port, app_error::AppError, inference::InferenceMedia,
-    installed_catalog_entry_by_id, model_registry::ModelRegistry, vision_batch, AppState,
-    ModelLaunchPlanner,
+    allocate_local_port,
+    app_error::AppError,
+    inference::InferenceMedia,
+    model_catalog,
+    model_download::{validate_gguf_header, validate_installed_dependencies},
+    model_registry::ModelRegistry,
+    vision_batch, AppState, ModelLaunchPlanner,
 };
+
+#[path = "pdf_ocr_selection.rs"]
+mod selection;
 
 const MAX_PAGES_PER_BATCH: usize = 4;
 
@@ -34,40 +41,24 @@ pub(crate) async fn ocr_pdf_pages(
         )));
     }
 
-    let lens_status = installed_catalog_entry_by_id(&state, "qwen25-vl-3b-q4km")?
-        .ok_or_else(|| {
-            AppError::ModelNotFound(
-                "OpenMindAI Lens is required to read scanned/image-only PDF pages. Download Lens from Settings > Models first."
-                    .to_string(),
-            )
-        })?;
-    let lens_path = lens_status.installed_path.as_deref().ok_or_else(|| {
-        AppError::ModelNotFound("OpenMindAI Lens model path is unavailable.".to_string())
-    })?;
-    let normalized_lens_path = lens_path.replace('\\', "/").to_ascii_lowercase();
-
+    let entry = model_catalog::entry_by_id("qwen25-vl-3b-q4km")?;
+    let paths = selection::lens_paths(state.root.root(), &entry)?;
+    validate_gguf_header(&paths.checkpoint, &state.root)?;
+    if !validate_installed_dependencies(&state.root, &entry, true)? {
+        return Err(AppError::ModelInvalid("OpenMindAI Lens projector integrity check failed. Validate or re-download Lens from Settings > Models.".into()));
+    }
     let lens_model = {
         let db = state
             .database
             .lock()
             .map_err(|_| AppError::internal("database lock poisoned"))?;
-        ModelRegistry::new(&db, &state.root)
-            .discover_gguf_models()?
-            .into_iter()
-            .find(|model| {
-                model.path.replace('\\', "/").to_ascii_lowercase() == normalized_lens_path
-                    || model.family.as_deref() == Some("qwen-vl")
-            })
-            .ok_or_else(|| {
-                AppError::ModelNotFound(
-                    "OpenMindAI Lens is installed but was not registered as a usable local model. Validate or re-download it from Settings > Models."
-                        .to_string(),
-                )
-            })?
+        let models = ModelRegistry::new(&db, &state.root).discover_gguf_models()?;
+        selection::select_lens_model(state.root.root(), &paths.checkpoint, models)?
     };
 
     let hardware = crate::hardware::HardwareProfiler::for_inference(&state.hardware);
-    let plan = ModelLaunchPlanner::plan(&lens_model, &hardware, allocate_local_port()?);
+    let mut plan = ModelLaunchPlanner::plan(&lens_model, &hardware, allocate_local_port()?);
+    plan.config.mmproj_path = Some(paths.projector.to_string_lossy().into_owned());
     // Held while the pages are read.
     let (endpoint, _lens_lease) = {
         let (status, lease) =

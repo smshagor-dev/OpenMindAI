@@ -12,9 +12,9 @@ OpenAgent uses a bounded inspect, act, observe, validate loop. Each model turn r
 
 The initial tool set covers directory listing, bounded file reads, text search, full-file writes, exact text replacement, directory creation, path moves, deletion, Git status, Git diff, and terminal execution. File tools are contained inside explicitly attached project roots. Absolute paths and terminal execution remain behind the separate Full PC + Terminal grant. Project files and command output are treated as untrusted data rather than agent instructions.
 
-## Delivery stages
+## Engineering capabilities and roadmap
 
-### Stage 1: Nemotron-powered foundation
+### Nemotron-powered foundation
 
 - Brand the project coding workflow as OpenAgent.
 - Prefer Nemotron 3.5 Lightning when its verified local package is installed.
@@ -23,34 +23,34 @@ The initial tool set covers directory listing, bounded file reads, text search, 
 - Keep workspace containment, cancellation, failure budgets, and validation gates.
 - Add routing and regression tests.
 
-### Stage 2: Durable run state
+### Durable run state
 
 - Add persistent run, step, tool-call, checkpoint, and validation records.
 - Resume interrupted runs without replaying completed mutations.
 - Record changed files and reversible checkpoints before destructive edits.
 - Expose a run timeline, token/runtime metrics, and clear failure reasons in the UI.
 
-### Stage 3: Strong process sandbox
+### Strong process sandbox
 
 - Add a platform adapter for Windows Sandbox/Job Objects, macOS sandbox profiles, and Linux bubblewrap or containers.
 - Default terminal execution to a disposable workspace copy with explicit mount and network policies.
 - Apply CPU, memory, process, output, and wall-clock limits.
 - Export reviewed patches back to the attached project instead of granting broad host access.
 
-### Stage 4: Codex-grade editing and context
+### Repository-aware editing and context
 
 - Add patch-based edits, symbol-aware search, repository instruction discovery, ignore rules, and binary/generated-file protection.
 - Build adaptive context packs from repository maps, relevant files, Git state, diagnostics, and recent tool evidence.
 - Add language-aware validation profiles for Rust, TypeScript, Python, Go, PHP, Java, .NET, and mobile projects.
 
-### Stage 5: Git delivery workflow
+### Git delivery workflow
 
 - Add explicit branch policy, commit composition, remote status checks, PR creation, CI monitoring, and merge controls.
 - Never include unrelated user changes in an agent commit.
 - Require passing local validation and repository checks before automatic merge.
 - Preserve a complete audit trail for every remote mutation.
 
-### Stage 6: Production qualification
+### Production qualification
 
 - Run adversarial prompt-injection, path escape, symlink, archive, command injection, timeout, cancellation, and resource exhaustion tests.
 - Run real-model tool-use evaluations with Nemotron 3.5 Lightning and every supported fallback.
@@ -59,9 +59,9 @@ The initial tool set covers directory listing, bounded file reads, text search, 
 
 ## Current implementation status
 
-Stage 1 is complete. The bounded agent loop is connected to installed Nemotron 3.5 Lightning packages, uses the selected model ID, retains compatible lower-memory fallbacks, and runs inside the attached-root file boundary.
+The Nemotron-powered foundation is implemented. The bounded agent loop is connected to installed Nemotron 3.5 Lightning packages, uses the selected model ID, retains compatible lower-memory fallbacks, and runs inside the attached-root file boundary.
 
-Stage 2 is in progress. OpenAgent now persists run state, ordered tool steps, bounded results, validation state, before/after checkpoints, and restore audit events. File-tool checkpoints include bounded file contents plus SHA-256 evidence and block destructive mutations that exceed the entry or byte limits. Completed mutations can be restored only after the matching after-state passes conflict, digest, symlink, and attached-root checks; active runs cannot be restored. Restore payloads are verified before mutation, failed restores attempt a compensating rollback to the captured after-state, and restored runs return to a validation-required state. Startup recovery marks abandoned runs as interrupted, blocks their active steps, and flags unfinished restore events for operator verification. Typed desktop APIs expose run history, checkpoint IDs, step details, restore results, and restore-event status. When terminal access is disabled, a mutated run reports that required validation was not run instead of presenting an unqualified success. True filesystem transactions, handle-based protection against every symlink race, automatic interrupted-run replay, terminal-command snapshots, token/runtime metrics, and the visible timeline UI are still pending and must not be represented as complete. The OS-level process sandbox remains Stage 3.
+Durable run-state support is partially implemented. OpenAgent now persists run state, ordered tool steps, bounded results, validation state, before/after checkpoints, and restore audit events. File-tool checkpoints include bounded file contents plus SHA-256 evidence and block destructive mutations that exceed the entry or byte limits. Completed mutations can be restored only after the matching after-state passes conflict, digest, symlink, and attached-root checks; active runs cannot be restored. Restore payloads are verified before mutation, failed restores attempt a compensating rollback to the captured after-state, and restored runs return to a validation-required state. Startup recovery marks abandoned runs as interrupted, blocks their active steps, and flags unfinished restore events for operator verification. Typed desktop APIs expose run history, checkpoint IDs, step details, restore results, and restore-event status. When terminal access is disabled, a mutated run reports that required validation was not run instead of presenting an unqualified success. True filesystem transactions, handle-based protection against every symlink race, automatic interrupted-run replay, terminal-command snapshots, token/runtime metrics, and the visible timeline UI are still pending and must not be represented as complete. The OS-level process sandbox remains planned.
 
 
 ## Implemented parallel sub-agent safety boundary

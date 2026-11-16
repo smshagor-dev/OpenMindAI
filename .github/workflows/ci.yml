@@ -40,11 +40,311 @@ jobs:
       - name: Model catalog
         run: npm run check:models
 
+      - name: Explicit media command routing
+        run: npm run test:chat-routing
+
+      - name: Image generation routing
+        run: npm run test:image
+
+      - name: Theme contrast and appearance regression
+        run: npm run check:theme
+
+      - name: Shared application updater regression
+        run: npm run test:updates
+
+      - name: Manual model update policy regression
+        run: npm run test:model-updates
+
+      - name: Conversation isolation regression
+        run: npm run test:conversations
+
+      - name: Local workspace root and navigation race regression
+        run: npm run test:workspace
+
+      - name: Chat draft failure recovery
+        run: npm run test:drafts
+
+      - name: Project catalog paging and stale detail regression
+        run: npm run test:project-catalog
+
+      - name: Project binary persistence and recovery regression
+        run: npm run test:project-binary
+      - name: Database snapshot scope disclosure
+        run: npm run test:backup-scope
+
+      - name: PDF ingestion fallback regression
+        run: npm run test:pdf
+      - name: Regeneration history preservation
+        run: npm run test:regeneration
+      - name: Model inventory availability
+        run: npm run test:model-inventory
+      - name: Model action failure recovery
+        run: npm run test:model-actions
+      - name: Concurrent attachment ingestion
+        run: npm run test:attachments
+      - name: Attachment context fairness and truncation disclosure
+        run: npm run test:attachment-context
+      - name: Settings save failure recovery
+        run: npm run test:settings-save
+      - name: Voice draft ownership
+        run: npm run test:voice-drafts
+      - name: Composer IME regression
+        run: npm run test:ime
+
+      - name: Auto routing and offline regression
+        run: npm run test:routing
+
+      - name: Setup storage path validation and stale response regression
+        run: npm run test:setup-storage
+
+      - name: Indexed chat search pagination and stale result regression
+        run: npm run test:chat-search
+
       - name: Lint
         run: npm run lint
 
       - name: TypeScript and Vite build
         run: npm run build
+
+  process-ownership:
+    name: Runtime ownership (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Runtime ownership format
+        run: cargo fmt --manifest-path tests/process-ownership/Cargo.toml -- --check
+      - name: Runtime ownership Clippy
+        run: cargo clippy --locked --manifest-path tests/process-ownership/Cargo.toml --all-targets -- -D warnings
+      - name: Runtime exit, crash and relaunch tests
+        run: cargo test --locked --manifest-path tests/process-ownership/Cargo.toml
+
+  sandbox-capture:
+    name: Bounded sandbox capture (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Production module regressions
+        run: cargo test --locked --manifest-path tests/sandbox-capture/Cargo.toml
+
+  mcp-response:
+    name: MCP response correlation (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --manifest-path tests/mcp-response/Cargo.toml -- --check
+      - run: cargo clippy --locked --manifest-path tests/mcp-response/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path tests/mcp-response/Cargo.toml
+
+  media-index-cleanup:
+    name: Deleted media index cleanup (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --manifest-path tests/media-index-cleanup/Cargo.toml -- --check
+      - run: cargo clippy --locked --manifest-path tests/media-index-cleanup/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path tests/media-index-cleanup/Cargo.toml
+
+  artifact-cleanup:
+    name: Confined artifact cleanup (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --manifest-path tests/artifact-cleanup/Cargo.toml -- --check
+      - run: cargo clippy --locked --manifest-path tests/artifact-cleanup/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path tests/artifact-cleanup/Cargo.toml
+
+  document-jobs:
+    name: Document worker scheduling (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --manifest-path tests/document-jobs/Cargo.toml -- --check
+      - run: cargo clippy --locked --manifest-path tests/document-jobs/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path tests/document-jobs/Cargo.toml
+
+  confined-artifacts:
+    name: Confined rendered artifacts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --manifest-path tests/confined-artifacts/Cargo.toml -- --check
+      - run: cargo clippy --locked --manifest-path tests/confined-artifacts/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path tests/confined-artifacts/Cargo.toml
+
+  private-descriptor:
+    name: Private session descriptor (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Production module regressions
+        run: cargo test --locked --manifest-path tests/private-descriptor/Cargo.toml
+
+  oauth-callback:
+    name: OAuth callback framing (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --manifest-path tests/oauth-callback/Cargo.toml -- --check
+      - run: cargo clippy --locked --manifest-path tests/oauth-callback/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path tests/oauth-callback/Cargo.toml
+
+  github-paging:
+    name: GitHub list pagination (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --manifest-path tests/github-paging/Cargo.toml -- --check
+      - run: cargo clippy --locked --manifest-path tests/github-paging/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path tests/github-paging/Cargo.toml
+
+  text-artifact-saves:
+    name: Text artifact rollback (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --manifest-path tests/text-artifact-saves/Cargo.toml -- --check
+      - run: cargo clippy --locked --manifest-path tests/text-artifact-saves/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path tests/text-artifact-saves/Cargo.toml
+
+  confined-backups:
+    name: Confined database backups (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --manifest-path tests/confined-backups/Cargo.toml -- --check
+      - run: cargo clippy --locked --manifest-path tests/confined-backups/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path tests/confined-backups/Cargo.toml
+
+  lockfile:
+    name: Cargo lockfile consistency
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve manifest and verify committed Cargo.lock
+        run: |
+          cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1 > /dev/null
+          git diff -- src-tauri/Cargo.lock
+          git diff --exit-code -- src-tauri/Cargo.lock
+
+  repository-context:
+    name: Bounded repository context (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --manifest-path tests/repository-context/Cargo.toml -- --check
+      - run: cargo clippy --locked --manifest-path tests/repository-context/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path tests/repository-context/Cargo.toml -- --nocapture
+
+  workspace-transactions:
+    name: Workspace transaction replacement (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --manifest-path tests/workspace-transactions/Cargo.toml -- --check
+      - run: cargo clippy --locked --manifest-path tests/workspace-transactions/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path tests/workspace-transactions/Cargo.toml
 
   rust:
     name: Rust validation (${{ matrix.os }})
@@ -86,6 +386,22 @@ jobs:
 
       - name: Rust tests
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+  proxy-credentials:
+    name: Protected proxy preferences (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --manifest-path tests/proxy-credentials/Cargo.toml -- --check
+      - run: cargo clippy --locked --manifest-path tests/proxy-credentials/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --locked --manifest-path tests/proxy-credentials/Cargo.toml
 
   windows-app-build:
     name: Windows Tauri application build

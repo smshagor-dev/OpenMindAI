@@ -1,0 +1,18 @@
+[package]
+name = "openmind-text-artifact-saves-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[lib]
+path = "lib.rs"
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+rusqlite = { version = "0.32", features = ["bundled"] }
+[dev-dependencies]
+tracing = "0.1"
+serde_json = "1"
+cap-std = "=4.0.3"
+chrono = "0.4"
+uuid = { version = "1", features = ["v4"] }
+tempfile = "3"

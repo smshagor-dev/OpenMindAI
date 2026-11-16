@@ -3,7 +3,7 @@ use serde::Serialize;
 use crate::{
     hardware::{BackendKind, HardwareProfile, HardwareProfiler},
     model_registry::ModelRecord,
-    performance::{PerformanceProfile, PerformanceProfileManager},
+    performance::{PerformanceMode, PerformanceProfile, PerformanceProfileManager},
 };
 
 const ACCELERATOR_FULL_OFFLOAD_HEADROOM_BYTES: u64 = 1024 * 1024 * 1024;
@@ -13,6 +13,7 @@ const DISPLAY_GPU_FULL_OFFLOAD_HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 #[serde(rename_all = "camelCase")]
 pub struct ModelLaunchConfig {
     pub model_path: String,
+    pub mmproj_path: Option<String>,
     pub backend: BackendKind,
     pub device: Option<String>,
     pub gpu_layers: i32,
@@ -42,13 +43,19 @@ pub struct ModelLaunchPlanner;
 
 impl ModelLaunchPlanner {
     pub fn plan(model: &ModelRecord, hardware: &HardwareProfile, port: u16) -> LaunchPlan {
-        // Startup intentionally keeps hardware discovery off the window-creation
-        // path. A model launch cannot use that placeholder, though: doing so
-        // would permanently start this model in CPU mode for the session. Pay
-        // the real GPU profile cost here only if the background scan has not
-        // already finished.
+        Self::plan_for_preference(model, hardware, "Auto", port)
+    }
+
+    pub fn plan_for_preference(
+        model: &ModelRecord,
+        hardware: &HardwareProfile,
+        selection: &str,
+        port: u16,
+    ) -> LaunchPlan {
+        // Inference must use the completed hardware profile, not the fast
+        // startup placeholder that may have no GPU or RAM details.
         let inference_hardware = HardwareProfiler::for_inference(hardware);
-        let profile = PerformanceProfileManager::auto(&inference_hardware);
+        let profile = PerformanceProfileManager::select(&inference_hardware, selection);
         Self::plan_with_profile(model, &inference_hardware, &profile, port)
     }
 
@@ -77,8 +84,21 @@ impl ModelLaunchPlanner {
             .unwrap_or(BackendKind::Cpu);
         let dedicated_vram_budget_bytes = selected_gpu
             .and_then(|gpu| gpu.dedicated_vram_bytes)
-            .map(safe_dedicated_vram_budget);
-        let context_size = model.context_length.unwrap_or(8192).clamp(4096, 8192) as u32;
+            .map(safe_dedicated_vram_budget)
+            .map(|budget| budget.min(profile.vram_budget_bytes.unwrap_or(budget)));
+        let context_size = choose_context_window(
+            model.context_length.unwrap_or(8_192).max(4_096) as u64,
+            model.size_bytes.max(0) as u64,
+            hardware
+                .memory
+                .available_bytes
+                .min(profile.system_memory_budget_bytes),
+        );
+        let context_size = match profile.mode {
+            PerformanceMode::Eco => context_size.min(8_192),
+            PerformanceMode::Balanced => context_size.min(16_384),
+            _ => context_size,
+        };
         let estimated_model_bytes = model.size_bytes.max(0) as u64;
         let estimated_context_bytes = estimate_context_bytes(context_size);
         let total_estimate = estimated_model_bytes
@@ -126,9 +146,33 @@ impl ModelLaunchPlanner {
             (BackendKind::Vulkan | BackendKind::Sycl, Some(_)) => 12,
             _ => 0,
         };
+        let gpu_layers = match profile.mode {
+            PerformanceMode::Eco => gpu_layers.min(12),
+            PerformanceMode::Balanced => gpu_layers.min(32),
+            _ => gpu_layers,
+        };
+        let (batch_size, ubatch_size) = match profile.mode {
+            PerformanceMode::Eco => (128, 64),
+            PerformanceMode::Balanced => (256, 128),
+            PerformanceMode::Auto | PerformanceMode::Performance => (512, 256),
+            PerformanceMode::Maximum => (1_024, 512),
+        };
 
         let mut notes = Vec::new();
-        notes.push("Initial context is capped at 8192 tokens for milestone stability.".to_string());
+        notes.push(format!(
+            "Effective performance profile: {:?}; {} CPU threads, {} GPU layers.",
+            profile.mode, profile.cpu_threads, gpu_layers,
+        ));
+        if backend == BackendKind::Cpu {
+            notes.push(
+                "No supported GPU runtime was selected; this profile uses CPU inference."
+                    .to_string(),
+            );
+        }
+        notes.push(format!(
+            "Context window selected at {} tokens from model capabilities and available memory.",
+            context_size
+        ));
         notes.push(
             "Dedicated VRAM only is used for GPU placement; shared memory is not counted."
                 .to_string(),
@@ -149,13 +193,14 @@ impl ModelLaunchPlanner {
         LaunchPlan {
             config: ModelLaunchConfig {
                 model_path: model.path.clone(),
+                mmproj_path: None,
                 backend,
                 device: selected_gpu.map(|gpu| gpu.name.clone()),
                 gpu_layers,
                 context_size,
                 threads: profile.cpu_threads,
-                batch_size: 512,
-                ubatch_size: 256,
+                batch_size,
+                ubatch_size,
                 flash_attention: profile.flash_attention,
                 mmap: profile.mmap,
                 mlock: false,
@@ -169,6 +214,31 @@ impl ModelLaunchPlanner {
             notes,
         }
     }
+}
+
+/// The loaded model and a system reserve must fit alongside the KV cache.
+/// Restrict the plan to supported native C++ and llama-server context sizes;
+/// never select a larger window just because GGUF advertises one.
+pub(crate) fn choose_context_window(
+    model_limit: u64,
+    model_bytes: u64,
+    available_ram: u64,
+) -> u32 {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    let supported = model_limit.clamp(4_096, 32_768);
+    let context_budget = available_ram
+        .saturating_sub(model_bytes)
+        .saturating_sub(2 * GIB);
+    for candidate in [32_768, 16_384, 8_192, 4_096] {
+        if u64::from(candidate) <= supported
+            && estimate_context_bytes(candidate) <= context_budget
+        {
+            return candidate;
+        }
+    }
+    // A lower RAM estimate must not launch with a context smaller than what
+    // llama.cpp and the native bridge support.
+    4_096
 }
 
 fn safe_dedicated_vram_budget(total: u64) -> u64 {
@@ -190,6 +260,60 @@ mod tests {
     use crate::hardware::{BackendProfile, CpuProfile, GpuInfo, GpuVendor, MemoryProfile};
 
     #[test]
+    fn context_tracks_model_capabilities_and_ram_headroom() {
+        let gib = 1024_u64 * 1024 * 1024;
+        let model_bytes = 2 * gib;
+        assert_eq!(choose_context_window(32_768, model_bytes, 12 * gib), 32_768);
+        assert_eq!(choose_context_window(32_768, model_bytes, 8 * gib), 16_384);
+        assert_eq!(choose_context_window(8_192, model_bytes, 12 * gib), 8_192);
+        assert_eq!(choose_context_window(32_768, model_bytes, 5 * gib), 4_096);
+        assert_eq!(choose_context_window(32_768, model_bytes, 2 * gib), 4_096);
+    }
+
+    #[test]
+    fn selected_modes_change_cpu_launch_plan_without_exceeding_hardware() {
+        let mut hardware = hardware_with_vram(0, 0);
+        hardware.gpus.clear();
+        hardware.recommended_inference_gpu = None;
+        let model = model(2_497_280_256);
+        let eco = ModelLaunchPlanner::plan_for_preference(&model, &hardware, "Eco", 8080);
+        let balanced = ModelLaunchPlanner::plan_for_preference(&model, &hardware, "Balanced", 8080);
+        let performance = ModelLaunchPlanner::plan_for_preference(&model, &hardware, "Performance", 8080);
+        let maximum = ModelLaunchPlanner::plan_for_preference(&model, &hardware, "Maximum", 8080);
+        for plan in [&eco, &balanced, &performance, &maximum] {
+            assert_eq!(plan.config.backend, BackendKind::Cpu);
+            assert_eq!(plan.config.gpu_layers, 0);
+            assert!(plan.config.threads <= hardware.cpu.logical_threads);
+            assert!(plan.notes.iter().any(|note| note.contains("CPU inference")));
+        }
+        assert!(eco.config.threads < balanced.config.threads);
+        assert!(balanced.config.threads < performance.config.threads);
+        assert_eq!(maximum.config.threads, hardware.cpu.logical_threads);
+        assert_eq!(eco.config.batch_size, 128);
+        assert_eq!(maximum.config.batch_size, 1_024);
+        assert!(eco.config.context_size <= 8_192);
+    }
+
+    #[test]
+    fn gpu_profiles_enforce_safe_offload_limits_and_context_fallback() {
+        let mut hardware = hardware_with_vram(8 * 1024 * 1024 * 1024, 0);
+        let model = model(2_497_280_256);
+        let eco = ModelLaunchPlanner::plan_for_preference(&model, &hardware, "Eco", 8080);
+        let auto = ModelLaunchPlanner::plan_for_preference(&model, &hardware, "Auto", 8080);
+        let maximum = ModelLaunchPlanner::plan_for_preference(&model, &hardware, "Maximum", 8080);
+        assert_eq!(eco.config.backend, BackendKind::Vulkan);
+        assert!(eco.config.gpu_layers <= 12);
+        assert!(eco.config.threads < auto.config.threads);
+        assert!(maximum.config.threads > auto.config.threads);
+        assert!(maximum.config.context_size >= eco.config.context_size);
+        assert!(eco.dedicated_vram_budget_bytes.unwrap()
+            < auto.dedicated_vram_budget_bytes.unwrap());
+        hardware.memory.available_bytes = 4 * 1024 * 1024 * 1024;
+        let low_memory = ModelLaunchPlanner::plan_for_preference(&model, &hardware, "Maximum", 8080);
+        assert_eq!(low_memory.config.context_size, 4_096);
+    }
+
+    #[test]
     fn preserves_display_headroom_on_8gb_vulkan_gpu() {
         let hardware = hardware_with_vram(8 * 1024 * 1024 * 1024, 32 * 1024 * 1024 * 1024);
         let model = model(2_497_280_256);
@@ -197,7 +321,7 @@ mod tests {
         assert_eq!(plan.config.backend, BackendKind::Vulkan);
         assert!(plan.dedicated_vram_budget_bytes.unwrap() < 8 * 1024 * 1024 * 1024);
         assert_eq!(plan.config.gpu_layers, 32);
-        assert_eq!(plan.estimated_context_bytes, 8192 * 192 * 1024);
+        assert_eq!(plan.estimated_context_bytes, 16_384 * 192 * 1024);
         assert_ne!(
             plan.dedicated_vram_budget_bytes.unwrap(),
             40 * 1024 * 1024 * 1024

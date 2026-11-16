@@ -192,80 +192,238 @@ mod platform {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use std::process::Command;
+    use std::{
+        ffi::{c_char, c_void},
+        ptr, slice,
+    };
 
     use super::{store_error, AppError, SERVICE_NAME};
 
-    fn command_error(action: &str, stderr: &[u8]) -> AppError {
-        let detail = String::from_utf8_lossy(stderr).trim().to_string();
-        if detail.is_empty() {
-            store_error(format!("macOS Keychain could not {action}"))
-        } else {
-            store_error(format!("macOS Keychain could not {action}: {detail}"))
+    // Preserve the service/account naming scheme from the old security CLI.
+    // This reads previously saved items but never puts a password in argv.
+    // The legacy generic-password API is available on macOS.
+    const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+
+    #[link(name = "Security", kind = "framework")]
+    extern "C" {
+        fn SecKeychainAddGenericPassword(
+            keychain: *const c_void,
+            service_length: u32,
+            service: *const c_char,
+            account_length: u32,
+            account: *const c_char,
+            password_length: u32,
+            password: *const c_void,
+            item: *mut *mut c_void,
+        ) -> i32;
+        fn SecKeychainFindGenericPassword(
+            keychain_or_array: *const c_void,
+            service_length: u32,
+            service: *const c_char,
+            account_length: u32,
+            account: *const c_char,
+            password_length: *mut u32,
+            password: *mut *mut c_void,
+            item: *mut *mut c_void,
+        ) -> i32;
+        fn SecKeychainItemModifyAttributesAndData(
+            item: *mut c_void,
+            attributes: *const c_void,
+            password_length: u32,
+            password: *const c_void,
+        ) -> i32;
+        fn SecKeychainItemDelete(item: *mut c_void) -> i32;
+        fn SecKeychainItemFreeContent(attributes: *mut c_void, data: *mut c_void) -> i32;
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFRelease(value: *const c_void);
+    }
+
+    struct ItemRef(*mut c_void);
+
+    impl Drop for ItemRef {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { CFRelease(self.0.cast_const()) };
+            }
         }
+    }
+
+    struct PasswordContent(*mut c_void);
+
+    impl Drop for PasswordContent {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // Memory came from Security.framework, not Rust's allocator.
+                unsafe { SecKeychainItemFreeContent(ptr::null_mut(), self.0) };
+            }
+        }
+    }
+
+    fn status_error(operation: &str, status: i32) -> AppError {
+        // Never include credentials or account identifiers in diagnostics.
+        store_error(format!("macOS Keychain could not {operation} (OSStatus {status})"))
+    }
+
+    fn sizes(slot: &str, secret: Option<&str>) -> Result<(u32, u32, u32), AppError> {
+        let service_len = u32::try_from(SERVICE_NAME.len())
+            .map_err(|_| store_error("macOS Keychain service name is too large"))?;
+        let slot_len = u32::try_from(slot.len())
+            .map_err(|_| store_error("macOS Keychain slot name is too large"))?;
+        let secret_len = u32::try_from(secret.unwrap_or("").len())
+            .map_err(|_| store_error("macOS Keychain credential is too large"))?;
+        Ok((service_len, slot_len, secret_len))
+    }
+
+    fn find_item(slot: &str) -> Result<Option<ItemRef>, AppError> {
+        let (service_len, slot_len, _) = sizes(slot, None)?;
+        let mut item = ptr::null_mut();
+        let status = unsafe {
+            SecKeychainFindGenericPassword(
+                ptr::null(),
+                service_len,
+                SERVICE_NAME.as_ptr().cast(),
+                slot_len,
+                slot.as_ptr().cast(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut item,
+            )
+        };
+        if status == ERR_SEC_ITEM_NOT_FOUND {
+            return Ok(None);
+        }
+        if status != 0 {
+            return Err(status_error("find a credential", status));
+        }
+        if item.is_null() {
+            return Err(store_error("macOS Keychain returned an empty item reference"));
+        }
+        Ok(Some(ItemRef(item)))
     }
 
     pub(super) fn set_secret(slot: &str, secret: &str) -> Result<(), AppError> {
-        let output = Command::new("/usr/bin/security")
-            .args([
-                "add-generic-password",
-                "-U",
-                "-a",
-                slot,
-                "-s",
-                SERVICE_NAME,
-                "-w",
-                secret,
-            ])
-            .output()
-            .map_err(|error| store_error(format!("could not open macOS Keychain: {error}")))?;
-        if !output.status.success() {
-            return Err(command_error("store a credential", &output.stderr));
+        let (service_len, slot_len, secret_len) = sizes(slot, Some(secret))?;
+        if let Some(item) = find_item(slot)? {
+            let status = unsafe {
+                SecKeychainItemModifyAttributesAndData(
+                    item.0,
+                    ptr::null(),
+                    secret_len,
+                    secret.as_ptr().cast(),
+                )
+            };
+            return if status == 0 {
+                Ok(())
+            } else {
+                Err(status_error("update a credential", status))
+            };
         }
-        Ok(())
+
+        let status = unsafe {
+            SecKeychainAddGenericPassword(
+                ptr::null(),
+                service_len,
+                SERVICE_NAME.as_ptr().cast(),
+                slot_len,
+                slot.as_ptr().cast(),
+                secret_len,
+                secret.as_ptr().cast(),
+                ptr::null_mut(),
+            )
+        };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(status_error("store a credential", status))
+        }
     }
 
     pub(super) fn get_secret(slot: &str) -> Result<Option<String>, AppError> {
-        let output = Command::new("/usr/bin/security")
-            .args([
-                "find-generic-password",
-                "-a",
-                slot,
-                "-s",
-                SERVICE_NAME,
-                "-w",
-            ])
-            .output()
-            .map_err(|error| store_error(format!("could not open macOS Keychain: {error}")))?;
-        if !output.status.success() {
-            let detail = String::from_utf8_lossy(&output.stderr).to_lowercase();
-            if output.status.code() == Some(44)
-                || detail.contains("could not be found")
-                || detail.contains("item not found")
-            {
-                return Ok(None);
-            }
-            return Err(command_error("read a credential", &output.stderr));
+        let (service_len, slot_len, _) = sizes(slot, None)?;
+        let mut password_len = 0_u32;
+        let mut password_ptr = ptr::null_mut();
+        let status = unsafe {
+            SecKeychainFindGenericPassword(
+                ptr::null(),
+                service_len,
+                SERVICE_NAME.as_ptr().cast(),
+                slot_len,
+                slot.as_ptr().cast(),
+                &mut password_len,
+                &mut password_ptr,
+                ptr::null_mut(),
+            )
+        };
+        let content = PasswordContent(password_ptr);
+        if status == ERR_SEC_ITEM_NOT_FOUND {
+            return Ok(None);
         }
-        Ok(Some(
-            String::from_utf8_lossy(&output.stdout)
-                .trim_end_matches(['\r', '\n'])
-                .to_string(),
-        ))
+        if status != 0 {
+            return Err(status_error("read a credential", status));
+        }
+        if password_len > 0 && content.0.is_null() {
+            return Err(store_error("macOS Keychain returned an empty password pointer"));
+        }
+        let bytes = if password_len == 0 {
+            &[][..]
+        } else {
+            unsafe { slice::from_raw_parts(content.0.cast::<u8>(), password_len as usize) }
+        };
+        let password = std::str::from_utf8(bytes)
+            .map_err(|_| store_error("macOS Keychain credential is not valid UTF-8"))?
+            .to_string();
+        Ok(Some(password))
     }
 
     pub(super) fn delete_secret(slot: &str) -> Result<(), AppError> {
-        if get_secret(slot)?.is_none() {
+        let Some(item) = find_item(slot)? else {
             return Ok(());
+        };
+        let status = unsafe { SecKeychainItemDelete(item.0) };
+        if status == 0 || status == ERR_SEC_ITEM_NOT_FOUND {
+            Ok(())
+        } else {
+            Err(status_error("delete a credential", status))
         }
-        let output = Command::new("/usr/bin/security")
-            .args(["delete-generic-password", "-a", slot, "-s", SERVICE_NAME])
-            .output()
-            .map_err(|error| store_error(format!("could not open macOS Keychain: {error}")))?;
-        if !output.status.success() {
-            return Err(command_error("delete a credential", &output.stderr));
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn storing_secrets_never_invokes_a_subprocess() {
+            let source = include_str!("secret_store.rs");
+            let implementation = source.split("#[cfg(target_os = \"macos\")]").nth(1).unwrap()
+                .split("    #[cfg(test)]").next().unwrap();
+            assert!(!implementation.contains("Command::new("));
+            assert!(implementation.contains("SecKeychainAddGenericPassword("));
         }
-        Ok(())
+
+        #[test]
+        #[ignore = "requires an unlocked user macOS login Keychain"]
+        fn synthetic_keychain_round_trip_and_update() {
+            let slot = format!(
+                "keychain-test-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            );
+            let secret = "synthetic-keychain-test-only-credential";
+            assert!(get_secret(&slot).unwrap().is_none());
+            set_secret(&slot, secret).unwrap();
+            assert_eq!(get_secret(&slot).unwrap().as_deref(), Some(secret));
+            set_secret(&slot, "synthetic-keychain-updated").unwrap();
+            assert_eq!(get_secret(&slot).unwrap().as_deref(), Some("synthetic-keychain-updated"));
+            delete_secret(&slot).unwrap();
+            assert!(get_secret(&slot).unwrap().is_none());
+            delete_secret(&slot).unwrap();
+        }
     }
 }
 

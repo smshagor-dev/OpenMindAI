@@ -1,0 +1,125 @@
+# ZIP 9 production migration and verification
+
+**Status: production migrated; legacy ZIP 7 exceptions retired.**
+
+The ZIP 9 remediation began as an isolated upstream compatibility
+experiment. The tracked desktop dependencies now use source-pinned,
+reviewed copies of `any-tts 0.1.3` and `candle-core 0.10.2` which
+have been minimally adapted to `zip 9.0.4`.
+
+## Final production source requirements
+
+- `src-tauri/Cargo.toml` pins the two local `vendor/` paths via
+  `[patch.crates-io]`.
+- `src-tauri/Cargo.lock` contains **exactly one ZIP crate, 9.0.4**.
+  ZIP 7 and ZIP 8 are not part of the production graph.
+- The vendored source snapshot is checked with
+  `python3 scripts/verify-zip9-vendor.py` (approved SHA-256 tree hashes,
+  patched source files, license and attribution notices).
+- `node scripts/check-zip-audit-mode.mjs` and
+  `node scripts/check-zip-audit-mode.mjs --metadata ...` verify the
+  exact lockfile, patched package identities, local source paths and
+  restricted ZIP archive handling.
+- Security CI unconditionally runs
+  `cargo audit --file src-tauri/Cargo.lock` without advisory ignores.
+  Legacy ZIP 7 or a partial migration is a **failure**, not a fallback.
+
+The original any-tts archive has one macOS Finder metadata file which
+is deliberately omitted from the committed source; all its code and
+upstream Markdown notices are kept. Reproducible full source evidence
+is retained by the candidate workflows.
+
+## Real Kokoro voice verification
+
+The Linux CPU workflow **Kokoro Real Voice Inference** downloads
+`hexgrad/Kokoro-82M` at fixed revision
+`04393022a04dcb701fd2061b8d5dbe23ac7be751`, validates the
+checkpoint and voice against SHA-256, and runs the production app's
+Rust/Candle `media_smoke speak` example. The generated WAV is then
+checked for its format, duration and non-silent RMS.
+
+[Real inference run](https://github.com/smshagor-dev/OpenMindAI/actions/runs/39274446841)
+passed with 24,000 Hz, mono, 16-bit PCM, **3.65 seconds** and
+**RMS 0.0485709**. The workflow uploads only safe JSON evidence; it
+does not commit third-party weights or the generated audio.
+
+Real voice output on Linux is proven. A new **Windows/macOS CPU inference**
+matrix now also downloads exactly the same SHA-256-pinned checkpoint, config,
+and voice and uses the real `media_smoke speak` Rust/Candle example; it does
+not merely call `cargo check` or generate a synthetic WAV. A failure on
+either platform fails the workflow. Artifacts contain only JSON evidence,
+including the host OS and CPU architecture, never the model assets or WAV.
+These jobs are considered **pending until their first run passes**; adding
+the workflow alone does not establish Windows/macOS runtime compatibility.
+
+Additional voices, hardware acceleration and installer-driven model setup
+still require their own smoke coverage.
+
+## Ongoing real-voice regression coverage
+
+The `Kokoro Real Voice Inference` workflow runs automatically for pull
+requests that change the pinned TTS Rust/runtime sources, model/package
+loading, Cargo dependencies, or the real inference test itself. It also
+runs on applicable `main` pushes, every Monday at 05:31 UTC, and by
+manual dispatch. This intentionally avoids large pretrained downloads
+on unrelated UI or documentation changes. Concurrent runs for the same
+pull request are canceled when superseded.
+
+The genuine checkpoint, voice and config are all SHA-256-pinned at an
+immutable model revision. The config checksum
+`5abb01e2403b072bf03d04fde160443e209d7a0dad49a423be15196b9b43c17f`
+was verified on the successful Linux inference run #39274446841 and is now
+required before Rust/Candle loads the package. Evidence includes the
+pinned config checksum alongside voice/model hashes and WAV duration,
+format and signal metrics. A regression or inability to fetch the upstream
+assets fails the job; no synthetic fallback can mark real inference green.
+
+This is a Linux CPU end-to-end regression. Real voices, model availability
+and the same inference route on Windows/macOS or multiple accelerators remain
+separate validation subjects. The scheduled check and PR trigger are
+additional protections rather than a replacement for full release testing.
+
+## Production model installation and real synthesis acceptance
+
+In addition to the fixed-revision asset staging test, the `Kokoro Real
+Voice Inference` workflow now has a **production Model Download Manager**
+test job. It runs the existing application `media_smoke speak` harness
+with `--install-model` on an isolated Linux portable root. This first
+invokes `ModelDownloadManager::download_catalog_model`, using the same
+catalog, network download and dependency/package manifest writers as
+OpenMindAI's Settings > Models download path, then loads that install
+through the actual Rust/Candle Kokoro runtime and generates a WAV.
+
+`scripts/kokoro-real-smoke.py verify-install` independently checks the
+manager's generated `model-manifest.json` and `package-manifest.json`,
+including model/voice/config identity, expected filenames, exact pinned
+SHA-256 digests, file sizes and verified states. Unlike the original
+`prepare` command, this verifier **must never rewrite or repair**
+the package manifests being tested. The non-silent 24 kHz mono PCM16
+WAV acceptance test follows only if production installation passes.
+
+The model manager resolves current upstream Hugging Face metadata at
+runtime; if upstream files change from the previously SHA-256-verified
+revision, the independent check fails rather than silently claiming a
+known model passed. The new job is **not proven** until its actual
+GitHub Actions run finishes green. It tests real installation on Linux,
+not UI interactions or end-to-end Windows/macOS model downloading.
+
+## Historical work and source evidence
+
+The review history traces the original package adaptation, registry
+source SHA-256 checks, ZIP NPZ/PTH regression fixtures, candidate Cargo
+lockfile generation, and downloadable artifact integrity:
+
+- PRs #305–#308: checked ZIP 9 compatibility, unignored candidate audit
+  and source-pinned migration candidate.
+- PRs #312–#313: validated candidates on desktop operating systems and
+  prevented missing hidden files in uploaded source artifacts.
+- PR #314: installed the fail-closed production security transition gate.
+- PR #317: committed the actual reviewed source replacement with
+  multi-platform CI and production no-ignore RustSec audit.
+- PR #358: validated authentic Kokoro speech synthesis and non-silent WAV.
+  
+The historical migration scripts continue to test the upstream adapter
+against the original registry dependency graph. They do **not** authorize
+legacy ZIP dependencies or any production RustSec advisory ignores.

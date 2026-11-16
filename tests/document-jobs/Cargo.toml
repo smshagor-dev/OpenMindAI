@@ -1,0 +1,13 @@
+[package]
+name = "openmind-document-jobs-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[lib]
+path = "lib.rs"
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+rusqlite = { version = "0.32", features = ["bundled"] }
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }

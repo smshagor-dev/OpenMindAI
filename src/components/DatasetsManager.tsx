@@ -14,6 +14,7 @@ import {
 import { api } from "../api";
 import type { DatasetDownloadStatus } from "../types";
 import { formatBytes } from "../lib/format";
+import { initialInstalledDatasets, recordCompletedDataset } from "../lib/datasetInstalledState";
 
 type DatasetCategory =
   | "recommended"
@@ -298,13 +299,10 @@ export function DatasetsManager() {
   const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [downloadStatus, setDownloadStatus] = useState<DatasetDownloadStatus | null>(null);
-  const [installedDatasets, setInstalledDatasets] = useState<Set<string>>(() => {
-    try {
-      return new Set(JSON.parse(window.localStorage.getItem("openmindaiInstalledDatasets") ?? "[]"));
-    } catch {
-      return new Set();
-    }
-  });
+  // Only a completion observed in this session is trustworthy. Historical
+  // localStorage IDs cannot prove that files still exist under the portable root.
+  // A validated backend inventory is required before restoring installed badges.
+  const [installedDatasets, setInstalledDatasets] = useState<Set<string>>(initialInstalledDatasets);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const selectedType = DATASET_TYPES.find((type) => type.id === category) ?? DATASET_TYPES[0];
 
@@ -391,6 +389,12 @@ export function DatasetsManager() {
     };
   }, []);
 
+  useEffect(() => {
+    if (downloadStatus?.state !== "completed" || !downloadStatus.datasetId) return;
+    setInstalledDatasets((current) => recordCompletedDataset(current, downloadStatus.state, downloadStatus.datasetId));
+  }, [downloadStatus?.datasetId, downloadStatus?.state]);
+
+
   async function openDataset(id: string) {
     await api.openExternalUrl(openMindDatasetPageUrl(id));
   }
@@ -419,12 +423,7 @@ export function DatasetsManager() {
     try {
       const status = await api.downloadOpenMindDataset(id);
       setDownloadStatus(status);
-      if (status.state === "completed") {
-        const next = new Set(installedDatasets);
-        next.add(id);
-        setInstalledDatasets(next);
-        window.localStorage.setItem("openmindaiInstalledDatasets", JSON.stringify(Array.from(next)));
-      }
+      // The status-polling effect also records downloads that finish after this call returns.
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
       try {
@@ -485,7 +484,7 @@ export function DatasetsManager() {
       </div>
 
       {downloadStatus && downloadStatus.state !== "queued" ? (
-        <div className="dataset-download-status">
+        <div className="dataset-download-status" role="status" aria-live="polite">
           <strong>
             {downloadStatus.datasetId}
             <span className={downloadStatus.state === "completed" ? "model-badge downloaded" : "model-badge"}>
@@ -493,11 +492,20 @@ export function DatasetsManager() {
             </span>
           </strong>
           <span>{datasetDownloadLabel(downloadStatus)}</span>
-          {downloadStatus.percentage !== null ? (
-            <div className="dataset-progress-track">
-              <span style={{ width: `${Math.min(100, downloadStatus.percentage)}%` }} />
+          {downloadStatus.state === "downloading" || downloadStatus.state === "resolving" ? (
+            <div
+              className="dataset-progress-track"
+              role="progressbar"
+              aria-label="Dataset download progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={downloadStatus.percentage == null ? undefined : Math.max(0, Math.min(100, downloadStatus.percentage))}
+              aria-valuetext={downloadStatus.percentage == null ? "Preparing download" : undefined}
+            >
+              <span style={{ width: `${Math.max(0, Math.min(100, downloadStatus.percentage ?? 0))}%` }} />
             </div>
           ) : null}
+          {downloadStatus.error ? <p className="download-feedback-error" role="alert">{downloadStatus.error}</p> : null}
         </div>
       ) : null}
 
@@ -527,6 +535,7 @@ export function DatasetsManager() {
               copied={copiedId === dataset.sourceId}
               installed={installedDatasets.has(dataset.sourceId)}
               downloadStatus={downloadStatus?.datasetId === dataset.sourceId ? downloadStatus : null}
+              anotherDownloadActive={Boolean(downloadStatus && (downloadStatus.state === "downloading" || downloadStatus.state === "resolving") && downloadStatus.datasetId !== dataset.sourceId)}
               onOpen={() => void openDataset(dataset.sourceId)}
               onCopy={() => void copyDatasetKey(dataset.sourceId, dataset.id)}
               onDownload={() => void downloadDataset(dataset.sourceId)}
@@ -537,7 +546,7 @@ export function DatasetsManager() {
 
       <section className="model-catalog-section">
         <h3>OpenMindAI live datasets</h3>
-        {error ? <p className="model-selector-error">{error}</p> : null}
+        {error ? <p className="download-feedback-error" role="alert">{error}</p> : null}
         {loading && datasets.length === 0 ? <p className="muted">Loading OpenMindAI datasets...</p> : null}
         {!loading && datasets.length === 0 && !error ? (
           <p className="muted">No live datasets matched this search.</p>
@@ -549,6 +558,7 @@ export function DatasetsManager() {
             copied={copiedId === dataset.id}
             installed={installedDatasets.has(dataset.id)}
             downloadStatus={downloadStatus?.datasetId === dataset.id ? downloadStatus : null}
+            anotherDownloadActive={Boolean(downloadStatus && (downloadStatus.state === "downloading" || downloadStatus.state === "resolving") && downloadStatus.datasetId !== dataset.id)}
             onOpen={() => void openDataset(dataset.id)}
             onCopy={() => void copyDatasetKey(dataset.id, displayDatasetId(dataset.id))}
             onDownload={() => void downloadDataset(dataset.id)}
@@ -574,6 +584,7 @@ function CuratedDatasetCard(props: {
   copied: boolean;
   installed: boolean;
   downloadStatus: DatasetDownloadStatus | null;
+  anotherDownloadActive: boolean;
   onOpen: () => void;
   onCopy: () => void;
   onDownload: () => void;
@@ -600,6 +611,7 @@ function CuratedDatasetCard(props: {
         copied={props.copied}
         installed={props.installed}
         downloadStatus={props.downloadStatus}
+        anotherDownloadActive={props.anotherDownloadActive}
         onOpen={props.onOpen}
         onCopy={props.onCopy}
         onDownload={props.onDownload}
@@ -613,6 +625,7 @@ function OpenMindDatasetCard(props: {
   copied: boolean;
   installed: boolean;
   downloadStatus: DatasetDownloadStatus | null;
+  anotherDownloadActive: boolean;
   onOpen: () => void;
   onCopy: () => void;
   onDownload: () => void;
@@ -652,6 +665,7 @@ function OpenMindDatasetCard(props: {
         copied={props.copied}
         installed={props.installed}
         downloadStatus={props.downloadStatus}
+        anotherDownloadActive={props.anotherDownloadActive}
         onOpen={props.onOpen}
         onCopy={props.onCopy}
         onDownload={props.onDownload}
@@ -664,6 +678,7 @@ function DatasetActions(props: {
   copied: boolean;
   installed: boolean;
   downloadStatus: DatasetDownloadStatus | null;
+  anotherDownloadActive: boolean;
   onOpen: () => void;
   onCopy: () => void;
   onDownload: () => void;
@@ -676,7 +691,7 @@ function DatasetActions(props: {
         type="button"
         onClick={props.onDownload}
         title={props.installed ? "Dataset downloaded" : "Download dataset to OpenMindAI datasets folder"}
-        disabled={busy || props.installed}
+        disabled={busy || props.installed || props.anotherDownloadActive}
       >
         {props.installed || props.downloadStatus?.state === "completed" ? (
           <CheckCircle2 size={16} />
@@ -828,5 +843,6 @@ function datasetDownloadLabel(status: DatasetDownloadStatus) {
       : formatBytes(status.downloadedBytes);
   const speed = status.speedBytesPerSec ? ` - ${formatBytes(status.speedBytesPerSec)}/s` : "";
   const current = status.currentFile ? ` - ${status.currentFile}` : "";
-  return `${files} - ${bytes}${speed}${current}`;
+  const verification = status.verification ? ` - ${status.verification}` : "";
+  return `${files} - ${bytes}${speed}${current}${verification}`;
 }

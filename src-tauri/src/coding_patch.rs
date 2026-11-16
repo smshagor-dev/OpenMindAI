@@ -141,6 +141,21 @@ pub fn apply_patch_transaction(
     commit_transaction(&root, planned, recovered)
 }
 
+/// Safely restore an editor file after a crash interrupted a patch journal.
+pub(crate) fn recover_pending_transactions(root: &Path) -> Result<usize, AppError> {
+    let lock = PATCH_TRANSACTION_LOCK.get_or_init(|| Mutex::new(()));
+    let _guard = lock
+        .lock()
+        .map_err(|_| AppError::internal("patch transaction lock is poisoned"))?;
+    let root = fs::canonicalize(root)?;
+    if !root.is_dir() {
+        return Err(AppError::internal(
+            "transaction recovery root is not a directory",
+        ));
+    }
+    recover_interrupted_transactions(&root)
+}
+
 fn parse_operations(action: &Value) -> Result<Vec<PatchOperation>, AppError> {
     let operations = action
         .get("operations")
@@ -348,6 +363,17 @@ fn commit_transaction(
             }
             if change.target.exists() {
                 reject_symlink(&change.target)?;
+                // Preserve the original file's permissions for replacing edits,
+                // rather than silently replacing it with a default-mode staged file.
+                if change.replacement.is_some() {
+                    let stage = tx_dir.join(format!("{index}.stage"));
+                    // Windows FlushFileBuffers requires write access. Acquire it
+                    // before copying permissions (which may make the stage readonly).
+                    let staged = OpenOptions::new().read(true).write(true).open(&stage)?;
+                    staged.set_permissions(fs::metadata(&change.target)?.permissions())?;
+                    staged.sync_all()?;
+                    drop(staged);
+                }
                 let backup = tx_dir.join(format!("{index}.backup"));
                 durable_rename(&change.target, &backup)?;
             }
@@ -974,6 +1000,47 @@ mod tests {
         let error = create_scoped_parent_directories(&root, &root.join("blocked").join("child"))
             .unwrap_err();
         assert!(error.to_string().contains("not a directory"));
+    }
+
+    #[test]
+    fn replacing_an_existing_file_syncs_and_preserves_its_permissions() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("existing.txt");
+        fs::write(&target, "before").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o750)).unwrap();
+        }
+        let permissions = fs::metadata(&target).unwrap().permissions();
+        apply_patch_transaction(temp.path(), &json!({"operations":[{"op":"write","path":"existing.txt","content":"after", "expectedSha256":format!("{:x}",Sha256::digest(b"before"))}]})).unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "after");
+        let actual = fs::metadata(&target).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(actual.mode() & 0o777, permissions.mode() & 0o777);
+        }
+        #[cfg(not(unix))]
+        assert_eq!(actual.readonly(), permissions.readonly());
+        assert!(!temp.path().join(TRANSACTION_DIR).exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_read_handle_cannot_flush_a_regular_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("flush.txt");
+        fs::write(&path, "fixture").unwrap();
+        let error = fs::File::open(&path).unwrap().sync_all().unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .sync_all()
+            .unwrap();
     }
 
     #[test]

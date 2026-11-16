@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Database,
+  Globe,
   FolderKanban,
   FolderOpen,
   LibraryBig,
@@ -24,7 +25,7 @@ export function Sidebar(props: {
   onToggleCollapsed: () => void;
   conversations: Conversation[];
   activeId: string | null;
-  view: "chat" | "work" | "settings" | "tools" | "projects";
+  view: "chat" | "work" | "settings" | "tools" | "projects" | "research-studio" | "3d-studio" | "web-search";
   userProfile: UserProfile | null;
   width: number;
   onWidthChange: (width: number) => void;
@@ -41,6 +42,7 @@ export function Sidebar(props: {
   onOpenDatasets: () => void;
   onOpenTools: () => void;
   onOpenProjects: () => void;
+  onOpenStudio: (section: "research-studio" | "3d-studio" | "web-search") => void;
   onOpenSettings: (section?: string) => void;
 }) {
   const displayName =
@@ -138,6 +140,15 @@ export function Sidebar(props: {
           title="Tools"
         >
           <Wrench size={18} /> {!props.collapsed ? "Tools" : null}
+        </button>
+        <button className={props.view === "research-studio" ? "nav-button active" : "nav-button"} onClick={() => props.onOpenStudio("research-studio")} title="Research Studio">
+          <TableProperties size={18} /> {!props.collapsed ? "Research Studio" : null}
+        </button>
+        <button className={props.view === "3d-studio" ? "nav-button active" : "nav-button"} onClick={() => props.onOpenStudio("3d-studio")} title="3D Studio">
+          <Wrench size={18} /> {!props.collapsed ? "3D Studio" : null}
+        </button>
+        <button className={props.view === "web-search" ? "nav-button active" : "nav-button"} onClick={() => props.onOpenStudio("web-search")} title="Web Search">
+          <Globe size={18} /> {!props.collapsed ? "Web Search" : null}
         </button>
         <button className="nav-button" onClick={props.onOpenLibrary} title="Files & Artifacts">
           <FolderOpen size={18} /> {!props.collapsed ? "Files & Artifacts" : null}

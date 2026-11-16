@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   Brain,
   Cpu,
@@ -34,6 +35,7 @@ import type {
   PerformanceProfile,
   PortableRootInfo,
   RuntimeInventory,
+  RuntimeInstallStatus,
   StorageSummary,
   UserProfile,
 } from "../types";
@@ -44,6 +46,7 @@ import { AppsSettings } from "./AppsSettings";
 import { MaintenanceCenter } from "./MaintenanceCenter";
 import { UpdatesPanel } from "./UpdatesPanel";
 import { AgentSettings } from "./AgentSettings";
+import { DiffusionRuntimePanel } from "./DiffusionRuntimePanel";
 
 export function SettingsDialog(props: {
   root: PortableRootInfo | null;
@@ -61,14 +64,76 @@ export function SettingsDialog(props: {
   startRuntime: (action?: "start" | "restart") => void;
   stopRuntime: () => void;
   runtimeAction: "start" | "restart" | "stop" | null;
+  runtimeInstallStatus: RuntimeInstallStatus | null;
+  runtimeInstalling: boolean;
+  runtimeInstallError: string | null;
+  installRuntime: () => void;
+  cancelRuntimeInstall: () => void;
   initialSection?: string;
 }) {
   const [activeSection, setActiveSection] = useState(props.initialSection ?? "general");
   const [preferenceDraft, setPreferenceDraft] = useState<AppPreferences | null>(props.preferences);
   const [profileDraft, setProfileDraft] = useState<UserProfile | null>(props.userProfile);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const saving = useRef(false);
+  const draftVersion = useRef(0);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [networkError, setNetworkError] = useState<string | null>(null);
+  const [webConnectivity, setWebConnectivity] = useState("Not checked");
+  const [providerHealth, setProviderHealth] = useState<{ name: string; status: string }[]>([]);
+  const [webCredentialPresence, setWebCredentialPresence] = useState({
+    braveConfigured: false,
+    googleConfigured: false,
+    googleKeyConfigured: false,
+    googleEngineConfigured: false,
+  });
+  const [webCredentialDraft, setWebCredentialDraft] = useState({
+    brave: "", googleKey: "", googleEngine: "",
+  });
+  const [webCredentialMessage, setWebCredentialMessage] = useState("");
+  const saveWebCredential = async (field: "brave" | "googleKey" | "googleEngine", value: string) => {
+    setWebCredentialMessage("");
+    try {
+      const result = await invoke<typeof webCredentialPresence>("save_web_provider_credential", {
+        field,
+        value,
+      });
+      setWebCredentialPresence(result);
+      setWebCredentialDraft((current) => ({ ...current, [field]: "" }));
+      setWebCredentialMessage(value ? "Credential saved in the platform secret store." : "Local credential cleared. An environment variable may still supply one.");
+      void checkWebConnectivity();
+    } catch {
+      setWebCredentialMessage("Credential update failed. Nothing was saved.");
+    }
+  };
+  const checkWebConnectivity = async () => {
+    setWebConnectivity("Checking internet and search providers...");
+    try {
+      const result = await invoke<{
+        status: string;
+        provider: string;
+        providers: { name: string; status: string; elapsedMs: number | null }[];
+      }>("check_web_connectivity");
+      setProviderHealth(result.providers);
+      if (result.status === "online") setWebConnectivity(`Online — ${result.provider} reachable`);
+      else if (result.status === "restricted") setWebConnectivity("Internet reachable, but search access is restricted");
+      else if (result.status === "disabled") setWebConnectivity("Live web features disabled");
+      else setWebConnectivity("Offline — local chat is still available");
+    } catch {
+      setWebConnectivity("Connectivity check failed — search may be unavailable");
+    }
+  };
+  useEffect(() => {
+    if (activeSection !== "capabilities") return;
+    void invoke<typeof webCredentialPresence>("web_provider_credential_status")
+      .then(setWebCredentialPresence)
+      .catch(() => setWebCredentialMessage("Could not read the local credential store."));
+    void checkWebConnectivity();
+    const timer = window.setInterval(() => { void checkWebConnectivity(); }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [activeSection]);
+
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -81,11 +146,15 @@ export function SettingsDialog(props: {
 
   const setPreference = <K extends keyof AppPreferences>(key: K, value: AppPreferences[K]) => {
     setPreferenceDraft((current) => (current ? { ...current, [key]: value } : current));
-    setSaveState("idle");
+    draftVersion.current += 1;
+    setSaveError(null);
+    if (!saving.current) setSaveState("idle");
   };
   const setProfile = <K extends keyof UserProfile>(key: K, value: UserProfile[K]) => {
     setProfileDraft((current) => (current ? { ...current, [key]: value } : current));
-    setSaveState("idle");
+    draftVersion.current += 1;
+    setSaveError(null);
+    if (!saving.current) setSaveState("idle");
   };
   const uploadAvatar = async (file: File) => {
     setAvatarError(null);
@@ -100,11 +169,25 @@ export function SettingsDialog(props: {
       setAvatarError("Could not read that image. Try a different file.");
     }
   };
+  const runSave = async (action: () => void | Promise<void>) => {
+    if (saving.current) return;
+    saving.current = true;
+    const version = draftVersion.current;
+    setSaveError(null);
+    setSaveState("saving");
+    try {
+      await action();
+      setSaveState(draftVersion.current === version ? "saved" : "idle");
+    } catch (error) {
+      setSaveError(formatError(error));
+      setSaveState("idle");
+    } finally {
+      saving.current = false;
+    }
+  };
   const savePreferences = async () => {
     if (!preferenceDraft) return;
-    setSaveState("saving");
-    await props.updatePreferences(preferenceDraft);
-    setSaveState("saved");
+    await runSave(() => props.updatePreferences(preferenceDraft));
   };
   const saveNetwork = async () => {
     if (!preferenceDraft) return;
@@ -113,18 +196,11 @@ export function SettingsDialog(props: {
       setNetworkError("Enter a proxy address, for example 127.0.0.1:8080.");
       return;
     }
-    try {
-      await savePreferences();
-    } catch (error) {
-      setSaveState("idle");
-      setNetworkError(formatError(error));
-    }
+    await savePreferences();
   };
   const saveProfile = async () => {
     if (!profileDraft) return;
-    setSaveState("saving");
-    await props.updateUserProfile(profileDraft);
-    setSaveState("saved");
+    await runSave(() => props.updateUserProfile(profileDraft));
   };
   const sections = [
     { id: "general", label: "General", icon: Settings },
@@ -168,6 +244,7 @@ export function SettingsDialog(props: {
         })}
       </nav>
       <section className="settings-content">
+        {saveError ? <p className="setup-warning" role="alert">{saveError}</p> : null}
         {activeSection === "general" && preferenceDraft ? (
           <SettingsGroup title="General">
             <SelectRow
@@ -341,6 +418,67 @@ export function SettingsDialog(props: {
               checked={preferenceDraft.deepResearchEnabled}
               onChange={(value) => setPreference("deepResearchEnabled", value)}
             />
+            <label className="setting-row">
+              <span>Preferred search provider</span>
+              <select
+                value={preferenceDraft.webSearchPreferredProvider ?? "auto"}
+                onChange={(event) => setPreference(
+                  "webSearchPreferredProvider",
+                  event.target.value as AppPreferences["webSearchPreferredProvider"],
+                )}
+              >
+                <option value="auto">Automatic fallback</option>
+                <option value="brave">Brave Search (requires API key)</option>
+                <option value="google">Google Custom Search (existing accounts only)</option>
+                <option value="duckduckgo">DuckDuckGo</option>
+                <option value="bing">Bing</option>
+              </select>
+            </label>
+            <p className="muted">
+              Unavailable and rate-limited providers fall back automatically.
+              Keys are saved in your operating system&apos;s credential store,
+              never in chat history or ordinary app preferences.
+            </p>
+            {(["brave", "googleKey", "googleEngine"] as const).map((field) => (
+              <label className="setting-row" key={field}>
+                <span>{field === "brave" ? "Brave API key" : field === "googleKey" ? "Google API key" : "Google Search engine ID"}</span>
+                <span>
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    value={webCredentialDraft[field]}
+                    placeholder={field === "brave"
+                      ? (webCredentialPresence.braveConfigured ? "Configured" : "Not configured")
+                      : field === "googleKey"
+                        ? (webCredentialPresence.googleKeyConfigured ? "Configured" : "Not configured")
+                        : (webCredentialPresence.googleEngineConfigured ? "Configured" : "Not configured")}
+                    onChange={(event) => setWebCredentialDraft((current) => ({
+                      ...current,
+                      [field]: event.target.value,
+                    }))}
+                  />
+                  <button type="button" disabled={!webCredentialDraft[field].trim()} onClick={() => void saveWebCredential(field, webCredentialDraft[field])}>Save</button>
+                  <button type="button" onClick={() => void saveWebCredential(field, "")}>Clear</button>
+                </span>
+              </label>
+            ))}
+            {webCredentialMessage ? <p className="muted" role="status">{webCredentialMessage}</p> : null}
+            <div className="settings-control-row">
+              <p className="muted" role="status">Web connectivity: {webConnectivity}</p>
+              <button type="button" onClick={() => void checkWebConnectivity()}>
+                <RefreshCw size={14} aria-hidden="true" /> Check connection
+              </button>
+            </div>
+            {providerHealth.length ? (
+              <p className="muted">
+                Providers: {providerHealth.map((item) => `${item.name}: ${item.status.replace(/_/g, " ")}`).join(" • ")}
+              </p>
+            ) : null}
+            <p className="muted">
+              Web Search tries configured Brave / legacy Google APIs, then DuckDuckGo and
+              Bing public search. Deep Research reads multiple public pages and checks
+              independent sources. External web requests only run when those modes are enabled.
+            </p>
             <ToggleRow
               label="Typing indicators"
               checked={preferenceDraft.typingIndicatorEnabled}
@@ -357,9 +495,10 @@ export function SettingsDialog(props: {
               onChange={(value) => setPreference("socketUrl", value)}
             />
             <p className="muted">
-              Search, research, document, PDF, image prompt, and vision review modes are available
-              in Chat. Local-only modes disclose when a dedicated live web, PDF, image, or vision
-              runtime is not connected.
+              Without internet, local chat stays available but current facts cannot be verified.
+              Brave and existing Google Custom Search credentials can be saved above
+              or inherited from runtime environment variables. Bing and DuckDuckGo
+              require no key. Health checks make real search requests when enabled.
             </p>
             <SaveBar state={saveState} onSave={savePreferences} />
           </SettingsGroup>
@@ -413,6 +552,44 @@ export function SettingsDialog(props: {
             <Info label="Backend" value={props.runtime?.selected?.manifest.backend} />
             <Info label="Version" value={props.runtime?.selected?.manifest.version} />
             <Info label="Location" value={props.runtime?.selected?.manifest.binaries.server} />
+            {!props.runtime?.selected ? (
+              <p className="setup-warning">
+                No usable llama.cpp runtime was detected. Chat history and Settings remain available.
+                OpenMindAI can download, verify, and install an official runtime in its portable storage.
+              </p>
+            ) : null}
+            <div className="button-row">
+              <button
+                type="button"
+                onClick={props.installRuntime}
+                disabled={props.runtimeInstalling || props.runtimeAction !== null}
+              >
+                {props.runtimeInstalling ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
+                {props.runtimeInstalling ? "Installing runtime…" : "Install / repair runtime"}
+              </button>
+              {props.runtimeInstalling ? (
+                <button type="button" onClick={props.cancelRuntimeInstall}>Cancel download</button>
+              ) : null}
+            </div>
+            {props.runtimeInstalling || props.runtimeInstallStatus ? (
+              <div className="setup-progress" role="status" aria-live="polite">
+                <progress
+                  max={100}
+                  value={props.runtimeInstallStatus?.percentage ?? 0}
+                  aria-label="Runtime download progress"
+                />
+                <p className="muted">
+                  {props.runtimeInstallStatus?.backend ? `${props.runtimeInstallStatus.backend} · ` : ""}
+                  {props.runtimeInstallStatus?.state ?? "resolving"}
+                  {props.runtimeInstallStatus?.percentage != null
+                    ? ` · ${Math.round(props.runtimeInstallStatus.percentage)}%`
+                    : ""}
+                </p>
+              </div>
+            ) : null}
+            {props.runtimeInstallError || props.runtimeInstallStatus?.error ? (
+              <p className="setup-warning">{props.runtimeInstallError ?? props.runtimeInstallStatus?.error}</p>
+            ) : null}
             <div className="button-row">
               <button type="button" onClick={props.refresh} title="Validate">
                 <RefreshCw size={16} />
@@ -421,7 +598,7 @@ export function SettingsDialog(props: {
                 type="button"
                 onClick={() => props.startRuntime("restart")}
                 title="Restart Runtime"
-                disabled={props.runtimeAction !== null}
+                disabled={props.runtimeAction !== null || !props.runtime?.selected || props.runtimeInstalling}
               >
                 {props.runtimeAction === "start" || props.runtimeAction === "restart" ? (
                   <LoaderCircle className="spin" size={16} />
@@ -442,6 +619,7 @@ export function SettingsDialog(props: {
                 )}
               </button>
             </div>
+            <DiffusionRuntimePanel />
           </SettingsGroup>
         )}
 
@@ -518,16 +696,20 @@ export function SettingsDialog(props: {
 
         {activeSection === "privacy" && preferenceDraft ? (
           <SettingsGroup title="Privacy">
-            <ToggleRow
-              label="Save chat history locally"
-              checked={preferenceDraft.saveChatHistory}
-              onChange={(value) => setPreference("saveChatHistory", value)}
-            />
-            <ToggleRow
-              label="Telemetry"
-              checked={preferenceDraft.telemetryEnabled}
-              onChange={(value) => setPreference("telemetryEnabled", value)}
-            />
+            <Info label="Chat history" value="Saved on this device" />
+            <p className="muted">
+              This version stores conversations, attachments and generated files locally.
+              Temporary chats are not available. Changing other privacy settings does not
+              stop local history storage or remove existing conversations.
+            </p>
+            <Info label="Usage telemetry" value="Not available in this release" />
+            <p className="muted">
+              OpenMindAI does not currently offer a usage-telemetry service or
+              a telemetry consent control. The previous switch had no runtime
+              effect and has been removed. Local diagnostic logs, optional Cloud
+              connections and web search are separate features with their own
+              behavior and settings.
+            </p>
             <Info label="Data location" value={props.root?.root} />
             <SaveBar state={saveState} onSave={savePreferences} />
           </SettingsGroup>
@@ -535,12 +717,21 @@ export function SettingsDialog(props: {
 
         {activeSection === "shortcuts" && (
           <SettingsGroup title="Shortcuts">
-            <Info label="New chat" value="Ctrl+N" />
-            <Info label="Search chats" value="Ctrl+K" />
-            <Info label="Settings" value="Ctrl+," />
-            <Info label="Send" value="Enter / Ctrl+Enter" />
-            <Info label="New line" value="Shift+Enter" />
-            <Info label="Stop generation" value="Esc" />
+            {preferenceDraft?.showShortcutHints ? (
+              <>
+                <Info label="New chat" value="Ctrl+N" />
+                <Info label="Search chats" value="Ctrl+K" />
+                <Info label="Settings" value="Ctrl+," />
+                <Info label="Send" value="Enter / Ctrl+Enter" />
+                <Info label="New line" value="Shift+Enter" />
+                <Info label="Stop generation" value="Esc" />
+              </>
+            ) : (
+              <p className="muted" role="status">
+                Optional shortcut hints are hidden. Keyboard shortcuts still work.
+                Enable Show shortcut hints in Appearance to display this reference.
+              </p>
+            )}
           </SettingsGroup>
         )}
 
@@ -557,7 +748,14 @@ export function SettingsDialog(props: {
               checked={preferenceDraft.localRuntimeAutostart}
               onChange={(value) => setPreference("localRuntimeAutostart", value)}
             />
+            <Info
+              label="Effective profile"
+              value={props.performance?.mode
+                ? props.performance.mode.charAt(0).toUpperCase() + props.performance.mode.slice(1)
+                : "Not loaded"}
+            />
             <Info label="Recommended backend" value={props.performance?.recommendedBackend} />
+            <Info label="CPU threads" value={String(props.performance?.cpuThreads ?? "Not loaded")} />
             <Info
               label="RAM budget"
               value={formatBytes(props.performance?.systemMemoryBudgetBytes)}
@@ -586,10 +784,17 @@ export function SettingsDialog(props: {
             </label>
             {preferenceDraft.networkProxyMode === "manual" ? (
               <TextRow
-                label="Proxy address"
+                type="password"
+                label="Proxy address (credentials hidden)"
                 value={preferenceDraft.networkProxyUrl}
-                onChange={(value) => setPreference("networkProxyUrl", value)}
+                onChange={(value) => {
+                  setPreference("networkProxyUrl", value);
+                  setPreference("networkProxyCredentialId", null);
+                }}
               />
+            ) : null}
+            {preferenceDraft.networkProxyCredentialId ? (
+              <button type="button" onClick={() => setPreference("networkProxyCredentialId", null)}>Stop using saved proxy credentials on save</button>
             ) : null}
             <p className="muted">
               Model, dataset and runtime downloads (including GitHub releases), app updates and
@@ -601,7 +806,7 @@ export function SettingsDialog(props: {
                 ? " Uses HTTPS_PROXY / HTTP_PROXY when set, otherwise the Windows proxy settings."
                 : null}
               {preferenceDraft.networkProxyMode === "manual"
-                ? " Use host:port or http://user:password@host:port."
+                ? " Use host:port or http://user:password@host:port. Credentials are kept in this OS credential store and are not included in portable preferences."
                 : null}
               {" The local AI runtime and other local network addresses are always reached directly."}
             </p>
@@ -698,12 +903,12 @@ export function SelectRow(props: {
   );
 }
 
-function TextRow(props: { label: string; value: string; onChange: (value: string) => void }) {
+function TextRow(props: { label: string; value: string; type?: "text" | "password"; onChange: (value: string) => void }) {
   return (
     <label className="setting-row">
       <span>{props.label}</span>
       <input
-        type="text"
+        type={props.type ?? "text"}
         value={props.value}
         onChange={(event) => props.onChange(event.target.value)}
       />

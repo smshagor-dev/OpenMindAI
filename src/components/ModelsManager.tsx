@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, Download, PauseCircle, RefreshCw, StopCircle, Trash2 } from "lucide-react";
 import { api } from "../api";
 import type {
@@ -11,7 +11,7 @@ import type {
   PortableRootInfo,
   RuntimeInventory,
 } from "../types";
-import { formatBytes } from "../lib/format";
+import { formatBytes, formatError } from "../lib/format";
 import { ConfirmDialog } from "./ConfirmDialog";
 
 export function ModelsManager(props: {
@@ -29,6 +29,9 @@ export function ModelsManager(props: {
   const [catalog, setCatalog] = useState<ModelCatalogReport | null>(null);
   const [launchPlan, setLaunchPlan] = useState<LaunchPlan | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const actionLock = useRef(false);
+  const [actionPending, setActionPending] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ModelCatalogStatus | null>(null);
 
   const refreshCatalog = async () => {
@@ -127,34 +130,47 @@ export function ModelsManager(props: {
     }
   };
 
-  const cancelDownload = async () => {
+  const runAction = async (action: () => Promise<void>) => {
+    if (actionLock.current) return;
+    actionLock.current = true;
+    setActionPending(true);
+    setActionError(null);
+    try {
+      await action();
+    } catch (error) {
+      setActionError(formatError(error));
+    } finally {
+      actionLock.current = false;
+      setActionPending(false);
+    }
+  };
+  const cancelDownload = () => runAction(async () => {
     setDownloadStatus(await api.cancelModelDownload());
-  };
-
-  const pauseDownload = async () => {
+  });
+  const pauseDownload = () => runAction(async () => {
     setDownloadStatus(await api.pauseModelDownload());
-  };
-
-  const validateFirstModel = async () => {
+  });
+  const validateFirstModel = () => runAction(async () => {
     const model = props.models[0];
     if (!model) return;
+    setLaunchPlan(null);
     await api.validateModel(model.id);
     setLaunchPlan(await api.planModelLaunch(model.id));
-  };
-
-  const deleteModel = async () => {
+  });
+  const deleteModel = () => runAction(async () => {
     if (!deleteTarget) return;
     await api.deleteCatalogModel(deleteTarget.entry.id);
     setDeleteTarget(null);
     await props.refresh();
     await refreshCatalog();
-  };
+  });
 
   return (
     <>
       {props.showRootInfo === false ? null : <Info label="Model folder" value={props.root?.modelsDir} />}
-      {catalogError ? <p className="model-selector-error">{catalogError}</p> : null}
+      {(actionError || catalogError) && !deleteTarget ? <p className="download-feedback-error" role="alert">{actionError ?? catalogError}</p> : null}
       <ModelCatalogOverview
+        actionPending={actionPending}
         variant={props.variant ?? "settings"}
         hardware={props.hardware}
         primary={primaryRecommendation}
@@ -173,8 +189,10 @@ export function ModelsManager(props: {
           {entries.map((item) => (
             <CatalogModelCard
               key={item.entry.id}
+              actionPending={actionPending}
               item={item}
               status={downloadStatus?.modelId === item.entry.id ? downloadStatus : null}
+              anotherDownloadActive={downloadStatus !== null && isActiveDownload(downloadStatus) && downloadStatus.modelId !== item.entry.id}
               recommended={recommendedIds.has(item.entry.id)}
               onDownload={() => downloadModel(item.entry.id)}
               onPause={pauseDownload}
@@ -195,7 +213,7 @@ export function ModelsManager(props: {
               type="button"
               onClick={validateFirstModel}
               title="Validate and plan first chat model"
-              disabled={props.models.length === 0}
+              disabled={actionPending || props.models.length === 0}
             >
               <RefreshCw size={16} />
             </button>
@@ -217,6 +235,8 @@ export function ModelsManager(props: {
         description="This will permanently delete all downloaded data for this model from your OpenMindAI Root. You will need to download it again before using it."
         confirmLabel="Delete model"
         danger
+        busy={actionPending}
+        error={actionError ?? catalogError}
         onConfirm={() => void deleteModel()}
         onCancel={() => setDeleteTarget(null)}
       />
@@ -233,6 +253,7 @@ function ModelCatalogOverview(props: {
   downloadedCount: number;
   recommendedCount: number;
   onDownload?: () => void | Promise<void>;
+  actionPending?: boolean;
   onPause: () => void | Promise<void>;
   onCancel: () => void | Promise<void>;
 }) {
@@ -275,10 +296,10 @@ function ModelCatalogOverview(props: {
           </button>
         ) : primaryStatus && busy ? (
           <>
-            <button type="button" onClick={props.onPause} title="Pause download">
+            <button type="button" disabled={props.actionPending} onClick={props.onPause} title="Pause download">
               <PauseCircle size={16} />
             </button>
-            <button type="button" onClick={props.onCancel} title="Cancel download">
+            <button type="button" disabled={props.actionPending} onClick={props.onCancel} title="Cancel download">
               <StopCircle size={16} />
             </button>
           </>
@@ -288,7 +309,7 @@ function ModelCatalogOverview(props: {
             className="primary-button"
             onClick={props.onDownload}
             title={`Download ${props.primary.entry.name}`}
-            disabled={!props.primary.downloadSupported || busy}
+            disabled={props.actionPending || !props.primary.downloadSupported || busy}
           >
             <Download size={16} />
           </button>
@@ -301,8 +322,10 @@ function ModelCatalogOverview(props: {
 function CatalogModelCard(props: {
   item: ModelCatalogStatus;
   status: DownloadStatus | null;
+  anotherDownloadActive: boolean;
   recommended: boolean;
   onDownload: () => void | Promise<void>;
+  actionPending?: boolean;
   onPause: () => void | Promise<void>;
   onCancel: () => void | Promise<void>;
   onDelete?: () => void;
@@ -333,7 +356,7 @@ function CatalogModelCard(props: {
         <small>{entry.capabilities.map(capabilityLabel).join(" · ")}</small>
         <small>{entry.description}</small>
       </div>
-      <div className="download-progress">
+      <div className="download-progress" aria-live="polite">
         <span>{catalogAvailabilityLabel(props.item, props.status)}</span>
         {props.status?.totalBytes ? (
           <small>
@@ -344,6 +367,19 @@ function CatalogModelCard(props: {
         ) : props.item.installed ? null : (
           <small>{systemFitLabel(props.item)}</small>
         )}
+        {props.status && isActiveDownload(props.status) ? (
+          <div
+            className="download-progress-track"
+            role="progressbar"
+            aria-label={`${entry.name} download progress`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={props.status.percentage == null ? undefined : Math.max(0, Math.min(100, props.status.percentage))}
+            aria-valuetext={props.status.percentage == null ? "Preparing download" : undefined}
+          >
+            <span style={{ width: `${Math.max(0, Math.min(100, props.status.percentage ?? 0))}%` }} />
+          </div>
+        ) : null}
       </div>
       <div className="button-row">
         {props.item.installed ? (
@@ -355,6 +391,7 @@ function CatalogModelCard(props: {
               <button
                 type="button"
                 className="danger-button"
+                disabled={props.actionPending}
                 onClick={props.onDelete}
                 title={`Delete ${entry.name}`}
               >
@@ -364,10 +401,10 @@ function CatalogModelCard(props: {
           </>
         ) : busy ? (
           <>
-            <button type="button" onClick={props.onPause} title="Pause download">
+            <button type="button" disabled={props.actionPending} onClick={props.onPause} title="Pause download">
               <PauseCircle size={16} />
             </button>
-            <button type="button" onClick={props.onCancel} title="Cancel download">
+            <button type="button" disabled={props.actionPending} onClick={props.onCancel} title="Cancel download">
               <StopCircle size={16} />
             </button>
           </>
@@ -380,13 +417,13 @@ function CatalogModelCard(props: {
                 ? `${paused ? "Resume" : "Download"} ${entry.name}`
                 : `${entry.name} requires manual upstream license/access setup`
             }
-            disabled={!props.item.downloadSupported}
+            disabled={props.actionPending || !props.item.downloadSupported || props.anotherDownloadActive}
           >
             <Download size={16} />
           </button>
         )}
       </div>
-      {props.status?.error ? <p className="muted">{props.status.error}</p> : null}
+      {props.status?.error ? <p className="download-feedback-error" role="alert">{props.status.error}</p> : null}
     </div>
   );
 }
@@ -563,6 +600,7 @@ function catalogAvailabilityLabel(item: ModelCatalogStatus, status: DownloadStat
   if (status?.state === "pausedInterrupted") return "Paused";
   if (status?.state === "failed") return "Download failed";
   if (status?.state === "cancelled") return "Cancelled";
+  if (item.entry.id === "flux1-schnell") return "Renderer integration pending";
   if (item.installed) return "Ready";
   if (!item.downloadSupported) return "Manual license/access";
   if (item.compatible) return "Available";
@@ -570,6 +608,7 @@ function catalogAvailabilityLabel(item: ModelCatalogStatus, status: DownloadStat
 }
 
 function systemFitLabel(item: ModelCatalogStatus) {
+  if (item.entry.id === "flux1-schnell") return "FLUX rendering is not available in this version";
   if (item.installed) return "Ready";
   if (!item.downloadSupported) {
     return item.compatible

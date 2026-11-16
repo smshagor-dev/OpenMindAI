@@ -45,7 +45,22 @@ jobs:
         with:
           tool: cargo-audit
 
-      - name: Cargo audit
+      - name: Verify ZIP 9-only production dependency graph
+        run: |
+          node scripts/check-zip-audit-mode.mjs --self-test
+          node scripts/check-zip-audit-mode.mjs
+
+      - name: Verify exact vendored ZIP 9 sources and third-party notices
+        run: |
+          python3 scripts/verify-zip9-vendor.py --self-test
+          python3 scripts/verify-zip9-vendor.py
+
+      - name: Inspect committed path-pinned ZIP 9 dependencies
+        run: |
+          cargo metadata --locked --manifest-path src-tauri/Cargo.toml --format-version 1 > "$RUNNER_TEMP/openmind-cargo-metadata.json"
+          node scripts/check-zip-audit-mode.mjs --metadata "$RUNNER_TEMP/openmind-cargo-metadata.json"
+
+      - name: Cargo audit (production, no advisory exceptions)
         run: cargo audit --file src-tauri/Cargo.lock
 
   codeql:

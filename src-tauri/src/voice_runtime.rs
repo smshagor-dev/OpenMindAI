@@ -7,6 +7,9 @@ use std::{
 };
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+use sha2::{Digest, Sha256};
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use any_tts::{
     models::kokoro::KokoroModel, traits::TtsModel, ModelType, SynthesisRequest, TtsConfig,
 };
@@ -23,6 +26,24 @@ const DEFAULT_VOICE: &str = "af_heart";
 const MAX_TTS_CHARS: usize = 12_000;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 const WAV_HEADER_BYTES: u64 = 44;
+
+/// This installed Kokoro package only configures the English af_heart voice.
+/// Reject scripts it cannot pronounce instead of producing misleading audio.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn validate_narration_language(text: &str) -> Result<(), AppError> {
+    let unsupported = text.chars().any(|ch| matches!(ch as u32,
+        0x0400..=0x052f | 0x0900..=0x097f | 0x0980..=0x09ff |
+        0x0600..=0x06ff | 0x4e00..=0x9fff | 0x3040..=0x30ff |
+        0xac00..=0xd7af | 0x0e00..=0x0e7f
+    ));
+    if unsupported {
+        return Err(AppError::ArtifactGenerationFailed(
+            "The installed Kokoro af_heart voice supports English narration only; this text contains an unsupported writing system. Select English text or install a compatible multilingual voice when available.".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub async fn generate_voice(
@@ -59,22 +80,24 @@ pub async fn generate_voice(
         )));
     }
 
+    validate_narration_language(text)?;
+
     let model_path = canonical_file_under_root(root, model_path, "Kokoro model")?;
     let voices_dir = canonical_dir_under_root(root, voices_dir, "Kokoro voices")?;
-    if !voices_dir.join(format!("{DEFAULT_VOICE}.pt")).is_file() {
-        return Err(AppError::ArtifactGenerationFailed(format!(
-            "required Kokoro voice {DEFAULT_VOICE} is missing"
-        )));
-    }
     let package_dir = model_path.parent().ok_or_else(|| {
         AppError::ArtifactGenerationFailed("Kokoro package directory is unavailable".to_string())
     })?;
-    if !package_dir.join("config.json").is_file() {
-        return Err(AppError::ArtifactGenerationFailed(
-            "required Kokoro config.json is missing; validate or re-download the model package"
-                .to_string(),
-        ));
-    }
+    // Resolve every asset passed to a third-party model loader, not just the
+    // model and voices directories: a symlinked config/voice file can escape
+    // the intended package without changing either parent directory.
+    validate_kokoro_assets(root, package_dir, &voices_dir)?;
+    // Rehash the installed config and voice against their recorded download
+    // digests; a same-size replacement must not reach the Kokoro loader.
+    verify_kokoro_dependency_digests(root, package_dir)?;
+    // Candle reads PyTorch ZIP metadata from the primary .pth model as well
+    // as from voice weights. Preflight both before entering upstream code.
+    validate_kokoro_pytorch_archive(&model_path)?;
+    verify_kokoro_checkpoint_digest(package_dir, &model_path)?;
     let package_dir = package_dir.to_path_buf();
 
     let output_parent = output_path.parent().ok_or_else(|| {
@@ -170,6 +193,297 @@ fn canonical_dir_under_root(
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+const MAX_KOKORO_ARCHIVE_ENTRIES: usize = 4096;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+const MAX_KOKORO_ARCHIVE_BYTES: u64 = 1024 * 1024 * 1024;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+const MAX_KOKORO_ZIP_EXPANSION_RATIO: u64 = 10_000;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+const MAX_KOKORO_CONFIG_BYTES: u64 = 1024 * 1024;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+const MAX_KOKORO_MANIFEST_BYTES: u64 = 64 * 1024;
+
+/// Verify both the OpenMindAI root and the expected model subdirectory after
+/// symlink resolution, before invoking the upstream Kokoro/Candle loader.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn validate_kokoro_assets(
+    root: &PortableRootManager,
+    package_dir: &Path,
+    voices_dir: &Path,
+) -> Result<(), AppError> {
+    let config =
+        canonical_file_under_root(root, &package_dir.join("config.json"), "Kokoro config.json")?;
+    if !config.starts_with(package_dir) {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro config.json resolves outside its model package".to_string(),
+        ));
+    }
+    validate_kokoro_config(&config)?;
+    let voice = canonical_file_under_root(
+        root,
+        &voices_dir.join(format!("{DEFAULT_VOICE}.pt")),
+        "required Kokoro voice",
+    )?;
+    if !voice.starts_with(voices_dir) {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro voice file resolves outside its voices directory".to_string(),
+        ));
+    }
+    validate_kokoro_pytorch_archive(&voice)
+}
+
+/// The install package manifest records SHA-256 for Kokoro config and
+/// voice dependencies. Preflight checks metadata and sizes only; perform a
+/// fresh hash comparison for both assets before invoking the model loader.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn verify_kokoro_dependency_digests(
+    root: &PortableRootManager,
+    package_dir: &Path,
+) -> Result<(), AppError> {
+    let entry = crate::model_catalog::entry_by_id("kokoro-82m-onnx")?;
+    let download = entry.download.as_ref().ok_or_else(|| {
+        AppError::ArtifactGenerationFailed("Kokoro catalog package is unavailable".to_string())
+    })?;
+    let expected_dir = fs::canonicalize(root.resolve_relative(&download.destination_dir)?)?;
+    if expected_dir != fs::canonicalize(package_dir)? {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro model must be loaded from its installed package directory".to_string(),
+        ));
+    }
+    if !crate::model_download::validate_installed_dependencies(root, &entry, true)? {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro config or voice failed its installed SHA-256 check; validate or re-download the model package".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Accept only correctly formatted installer or upstream SHA-256 records.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn kokoro_manifest_digest<'a>(
+    manifest: &'a serde_json::Value,
+    key: &str,
+) -> Result<Option<&'a str>, AppError> {
+    match manifest.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(value))
+            if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
+        {
+            Ok(Some(value))
+        }
+        _ => Err(AppError::ArtifactGenerationFailed(format!(
+            "Kokoro model manifest has an invalid {key} SHA-256"
+        ))),
+    }
+}
+
+/// Recheck the primary checkpoint against its upstream expected SHA-256 or
+/// the installer-recorded actualSha256 when the upstream value was absent.
+/// This detects changes made after installation. A local manifest is not a
+/// signed trust anchor, and legacy installs without any digest remain supported.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn verify_kokoro_checkpoint_digest(package_dir: &Path, model_path: &Path) -> Result<(), AppError> {
+    let manifest_path = package_dir.join("model-manifest.json");
+    if !manifest_path.exists() {
+        return Ok(());
+    }
+    let canonical_package = fs::canonicalize(package_dir)?;
+    let canonical = fs::canonicalize(&manifest_path)?;
+    if !canonical.is_file() || !canonical.starts_with(&canonical_package) {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro model manifest resolves outside its package".to_string(),
+        ));
+    }
+    if fs::metadata(&canonical)?.len() > MAX_KOKORO_MANIFEST_BYTES {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro model manifest exceeds 64 KiB".to_string(),
+        ));
+    }
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(canonical)?).map_err(|error| {
+            AppError::ArtifactGenerationFailed(format!("Kokoro model manifest is invalid: {error}"))
+        })?;
+    let filename = model_path.file_name().and_then(|name| name.to_str());
+    if manifest.get("filename").and_then(|value| value.as_str()) != filename {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro model manifest filename does not match the selected checkpoint".to_string(),
+        ));
+    }
+    if manifest
+        .get("verification")
+        .and_then(|value| value.as_str())
+        == Some("failed")
+    {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro model manifest records failed verification".to_string(),
+        ));
+    }
+    let upstream = kokoro_manifest_digest(&manifest, "sha256")?;
+    let installed = kokoro_manifest_digest(&manifest, "actualSha256")?;
+    if upstream
+        .zip(installed)
+        .is_some_and(|(a, b)| !a.eq_ignore_ascii_case(b))
+    {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro model manifest has conflicting SHA-256 records".to_string(),
+        ));
+    }
+    let Some(expected) = upstream.or(installed) else {
+        // Legacy installs with no recorded digest are not silently reported
+        // as verified; other asset/path preflight still applies.
+        return Ok(());
+    };
+    let mut file = fs::File::open(model_path)?;
+    if let Some(size) = manifest.get("sizeBytes") {
+        let declared = size.as_u64().ok_or_else(|| {
+            AppError::ArtifactGenerationFailed(
+                "Kokoro model manifest has an invalid size".to_string(),
+            )
+        })?;
+        if file.metadata()?.len() != declared {
+            return Err(AppError::ArtifactGenerationFailed(
+                "Kokoro checkpoint size differs from its install manifest".to_string(),
+            ));
+        }
+    }
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    let actual = format!("{:x}", digest.finalize());
+    if !actual.eq_ignore_ascii_case(expected) {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro checkpoint differs from its recorded SHA-256; validate or re-download the model".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Bound and parse model configuration before passing it to the external
+/// loader. In addition to invalid JSON, excessively large configs are rejected
+/// without reading them into memory.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn validate_kokoro_config(path: &Path) -> Result<(), AppError> {
+    if fs::metadata(path)?.len() > MAX_KOKORO_CONFIG_BYTES {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro config.json exceeds the 1 MiB size limit".to_string(),
+        ));
+    }
+    let contents = fs::read(path)?;
+    let parsed: serde_json::Value = serde_json::from_slice(&contents).map_err(|error| {
+        AppError::ArtifactGenerationFailed(format!("Kokoro config.json is invalid: {error}"))
+    })?;
+    if !parsed.is_object() {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro config.json must contain an object".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Bound claimed expansion and compressed sizes before model loaders encounter
+/// a checkpoint. These are metadata limits only, not proof of content integrity.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn checked_kokoro_zip_sizes(
+    declared_uncompressed: u64,
+    compressed: u64,
+    expanded_so_far: u64,
+    compressed_so_far: u64,
+) -> Result<(u64, u64), AppError> {
+    if declared_uncompressed > 0
+        && (compressed == 0 || declared_uncompressed / compressed > MAX_KOKORO_ZIP_EXPANSION_RATIO)
+    {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro PyTorch ZIP has an implausible expansion ratio".to_string(),
+        ));
+    }
+    let expanded = expanded_so_far
+        .checked_add(declared_uncompressed)
+        .ok_or_else(|| {
+            AppError::ArtifactGenerationFailed("Kokoro PyTorch ZIP size overflow".to_string())
+        })?;
+    let stored = compressed_so_far.checked_add(compressed).ok_or_else(|| {
+        AppError::ArtifactGenerationFailed("Kokoro PyTorch ZIP size overflow".to_string())
+    })?;
+    if expanded > MAX_KOKORO_ARCHIVE_BYTES || stored > MAX_KOKORO_ARCHIVE_BYTES {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro PyTorch ZIP exceeds its size limit".to_string(),
+        ));
+    }
+    Ok((expanded, stored))
+}
+
+/// PyTorch .pt and .pth files can be ZIP containers. Use the already-patched ZIP 9
+/// reader to screen suspicious archive metadata before passing the file to
+/// upstream Candle code still linked to ZIP 7. This does not replace or patch
+/// ZIP 7 and intentionally leaves legacy non-ZIP PyTorch files to the model loader.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn validate_kokoro_pytorch_archive(path: &Path) -> Result<(), AppError> {
+    let mut file = fs::File::open(path)?;
+    let mut magic = [0_u8; 4];
+    file.read_exact(&mut magic).map_err(|error| {
+        AppError::ArtifactGenerationFailed(format!("Kokoro PyTorch archive is incomplete: {error}"))
+    })?;
+    if magic != *b"PK\x03\x04" {
+        return Ok(());
+    }
+    let mut archive = zip::ZipArchive::new(file).map_err(|error| {
+        AppError::ArtifactGenerationFailed(format!("Kokoro PyTorch ZIP is invalid: {error}"))
+    })?;
+    if archive.len() > MAX_KOKORO_ARCHIVE_ENTRIES {
+        return Err(AppError::ArtifactGenerationFailed(
+            "Kokoro PyTorch ZIP contains too many entries".to_string(),
+        ));
+    }
+    let mut expanded = 0_u64;
+    let mut compressed = 0_u64;
+    let mut names = std::collections::HashSet::new();
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index).map_err(|error| {
+            AppError::ArtifactGenerationFailed(format!(
+                "Kokoro PyTorch ZIP entry is invalid: {error}"
+            ))
+        })?;
+        let enclosed = entry.enclosed_name().ok_or_else(|| {
+            AppError::ArtifactGenerationFailed(
+                "Kokoro PyTorch ZIP contains an unsafe path".to_string(),
+            )
+        })?;
+        if enclosed.as_os_str().is_empty() || !names.insert(enclosed.to_path_buf()) {
+            return Err(AppError::ArtifactGenerationFailed(
+                "Kokoro PyTorch ZIP contains empty or duplicate paths".to_string(),
+            ));
+        }
+        if entry.encrypted() {
+            return Err(AppError::ArtifactGenerationFailed(
+                "Kokoro PyTorch ZIP must not contain encrypted entries".to_string(),
+            ));
+        }
+        if let Some(mode) = entry.unix_mode() {
+            if mode & 0o7000 != 0
+                || !matches!(
+                    (mode & 0o170000, entry.is_dir()),
+                    (0, _) | (0o040000, true) | (0o100000, false)
+                )
+            {
+                return Err(AppError::ArtifactGenerationFailed(
+                    "Kokoro PyTorch ZIP contains a link, special entry or privileged mode"
+                        .to_string(),
+                ));
+            }
+        }
+        (expanded, compressed) =
+            checked_kokoro_zip_sizes(entry.size(), entry.compressed_size(), expanded, compressed)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn write_pcm16_wav(path: &Path, samples: &[f32]) -> Result<(), AppError> {
     let data_bytes = samples
         .len()
@@ -239,6 +553,273 @@ mod tests {
     use super::*;
 
     #[test]
+    fn kokoro_voice_zip_preflight_accepts_standard_archive_and_checks_count() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("af_heart.pt");
+        let file = fs::File::create(&path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file("voices/data.pkl", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"model-data").unwrap();
+        writer.finish().unwrap();
+        assert!(validate_kokoro_pytorch_archive(&path).is_ok());
+        let mut file = fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(&mut file).unwrap();
+        assert_eq!(archive.len(), 1);
+        assert!(archive.by_name("voices/data.pkl").is_ok());
+    }
+
+    #[test]
+    fn kokoro_zip_size_checks_reject_bombs_and_overflow() {
+        assert!(checked_kokoro_zip_sizes(128, 128, 0, 0).is_ok());
+        assert!(checked_kokoro_zip_sizes(0, 0, 0, 0).is_ok());
+        assert!(checked_kokoro_zip_sizes(4, 0, 0, 0).is_err());
+        assert!(checked_kokoro_zip_sizes(10_001, 1, 0, 0).is_err());
+        assert!(checked_kokoro_zip_sizes(MAX_KOKORO_ARCHIVE_BYTES + 1, 1, 0, 0).is_err());
+        assert!(checked_kokoro_zip_sizes(10, 10, u64::MAX, 0).is_err());
+        assert!(checked_kokoro_zip_sizes(10, 10, 0, u64::MAX).is_err());
+        assert!(checked_kokoro_zip_sizes(1, 1, 0, MAX_KOKORO_ARCHIVE_BYTES).is_err());
+    }
+
+    #[test]
+    fn kokoro_dependency_digests_reject_same_size_voice_or_config_tampering() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let package = root.resolve_relative("models/audio/kokoro").unwrap();
+        let voices = package.join("voices");
+        fs::create_dir_all(&voices).unwrap();
+
+        let config_bytes = b"{\"version\":1}";
+        let voice_bytes = b"voice-weights";
+        fs::write(package.join("config.json"), config_bytes).unwrap();
+        fs::write(voices.join("af_heart.pt"), voice_bytes).unwrap();
+        let config_hash = format!("{:x}", Sha256::digest(config_bytes));
+        let voice_hash = format!("{:x}", Sha256::digest(voice_bytes));
+        let manifest = serde_json::json!({
+            "modelId": "kokoro-82m-onnx",
+            "repo": "hexgrad/Kokoro-82M",
+            "files": [
+                {
+                    "role": "config",
+                    "filename": "config.json",
+                    "format": "json",
+                    "sizeBytes": config_bytes.len(),
+                    "sha256": config_hash,
+                    "actualSha256": config_hash,
+                    "verification": "verified",
+                    "sourceUrl": "https://example.invalid/config.json"
+                },
+                {
+                    "role": "voice",
+                    "filename": "voices/af_heart.pt",
+                    "format": "pt",
+                    "sizeBytes": voice_bytes.len(),
+                    "sha256": voice_hash,
+                    "actualSha256": voice_hash,
+                    "verification": "verified",
+                    "sourceUrl": "https://example.invalid/af_heart.pt"
+                }
+            ]
+        });
+        fs::write(
+            package.join("package-manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(verify_kokoro_dependency_digests(&root, &package).is_ok());
+
+        fs::write(voices.join("af_heart.pt"), b"voice-weightz").unwrap();
+        assert!(verify_kokoro_dependency_digests(&root, &package).is_err());
+        fs::write(voices.join("af_heart.pt"), voice_bytes).unwrap();
+
+        fs::write(package.join("config.json"), b"{\"version\":2}").unwrap();
+        assert!(verify_kokoro_dependency_digests(&root, &package).is_err());
+        fs::write(package.join("config.json"), config_bytes).unwrap();
+        assert!(verify_kokoro_dependency_digests(&root, &package).is_ok());
+
+        fs::remove_file(package.join("package-manifest.json")).unwrap();
+        assert!(verify_kokoro_dependency_digests(&root, &package).is_err());
+    }
+
+    #[test]
+    fn kokoro_checkpoint_digest_detects_post_install_tampering() {
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("kokoro");
+        fs::create_dir_all(&package).unwrap();
+        let model = package.join("kokoro-v1_0.pth");
+        fs::write(&model, b"original-checkpoint").unwrap();
+        // Legacy installs without a manifest must remain readable.
+        assert!(verify_kokoro_checkpoint_digest(&package, &model).is_ok());
+
+        let manifest = serde_json::json!({
+            "filename": "kokoro-v1_0.pth",
+            "sha256": format!("{:x}", Sha256::digest(b"original-checkpoint")),
+        });
+        fs::write(
+            package.join("model-manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(verify_kokoro_checkpoint_digest(&package, &model).is_ok());
+        fs::write(&model, b"tampered-checkpoint").unwrap();
+        assert!(verify_kokoro_checkpoint_digest(&package, &model).is_err());
+    }
+
+    #[test]
+    fn kokoro_checkpoint_digest_uses_install_record_when_upstream_hash_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("kokoro");
+        fs::create_dir_all(&package).unwrap();
+        let model = package.join("kokoro-v1_0.pth");
+        let original = b"original-checkpoint";
+        fs::write(&model, original).unwrap();
+        let digest = format!("{:x}", Sha256::digest(original));
+        let manifest_path = package.join("model-manifest.json");
+        let manifest = serde_json::json!({
+            "filename": "kokoro-v1_0.pth",
+            "sha256": null,
+            "actualSha256": digest,
+            "sizeBytes": original.len(),
+            "verification": "unverified",
+        });
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(verify_kokoro_checkpoint_digest(&package, &model).is_ok());
+
+        // A same-size replacement must not pass a metadata-only check.
+        fs::write(&model, b"tampered-checkpoint").unwrap();
+        assert!(verify_kokoro_checkpoint_digest(&package, &model).is_err());
+    }
+
+    #[test]
+    fn kokoro_checkpoint_digest_rejects_conflicting_records_and_invalid_size() {
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("kokoro");
+        fs::create_dir_all(&package).unwrap();
+        let model = package.join("kokoro-v1_0.pth");
+        fs::write(&model, b"checkpoint").unwrap();
+        let valid = format!("{:x}", Sha256::digest(b"checkpoint"));
+        let other = format!("{:x}", Sha256::digest(b"another"));
+        let manifest_path = package.join("model-manifest.json");
+        for manifest in [
+            serde_json::json!({"filename":"kokoro-v1_0.pth","sha256":valid,"actualSha256":other}),
+            serde_json::json!({"filename":"kokoro-v1_0.pth","actualSha256":"bad"}),
+            serde_json::json!({"filename":"kokoro-v1_0.pth","actualSha256":valid,"sizeBytes":42}),
+            serde_json::json!({"filename":"kokoro-v1_0.pth","actualSha256":valid,"verification":"failed"}),
+            serde_json::json!({"filename":"another.pth","actualSha256":valid}),
+        ] {
+            fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+            assert!(verify_kokoro_checkpoint_digest(&package, &model).is_err());
+        }
+    }
+
+    #[test]
+    fn kokoro_checkpoint_digest_rejects_invalid_manifest_and_wrong_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("kokoro");
+        fs::create_dir_all(&package).unwrap();
+        let model = package.join("kokoro-v1_0.pth");
+        fs::write(&model, b"checkpoint").unwrap();
+        let manifest_path = package.join("model-manifest.json");
+        fs::write(&manifest_path, b"broken json").unwrap();
+        assert!(verify_kokoro_checkpoint_digest(&package, &model).is_err());
+        let digest = format!("{:x}", Sha256::digest(b"checkpoint"));
+        for (filename, sha256) in [
+            ("another-file.pth", digest.as_str()),
+            ("kokoro-v1_0.pth", "not-a-valid-digest"),
+        ] {
+            let manifest = serde_json::json!({
+                "filename": filename,
+                "sha256": sha256,
+            });
+            fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+            assert!(verify_kokoro_checkpoint_digest(&package, &model).is_err());
+        }
+    }
+
+    #[test]
+    fn kokoro_primary_model_pth_archive_is_screened() {
+        let temp = tempfile::tempdir().unwrap();
+        let model_path = temp.path().join("kokoro-v1_0.pth");
+        let file = fs::File::create(&model_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file("kokoro/data.pkl", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"pickle-placeholder").unwrap();
+        writer.finish().unwrap();
+        assert!(validate_kokoro_pytorch_archive(&model_path).is_ok());
+        fs::write(&model_path, b"PK\x03\x04corrupted-model").unwrap();
+        assert!(validate_kokoro_pytorch_archive(&model_path).is_err());
+    }
+
+    #[test]
+    fn kokoro_config_must_be_bounded_valid_json_object() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.json");
+        fs::write(&path, b"{\"model\":\"kokoro\"}").unwrap();
+        assert!(validate_kokoro_config(&path).is_ok());
+        fs::write(&path, b"not json").unwrap();
+        assert!(validate_kokoro_config(&path).is_err());
+        fs::write(&path, b"[]").unwrap();
+        assert!(validate_kokoro_config(&path).is_err());
+        fs::write(&path, vec![b'x'; MAX_KOKORO_CONFIG_BYTES as usize + 1]).unwrap();
+        assert!(validate_kokoro_config(&path).is_err());
+    }
+
+    #[test]
+    fn kokoro_voice_zip_preflight_rejects_invalid_zip() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("af_heart.pt");
+        fs::write(&path, b"PK\x03\x04not-a-real-zip").unwrap();
+        assert!(validate_kokoro_pytorch_archive(&path).is_err());
+    }
+
+    #[test]
+    fn kokoro_assets_require_files_inside_the_expected_package() {
+        let temp = tempfile::tempdir().unwrap();
+        let root_dir = temp.path().join("OpenMindAI");
+        let package = root_dir.join("models/kokoro");
+        let voices = package.join("voices");
+        fs::create_dir_all(&voices).unwrap();
+        fs::write(package.join("config.json"), b"{}").unwrap();
+        fs::write(voices.join("af_heart.pt"), b"legacy-model-data").unwrap();
+        let root = PortableRootManager::from_root(root_dir);
+        let package = fs::canonicalize(package).unwrap();
+        let voices = fs::canonicalize(voices).unwrap();
+        assert!(validate_kokoro_assets(&root, &package, &voices).is_ok());
+        fs::remove_file(voices.join("af_heart.pt")).unwrap();
+        assert!(validate_kokoro_assets(&root, &package, &voices).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kokoro_assets_reject_symlinked_files_outside_their_directories() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let root_dir = temp.path().join("OpenMindAI");
+        let package = root_dir.join("models/kokoro");
+        let voices = package.join("voices");
+        let elsewhere = root_dir.join("unrelated");
+        fs::create_dir_all(&voices).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(elsewhere.join("config.json"), b"{}").unwrap();
+        fs::write(elsewhere.join("af_heart.pt"), b"external-voice").unwrap();
+        fs::write(package.join("config.json"), b"{}").unwrap();
+        symlink(elsewhere.join("af_heart.pt"), voices.join("af_heart.pt")).unwrap();
+        let root = PortableRootManager::from_root(root_dir);
+        let package = fs::canonicalize(package).unwrap();
+        let voices = fs::canonicalize(voices).unwrap();
+        assert!(validate_kokoro_assets(&root, &package, &voices).is_err());
+        fs::remove_file(voices.join("af_heart.pt")).unwrap();
+        fs::write(voices.join("af_heart.pt"), b"local-voice").unwrap();
+        fs::remove_file(package.join("config.json")).unwrap();
+        symlink(elsewhere.join("config.json"), package.join("config.json")).unwrap();
+        assert!(validate_kokoro_assets(&root, &package, &voices).is_err());
+    }
+
+    #[test]
     fn writes_and_validates_pcm16_wav() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("voice.wav");
@@ -259,5 +840,29 @@ mod tests {
         let path = temp.path().join("voice.wav");
         fs::write(&path, vec![0_u8; 128]).unwrap();
         assert!(validate_wav(&path).is_err());
+    }
+}
+
+
+#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
+mod narration_language_tests {
+    use super::validate_narration_language;
+
+    #[test]
+    fn english_narration_and_punctuation_are_allowed() {
+        assert!(validate_narration_language("Hello, world! 2026 — ready.").is_ok());
+    }
+
+    #[test]
+    fn unsupported_scripts_fail_before_model_or_output_access() {
+        for text in ["বাংলা", "Привет", "नमस्ते", "مرحبا", "你好", "こんにちは"] {
+            let error = validate_narration_language(text).unwrap_err();
+            assert!(error.to_string().contains("English narration only"));
+        }
+    }
+
+    #[test]
+    fn mixed_script_narration_is_rejected() {
+        assert!(validate_narration_language("Hello বাংলা").is_err());
     }
 }

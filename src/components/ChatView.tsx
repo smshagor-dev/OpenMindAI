@@ -1,3 +1,4 @@
+import type { VoiceDraftTarget } from "../lib/voiceDraft";
 import { useEffect, useRef } from "react";
 import type { RefObject } from "react";
 import {
@@ -17,13 +18,19 @@ import type {
   AppPreferences,
   Artifact,
   ArtifactKind,
+  ImageRenderProgress,
+  ImageGenerationOptions,
   Conversation,
   Message,
   ModelRecord,
   RuntimeInventory,
+  WebResearchProgressEvent,
 } from "../types";
 import type { AttachmentDraft } from "../lib/chat";
+import type { PdfExtractionProgress } from "../lib/pdf";
+import type { CloudModel } from "../cloudApi";
 import { MessageItem } from "./MessageItem";
+import { ResearchProgress } from "./ResearchProgress";
 import { Composer } from "./Composer";
 import type { PreviewTarget } from "./PreviewPanel";
 
@@ -49,9 +56,15 @@ export function ChatView(props: {
   messages: Message[];
   prompt: string;
   setPrompt: (value: string) => void;
+  createVoiceDraftTarget: () => VoiceDraftTarget;
+  imageOptions: ImageGenerationOptions;
+  setImageOptions: (options: ImageGenerationOptions) => void;
   attachments: AttachmentDraft[];
+  pdfImportProgress?: (PdfExtractionProgress & { fileName: string }) | null;
+  onCancelPdfImport?: () => void;
   preferences: AppPreferences | null;
   activity: RealtimeActivity;
+  webProgress: WebResearchProgressEvent | null;
   enterToSend: boolean;
   addFiles: (files: FileList | null) => void;
   removeAttachment: (id: string) => void;
@@ -63,23 +76,36 @@ export function ChatView(props: {
   composerRef: RefObject<HTMLTextAreaElement>;
   streaming: boolean;
   submitting: boolean;
+  backgroundBusy?: boolean;
   models: ModelRecord[];
   activeModelId: string | null;
   runtime: RuntimeInventory | null;
   modelSwitching: boolean;
   modelSwitchError: string | null;
   onSelectModel: (modelId: string) => void;
+  showCloudModels?: boolean;
+  cloudUnavailable?: boolean;
+  onConnectCloud?: () => void;
+  cloudModels?: CloudModel[];
+  activeCloudModelId?: string;
+  onSelectCloudModel?: (modelId: string) => void;
   artifactsByMessage: Map<string, Artifact[]>;
   onCreateArtifact: (messageId: string, kind: ArtifactKind, content: string, filenameHint?: string) => void;
   onOpenArtifact: (artifact: Artifact) => void;
   onRevealArtifact: (artifact: Artifact) => void;
-  onRetryArtifact: (artifact: Artifact) => void;
+  onRetryArtifact: (artifact: Artifact, useCpu?: boolean) => void;
+  onCancelImageArtifact: (artifact: Artifact) => void;
+  imageProgressByArtifact: Record<string, ImageRenderProgress>;
   onPreview: (target: PreviewTarget) => void;
 }) {
   const latestMessageRef = useRef<globalThis.HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(true);
   const isEmpty = props.messages.length === 0;
+  const liveResearch = props.webProgress?.conversationId === props.conversation?.id
+    && (props.submitting || props.streaming || props.activity.typing)
+    ? props.webProgress
+    : null;
 
   useEffect(() => {
     if (stickToBottom.current) {
@@ -95,16 +121,24 @@ export function ChatView(props: {
     props.activity.typing,
     props.activity.searching,
     props.activity.researching,
+    props.webProgress?.stage,
+    props.webProgress?.completed,
   ]);
 
   const composer = (
     <Composer
       prompt={props.prompt}
       setPrompt={props.setPrompt}
+      createVoiceDraftTarget={props.createVoiceDraftTarget}
+      imageOptions={props.imageOptions}
+      setImageOptions={props.setImageOptions}
       attachments={props.attachments}
+      pdfImportProgress={props.pdfImportProgress}
+      onCancelPdfImport={props.onCancelPdfImport}
       enterToSend={props.enterToSend}
       streaming={props.streaming}
       submitting={props.submitting}
+      backgroundBusy={props.backgroundBusy}
       addFiles={props.addFiles}
       removeAttachment={props.removeAttachment}
       sendMessage={props.sendMessage}
@@ -116,8 +150,18 @@ export function ChatView(props: {
       modelSwitching={props.modelSwitching}
       modelSwitchError={props.modelSwitchError}
       onSelectModel={props.onSelectModel}
+      showCloudModels={props.showCloudModels}
+      cloudUnavailable={props.cloudUnavailable}
+      onConnectCloud={props.onConnectCloud}
+      cloudModels={props.cloudModels}
+      activeCloudModelId={props.activeCloudModelId}
+      onSelectCloudModel={props.onSelectCloudModel}
       placeholder={isEmpty ? "Ask anything..." : "Message OpenMindAI..."}
-      note={isEmpty ? undefined : "Responses are generated locally on your machine."}
+      note={isEmpty ? undefined : props.cloudUnavailable
+        ? "Cloud Only is waiting for a verified account and an available API model. No local inference will start."
+        : props.showCloudModels
+        ? "Cloud API model selected. Your request can route to Local if Cloud becomes unavailable."
+        : "Responses use installed local models when Cloud is unavailable or Local is selected."}
     />
   );
 
@@ -189,7 +233,7 @@ export function ChatView(props: {
               message={message}
               markdown={props.preferences?.markdownRendering ?? true}
               codeCopyButtons={props.preferences?.codeCopyButtons ?? true}
-              canRegenerate={!props.streaming && !props.submitting}
+              canRegenerate={!props.streaming && !props.submitting && !props.backgroundBusy}
               onRegenerate={() => props.regenerate(message.id)}
               onRetry={() => props.retry(message.id)}
               artifacts={props.artifactsByMessage.get(message.id) ?? []}
@@ -197,12 +241,15 @@ export function ChatView(props: {
               onOpenArtifact={props.onOpenArtifact}
               onRevealArtifact={props.onRevealArtifact}
               onRetryArtifact={props.onRetryArtifact}
+              onCancelImageArtifact={props.onCancelImageArtifact}
+              imageProgressByArtifact={props.imageProgressByArtifact}
               onPreview={props.onPreview}
               onEditUser={message.role === "user" ? (content) => props.editUserMessage(message.id, content) : undefined}
             />
           ))
         )}
-        {!isEmpty &&
+        {liveResearch ? <ResearchProgress progress={liveResearch} /> : null}
+        {!isEmpty && !liveResearch &&
         (props.submitting || props.streaming || props.activity.typing || props.activity.searching || props.activity.researching) &&
         props.preferences?.typingIndicatorEnabled ? (
           <div className="activity-row">

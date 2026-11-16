@@ -1,9 +1,16 @@
 import { useEffect, useState } from "react";
 import { FileCode, FileText, FileType, Folder, Image, Loader2, RefreshCw, Video, Volume2 } from "lucide-react";
-import type { Artifact } from "../types";
+import type { Artifact, ImageRenderProgress, ImageRenderStage } from "../types";
 import { formatBytes } from "../lib/format";
 import { renderMarkdown } from "../lib/markdown";
 import { artifactMediaDataUrl } from "../lib/media";
+
+const IMAGE_STAGE_LABELS: Record<ImageRenderStage, string> = {
+  queued: "Waiting for the current image to finish...",
+  preparing: "Preparing image renderer...",
+  rendering: "Rendering image...",
+  validating: "Checking generated image...",
+};
 
 const KIND_LABELS: Record<Artifact["kind"], string> = {
   text: "Text document",
@@ -39,12 +46,28 @@ export function ArtifactCard(props: {
   previewContent: string | null;
   onOpen: (artifact: Artifact) => void;
   onReveal: (artifact: Artifact) => void;
-  onRetry: (artifact: Artifact) => void;
+  onRetry: (artifact: Artifact, useCpu?: boolean) => void;
+  onCancel: (artifact: Artifact) => void;
+  imageProgress?: ImageRenderProgress;
 }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [mediaUrl, setMediaUrl] = useState<string | null>(null);
   const [mediaError, setMediaError] = useState<string | null>(null);
   const artifact = props.artifact;
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (artifact.status !== "generating" || artifact.kind !== "image") return;
+    setNow(Date.now());
+    const interval = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [artifact.status, artifact.kind]);
+  const startTime = Date.parse(artifact.createdAt);
+  const elapsed = Number.isFinite(startTime)
+    ? Math.max(0, Math.floor((now - startTime) / 1000))
+    : null;
+  const elapsedLabel = elapsed === null
+    ? null
+    : `${Math.floor(elapsed / 60)}m ${String(elapsed % 60).padStart(2, "0")}s`;
 
   useEffect(() => {
     let cancelled = false;
@@ -91,12 +114,23 @@ export function ArtifactCard(props: {
               : artifact.kind === "docx"
                 ? "Creating document..."
                 : artifact.kind === "image"
-                  ? "Generating image..."
+                  ? IMAGE_STAGE_LABELS[props.imageProgress?.stage ?? "preparing"]
                   : artifact.kind === "audio"
                     ? "Generating audio..."
                     : artifact.kind === "video"
                       ? "Generating video..."
                       : "Generating..."}
+            {artifact.kind === "image" && elapsedLabel ? ` · ${elapsedLabel} elapsed` : ""}
+          </span>
+        ) : null}
+        {artifact.status === "generating" &&
+        artifact.kind === "image" &&
+        props.imageProgress?.stage === "rendering" &&
+        props.imageProgress.step != null &&
+        props.imageProgress.totalSteps != null &&
+        props.imageProgress.totalSteps > 0 ? (
+          <span className="artifact-status" role="status">
+            Sampling step {props.imageProgress.step} of {props.imageProgress.totalSteps}
           </span>
         ) : null}
         {artifact.status === "failed" ? (
@@ -128,9 +162,23 @@ export function ArtifactCard(props: {
             <Folder size={15} />
           </button>
         ) : null}
+        {artifact.status === "generating" && artifact.kind === "image" ? (
+          <button type="button" onClick={() => props.onCancel(artifact)}>
+            Stop image
+          </button>
+        ) : null}
         {artifact.status === "failed" ? (
           <button type="button" onClick={() => props.onRetry(artifact)}>
             <RefreshCw size={15} /> Retry
+          </button>
+        ) : null}
+        {artifact.status === "failed" && artifact.kind === "image" ? (
+          <button
+            type="button"
+            title="Retry with the CPU renderer. This may take much longer than GPU rendering."
+            onClick={() => props.onRetry(artifact, true)}
+          >
+            Retry on CPU (slower)
           </button>
         ) : null}
       </div>

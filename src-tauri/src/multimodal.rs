@@ -90,6 +90,8 @@ pub(crate) async fn send_multimodal_chat_message(
     let persisted = persist_inference_media(&state.root, &media)?;
     let routing = crate::resolve_conversation_model(&state, &conversation_id, &mode, trimmed)?;
     let model = routing.model;
+    let generation =
+        crate::ChatGenerationGuard::start(&state.active_generations, &conversation_id)?;
 
     let (user, assistant) = {
         let db = state
@@ -114,7 +116,30 @@ pub(crate) async fn send_multimodal_chat_message(
         (user, assistant)
     };
 
-    if let Err(error) = save_media_index(&state.root, &user.id, &persisted) {
+    let index_result = (|| {
+        let db = state
+            .database
+            .lock()
+            .map_err(|_| AppError::internal("database lock poisoned"))?;
+        let tx = db.connection().unchecked_transaction()?;
+        // Take the SQLite writer lock before testing liveness, including across
+        // processes. Deletion cannot commit between this check and publication.
+        tx.execute("UPDATE messages SET id = id WHERE id = ?1", [&user.id])?;
+        let live: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM messages WHERE id = ?1)",
+            [&user.id],
+            |row| row.get(0),
+        )?;
+        if !live {
+            return Err(AppError::internal(
+                "message was deleted before media publication",
+            ));
+        }
+        save_media_index(&state.root, &user.id, &persisted)?;
+        tx.commit()?;
+        Ok::<(), AppError>(())
+    })();
+    if let Err(error) = index_result {
         let db = state
             .database
             .lock()
@@ -125,7 +150,7 @@ pub(crate) async fn send_multimodal_chat_message(
         return Err(error);
     }
 
-    crate::sync_project_context(&state, &conversation_id)?;
+    crate::sync_project_context_for_prompt(&state, &conversation_id, trimmed)?;
     let dataset_context = crate::dataset_context::build_dataset_context(
         &state.root,
         &content,
@@ -153,6 +178,7 @@ pub(crate) async fn send_multimodal_chat_message(
         &mode,
         &media,
         dataset_context.as_deref(),
+        &generation.cancellation,
     )
     .await?;
 
@@ -193,18 +219,13 @@ pub(crate) async fn regenerate_multimodal_message(
         ));
     }
 
-    {
-        let db = state
-            .database
-            .lock()
-            .map_err(|_| AppError::internal("database lock poisoned"))?;
-        ChatRepository::new(&db).delete_message(&assistant_message_id)?;
-    }
+    let generation =
+        crate::ChatGenerationGuard::start(&state.active_generations, &conversation_id)?;
 
     let mode = "vision";
     let routing = crate::resolve_conversation_model(&state, &conversation_id, mode, &user.content)?;
     let model = routing.model;
-    crate::sync_project_context(&state, &conversation_id)?;
+    crate::sync_project_context_for_prompt(&state, &conversation_id, &user.content)?;
     let dataset_context = crate::dataset_context::build_dataset_context(
         &state.root,
         &user.content,
@@ -216,11 +237,9 @@ pub(crate) async fn regenerate_multimodal_message(
             .database
             .lock()
             .map_err(|_| AppError::internal("database lock poisoned"))?;
-        ChatRepository::new(&db).add_message(
+        ChatRepository::new(&db).begin_regeneration(
             &conversation_id,
-            "assistant",
-            "",
-            "streaming",
+            &assistant_message_id,
             Some(&model.id),
         )?
     };
@@ -246,6 +265,7 @@ pub(crate) async fn regenerate_multimodal_message(
         mode,
         &media,
         dataset_context.as_deref(),
+        &generation.cancellation,
     )
     .await?;
 
@@ -480,7 +500,7 @@ pub(crate) async fn create_soundscape_artifact(
         "preparing OpenMindAI Soundscape generation"
     );
 
-    let (artifact, path) = {
+    let (artifact, output) = {
         let db = state
             .database
             .lock()
@@ -490,8 +510,8 @@ pub(crate) async fn create_soundscape_artifact(
             .map(|conversation| conversation.title)
             .unwrap_or_else(|_| "soundscape".to_string());
         let manager = ArtifactManager::new(&state.root);
-        let (path, filename, relative) =
-            manager.resolve_destination("audio", Some("soundscape.wav"), &fallback_title)?;
+        let (output, filename, relative) =
+            manager.stage_destination("audio", Some("soundscape.wav"), &fallback_title)?;
         let artifacts = ArtifactRepository::new(&db);
         let artifact = artifacts.create(
             &conversation_id,
@@ -502,9 +522,10 @@ pub(crate) async fn create_soundscape_artifact(
             "audio",
             "generating",
         )?;
-        (artifact, path)
+        (artifact, output)
     };
 
+    let path = output.path.clone();
     app.emit("artifact:started", &artifact)
         .map_err(|error| AppError::internal(error.to_string()))?;
 
@@ -516,16 +537,14 @@ pub(crate) async fn create_soundscape_artifact(
     .await
     .map_err(|error| AppError::ArtifactGenerationFailed(format!("sound worker failed: {error}")))?;
 
+    let generation_result = generation_result.and_then(|()| output.commit_for("audio"));
     let db = state
         .database
         .lock()
         .map_err(|_| AppError::internal("database lock poisoned"))?;
     let artifacts = ArtifactRepository::new(&db);
     let updated = match generation_result {
-        Ok(()) => {
-            let size = fs::metadata(&path)
-                .map(|meta| meta.len() as i64)
-                .unwrap_or(0);
+        Ok(size) => {
             artifacts.set_ready(&artifact.id, size, None)?;
             artifacts.find(&artifact.id)?
         }

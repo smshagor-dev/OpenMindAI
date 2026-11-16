@@ -205,21 +205,25 @@ async fn run_connected_message(
                 return Ok(());
             }
 
-            // Consume the approval before execution so duplicate confirmation messages cannot repeat a write.
-            clear_pending(state, conversation_id)?;
-            let result = tokio::select! {
-                result = execute_connected_action(
-                    &pending.provider,
-                    &pending.action,
-                    pending.params.clone(),
-                    true,
-                    state,
-                ) => result,
-                _ = cancellation.cancelled() => {
-                    emit_agent_chunk(app, state, conversation_id, &assistant.id, "Connected-app action cancelled.")?;
-                    return Ok(());
+            let execution = {
+                let db = state.database.lock().map_err(|_| AppError::internal("database lock poisoned"))?;
+                let expected = serde_json::to_value(&pending).map_err(|e| AppError::internal(e.to_string()))?;
+                crate::connected_action_ledger::claim(db.connection(), conversation_id, &pending_key(conversation_id), &expected)?
+            };
+            let result = crate::connected_action_ledger::dispatch(
+                &execution,
+                execute_connected_action(&pending.provider, &pending.action, pending.params.clone(), true, state),
+                &cancellation,
+                |succeeded, outcome| record_execution(state, &execution, succeeded, outcome),
+            ).await;
+            let result = match result {
+                Ok(value) => value,
+                Err(error) => {
+                    emit_agent_chunk(app, state, conversation_id, &assistant.id, &execution_notice(state, conversation_id)?.unwrap_or_default())?;
+                    return Err(error);
                 }
-            }?;
+            };
+            emit_agent_chunk(app, state, conversation_id, &assistant.id, &format!("Action {} completed; its receipt is saved.\n\n", execution.id))?;
 
             let endpoint = ensure_model_endpoint(state, &model)?;
             let mut transcript = VecDeque::new();
@@ -256,6 +260,12 @@ async fn run_connected_message(
             return Ok(());
         }
 
+        if is_confirmation(content) {
+            if let Some(notice) = execution_notice(state, conversation_id)? {
+                emit_agent_chunk(app, state, conversation_id, &assistant.id, &notice)?;
+                return Ok(());
+            }
+        }
         let endpoint = ensure_model_endpoint(state, &model)?;
         let recent_chat = conversation_context(state, conversation_id)?;
         let project = project_context(state, conversation_id)?;
@@ -335,6 +345,9 @@ async fn run_connected_message(
                     created_at: Utc::now().timestamp(),
                 };
                 save_pending(state, conversation_id, &pending)?;
+                if let Some(notice) = execution_notice(state, conversation_id)? {
+                    emit_agent_chunk(app, state, conversation_id, &assistant.id, &format!("Previous execution: {notice}\n\n"))?;
+                }
                 emit_agent_chunk(
                     app,
                     state,
@@ -716,6 +729,34 @@ fn provider_label(provider: &str) -> &'static str {
 
 fn pending_key(conversation_id: &str) -> String {
     format!("{PENDING_KEY_PREFIX}{conversation_id}")
+}
+
+fn execution_notice(
+    state: &State<'_, AppState>,
+    conversation: &str,
+) -> Result<Option<String>, AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| AppError::internal("database lock poisoned"))?;
+    Ok(
+        crate::connected_action_ledger::latest(db.connection(), conversation)?
+            .as_ref()
+            .map(crate::connected_action_ledger::explanation),
+    )
+}
+
+fn record_execution(
+    state: &State<'_, AppState>,
+    execution: &crate::connected_action_ledger::Execution,
+    succeeded: bool,
+    outcome: Value,
+) -> Result<(), AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| AppError::internal("database lock poisoned"))?;
+    crate::connected_action_ledger::finish(db.connection(), execution, succeeded, outcome)
 }
 
 fn active_pending(

@@ -17,6 +17,7 @@ use std::os::windows::process::CommandExt;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     app_error::AppError,
@@ -169,6 +170,8 @@ pub struct LlamaRuntimeManager {
     endpoint: Option<String>,
     state: ServerState,
     loaded_model_path: Option<String>,
+    loaded_context_size: Option<u32>,
+    loaded_config: Option<ModelLaunchConfig>,
     active_runtime: Option<RuntimeValidation>,
     load_started: Option<Instant>,
     leases: Arc<AtomicUsize>,
@@ -183,6 +186,8 @@ impl LlamaRuntimeManager {
             endpoint: None,
             state: ServerState::Stopped,
             loaded_model_path: None,
+            loaded_context_size: None,
+            loaded_config: None,
             active_runtime: None,
             load_started: None,
             leases: Arc::new(AtomicUsize::new(0)),
@@ -331,6 +336,11 @@ impl LlamaRuntimeManager {
     ) -> Result<ModelLaunch, AppError> {
         let model_path = resolve_model_path(&self.root, &config.model_path)?;
         let model_path_string = model_path.display().to_string();
+        let explicit_mmproj = if config.mmproj_path.is_some() {
+            resolve_mmproj_path(&self.root, &model_path, config.mmproj_path.as_deref())?
+        } else {
+            None
+        };
         let selected = self.inventory(hardware)?.selected.ok_or_else(|| {
             AppError::RuntimeNotFound("no usable llama.cpp runtime found".to_string())
         })?;
@@ -346,7 +356,15 @@ impl LlamaRuntimeManager {
             .as_ref()
             .is_some_and(|runtime| runtime.manifest.backend == selected_backend);
 
-        if child_alive && same_model && same_backend {
+        // Reuse the resident server only when its actual KV context matches
+        // the new memory-aware launch plan. Available RAM can change after
+        // startup, and the request budget must not assume an unallocated window.
+        let same_context = self.loaded_context_size == Some(config.context_size);
+        let same_settings = self
+            .loaded_config
+            .as_ref()
+            .is_some_and(|loaded| same_model_launch_settings(loaded, config));
+        if child_alive && same_model && same_backend && same_context && same_settings {
             // True hot-chat path: reuse the resident model and its KV prompt
             // cache. No runtime probing, process restart or model reload.
             if self.state == ServerState::Ready {
@@ -420,7 +438,7 @@ impl LlamaRuntimeManager {
             "--parallel".to_string(),
             config.parallelism.to_string(),
         ];
-        if let Some(mmproj_path) = discover_mmproj_sibling(&model_path) {
+        if let Some(mmproj_path) = explicit_mmproj.or_else(|| discover_mmproj_sibling(&model_path)) {
             args.push("--mmproj".to_string());
             args.push(mmproj_path.display().to_string());
         }
@@ -460,6 +478,8 @@ impl LlamaRuntimeManager {
         self.child = Some(child);
         self.endpoint = Some(format!("http://{}:{}", config.host, config.port));
         self.loaded_model_path = Some(model_path_string);
+        self.loaded_context_size = Some(config.context_size);
+        self.loaded_config = Some(config.clone());
         self.active_runtime = Some(selected);
         self.load_started = Some(Instant::now());
         self.leases = Arc::new(AtomicUsize::new(0));
@@ -570,6 +590,8 @@ impl LlamaRuntimeManager {
         }
         self.endpoint = None;
         self.loaded_model_path = None;
+        self.loaded_context_size = None;
+        self.loaded_config = None;
         self.active_runtime = None;
         self.state = ServerState::Stopped;
         Ok(())
@@ -580,16 +602,34 @@ fn child_still_running(pid: u32) -> bool {
     process_ownership::identity(pid).is_some()
 }
 
-/// Loads `config` into the runtime behind `runtime` and waits until it is healthy, holding
-/// the lock only for short launch/probe steps so status queries and the other runtime are
-/// never blocked by a slow load. If another model is mid-load, waits for that load to finish
-/// before switching, so concurrent callers never kill each other's loads. Blocking: call
-/// from synchronous code or `spawn_blocking`.
+/// Loads a model on a synchronous caller. The manager lock is held only
+/// for launch/probe steps, never while waiting for the model to be ready.
+/// Async callers must use `ensure_model_ready_cancellable` instead.
 pub fn ensure_model_ready(
     runtime: &Mutex<LlamaRuntimeManager>,
     hardware: &HardwareProfile,
     config: &ModelLaunchConfig,
 ) -> Result<(LlamaRuntimeStatus, ModelLease), AppError> {
+    ensure_model_ready_checked(runtime, hardware, config, None)
+}
+
+/// Shared readiness flow for background startup and foreground chat. When
+/// cancellation is present, the worker stops its polling without terminating a
+/// model server another conversation may be about to reuse.
+fn ensure_model_ready_checked(
+    runtime: &Mutex<LlamaRuntimeManager>,
+    hardware: &HardwareProfile,
+    config: &ModelLaunchConfig,
+    cancellation: Option<&CancellationToken>,
+) -> Result<(LlamaRuntimeStatus, ModelLease), AppError> {
+    let check_cancelled = || {
+        if cancellation.is_some_and(CancellationToken::is_cancelled) {
+            Err(AppError::InferenceCancelled("generation cancelled".to_string()))
+        } else {
+            Ok(())
+        }
+    };
+    check_cancelled()?;
     let lock = || {
         runtime
             .lock()
@@ -598,30 +638,39 @@ pub fn ensure_model_ready(
     let expected = lock()?.resolved_model_path(&config.model_path)?;
     let started = Instant::now();
     let mut launched = false;
+
     loop {
+        check_cancelled()?;
         {
             let mut manager = lock()?;
+            check_cancelled()?;
             if !launched {
                 match manager.launch_model_server(hardware, config)? {
-                    ModelLaunch::Resident(status) => return Ok((*status, manager.lease())),
+                    ModelLaunch::Resident(status) => {
+                        check_cancelled()?;
+                        return Ok((*status, manager.lease()));
+                    }
                     ModelLaunch::Loading => launched = true,
                     ModelLaunch::Busy => {}
                 }
             }
             if launched {
+                check_cancelled()?;
                 match manager.probe_model_server(&expected) {
                     ModelProbe::Ready(_) => {
-                        let lease = manager.lease();
-                        return Ok((manager.active_status(), lease));
+                        check_cancelled()?;
+                        return Ok((manager.active_status(), manager.lease()));
                     }
                     ModelProbe::Failed(reason) => return Err(AppError::ModelLoadFailed(reason)),
                     ModelProbe::Loading => {}
                 }
             }
         }
+        check_cancelled()?;
         if started.elapsed() >= MODEL_LOAD_TIMEOUT {
             if launched {
                 let mut manager = lock()?;
+                check_cancelled()?;
                 if manager.loaded_model_path() == Some(expected.as_str()) {
                     let _ = manager.stop();
                 }
@@ -631,7 +680,43 @@ pub fn ensure_model_ready(
                 MODEL_LOAD_TIMEOUT.as_secs()
             )));
         }
+        // The synchronous version is only used by blocking startup calls.
+        // Async callers execute this loop inside spawn_blocking and can Stop
+        // immediately, even if the worker is probing localhost.
         thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// All blocking disk inventory, process creation, server health probes and
+/// readiness polling run in a dedicated blocking worker. Cancel can return
+/// promptly even if that worker is currently waiting on the runtime mutex.
+pub async fn ensure_model_ready_cancellable(
+    runtime: &Arc<Mutex<LlamaRuntimeManager>>,
+    hardware: &HardwareProfile,
+    config: &ModelLaunchConfig,
+    cancellation: &CancellationToken,
+) -> Result<(LlamaRuntimeStatus, ModelLease), AppError> {
+    if cancellation.is_cancelled() {
+        return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
+    }
+
+    let shared = Arc::clone(runtime);
+    let hardware = hardware.clone();
+    let config = config.clone();
+    let worker_cancellation = cancellation.clone();
+    let worker = tokio::task::spawn_blocking(move || {
+        ensure_model_ready_checked(&shared, &hardware, &config, Some(&worker_cancellation))
+    });
+
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => {
+            Err(AppError::InferenceCancelled("generation cancelled".to_string()))
+        }
+        result = worker => {
+            result
+                .map_err(|error| AppError::internal(format!("model readiness worker failed: {error}")))?
+        }
     }
 }
 
@@ -663,11 +748,19 @@ impl<'a> RuntimeRegistry<'a> {
             if path.extension().and_then(|value| value.to_str()) != Some("json") {
                 continue;
             }
-            let content = fs::read_to_string(path)?;
-            let manifest =
-                serde_json::from_str::<RuntimeManifest>(content.trim_start_matches('\u{feff}'))
-                    .map_err(|error| AppError::RuntimeStartFailed(error.to_string()))?;
-            manifests.push(manifest);
+            let content = match fs::read_to_string(&path) {
+                Ok(content) => content,
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "skipping unreadable runtime manifest");
+                    continue;
+                }
+            };
+            match serde_json::from_str::<RuntimeManifest>(content.trim_start_matches('\u{feff}')) {
+                Ok(manifest) => manifests.push(manifest),
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "skipping invalid runtime manifest");
+                }
+            }
         }
         manifests.sort_by(|left, right| left.runtime_name.cmp(&right.runtime_name));
         Ok(manifests)
@@ -783,6 +876,29 @@ fn resolve_model_path(root: &PortableRootManager, path: &str) -> Result<PathBuf,
     }
 }
 
+fn resolve_mmproj_path(
+    root: &PortableRootManager,
+    model_path: &Path,
+    explicit: Option<&str>,
+) -> Result<Option<PathBuf>, AppError> {
+    let Some(explicit) = explicit else {
+        return Ok(discover_mmproj_sibling(model_path));
+    };
+    let candidate = fs::canonicalize(resolve_model_path(root, explicit)?)?;
+    if !candidate.starts_with(fs::canonicalize(root.root())?)
+        || !candidate.is_file()
+        || !candidate
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
+    {
+        return Err(AppError::ModelInvalid(
+            "the requested vision projector is not a local GGUF file".into(),
+        ));
+    }
+    Ok(Some(candidate))
+}
+
 fn discover_mmproj_sibling(model_path: &Path) -> Option<PathBuf> {
     let parent = model_path.parent()?;
     let mut candidates = fs::read_dir(parent)
@@ -859,10 +975,167 @@ fn http_health_ok(host: &str, port: u16) -> bool {
     response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")
 }
 
+// A request allocates a fresh candidate port even when reusing the resident
+// model. Changes to actual server options must still restart the process.
+fn same_model_launch_settings(loaded: &ModelLaunchConfig, requested: &ModelLaunchConfig) -> bool {
+    let mut requested = requested.clone();
+    requested.port = loaded.port;
+    loaded == &requested
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::hardware::{CpuProfile, MemoryProfile};
+
+    #[test]
+    fn explicit_projector_overrides_sibling_order_and_rejects_invalid_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("root"));
+        fs::create_dir_all(root.root()).unwrap();
+        let model = root.root().join("Lens.gguf");
+        let wanted = root.root().join("mmproj-Lens.gguf");
+        fs::write(&model, b"fixture model").unwrap();
+        fs::write(&wanted, b"fixture projector").unwrap();
+        fs::write(root.root().join("mmproj-AAA-other.gguf"), b"other").unwrap();
+        assert_eq!(resolve_mmproj_path(&root, &model, Some("mmproj-Lens.gguf")).unwrap(), Some(fs::canonicalize(wanted).unwrap()));
+        assert!(resolve_mmproj_path(&root, &model, Some("missing.gguf")).is_err());
+        let outside = temp.path().join("outside.gguf");
+        fs::write(&outside, b"outside").unwrap();
+        assert!(resolve_mmproj_path(&root, &model, outside.to_str()).is_err());
+        fs::write(root.root().join("wrong.txt"), b"wrong").unwrap();
+        assert!(resolve_mmproj_path(&root, &model, Some("wrong.txt")).is_err());
+    }
+
+    #[test]
+    fn model_hot_reuse_ignores_ephemeral_port_but_detects_profile_changes() {
+        let original = ModelLaunchConfig {
+            model_path: "model.gguf".into(),
+            mmproj_path: None,
+            backend: BackendKind::Cpu,
+            device: None,
+            gpu_layers: 0,
+            context_size: 8_192,
+            threads: 6,
+            batch_size: 512,
+            ubatch_size: 256,
+            flash_attention: false,
+            mmap: true,
+            mlock: false,
+            parallelism: 1,
+            host: "127.0.0.1".into(),
+            port: 12345,
+        };
+        let mut requested = original.clone();
+        requested.port = 23456;
+        assert!(same_model_launch_settings(&original, &requested));
+        requested.threads = 2;
+        assert!(!same_model_launch_settings(&original, &requested));
+        requested.threads = original.threads;
+        requested.gpu_layers = 12;
+        assert!(!same_model_launch_settings(&original, &requested));
+        requested.gpu_layers = original.gpu_layers;
+        requested.mmproj_path = Some("lens-projector.gguf".into());
+        assert!(!same_model_launch_settings(&original, &requested));
+        requested.mmproj_path = None;
+        requested.context_size = 16_384;
+        assert!(!same_model_launch_settings(&original, &requested));
+    }
+
+    #[tokio::test]
+    async fn cancelling_chat_loading_returns_without_starting_a_server() {
+        let root = PortableRootManager::from_root(
+            std::env::temp_dir().join("openmindai-cancelled-load-test"),
+        );
+        let runtime = Arc::new(Mutex::new(LlamaRuntimeManager::new(root)));
+        let config = ModelLaunchConfig {
+            model_path: "missing.gguf".to_string(),
+            mmproj_path: None,
+            backend: BackendKind::Cpu,
+            device: None,
+            gpu_layers: 0,
+            context_size: 4096,
+            threads: 4,
+            batch_size: 256,
+            ubatch_size: 128,
+            flash_attention: false,
+            mmap: true,
+            mlock: false,
+            parallelism: 1,
+            host: "127.0.0.1".to_string(),
+            port: 12345,
+        };
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let result = ensure_model_ready_cancellable(
+            &runtime,
+            &hardware(GpuVendor::Nvidia),
+            &config,
+            &cancelled,
+        )
+        .await;
+        assert!(matches!(result, Err(AppError::InferenceCancelled(_))));
+        assert!(!runtime.lock().unwrap().has_process());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn chat_cancellation_remains_responsive_while_runtime_mutex_is_busy() {
+        use tokio::time::{timeout, Duration};
+
+        let root = PortableRootManager::from_root(
+            std::env::temp_dir().join("openmindai-chat-readiness-responsiveness"),
+        );
+        let runtime = Arc::new(Mutex::new(LlamaRuntimeManager::new(root)));
+        // Keep the mutex held in a separate thread. The async test must not
+        // retain a std::sync::MutexGuard across an await point.
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder_runtime = Arc::clone(&runtime);
+        let holder = std::thread::spawn(move || {
+            let _guard = holder_runtime.lock().expect("runtime lock");
+            held_tx.send(()).expect("announce held lock");
+            release_rx.recv().expect("release runtime lock");
+        });
+        held_rx.recv().expect("wait for held lock");
+        let cancelled = CancellationToken::new();
+        let to_stop = cancelled.clone();
+        let config = ModelLaunchConfig {
+            model_path: "unused.gguf".to_string(),
+            mmproj_path: None,
+            backend: BackendKind::Cpu,
+            device: None,
+            gpu_layers: 0,
+            context_size: 4096,
+            threads: 4,
+            batch_size: 256,
+            ubatch_size: 128,
+            flash_attention: false,
+            mmap: true,
+            mlock: false,
+            parallelism: 1,
+            host: "127.0.0.1".to_string(),
+            port: 12345,
+        };
+        let stop = async move {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            to_stop.cancel();
+        };
+        let profile = hardware(GpuVendor::Nvidia);
+        let load = ensure_model_ready_cancellable(
+            &runtime,
+            &profile,
+            &config,
+            &cancelled,
+        );
+        let (result, ()) = timeout(Duration::from_secs(2), async {
+            tokio::join!(load, stop)
+        })
+        .await
+        .expect("the async caller blocked on the runtime mutex");
+        assert!(matches!(result, Err(AppError::InferenceCancelled(_))));
+        release_tx.send(()).expect("release held lock");
+        holder.join().expect("mutex holder exited");
+    }
 
     #[test]
     fn a_different_model_waits_for_load_use_and_claim() {
@@ -1036,6 +1309,25 @@ mod tests {
         .unwrap();
         assert!(!validation.usable);
         assert!(!validation.server_exists);
+    }
+
+    #[test]
+    fn invalid_manifest_does_not_hide_other_runtime_installs() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let dir = root.resolve_relative("runtimes/llama/manifests").unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("broken.json"), b"{invalid").unwrap();
+        fs::write(
+            dir.join("usable.json"),
+            serde_json::to_vec(&manifest(BackendKind::Cpu, Some("runtimes/llama/cpu/server")))
+                .unwrap(),
+        )
+        .unwrap();
+        let discovered = RuntimeRegistry::new(&root).discover().unwrap();
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].backend, BackendKind::Cpu);
     }
 
     #[test]

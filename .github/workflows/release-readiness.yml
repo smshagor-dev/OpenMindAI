@@ -67,7 +67,7 @@ jobs:
 
       - name: Cache pinned llama.cpp Windows CPU build
         id: llama-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: vendor/llama.cpp/build
           key: llama-${{ runner.os }}-${{ env.LLAMA_CPP_COMMIT }}-cpu-shared-v2

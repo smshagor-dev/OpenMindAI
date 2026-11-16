@@ -18,6 +18,9 @@ use tokio::{process::Command, time::timeout};
 use uuid::Uuid;
 use zip::ZipArchive;
 
+#[path = "png_output_validation.rs"]
+mod png_output_validation;
+
 use crate::{
     app_error::AppError,
     hardware::{BackendKind, GpuVendor, HardwareProfile},
@@ -32,10 +35,108 @@ const RELEASE_URL: &str =
 const RUNTIME_ROOT: &str = "runtimes/diffusion/stable-diffusion.cpp";
 const MANIFEST_PATH: &str = "runtimes/diffusion/stable-diffusion.cpp/manifest.json";
 const SAFE_SPACE_MARGIN: u64 = 256 * 1024 * 1024;
+// Runtime downloads are untrusted ZIP input even when GitHub reports an asset hash.
+const MAX_RUNTIME_ARCHIVE_ENTRIES: usize = 4_096;
+const MAX_RUNTIME_EXPANDED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_RUNTIME_ENTRY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_PROMPT_CHARS: usize = 4_000;
+
+// Avoid parallel downloads/extraction and manifest races within one app process.
+static RUNTIME_INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static RUNTIME_INSTALL_ACTIVITY: std::sync::Mutex<Option<DiffusionRuntimeStatus>> =
+    std::sync::Mutex::new(None);
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffusionRuntimeStatus {
+    pub state: String,
+    pub backend: Option<BackendKind>,
+    pub version: Option<String>,
+    pub detail: String,
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+    pub percentage: Option<f64>,
+}
+
+fn runtime_activity(state: &str, detail: impl Into<String>) -> DiffusionRuntimeStatus {
+    DiffusionRuntimeStatus {
+        state: state.to_string(),
+        backend: None,
+        version: None,
+        detail: detail.into(),
+        downloaded_bytes: 0,
+        total_bytes: None,
+        percentage: None,
+    }
+}
+
+fn set_runtime_activity(status: DiffusionRuntimeStatus) {
+    if let Ok(mut activity) = RUNTIME_INSTALL_ACTIVITY.lock() {
+        *activity = Some(status);
+    }
+}
+
+pub fn diffusion_runtime_status(
+    root: &PortableRootManager,
+    hardware: &HardwareProfile,
+) -> Result<DiffusionRuntimeStatus, AppError> {
+    if let Ok(activity) = RUNTIME_INSTALL_ACTIVITY.lock() {
+        if let Some(status) = activity.as_ref() {
+            if matches!(
+                status.state.as_str(),
+                "resolving" | "downloading" | "verifying" | "extracting" | "failed"
+            ) {
+                return Ok(status.clone());
+            }
+        }
+    }
+
+    let candidates =
+        runtime_asset_candidates(std::env::consts::OS, std::env::consts::ARCH, hardware);
+    if candidates.is_empty() {
+        return Ok(runtime_activity(
+            "unsupported",
+            format!(
+                "No prebuilt diffusion runtime is available for {}/{}",
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+            ),
+        ));
+    }
+    let Some(manifest) = load_manifest(root)? else {
+        return Ok(runtime_activity(
+            "missing",
+            "Image renderer is not installed. Install it here before generating images.",
+        ));
+    };
+
+    let preferred = candidates.first().map(|(backend, _)| backend);
+    let verified = runtime_manifest_is_reusable(root, &manifest, preferred)?;
+    let mut status = runtime_activity(
+        if verified { "ready" } else { "repairNeeded" },
+        if verified {
+            "Image renderer installed and its executable checksum verified."
+        } else {
+            "Installed renderer is missing, outdated, or failed integrity checks. Choose Install / repair."
+        },
+    );
+    status.backend = Some(manifest.backend);
+    status.version = Some(manifest.version);
+    Ok(status)
+}
+
+pub async fn install_diffusion_runtime(
+    root: &PortableRootManager,
+    client: &Client,
+    hardware: &HardwareProfile,
+) -> Result<DiffusionRuntimeStatus, AppError> {
+    ensure_runtime(root, client, hardware, false).await?;
+    diffusion_runtime_status(root, hardware)
+}
+
 const GENERATION_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 const VIDEO_GENERATION_TIMEOUT: Duration = Duration::from_secs(90 * 60);
-const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+
 const WEBM_SIGNATURE: &[u8; 4] = b"\x1a\x45\xdf\xa3";
 
 #[cfg(target_os = "windows")]
@@ -92,6 +193,81 @@ struct VideoRenderProfile {
     vae_on_cpu: bool,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageRenderOptions {
+    pub negative_prompt: Option<String>,
+    pub seed: Option<i64>,
+    pub steps: Option<u32>,
+}
+
+impl ImageRenderOptions {
+    pub fn validate(&self) -> Result<(), AppError> {
+        if self
+            .negative_prompt
+            .as_deref()
+            .is_some_and(|text| text.chars().count() > MAX_PROMPT_CHARS)
+        {
+            return Err(AppError::ArtifactGenerationFailed(format!(
+                "negative prompt is too long; maximum is {MAX_PROMPT_CHARS} characters"
+            )));
+        }
+        if self.steps.is_some_and(|steps| !(1..=50).contains(&steps)) {
+            return Err(AppError::ArtifactGenerationFailed(
+                "image sampling steps must be between 1 and 50".to_string(),
+            ));
+        }
+        if self
+            .seed
+            .is_some_and(|seed| !(0..=2_147_483_647).contains(&seed))
+        {
+            return Err(AppError::ArtifactGenerationFailed(
+                "image seed must be between 0 and 2147483647".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod renderer_diagnostic_privacy_tests {
+    use super::process_error_detail;
+
+    #[test]
+    fn removes_image_and_negative_prompt_from_renderer_errors() {
+        let prompt = "SENTINEL private image request";
+        let negative = "SENTINEL private negative request";
+        let stderr = format!("failed for {prompt}; negative={negative}");
+        let sanitized = process_error_detail(b"", stderr.as_bytes(), &[prompt, negative]);
+        assert!(!sanitized.contains("SENTINEL"));
+        assert!(sanitized.contains("[redacted prompt]"));
+    }
+
+    #[test]
+    fn empty_secret_does_not_modify_diagnostics() {
+        assert_eq!(process_error_detail(b"failed", b"", &[""]), "failed");
+    }
+
+    #[test]
+    fn video_prompt_is_removed_from_renderer_errors() {
+        let prompt = "SENTINEL video context";
+        let stdout = format!("renderer rejected {prompt}");
+        let sanitized = process_error_detail(stdout.as_bytes(), b"", &[prompt]);
+        assert!(!sanitized.contains(prompt));
+    }
+
+    #[test]
+    fn long_unicode_prompt_is_redacted_before_diagnostic_truncation() {
+        let prompt = "ব্যক্তিগত секрет".repeat(500);
+        let stderr = format!("renderer rejected {prompt}; failed");
+        let sanitized = process_error_detail(b"", stderr.as_bytes(), &[&prompt]);
+        assert_eq!(sanitized, "renderer rejected [redacted prompt]; failed");
+        assert!(!sanitized.contains("секрет"));
+    }
+}
+
+// Keep the render's independent progress callback alongside its existing inputs.
+#[allow(clippy::too_many_arguments)]
 pub async fn generate_image(
     root: &PortableRootManager,
     client: &Client,
@@ -99,7 +275,12 @@ pub async fn generate_image(
     model_path: &Path,
     prompt: &str,
     output_path: &Path,
+    use_cpu: bool,
+    options: &ImageRenderOptions,
+    on_stage: &(dyn Fn(&'static str) + Send + Sync),
+    on_step: &(dyn Fn(u32, u32) + Send + Sync),
 ) -> Result<(), AppError> {
+    options.validate()?;
     let prompt = prompt.trim();
     if prompt.is_empty() {
         return Err(AppError::ArtifactGenerationFailed(
@@ -121,9 +302,13 @@ pub async fn generate_image(
         AppError::ArtifactGenerationFailed(format!("image output path rejected: {error}"))
     })?;
 
-    let runtime = ensure_runtime(root, client, hardware).await?;
+    let runtime = ensure_runtime(root, client, hardware, use_cpu).await?;
+    on_stage("rendering");
     let cli_path = root.resolve_relative(&runtime.cli_path)?;
-    let profile = render_profile(hardware, &runtime.backend);
+    let mut profile = render_profile(hardware, &runtime.backend);
+    if let Some(steps) = options.steps {
+        profile.steps = steps;
+    }
 
     if output_path.exists() {
         fs::remove_file(output_path)?;
@@ -153,6 +338,14 @@ pub async fn generate_image(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
+    if let Some(negative) = options.negative_prompt.as_deref().map(str::trim) {
+        if !negative.is_empty() {
+            command.arg("--negative-prompt").arg(negative);
+        }
+    }
+    if let Some(seed) = options.seed {
+        command.arg("--seed").arg(seed.to_string());
+    }
     if profile.clip_on_cpu {
         command.arg("--clip-on-cpu");
     }
@@ -176,9 +369,19 @@ pub async fn generate_image(
         "starting local diffusion image generation"
     );
 
+    let last_reported_step = std::sync::atomic::AtomicU32::new(0);
+    let observe_line = |line: &str| {
+        if let Some(done) = parse_sampling_step(line, profile.steps) {
+            // Status lines can repeat (carriage-return progress output), and
+            // should not send the UI backward or overwhelm the event bus.
+            if done > last_reported_step.fetch_max(done, std::sync::atomic::Ordering::Relaxed) {
+                on_step(done, profile.steps);
+            }
+        }
+    };
     let output = timeout(
         GENERATION_TIMEOUT,
-        crate::process_ownership::output_owned(command),
+        crate::process_ownership::output_owned_with_progress_lines(command, &observe_line),
     )
     .await
     .map_err(|_| {
@@ -191,14 +394,19 @@ pub async fn generate_image(
     })?;
 
     if !output.status.success() {
-        let detail = process_error_detail(&output.stdout, &output.stderr);
+        let detail = process_error_detail(
+            &output.stdout,
+            &output.stderr,
+            &[prompt, options.negative_prompt.as_deref().unwrap_or("")],
+        );
         return Err(AppError::ArtifactGenerationFailed(format!(
             "stable-diffusion.cpp exited with {}: {detail}",
             output.status
         )));
     }
 
-    validate_png(output_path)?;
+    on_stage("validating");
+    png_output_validation::validate_png(output_path)?;
     tracing::info!(path = %output_path.display(), "local diffusion image generated");
     Ok(())
 }
@@ -249,7 +457,7 @@ pub async fn generate_video(
         AppError::ArtifactGenerationFailed(format!("video output path rejected: {error}"))
     })?;
 
-    let runtime = ensure_runtime(root, client, hardware).await?;
+    let runtime = ensure_runtime(root, client, hardware, false).await?;
     let cli_path = root.resolve_relative(&runtime.cli_path)?;
     let profile = video_render_profile(hardware, &runtime.backend);
     if output_path.exists() {
@@ -333,7 +541,7 @@ pub async fn generate_video(
     })?;
 
     if !output.status.success() {
-        let detail = process_error_detail(&output.stdout, &output.stderr);
+        let detail = process_error_detail(&output.stdout, &output.stderr, &[prompt]);
         return Err(AppError::ArtifactGenerationFailed(format!(
             "stable-diffusion.cpp video generation exited with {}: {detail}",
             output.status
@@ -349,9 +557,51 @@ async fn ensure_runtime(
     root: &PortableRootManager,
     client: &Client,
     hardware: &HardwareProfile,
+    use_cpu: bool,
 ) -> Result<DiffusionRuntimeManifest, AppError> {
-    let candidates =
-        runtime_asset_candidates(std::env::consts::OS, std::env::consts::ARCH, hardware);
+    // Keep install, validation and replacement serialized with image and video generation.
+    let _runtime_install_guard = RUNTIME_INSTALL_LOCK.lock().await;
+    set_runtime_activity(runtime_activity(
+        "resolving",
+        "Checking local renderer and release assets…",
+    ));
+    let result = ensure_runtime_inner(root, client, hardware, use_cpu).await;
+    match &result {
+        Ok(manifest) => {
+            let mut status = runtime_activity("ready", "Image renderer is installed and verified.");
+            status.backend = Some(manifest.backend.clone());
+            status.version = Some(manifest.version.clone());
+            set_runtime_activity(status);
+        }
+        Err(error) => {
+            set_runtime_activity(runtime_activity(
+                "failed",
+                format!("Image renderer setup failed: {error}"),
+            ));
+        }
+    }
+    result
+}
+
+async fn ensure_runtime_inner(
+    root: &PortableRootManager,
+    client: &Client,
+    hardware: &HardwareProfile,
+    use_cpu: bool,
+) -> Result<DiffusionRuntimeManifest, AppError> {
+    let candidates = runtime_candidates_for_request(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        hardware,
+        use_cpu,
+    );
+    if use_cpu && candidates.is_empty() {
+        return Err(AppError::RuntimeInstallFailed(format!(
+            "CPU image rendering is not supported by this runtime on {}/{}; use the normal image retry",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )));
+    }
     let preferred_backend = candidates.first().map(|(backend, _)| backend);
 
     if let Some(manifest) = load_manifest(root)? {
@@ -439,7 +689,16 @@ async fn install_runtime_asset(
 
     let archive_path = temp_dir.join(format!("{}.part", asset.name));
     ensure_contained(root.root(), &archive_path)?;
+    let mut progress = runtime_activity("downloading", "Downloading the verified image renderer…");
+    progress.backend = Some(backend.clone());
+    progress.version = Some(version.to_string());
+    progress.total_bytes = Some(asset.size);
+    set_runtime_activity(progress);
     download_asset(asset, &archive_path).await?;
+    let mut verifying = runtime_activity("verifying", "Verifying the downloaded runtime checksum…");
+    verifying.backend = Some(backend.clone());
+    verifying.version = Some(version.to_string());
+    set_runtime_activity(verifying);
 
     let actual_sha256 = sha256_file(&archive_path)?;
     if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
@@ -454,6 +713,10 @@ async fn install_runtime_asset(
         backend_slug(&backend),
         safe_component(version)
     ))?;
+    let mut extracting = runtime_activity("extracting", "Extracting the verified image renderer…");
+    extracting.backend = Some(backend.clone());
+    extracting.version = Some(version.to_string());
+    set_runtime_activity(extracting);
     let cli_path = extract_runtime_archive(root, &archive_path, &install_dir)?;
     let _ = fs::remove_file(&archive_path);
 
@@ -497,7 +760,19 @@ async fn download_asset(asset: &GithubAsset, destination: &Path) -> Result<(), A
         destination,
         Some(asset.size),
         None,
-        |_| {},
+        |progress| {
+            if let Ok(mut activity) = RUNTIME_INSTALL_ACTIVITY.lock() {
+                if let Some(status) = activity.as_mut() {
+                    status.downloaded_bytes = progress.downloaded;
+                    status.total_bytes = Some(asset.size);
+                    status.percentage = if asset.size == 0 {
+                        None
+                    } else {
+                        Some(100.0 * progress.downloaded as f64 / asset.size as f64)
+                    };
+                }
+            }
+        },
     )
     .await
     .map_err(|error| {
@@ -513,6 +788,22 @@ fn extract_runtime_archive(
     archive_path: &Path,
     install_dir: &Path,
 ) -> Result<PathBuf, AppError> {
+    extract_runtime_archive_bounded(
+        root,
+        archive_path,
+        install_dir,
+        MAX_RUNTIME_ARCHIVE_ENTRIES,
+        MAX_RUNTIME_EXPANDED_BYTES,
+    )
+}
+
+fn extract_runtime_archive_bounded(
+    root: &PortableRootManager,
+    archive_path: &Path,
+    install_dir: &Path,
+    max_entries: usize,
+    max_expanded_bytes: u64,
+) -> Result<PathBuf, AppError> {
     let staging = root.resolve_relative(format!("temp/runtime-extract/{}", Uuid::new_v4()))?;
     fs::create_dir_all(&staging)?;
     ensure_contained(root.root(), &staging)?;
@@ -521,13 +812,31 @@ fn extract_runtime_archive(
         let file = fs::File::open(archive_path)?;
         let mut archive = ZipArchive::new(file)
             .map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?;
+        if archive.len() > max_entries {
+            return Err(AppError::RuntimeInstallFailed(format!(
+                "diffusion runtime archive has {} entries; limit is {max_entries}",
+                archive.len()
+            )));
+        }
+
+        let mut expanded_bytes = 0_u64;
         for index in 0..archive.len() {
             let mut entry = archive
                 .by_index(index)
                 .map_err(|error| AppError::RuntimeInstallFailed(error.to_string()))?;
+            // UNIX symlink entries must not be written as ordinary files. Reject
+            // links rather than following archive paths outside the staging root.
+            if entry
+                .unix_mode()
+                .is_some_and(|mode| mode & 0o170000 == 0o120000)
+            {
+                return Err(AppError::RuntimeInstallFailed(
+                    "diffusion runtime archive contains a symbolic link".to_string(),
+                ));
+            }
             let enclosed = entry.enclosed_name().ok_or_else(|| {
                 AppError::RuntimeInstallFailed(
-                    "runtime archive contains an unsafe path".to_string(),
+                    "diffusion runtime archive contains an unsafe path".to_string(),
                 )
             })?;
             let destination = staging.join(enclosed);
@@ -535,15 +844,36 @@ fn extract_runtime_archive(
                 fs::create_dir_all(&destination)?;
                 continue;
             }
+
+            // Declared lengths provide an early rejection; bounded copying below
+            // also protects against incorrect metadata or runaway decompression.
+            let declared = entry.size();
+            let remaining = max_expanded_bytes.saturating_sub(expanded_bytes);
+            if declared > MAX_RUNTIME_ENTRY_BYTES || declared > remaining {
+                return Err(AppError::RuntimeInstallFailed(
+                    "diffusion runtime archive exceeds extraction byte limits".to_string(),
+                ));
+            }
             if let Some(parent) = destination.parent() {
                 fs::create_dir_all(parent)?;
             }
             let mut output = fs::File::create(&destination)?;
-            std::io::copy(&mut entry, &mut output)?;
+            let copy_limit = MAX_RUNTIME_ENTRY_BYTES.min(remaining);
+            let written = std::io::copy(
+                &mut (&mut entry).take(copy_limit.saturating_add(1)),
+                &mut output,
+            )?;
+            if written > copy_limit || written != declared {
+                return Err(AppError::RuntimeInstallFailed(
+                    "diffusion runtime archive contains an oversized or truncated entry"
+                        .to_string(),
+                ));
+            }
+            expanded_bytes = expanded_bytes.saturating_add(written);
             output.flush()?;
             #[cfg(unix)]
             if let Some(mode) = entry.unix_mode() {
-                fs::set_permissions(&destination, fs::Permissions::from_mode(mode))?;
+                fs::set_permissions(&destination, fs::Permissions::from_mode(mode & 0o777))?;
             }
         }
         Ok(())
@@ -575,7 +905,6 @@ fn extract_runtime_archive(
     fs::rename(&staging, install_dir)?;
     Ok(install_dir.join(relative_cli))
 }
-
 fn find_cli_binary(root: &Path) -> Option<PathBuf> {
     let expected = if cfg!(target_os = "windows") {
         "sd-cli.exe"
@@ -677,6 +1006,23 @@ fn write_manifest(
     )?;
     fs::rename(temp, path)?;
     Ok(())
+}
+
+fn runtime_candidates_for_request(
+    os: &str,
+    arch: &str,
+    hardware: &HardwareProfile,
+    use_cpu: bool,
+) -> Vec<(BackendKind, &'static str)> {
+    let candidates = runtime_asset_candidates(os, arch, hardware);
+    if use_cpu {
+        candidates
+            .into_iter()
+            .filter(|(backend, _)| *backend == BackendKind::Cpu)
+            .collect()
+    } else {
+        candidates
+    }
 }
 
 fn runtime_asset_candidates(
@@ -850,26 +1196,6 @@ fn validate_webm(path: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
-fn validate_png(path: &Path) -> Result<(), AppError> {
-    let metadata = fs::metadata(path).map_err(|error| {
-        AppError::ArtifactGenerationFailed(format!("image output was not created: {error}"))
-    })?;
-    if metadata.len() < 1024 {
-        return Err(AppError::ArtifactGenerationFailed(
-            "image output is implausibly small".to_string(),
-        ));
-    }
-    let mut file = fs::File::open(path)?;
-    let mut signature = [0_u8; 8];
-    file.read_exact(&mut signature)?;
-    if &signature != PNG_SIGNATURE {
-        return Err(AppError::ArtifactGenerationFailed(
-            "image runtime did not produce a valid PNG".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 fn canonical_file_under_root(
     root: &PortableRootManager,
     path: &Path,
@@ -887,13 +1213,78 @@ fn canonical_file_under_root(
     Ok(canonical)
 }
 
-fn process_error_detail(stdout: &[u8], stderr: &[u8]) -> String {
+/// Recognise explicit sampler progress, not arbitrary percentages or
+/// file/model download counters that happen to contain two numbers.
+fn parse_sampling_step(line: &str, expected_total: u32) -> Option<u32> {
+    let lower = line.to_ascii_lowercase();
+    // The pinned sd-cli prints actual sampling bars to stdout as
+    // "\r  |====>  | 3/20 - 1.25s/it". Its model-loading progress uses
+    // MB/s or GB/s instead; never mistake those for sampling.
+    let native_sampling_bar = lower.contains('|')
+        && lower.contains(" - ")
+        && (lower.contains("s/it") || lower.contains("it/s"));
+    if !native_sampling_bar
+        && !lower.contains("sampling")
+        && !lower.contains("sample step")
+        && !lower.contains("step ")
+    {
+        return None;
+    }
+    let bytes = lower.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let first_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        let Ok(done) = lower[first_start..i].parse::<u32>() else {
+            continue;
+        };
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() || bytes[i] != b'/' {
+            continue;
+        }
+        i += 1;
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let second_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if second_start < i {
+            if let Ok(total) = lower[second_start..i].parse::<u32>() {
+                if total == expected_total && done > 0 && done <= total {
+                    return Some(done);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn process_error_detail(stdout: &[u8], stderr: &[u8], sensitive: &[&str]) -> String {
     let mut combined = String::from_utf8_lossy(stderr).trim().to_string();
     if combined.is_empty() {
         combined = String::from_utf8_lossy(stdout).trim().to_string();
     }
     if combined.is_empty() {
         return "no process output".to_string();
+    }
+    // The renderer may echo its command line or input on failure. Scrub before
+    // truncating, otherwise the truncated suffix could expose prompt fragments.
+    for secret in sensitive
+        .iter()
+        .copied()
+        .filter(|secret| !secret.is_empty())
+    {
+        combined = combined.replace(secret, "[redacted prompt]");
     }
     let chars = combined.chars().collect::<Vec<_>>();
     let start = chars.len().saturating_sub(4_000);
@@ -934,6 +1325,25 @@ fn hide_console_window(_command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn renderer_errors_redact_private_prompts_before_display() {
+        let prompt = "private sentinel image request";
+        let negative = "private negative sentinel";
+        let stderr = format!("error: -p {prompt} --negative-prompt {negative}");
+        let detail = process_error_detail(b"", stderr.as_bytes(), &[prompt, negative]);
+        assert!(!detail.contains(prompt));
+        assert!(!detail.contains(negative));
+        assert!(detail.contains("[redacted prompt]"));
+    }
+
+    #[test]
+    fn renderer_errors_keep_non_sensitive_diagnostics() {
+        assert_eq!(
+            process_error_detail(b"missing model", b"", &["secret"]),
+            "missing model"
+        );
+    }
+
     use crate::hardware::{BackendProfile, CpuProfile, GpuInfo, MemoryProfile};
 
     fn hardware(vendor: Option<GpuVendor>, vram: Option<u64>) -> HardwareProfile {
@@ -986,6 +1396,159 @@ mod tests {
         }
     }
 
+    fn sample_runtime_zip(path: &Path, files: &[(&str, &[u8])]) {
+        let archive = fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(archive);
+        for (name, bytes) in files {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn extracts_valid_runtime_archive_within_limits() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let archive = root.resolve_relative("temp/runtime-ok.zip").unwrap();
+        let cli = if cfg!(windows) {
+            "bin/sd-cli.exe"
+        } else {
+            "bin/sd-cli"
+        };
+        sample_runtime_zip(&archive, &[(cli, b"test-runtime")]);
+        let install = root.resolve_relative("runtimes/diffusion/test-ok").unwrap();
+        let extracted = extract_runtime_archive_bounded(&root, &archive, &install, 8, 64).unwrap();
+        assert_eq!(fs::read(extracted).unwrap(), b"test-runtime");
+    }
+
+    #[test]
+    fn rejects_archive_exceeding_expanded_byte_budget_without_installing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let archive = root.resolve_relative("temp/runtime-large.zip").unwrap();
+        let cli = if cfg!(windows) {
+            "sd-cli.exe"
+        } else {
+            "sd-cli"
+        };
+        sample_runtime_zip(&archive, &[(cli, b"much-more-data-than-allowed")]);
+        let install = root
+            .resolve_relative("runtimes/diffusion/test-large")
+            .unwrap();
+        let result = extract_runtime_archive_bounded(&root, &archive, &install, 8, 4);
+        assert!(result.is_err());
+        assert!(!install.exists());
+    }
+
+    #[test]
+    fn rejects_archive_with_too_many_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let archive = root.resolve_relative("temp/runtime-many.zip").unwrap();
+        let cli = if cfg!(windows) {
+            "sd-cli.exe"
+        } else {
+            "sd-cli"
+        };
+        sample_runtime_zip(&archive, &[(cli, b"data"), ("extra.txt", b"x")]);
+        let install = root
+            .resolve_relative("runtimes/diffusion/test-many")
+            .unwrap();
+        let result = extract_runtime_archive_bounded(&root, &archive, &install, 1, 64);
+        assert!(result.is_err());
+        assert!(!install.exists());
+    }
+
+    #[test]
+    fn diffusion_runtime_settings_report_missing_installation() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let report = diffusion_runtime_status(
+            &root,
+            &hardware(Some(GpuVendor::Amd), Some(8 * 1024_u64.pow(3))),
+        )
+        .unwrap();
+        assert!(matches!(report.state.as_str(), "missing" | "unsupported"));
+    }
+
+    #[test]
+    fn cpu_retry_selects_only_cpu_binary_on_supported_platforms() {
+        let gpu = hardware(Some(GpuVendor::Nvidia), Some(12 * 1024_u64.pow(3)));
+        let windows = runtime_candidates_for_request("windows", "x86_64", &gpu, true);
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].0, BackendKind::Cpu);
+        let linux = runtime_candidates_for_request("linux", "x86_64", &gpu, true);
+        assert_eq!(linux.len(), 1);
+        assert_eq!(linux[0].0, BackendKind::Cpu);
+        assert!(runtime_candidates_for_request("macos", "aarch64", &gpu, true).is_empty());
+    }
+
+    #[test]
+    fn normal_image_render_keeps_gpu_preference() {
+        let gpu = hardware(Some(GpuVendor::Nvidia), Some(12 * 1024_u64.pow(3)));
+        let automatic = runtime_candidates_for_request("windows", "x86_64", &gpu, false);
+        assert_eq!(automatic[0].0, BackendKind::Cuda);
+    }
+
+    #[test]
+    fn image_options_validate_requested_seed_steps_and_prompt() {
+        assert!(ImageRenderOptions::default().validate().is_ok());
+        assert!(ImageRenderOptions {
+            seed: Some(42),
+            steps: Some(20),
+            negative_prompt: Some("blurry, low resolution".to_string()),
+        }
+        .validate()
+        .is_ok());
+        assert!(ImageRenderOptions {
+            seed: Some(-1),
+            ..ImageRenderOptions::default()
+        }
+        .validate()
+        .is_err());
+        assert!(ImageRenderOptions {
+            steps: Some(51),
+            ..ImageRenderOptions::default()
+        }
+        .validate()
+        .is_err());
+        assert!(ImageRenderOptions {
+            negative_prompt: Some("x".repeat(MAX_PROMPT_CHARS + 1)),
+            ..ImageRenderOptions::default()
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[test]
+    fn sampling_progress_ignores_unrelated_logs() {
+        assert_eq!(parse_sampling_step("Sampling step 3/20", 20), Some(3));
+        assert_eq!(
+            parse_sampling_step("  |====>    | 3/20 - 1.23s/it", 20),
+            Some(3)
+        );
+        assert_eq!(
+            parse_sampling_step("  |=======> | 9/20 - 2.5it/s", 20),
+            Some(9)
+        );
+        assert_eq!(
+            parse_sampling_step("  |====>    | 3/20 - 25.3MB/s", 20),
+            None
+        );
+        assert_eq!(parse_sampling_step("sampling: 20/20", 20), Some(20));
+        assert_eq!(parse_sampling_step("loading model 3/20", 20), None);
+        assert_eq!(parse_sampling_step("sampling: 3/22", 20), None);
+        assert_eq!(parse_sampling_step("sampling: 21/20", 20), None);
+        assert_eq!(parse_sampling_step("sampling: 0/20", 20), None);
+        assert_eq!(parse_sampling_step("Downloading 75%", 20), None);
+    }
+
     #[test]
     fn windows_amd_prefers_vulkan_before_cpu() {
         let candidates = runtime_asset_candidates(
@@ -1032,17 +1595,11 @@ mod tests {
     }
 
     #[test]
-    fn validates_real_png_signature_and_rejects_text() {
+    fn rejects_non_png_image_output() {
         let temp = tempfile::tempdir().unwrap();
-        let good = temp.path().join("good.png");
-        let mut png = PNG_SIGNATURE.to_vec();
-        png.resize(2048, 0);
-        fs::write(&good, png).unwrap();
-        validate_png(&good).unwrap();
-
         let bad = temp.path().join("bad.png");
         fs::write(&bad, vec![b'x'; 2048]).unwrap();
-        assert!(validate_png(&bad).is_err());
+        assert!(png_output_validation::validate_png(&bad).is_err());
     }
 
     #[test]

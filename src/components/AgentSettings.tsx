@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, Download, LoaderCircle, Play, RefreshCw, Server, ShieldCheck, StopCircle } from "lucide-react";
 import { api } from "../api";
+import { cloud } from "../cloudApi";
 import type {
   AppPreferences,
   CodingAgentStatus,
@@ -33,6 +34,7 @@ export function AgentSettings(props: {
   const [sandbox, setSandbox] = useState<OpenAgentSandboxCapability | null>(null);
   const [qualification, setQualification] = useState<string | null>(null);
   const [agentStatus, setAgentStatus] = useState<CodingAgentStatus | null>(null);
+  const [cloudConnected, setCloudConnected] = useState(false);
 
   const refreshCatalog = async () => {
     try {
@@ -47,6 +49,7 @@ export function AgentSettings(props: {
 
   useEffect(() => {
     void refreshCatalog();
+    void cloud.status().then((session) => setCloudConnected(session.connected)).catch(() => setCloudConnected(false));
   }, []);
 
   useEffect(() => {
@@ -120,9 +123,30 @@ export function AgentSettings(props: {
     }
   };
 
+  const executionMode = props.preferences.codingAgentExecutionMode;
   return (
     <div className="agent-settings-stack">
       <section className="sub-panel">
+        <strong>Coding Agent inference</strong>
+        <label className="agent-setting-field">
+          <span>Processing mode</span>
+          <select value={executionMode} onChange={(event) =>
+            save("codingAgentExecutionMode", event.currentTarget.value as AppPreferences["codingAgentExecutionMode"])}>
+            <option value="auto">Both · Cloud first, local fallback</option>
+            <option value="cloud">Cloud Only · account required</option>
+            <option value="local">Local Only · installed OpenAgent</option>
+          </select>
+        </label>
+        {executionMode !== "local" ? (
+          <p className="muted">
+            {cloudConnected
+              ? "Cloud account connected. Hosted coding inference uses the available API model."
+              : "Cloud is disconnected. Connect your account in Research Studio. Both can use Local if installed; Cloud Only requires a connection."}
+            {" "}Cloud inference sends selected code excerpts, project instructions and recent tool context to your authenticated account API. Tool execution and approval gates stay on this computer.
+          </p>
+        ) : <p className="muted">Inference remains on this device, including when internet is available.</p>}
+      </section>
+      {executionMode !== "cloud" ? <section className="sub-panel">
         <div className="agent-runtime-head">
           <strong>OpenAgent runtime</strong>
           <span className={`agent-runtime-status ${runtimeStatusClass(props.runtimeStatus?.state, props.runtimeAction)}`}>
@@ -174,27 +198,27 @@ export function AgentSettings(props: {
             </button>
           ) : null}
         </div>
-      </section>
+      </section> : null}
 
       <section className="sub-panel">
         <div className="agent-runtime-head">
           <strong>Coding agent</strong>
-          <span className={`agent-runtime-status ${agentStatusClass(agentStatus?.state)}`}>
+          <span className={`agent-runtime-status ${executionMode === "cloud" ? "agent-runtime-status-ready" : agentStatusClass(agentStatus?.state)}`}>
             {agentStatus?.state === "starting" || agentStatus?.state === "loadingModel" ? (
               <LoaderCircle className="spin" size={14} />
             ) : (
               <span className="agent-runtime-dot" />
             )}
-            {agentStatusLabel(agentStatus)}
+            {executionMode === "cloud" ? (cloudConnected ? "Cloud connected" : "Sign-in required") : agentStatusLabel(agentStatus)}
           </span>
         </div>
-        {agentStatus?.model ? (
+        {executionMode !== "cloud" && agentStatus?.model ? (
           <p className="muted">
             {agentStatus.model.name} · {agentStatus.model.displayName}
             {agentStatus.model.quantization ? ` · ${agentStatus.model.quantization}` : ""}
           </p>
         ) : null}
-        {agentStatus?.model && agentStatus.effectiveContext ? (
+        {executionMode !== "cloud" && agentStatus?.model && agentStatus.effectiveContext ? (
           <p className="muted">
             Context {agentStatus.configuredContext} · {agentStatus.parallelWorkers} parallel{" "}
             {agentStatus.parallelWorkers === 1 ? "worker" : "workers"} · {agentStatus.effectiveContext} tokens per request
@@ -202,7 +226,7 @@ export function AgentSettings(props: {
             {agentStatus.gpuLayers ? `GPU layers ${agentStatus.gpuLayers}` : "CPU only"}
           </p>
         ) : null}
-        {agentStatus?.runtimePlacement ? (
+        {executionMode !== "cloud" && agentStatus?.runtimePlacement ? (
           <p className="muted">
             {agentStatus.runtimePlacement === "dedicated" ? "Dedicated runtime" : "Shared runtime with Core"}:{" "}
             {agentStatus.placementReason}
@@ -211,13 +235,13 @@ export function AgentSettings(props: {
               : ""}
           </p>
         ) : null}
-        {agentStatus?.state === "disabled" || agentStatus?.state === "notInstalled" ? (
+        {executionMode !== "cloud" && (agentStatus?.state === "disabled" || agentStatus?.state === "notInstalled") ? (
           <p className="model-selector-error">{agentStatus.message}</p>
         ) : null}
-        {agentStatus?.state === "error" && agentStatus.error ? (
+        {executionMode !== "cloud" && agentStatus?.state === "error" && agentStatus.error ? (
           <p className="model-selector-error">{agentStatus.error}</p>
         ) : null}
-        <label className="agent-setting-field">
+        {executionMode !== "cloud" ? <label className="agent-setting-field">
           <span>Agent runtime mode</span>
           <select
             value={props.preferences.openagentRuntimeMode ?? "automatic"}
@@ -227,8 +251,8 @@ export function AgentSettings(props: {
             <option value="shared">Shared runtime</option>
             <option value="dedicated">Dedicated runtime</option>
           </select>
-        </label>
-        {agentStatus?.state === "stopped" || agentStatus?.state === "error" ? (
+        </label> : null}
+        {executionMode !== "cloud" && (agentStatus?.state === "stopped" || agentStatus?.state === "error") ? (
           <div className="button-row">
             <button type="button" onClick={() => void loadAgent()} title="Load the coding agent model now">
               <Play size={16} /> Load agent
@@ -270,13 +294,14 @@ export function AgentSettings(props: {
         <label className="agent-setting-field"><span>Parallel read workers</span><input type="number" min={1} max={4} value={props.preferences.codingMaxParallelWorkers} onChange={(event) => save("codingMaxParallelWorkers", Number(event.target.value))} /></label>
         <label className="agent-setting-field"><span>CI repair limit</span><input type="number" min={1} max={5} value={props.preferences.codingCiRepairLimit} onChange={(event) => save("codingCiRepairLimit", Number(event.target.value))} /></label>
         <label className="agent-setting-field"><span>Context size</span><input type="number" min={4096} max={131072} step={4096} value={props.preferences.codingContextSize} onChange={(event) => save("codingContextSize", Number(event.target.value))} /></label>
+        <p className="muted">Context size allocates tokens to the local model. OpenAgent uses the actual llama-server per-request slot (shared across parallel workers), reserving room for instructions, active plan and output. Each JSON tool decision is capped at 1,536 output tokens; larger context settings expand the evidence that can fit, not the tool response size.</p>
         <label className="agent-setting-field"><span>GPU layers (-1 auto)</span><input type="number" min={-1} max={999} value={props.preferences.codingGpuLayers} onChange={(event) => save("codingGpuLayers", Number(event.target.value))} /></label>
         <label className="agent-setting-field"><span>Sandbox network</span><select value={props.preferences.codingNetworkEnabled ? "on" : "off"} onChange={(event) => save("codingNetworkEnabled", event.target.value === "on")}><option value="off">Off · default</option><option value="on" disabled>On · reserved for explicit future policy</option></select></label>
         <div className="button-row"><button type="button" onClick={() => void api.runCodingQualification().then((report) => setQualification(report.passed ? `Qualification passed · ${report.checks.length} checks` : `Qualification failed · ${report.checks.filter((item) => !item.passed).map((item) => item.id).join(", ")}`)).catch((error) => setQualification(String(error)))}><ShieldCheck size={16} /> Run qualification</button></div>
         {qualification ? <p className="muted">{qualification}</p> : null}
       </section>
 
-      <section className="model-catalog-section">
+      {executionMode !== "cloud" ? <section className="model-catalog-section">
         <h3>OpenAgent - Your personal Agent</h3>
         {agentModels.map((item) => {
           const selected = props.preferences.openagentModelId === item.entry.id;
@@ -314,9 +339,9 @@ export function AgentSettings(props: {
             </div>
           );
         })}
-      </section>
+      </section> : null}
       {message ? <p className="model-selector-error">{message}</p> : null}
-      {props.models.length === 0 ? <p className="muted">Download and verify an OpenAgent model to activate your personal agent.</p> : null}
+      {executionMode !== "cloud" && props.models.length === 0 ? <p className="muted">Download and verify an OpenAgent model to activate your personal agent.</p> : null}
     </div>
   );
 }

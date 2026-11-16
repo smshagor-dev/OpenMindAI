@@ -229,7 +229,7 @@ fn register_windows_autostart() {
     if cfg!(debug_assertions) {
         return;
     }
-    let Some(config) = crate::portable_root::load_installation() else {
+    let Ok(Some(config)) = crate::portable_root::load_installation() else {
         return;
     };
     if !config.installation_complete {

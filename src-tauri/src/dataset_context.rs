@@ -1,9 +1,13 @@
 use std::{
-    fs,
+    collections::HashSet,
+    io::{self, Read},
     path::{Path, PathBuf},
 };
 
+use cap_std::{ambient_authority, fs::Dir};
 use serde::Deserialize;
+use unicode_normalization::UnicodeNormalization;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{app_error::AppError, portable_root::PortableRootManager};
 
@@ -11,6 +15,13 @@ const MAX_DATASETS: usize = 4;
 const MAX_FILES_PER_DATASET: usize = 6;
 const MAX_SNIPPET_CHARS: usize = 1_200;
 const MAX_CONTEXT_CHARS: usize = 5_500;
+const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+const MAX_TEXT_FILE_BYTES: u64 = 4 * 1024 * 1024;
+// Evidence selection uses a bounded prefix, not a full multi-megabyte allocation.
+const MAX_TEXT_SAMPLE_BYTES: u64 = 256 * 1024;
+const MAX_MANIFEST_FILES: usize = 4_096;
+const MAX_SCAN_ENTRIES: usize = 8_192;
+const MAX_SCAN_DEPTH: usize = 16;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,9 +38,14 @@ struct DatasetManifestFile {
 
 struct DatasetCandidate {
     id: String,
-    root: PathBuf,
+    root: Dir,
     score: i32,
     files: Vec<DatasetManifestFile>,
+}
+
+struct ManifestScan {
+    visited: HashSet<PathBuf>,
+    remaining_entries: usize,
 }
 
 pub(crate) fn build_dataset_context(
@@ -38,18 +54,42 @@ pub(crate) fn build_dataset_context(
     model_name: &str,
     routing_reason: &str,
 ) -> Result<Option<String>, AppError> {
-    let base = root.resolve_relative("datasets/openmindai")?;
-    if !base.is_dir() {
-        return Ok(None);
-    }
-
     let keywords = prompt_keywords(prompt);
     if keywords.is_empty() {
         return Ok(None);
     }
 
+    // Ambient authority is used only for the user-selected portable root.
+    // Every subsequent lookup stays relative to an already-open directory.
+    let portable = match Dir::open_ambient_dir(root.root(), ambient_authority()) {
+        Ok(portable) => portable,
+        Err(error) => {
+            // Dataset enrichment is optional. A missing, inaccessible or
+            // concurrently removed portable root must not fail chat sending.
+            tracing::warn!(%error, "dataset portable root unavailable; skipping optional context");
+            return Ok(None);
+        }
+    };
+    let base = match open_dataset_base(&portable) {
+        Ok(base) => base,
+        Err(error) => {
+            tracing::debug!(%error, "dataset directory is unavailable or unsafe");
+            return Ok(None);
+        }
+    };
     let mut candidates = Vec::new();
-    collect_manifests(&base, &base, &keywords, &mut candidates)?;
+    let mut scan = ManifestScan {
+        visited: HashSet::new(),
+        remaining_entries: MAX_SCAN_ENTRIES,
+    };
+    collect_manifests(
+        &base,
+        Path::new("."),
+        &keywords,
+        &mut candidates,
+        &mut scan,
+        0,
+    )?;
     candidates.sort_by(|left, right| {
         right
             .score
@@ -98,26 +138,69 @@ pub(crate) fn build_dataset_context(
 }
 
 fn collect_manifests(
-    base: &Path,
+    base: &Dir,
     dir: &Path,
     keywords: &[String],
     candidates: &mut Vec<DatasetCandidate>,
+    scan: &mut ManifestScan,
+    depth: usize,
 ) -> Result<(), AppError> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_manifests(base, &path, keywords, candidates)?;
+    if depth > MAX_SCAN_DEPTH || scan.remaining_entries == 0 {
+        return Ok(());
+    }
+    // cap-std canonicalization is relative to `base` and rejects escapes.
+    let Ok(canonical) = base.canonicalize(dir) else {
+        return Ok(());
+    };
+    if !scan.visited.insert(canonical) {
+        return Ok(());
+    }
+    let Ok(directory) = base.open_dir(dir) else {
+        return Ok(());
+    };
+    let Ok(entries) = directory.entries() else {
+        return Ok(());
+    };
+    for entry in entries {
+        if scan.remaining_entries == 0 {
+            tracing::warn!("dataset discovery entry limit reached");
+            break;
+        }
+        scan.remaining_entries -= 1;
+        let Ok(entry) = entry else { continue };
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        // Do not follow directory links (including cycles) or linked manifests.
+        if kind.is_symlink() {
             continue;
         }
-        if path.file_name().and_then(|name| name.to_str()) != Some("openmindai-dataset.json") {
+        let name = entry.file_name();
+        if kind.is_dir() {
+            // A damaged optional dataset subtree must never block ordinary chat.
+            if let Err(error) =
+                collect_manifests(base, &dir.join(name), keywords, candidates, scan, depth + 1)
+            {
+                tracing::warn!(%error, "skipping unreadable dataset subtree");
+            }
             continue;
         }
-        let content = fs::read_to_string(&path)?;
-        let manifest: DatasetManifest = serde_json::from_str(&content).map_err(|error| {
-            AppError::internal(format!("dataset manifest parse failed: {error}"))
-        })?;
-        let dataset_root = path.parent().unwrap_or(base).to_path_buf();
+        if !kind.is_file() || name != "openmindai-dataset.json" {
+            continue;
+        }
+        let Ok(content) = read_bounded_text(&directory, Path::new(&name), MAX_MANIFEST_BYTES)
+        else {
+            tracing::warn!("skipping unreadable, unsafe or oversized dataset manifest");
+            continue;
+        };
+        let Ok(mut manifest) = serde_json::from_str::<DatasetManifest>(&content) else {
+            tracing::warn!("skipping malformed dataset manifest");
+            continue;
+        };
+        // Validate on use: a downloaded or copied manifest is untrusted input.
+        // Invalid paths must not enter retrieval scoring or the fallback listing.
+        manifest.files.retain(|file| safe_manifest_path(&file.path));
+        manifest.files.truncate(MAX_MANIFEST_FILES);
         let haystack = format!(
             "{} {}",
             manifest.dataset_id,
@@ -128,40 +211,48 @@ fn collect_manifests(
                 .map(|file| file.path.as_str())
                 .collect::<Vec<_>>()
                 .join(" ")
-        )
-        .to_ascii_lowercase();
+        );
         let score = score_text(&haystack, keywords);
         if score > 0 {
+            // Failure to duplicate a handle is local to this optional dataset.
+            let Ok(root) = directory.try_clone() else {
+                tracing::warn!("skipping dataset whose directory handle cannot be cloned");
+                continue;
+            };
             candidates.push(DatasetCandidate {
                 id: manifest.dataset_id,
-                root: dataset_root,
+                root,
                 score,
                 files: manifest.files,
             });
+            // Retain only the best candidates, keeping directory handles bounded.
+            candidates.sort_by(|left, right| {
+                right
+                    .score
+                    .cmp(&left.score)
+                    .then_with(|| left.id.cmp(&right.id))
+            });
+            candidates.truncate(MAX_DATASETS);
         }
     }
     Ok(())
 }
 
 fn dataset_snippets(
-    dataset_root: &Path,
+    dataset_root: &Dir,
     files: &[DatasetManifestFile],
     keywords: &[String],
 ) -> Result<Vec<String>, AppError> {
     let mut scored = files
         .iter()
-        .filter(|file| supported_context_file(&file.path))
-        .map(|file| (score_text(&file.path.to_ascii_lowercase(), keywords), file))
+        .filter(|file| safe_manifest_path(&file.path) && supported_context_file(&file.path))
+        .map(|file| (score_text(&file.path, keywords), file))
         .collect::<Vec<_>>();
     scored.sort_by_key(|item| std::cmp::Reverse(item.0));
 
     let mut snippets = Vec::new();
     for (_, file) in scored.into_iter().take(MAX_FILES_PER_DATASET) {
-        let path = dataset_root.join(&file.path);
-        if !path.is_file() {
-            continue;
-        }
-        let Ok(content) = fs::read_to_string(&path) else {
+        let Ok(content) = read_bounded_text_sample(dataset_root, Path::new(&file.path)) else {
             continue;
         };
         let selected = best_text_window(&content, keywords);
@@ -178,6 +269,112 @@ fn dataset_snippets(
     Ok(snippets)
 }
 
+fn open_dataset_base(portable: &Dir) -> io::Result<Dir> {
+    let mut directory = portable.try_clone()?;
+    for name in ["datasets", "openmindai"] {
+        if !directory.symlink_metadata(name)?.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "linked dataset root",
+            ));
+        }
+        directory = directory.open_dir(name)?;
+    }
+    Ok(directory)
+}
+
+fn safe_manifest_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 4_096
+        && !path
+            .chars()
+            .any(|ch| ch.is_control() || "\\:<>\"|?*".contains(ch))
+        && path.split('/').all(|part| {
+            !part.is_empty() && part != "." && part != ".." && !part.ends_with(['.', ' '])
+        })
+}
+
+fn read_bounded_text(directory: &Dir, path: &Path, limit: u64) -> io::Result<String> {
+    // This check rejects stable links and special files before opening. cap-std
+    // also confines the actual open to this directory if a path changes later.
+    if !directory.symlink_metadata(path)?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular dataset file",
+        ));
+    }
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        // A concurrent replacement with a FIFO must not hang the chat thread.
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = directory.open_with(path, &options)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "dataset file exceeds read limit",
+        ));
+    }
+    read_limited_utf8(file, limit)
+}
+
+/// Read only a bounded prefix for retrieval. Large local files must not be
+/// fully allocated on every chat request. A truncated UTF-8 codepoint is
+/// excluded rather than causing the entire dataset to be ignored.
+fn read_bounded_text_sample(directory: &Dir, path: &Path) -> io::Result<String> {
+    if !directory.symlink_metadata(path)?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular dataset file",
+        ));
+    }
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let mut file = directory.open_with(path, &options)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > MAX_TEXT_FILE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "dataset file exceeds read limit or is not a regular file",
+        ));
+    }
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take(MAX_TEXT_SAMPLE_BYTES)
+        .read_to_end(&mut bytes)?;
+    match std::str::from_utf8(&bytes) {
+        Ok(text) => Ok(text.to_owned()),
+        Err(error) if error.error_len().is_none() => {
+            bytes.truncate(error.valid_up_to());
+            String::from_utf8(bytes)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        }
+        Err(error) => Err(io::Error::new(io::ErrorKind::InvalidData, error)),
+    }
+}
+
+fn read_limited_utf8(reader: impl Read, limit: u64) -> io::Result<String> {
+    let mut bytes = Vec::new();
+    // Limit the read itself, even if the file grows after metadata was checked.
+    reader.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "dataset file exceeds read limit",
+        ));
+    }
+    String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
 fn supported_context_file(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     matches!(
@@ -187,11 +384,17 @@ fn supported_context_file(path: &str) -> bool {
 }
 
 fn best_text_window(content: &str, keywords: &[String]) -> String {
-    let lower = content.to_ascii_lowercase();
-    let index = keywords
-        .iter()
-        .filter_map(|keyword| lower.find(keyword))
-        .min()
+    // Search normalized words, but retain offsets in the original UTF-8.
+    // Lowercasing/normalization can change byte length (e.g. İ or decomposed accents).
+    let index = content
+        .unicode_word_indices()
+        .find_map(|(index, word)| {
+            let normalized = normalize_search_text(word);
+            keywords
+                .iter()
+                .any(|keyword| normalized.contains(keyword))
+                .then_some(index)
+        })
         .unwrap_or(0);
     let start = content[..index]
         .char_indices()
@@ -207,11 +410,24 @@ fn best_text_window(content: &str, keywords: &[String]) -> String {
     limit_chars(content[start..end].trim(), MAX_SNIPPET_CHARS)
 }
 
+fn normalize_search_text(text: &str) -> String {
+    text.nfc()
+        .collect::<String>()
+        .to_lowercase()
+        .nfc()
+        .collect()
+}
+
 fn prompt_keywords(prompt: &str) -> Vec<String> {
-    let mut words = prompt
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .map(|word| word.trim().to_ascii_lowercase())
-        .filter(|word| word.len() >= 4 && !STOP_WORDS.contains(&word.as_str()))
+    let normalized = normalize_search_text(prompt);
+    let mut words = normalized
+        .unicode_words()
+        // Retain the existing English noise filter, while permitting short
+        // non-Latin words and individual UAX #29 words in unspaced scripts.
+        .filter(|word| {
+            (!word.is_ascii() || word.chars().count() >= 4) && !STOP_WORDS.contains(word)
+        })
+        .map(str::to_owned)
         .collect::<Vec<_>>();
     words.sort();
     words.dedup();
@@ -220,6 +436,7 @@ fn prompt_keywords(prompt: &str) -> Vec<String> {
 }
 
 fn score_text(text: &str, keywords: &[String]) -> i32 {
+    let text = normalize_search_text(text);
     keywords
         .iter()
         .map(|keyword| if text.contains(keyword) { 4 } else { 0 })
@@ -262,3 +479,507 @@ const STOP_WORDS: &[&str] = &[
     "about", "after", "also", "answer", "best", "data", "dataset", "from", "have", "into", "make",
     "model", "need", "please", "that", "their", "there", "this", "user", "with", "your",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn fixture() -> (TempDir, PortableRootManager, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let portable = temp.path().join("portable");
+        let dataset = portable.join("datasets/openmindai/alpha/snapshot/main");
+        fs::create_dir_all(&dataset).unwrap();
+        (temp, PortableRootManager::from_root(portable), dataset)
+    }
+
+    fn manifest(directory: &Path, paths: &[String]) {
+        let files = paths
+            .iter()
+            .map(|path| serde_json::json!({"path": path, "size": 1}))
+            .collect::<Vec<_>>();
+        fs::write(
+            directory.join("openmindai-dataset.json"),
+            serde_json::json!({"datasetId": "alpha", "files": files}).to_string(),
+        )
+        .unwrap();
+    }
+
+    fn context(root: &PortableRootManager) -> Option<String> {
+        build_dataset_context(root, "alpha evidence", "test model", "test routing").unwrap()
+    }
+
+    #[cfg(unix)]
+    fn link(target: &Path, path: &Path, _directory: bool) -> bool {
+        std::os::unix::fs::symlink(target, path).unwrap();
+        true
+    }
+
+    #[cfg(windows)]
+    fn link(target: &Path, path: &Path, directory: bool) -> bool {
+        let result = if directory {
+            std::os::windows::fs::symlink_dir(target, path)
+        } else {
+            std::os::windows::fs::symlink_file(target, path)
+        };
+        match result {
+            Ok(()) => true,
+            Err(error) if error.raw_os_error() == Some(1314) => {
+                eprintln!("symlink fixture unavailable: Windows Developer Mode/privilege required");
+                false
+            }
+            Err(error) => panic!("symlink fixture failed: {error}"),
+        }
+    }
+
+    #[test]
+    fn missing_portable_root_does_not_block_chat_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("removed-portable-root");
+        let root = PortableRootManager::from_root(missing);
+        assert!(
+            build_dataset_context(&root, "alpha evidence", "test", "routing")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn portable_root_removed_between_requests_is_optional() {
+        let (temp, root, dataset) = fixture();
+        fs::write(dataset.join("alpha.txt"), "alpha INSIDE_MARKER").unwrap();
+        manifest(&dataset, &["alpha.txt".into()]);
+        assert!(context(&root).unwrap().contains("INSIDE_MARKER"));
+        fs::remove_dir_all(temp.path().join("portable")).unwrap();
+        assert!(context(&root).is_none());
+    }
+
+    #[test]
+    fn normal_nested_evidence_is_retained() {
+        let (_temp, root, dataset) = fixture();
+        fs::create_dir(dataset.join("nested")).unwrap();
+        fs::write(
+            dataset.join("nested/alpha.txt"),
+            "alpha evidence INSIDE_MARKER",
+        )
+        .unwrap();
+        manifest(&dataset, &["nested/alpha.txt".into()]);
+        assert!(context(&root).unwrap().contains("INSIDE_MARKER"));
+    }
+
+    #[test]
+    fn manifest_cannot_read_parent_absolute_or_sibling_dataset_files() {
+        let (temp, root, dataset) = fixture();
+        let outside = temp.path().join("outside-alpha.txt");
+        fs::write(&outside, "alpha OUTSIDE_MARKER").unwrap();
+        fs::write(
+            dataset.parent().unwrap().join("outside-alpha.txt"),
+            "alpha OUTSIDE_MARKER",
+        )
+        .unwrap();
+        let sibling = root.root().join("datasets/openmindai/other");
+        fs::create_dir(&sibling).unwrap();
+        fs::write(sibling.join("alpha.txt"), "alpha OUTSIDE_MARKER").unwrap();
+        fs::write(dataset.join("alpha.txt"), "alpha INSIDE_MARKER").unwrap();
+        manifest(
+            &dataset,
+            &[
+                "../outside-alpha.txt".into(),
+                outside.to_string_lossy().into_owned(),
+                "nested/../../outside-alpha.txt".into(),
+                "../../../other/alpha.txt".into(),
+                "..\\outside-alpha.txt".into(),
+                "C:/outside-alpha.txt".into(),
+                "alpha.txt".into(),
+            ],
+        );
+        let output = context(&root).unwrap();
+        assert!(!output.contains("OUTSIDE_MARKER"));
+        assert!(!output.contains("../outside-alpha.txt"));
+        assert!(output.contains("INSIDE_MARKER"));
+    }
+
+    #[test]
+    fn linked_text_and_intermediate_directory_cannot_supply_external_evidence() {
+        let (temp, root, dataset) = fixture();
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("alpha.txt"), "alpha OUTSIDE_MARKER").unwrap();
+        if !link(
+            &outside.join("alpha.txt"),
+            &dataset.join("alpha-link.txt"),
+            false,
+        ) || !link(&outside, &dataset.join("linked"), true)
+        {
+            return;
+        }
+        manifest(
+            &dataset,
+            &["alpha-link.txt".into(), "linked/alpha.txt".into()],
+        );
+        assert!(!context(&root).unwrap().contains("OUTSIDE_MARKER"));
+    }
+
+    #[test]
+    fn intermediate_link_within_the_same_dataset_remains_usable() {
+        let (_temp, root, dataset) = fixture();
+        fs::create_dir(dataset.join("nested")).unwrap();
+        fs::write(dataset.join("nested/alpha.txt"), "alpha INSIDE_MARKER").unwrap();
+        if !link(Path::new("nested"), &dataset.join("linked"), true) {
+            return;
+        }
+        manifest(&dataset, &["linked/alpha.txt".into()]);
+        assert!(context(&root).unwrap().contains("INSIDE_MARKER"));
+    }
+
+    #[test]
+    fn linked_manifest_is_not_loaded() {
+        let (temp, root, dataset) = fixture();
+        let external = temp.path().join("external");
+        fs::create_dir(&external).unwrap();
+        let outside = external.join("alpha.txt");
+        fs::write(&outside, "alpha OUTSIDE_MARKER").unwrap();
+        manifest(&external, &[outside.to_string_lossy().into_owned()]);
+        if !link(
+            &external.join("openmindai-dataset.json"),
+            &dataset.join("openmindai-dataset.json"),
+            false,
+        ) {
+            return;
+        }
+        assert!(context(&root).is_none());
+    }
+
+    #[test]
+    fn discovery_skips_linked_directories_and_cycles() {
+        let (temp, root, dataset) = fixture();
+        let external = temp.path().join("external");
+        fs::create_dir(&external).unwrap();
+        fs::write(external.join("alpha.txt"), "alpha OUTSIDE_MARKER").unwrap();
+        manifest(&external, &["alpha.txt".into()]);
+        let base = root.root().join("datasets/openmindai");
+        if !link(&external, &base.join("linked"), true) || !link(&base, &dataset.join("loop"), true)
+        {
+            return;
+        }
+        assert!(context(&root).is_none());
+    }
+
+    #[test]
+    fn linked_dataset_base_is_not_scanned() {
+        let temp = tempfile::tempdir().unwrap();
+        let portable = temp.path().join("portable");
+        let external = temp.path().join("external");
+        fs::create_dir_all(&portable).unwrap();
+        fs::create_dir_all(external.join("openmindai")).unwrap();
+        fs::write(
+            external.join("openmindai/alpha.txt"),
+            "alpha OUTSIDE_MARKER",
+        )
+        .unwrap();
+        manifest(&external.join("openmindai"), &["alpha.txt".into()]);
+        if !link(&external, &portable.join("datasets"), true) {
+            return;
+        }
+        assert!(context(&PortableRootManager::from_root(portable)).is_none());
+    }
+
+    #[test]
+    fn malformed_and_oversized_manifests_do_not_block_valid_datasets() {
+        let (_temp, root, dataset) = fixture();
+        let base = root.root().join("datasets/openmindai");
+        for (name, content) in [
+            ("malformed", "not json"),
+            ("invalid-schema", "{\"files\": false}"),
+        ] {
+            let directory = base.join(name);
+            fs::create_dir(&directory).unwrap();
+            fs::write(directory.join("openmindai-dataset.json"), content).unwrap();
+        }
+        let huge = base.join("oversized");
+        fs::create_dir(&huge).unwrap();
+        fs::File::create(huge.join("openmindai-dataset.json"))
+            .unwrap()
+            .set_len(1024 * 1024 + 1)
+            .unwrap();
+        fs::write(dataset.join("alpha.txt"), "alpha INSIDE_MARKER").unwrap();
+        manifest(&dataset, &["alpha.txt".into()]);
+        assert!(context(&root).unwrap().contains("INSIDE_MARKER"));
+    }
+
+    #[test]
+    fn missing_and_corrupt_optional_manifests_do_not_interrupt_chat() {
+        let (_temp, root, dataset) = fixture();
+        let base = root.root().join("datasets/openmindai");
+        let missing = base.join("missing");
+        fs::create_dir(&missing).unwrap();
+        let corrupt = base.join("corrupt");
+        fs::create_dir(&corrupt).unwrap();
+        fs::write(corrupt.join("openmindai-dataset.json"), [0xff, 0xfe]).unwrap();
+        // The chat path must remain usable even if no valid dataset exists.
+        assert!(context(&root).is_none());
+        fs::write(dataset.join("alpha.txt"), "alpha VALID_EVIDENCE").unwrap();
+        manifest(&dataset, &["alpha.txt".into()]);
+        assert!(context(&root).unwrap().contains("VALID_EVIDENCE"));
+    }
+
+    #[test]
+    fn large_dataset_evidence_uses_bounded_prefix_without_loading_tail() {
+        let (_temp, root, dataset) = fixture();
+        let mut content = String::from("alpha EARLY_MARKER ");
+        content.push_str(&"x".repeat(MAX_TEXT_SAMPLE_BYTES as usize + 1024));
+        content.push_str(" alpha LATE_MARKER");
+        fs::write(dataset.join("alpha.txt"), content).unwrap();
+        manifest(&dataset, &["alpha.txt".into()]);
+        let output = context(&root).unwrap();
+        assert!(output.contains("EARLY_MARKER"));
+        assert!(!output.contains("LATE_MARKER"));
+    }
+
+    #[test]
+    fn sample_truncation_preserves_valid_utf8_boundary() {
+        let (_temp, root, dataset) = fixture();
+        let mut content = String::from("alpha INSIDE_MARKER ");
+        let padding = MAX_TEXT_SAMPLE_BYTES as usize - content.len() - 1;
+        content.push_str(&"x".repeat(padding));
+        content.push('é'); // two-byte character crosses the sample boundary
+        fs::write(dataset.join("alpha.txt"), content).unwrap();
+        manifest(&dataset, &["alpha.txt".into()]);
+        assert!(context(&root).unwrap().contains("INSIDE_MARKER"));
+    }
+
+    #[test]
+    fn oversized_and_invalid_utf8_text_are_skipped() {
+        let (_temp, root, dataset) = fixture();
+        let huge = fs::File::create(dataset.join("alpha-huge.txt")).unwrap();
+        huge.set_len(4 * 1024 * 1024 + 1).unwrap();
+        fs::write(dataset.join("alpha-invalid.txt"), [0xff, 0xfe]).unwrap();
+        fs::write(dataset.join("alpha.txt"), "alpha INSIDE_MARKER").unwrap();
+        manifest(
+            &dataset,
+            &[
+                "alpha-huge.txt".into(),
+                "alpha-invalid.txt".into(),
+                "alpha.txt".into(),
+            ],
+        );
+        let output = context(&root).unwrap();
+        assert!(output.contains("INSIDE_MARKER"));
+        assert!(!output.contains('\0'));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_junction_cannot_supply_external_evidence() {
+        let (temp, root, dataset) = fixture();
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("alpha.txt"), "alpha OUTSIDE_MARKER").unwrap();
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(dataset.join("junction"))
+            .arg(&outside)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        manifest(&dataset, &["junction/alpha.txt".into()]);
+        assert!(!context(&root).unwrap().contains("OUTSIDE_MARKER"));
+    }
+    #[test]
+    fn multilingual_prompts_retrieve_local_evidence() {
+        for (prompt, filename, content) in [
+            ("বাংলা কৃষি", "বাংলা-কৃষি.txt", "বাংলা কৃষি INSIDE_MARKER"),
+            (
+                "РУССКАЯ НАУКА",
+                "русская-наука.txt",
+                "Русская наука INSIDE_MARKER",
+            ),
+            (
+                "हिन्दी शिक्षा",
+                "हिन्दी-शिक्षा.txt",
+                "हिन्दी शिक्षा INSIDE_MARKER",
+            ),
+            (
+                "English বাংলা РУССКАЯ",
+                "english-русская.txt",
+                "mixed evidence INSIDE_MARKER",
+            ),
+            ("中文資料", "中文資料.txt", "中文資料 INSIDE_MARKER"),
+            ("cafe\u{301}", "café.txt", "café INSIDE_MARKER"),
+        ] {
+            let (_temp, root, dataset) = fixture();
+            fs::write(dataset.join(filename), content).unwrap();
+            manifest(&dataset, &[filename.into()]);
+            let found = build_dataset_context(&root, prompt, "test model", "test routing").unwrap();
+            assert!(
+                found.unwrap_or_default().contains("INSIDE_MARKER"),
+                "{prompt}"
+            );
+        }
+    }
+
+    #[test]
+    fn normalization_keeps_original_snippet_boundaries_valid() {
+        let prefix = "İ ".repeat(400);
+        let content = format!("{prefix}cafe\u{301} TARGET_MARKER end");
+        let snippet = best_text_window(&content, &prompt_keywords("CAFÉ"));
+        assert!(snippet.contains("TARGET_MARKER"));
+        assert!(snippet.contains("cafe\u{301}"));
+        assert_eq!(prompt_keywords("বাংলা কৃষি"), vec!["কৃষি", "বাংলা"]);
+        assert_eq!(
+            prompt_keywords("please DATA dataset with"),
+            Vec::<String>::new()
+        );
+    }
+    #[test]
+    fn unicode_dataset_id_can_select_an_ascii_named_file() {
+        let (_temp, root, dataset) = fixture();
+        fs::write(dataset.join("notes.txt"), "ЛОКАЛЬНЫЕ ДАННЫЕ ID_MARKER").unwrap();
+        fs::write(
+            dataset.join("openmindai-dataset.json"),
+            serde_json::json!({
+                "datasetId": "Русская-наука", "files": [{"path": "notes.txt", "size": 1}]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(build_dataset_context(&root, "РУССКАЯ", "model", "routing")
+            .unwrap()
+            .unwrap()
+            .contains("ID_MARKER"));
+    }
+}
+
+#[cfg(test)]
+mod safety_tests {
+    use super::*;
+
+    #[test]
+    fn portable_manifest_paths_reject_aliases_and_traversal() {
+        for path in [
+            "",
+            ".",
+            "..",
+            "../alpha.txt",
+            "nested/../../alpha.txt",
+            "/alpha.txt",
+            "C:/alpha.txt",
+            "C:alpha.txt",
+            "\\\\host\\alpha.txt",
+            "..\\alpha.txt",
+            "alpha.txt:stream",
+            "nested//alpha.txt",
+            "./alpha.txt",
+            "nested/./alpha.txt",
+            "nested/",
+            "nested./alpha.txt",
+            "nested /alpha.txt",
+            "alpha\0.txt",
+            "alpha\n.txt",
+        ] {
+            assert!(!safe_manifest_path(path), "{path:?}");
+        }
+        for path in [
+            "alpha.txt",
+            "nested/alpha data.csv",
+            "nested/.hidden.txt",
+            "বাংলা/данные.jsonl",
+        ] {
+            assert!(safe_manifest_path(path), "{path}");
+        }
+    }
+
+    #[test]
+    fn read_limit_applies_to_the_reader_and_utf8_bytes() {
+        assert_eq!(read_limited_utf8("বাংলা".as_bytes(), 64).unwrap(), "বাংলা");
+        assert!(read_limited_utf8(io::repeat(b'x'), 64).is_err());
+        assert_eq!(read_limited_utf8(&b"alpha"[..], 5).unwrap(), "alpha");
+        assert!(read_limited_utf8(&b"alpha!"[..], 5).is_err());
+        assert!(read_limited_utf8(&[0xff][..], 5).is_err());
+    }
+
+    #[test]
+    fn discovery_budget_depth_and_visited_set_are_enforced() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = Dir::open_ambient_dir(temp.path(), ambient_authority()).unwrap();
+        let keywords = vec!["alpha".into()];
+        let mut candidates = Vec::new();
+        let mut scan = ManifestScan {
+            visited: HashSet::new(),
+            remaining_entries: 0,
+        };
+        collect_manifests(
+            &base,
+            Path::new("."),
+            &keywords,
+            &mut candidates,
+            &mut scan,
+            0,
+        )
+        .unwrap();
+        assert!(scan.visited.is_empty());
+        scan.remaining_entries = MAX_SCAN_ENTRIES;
+        collect_manifests(
+            &base,
+            Path::new("."),
+            &keywords,
+            &mut candidates,
+            &mut scan,
+            MAX_SCAN_DEPTH + 1,
+        )
+        .unwrap();
+        assert!(scan.visited.is_empty());
+        for name in ["one", "two", "three"] {
+            base.create_dir(name).unwrap();
+        }
+        scan.remaining_entries = 1;
+        collect_manifests(
+            &base,
+            Path::new("."),
+            &keywords,
+            &mut candidates,
+            &mut scan,
+            0,
+        )
+        .unwrap();
+        assert_eq!(scan.remaining_entries, 0);
+        let count = scan.visited.len();
+        scan.remaining_entries = MAX_SCAN_ENTRIES;
+        collect_manifests(
+            &base,
+            Path::new("./"),
+            &keywords,
+            &mut candidates,
+            &mut scan,
+            0,
+        )
+        .unwrap();
+        assert_eq!(scan.visited.len(), count);
+        assert_eq!(scan.remaining_entries, MAX_SCAN_ENTRIES);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovered_dataset_handle_survives_path_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let dataset = temp.path().join("dataset");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&dataset).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(dataset.join("alpha.txt"), "alpha INSIDE_MARKER").unwrap();
+        std::fs::write(outside.join("alpha.txt"), "alpha OUTSIDE_MARKER").unwrap();
+        let handle = Dir::open_ambient_dir(&dataset, ambient_authority()).unwrap();
+        std::fs::rename(&dataset, temp.path().join("moved-dataset")).unwrap();
+        std::os::unix::fs::symlink(&outside, &dataset).unwrap();
+        let files = vec![DatasetManifestFile {
+            path: "alpha.txt".into(),
+            size: Some(1),
+        }];
+        let snippets = dataset_snippets(&handle, &files, &["alpha".into()])
+            .unwrap()
+            .join("\n");
+        assert!(snippets.contains("INSIDE_MARKER"));
+        assert!(!snippets.contains("OUTSIDE_MARKER"));
+    }
+}

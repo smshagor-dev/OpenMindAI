@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { api } from "../api";
-import { checkForAppUpdate } from "../lib/appUpdate";
+import { appUpdateCoordinator } from "../lib/appUpdate";
 import { notifyUser } from "../lib/notify";
 
 const UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1000;
@@ -9,46 +9,37 @@ function notificationKey(version: string) {
   return `openmindai:update-notified:${version}`;
 }
 
-function downloadKey(version: string) {
-  return `openmindai:update-download:${version}`;
+function readyKey(version: string) {
+  return `openmindai:update-ready:${version}`;
 }
 
+/** All automatic update triggers share the same coordinator as Settings. */
 async function checkForPublishedUpdate() {
   const preferences = await api.preferences();
   if (!preferences.autoCheckAppUpdates) return;
 
-  const update = await checkForAppUpdate();
-  if (!update) return;
+  const result = await appUpdateCoordinator.check();
+  if (!result.version || result.state === "failed") return;
+  const version = result.version;
 
-  try {
-    const notifiedStorageKey = notificationKey(update.version);
-    if (window.sessionStorage.getItem(notifiedStorageKey) !== "1") {
-      await notifyUser(
-        "OpenMindAI update available",
-        `Version ${update.version} is ready to download.`,
-      );
-      window.sessionStorage.setItem(notifiedStorageKey, "1");
-    }
+  const notifiedKey = notificationKey(version);
+  if (window.sessionStorage.getItem(notifiedKey) !== "1") {
+    // Claim the notification before awaiting OS delivery: React StrictMode
+    // and overlapping focus/interval requests must not duplicate it.
+    window.sessionStorage.setItem(notifiedKey, "1");
+    await notifyUser("OpenMindAI update available", `Version ${version} is ready to download.`);
+  }
+  if (!preferences.autoDownloadAppUpdates) return;
 
-    if (!preferences.autoDownloadAppUpdates) return;
-
-    const downloadStorageKey = downloadKey(update.version);
-    if (window.sessionStorage.getItem(downloadStorageKey)) return;
-
-    window.sessionStorage.setItem(downloadStorageKey, "downloading");
-    try {
-      await update.downloadAndInstall();
-      window.sessionStorage.setItem(downloadStorageKey, "ready");
-      await notifyUser(
-        "OpenMindAI is ready to update",
-        "Restart OpenMindAI to finish installing the update.",
-      );
-    } catch (error) {
-      window.sessionStorage.removeItem(downloadStorageKey);
-      throw error;
-    }
-  } finally {
-    await update.close();
+  const installed = await appUpdateCoordinator.downloadAndInstall();
+  if (installed.state !== "ready") return;
+  const doneKey = readyKey(version);
+  if (window.sessionStorage.getItem(doneKey) !== "1") {
+    window.sessionStorage.setItem(doneKey, "1");
+    await notifyUser(
+      "OpenMindAI is ready to update",
+      "Restart OpenMindAI to finish installing the update.",
+    );
   }
 }
 
@@ -71,6 +62,9 @@ export function AppUpdateMonitor() {
       if (!document.hidden) runCheck();
     };
 
+    // One orchestrator owns startup, periodic and focus-triggered checks.
+    // Overlapping triggers and React remounts converge on the same flight.
+    runCheck();
     const interval = window.setInterval(runCheck, UPDATE_CHECK_INTERVAL_MS);
     window.addEventListener("focus", runCheck);
     document.addEventListener("visibilitychange", handleVisibility);

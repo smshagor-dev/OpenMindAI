@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import type { VoiceDraftTarget } from "../lib/voiceDraft";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   FileText,
   FileType,
@@ -17,20 +18,28 @@ import {
   X,
 } from "lucide-react";
 import type { ReactNode, RefObject } from "react";
-import type { ModelRecord, RuntimeInventory } from "../types";
+import type { ImageGenerationOptions, ModelRecord, RuntimeInventory } from "../types";
 import { formatBytes } from "../lib/format";
-import type { AttachmentDraft } from "../lib/chat";
+import { attachmentContextStats, inferChatMode, type AttachmentDraft } from "../lib/chat";
+import type { PdfExtractionProgress } from "../lib/pdf";
 import { transcribeAudioBlob } from "../lib/media";
 import { api } from "../api";
 import { ModelSelector } from "./ModelSelector";
+import type { CloudModel } from "../cloudApi";
 
 export function Composer(props: {
   prompt: string;
   setPrompt: (value: string) => void;
+  createVoiceDraftTarget: () => VoiceDraftTarget;
+  imageOptions: ImageGenerationOptions;
+  setImageOptions: (options: ImageGenerationOptions) => void;
   attachments: AttachmentDraft[];
+  pdfImportProgress?: (PdfExtractionProgress & { fileName: string }) | null;
+  onCancelPdfImport?: () => void;
   enterToSend: boolean;
   streaming: boolean;
   submitting: boolean;
+  backgroundBusy?: boolean;
   addFiles: (files: FileList | null) => void | Promise<void>;
   removeAttachment: (id: string) => void;
   sendMessage: () => void;
@@ -42,10 +51,20 @@ export function Composer(props: {
   modelSwitching: boolean;
   modelSwitchError: string | null;
   onSelectModel: (modelId: string) => void;
+  showCloudModels?: boolean;
+  cloudUnavailable?: boolean;
+  onConnectCloud?: () => void;
+  cloudModels?: CloudModel[];
+  activeCloudModelId?: string;
+  onSelectCloudModel?: (modelId: string) => void;
   placeholder?: string;
   note?: string;
 }) {
   const textareaRef = props.composerRef;
+  const contextPlan = useMemo(() => attachmentContextStats(props.attachments), [props.attachments]);
+  const alive = useRef(false);
+  const startingMicrophone = useRef(false);
+  const composingRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -53,6 +72,8 @@ export function Composer(props: {
   const audioPreviewUrlsRef = useRef(new Map<string, string>());
   const attachmentsRef = useRef(props.attachments);
   attachmentsRef.current = props.attachments;
+  const [imageSettingsOpen, setImageSettingsOpen] = useState(false);
+  const isImageRequest = inferChatMode(props.prompt, props.attachments) === "image";
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [micError, setMicError] = useState<string | null>(null);
@@ -65,15 +86,17 @@ export function Composer(props: {
     node.style.height = `${Math.min(node.scrollHeight, 180)}px`;
   }, [props.prompt, textareaRef]);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    alive.current = true;
+    const previews = audioPreviewUrlsRef.current;
+    return () => {
+      alive.current = false;
       if (recorderRef.current?.state === "recording") recorderRef.current.stop();
       streamRef.current?.getTracks().forEach((track) => track.stop());
-      for (const url of audioPreviewUrlsRef.current.values()) URL.revokeObjectURL(url);
-      audioPreviewUrlsRef.current.clear();
-    },
-    [],
-  );
+      for (const url of previews.values()) URL.revokeObjectURL(url);
+      previews.clear();
+    };
+  }, []);
 
   useEffect(() => {
     pruneAudioPreviews(audioPreviewUrlsRef.current, props.attachments);
@@ -99,13 +122,15 @@ export function Composer(props: {
       stopMicrophone();
       return;
     }
-    if (transcribing || props.streaming || props.submitting) return;
+    if (startingMicrophone.current || transcribing || props.streaming || props.submitting || props.backgroundBusy) return;
     setMicError(null);
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       setMicError("Microphone recording is not available in this WebView.");
       return;
     }
 
+    const target = props.createVoiceDraftTarget();
+    startingMicrophone.current = true;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -115,6 +140,10 @@ export function Composer(props: {
           autoGainControl: true,
         },
       });
+      if (!alive.current || !target.isCurrent()) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       streamRef.current = stream;
       chunksRef.current = [];
       const preferred = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((mimeType) =>
@@ -128,43 +157,45 @@ export function Composer(props: {
         if (event.data.size > 0) chunksRef.current.push(event.data);
       };
       recorder.onerror = () => {
-        setMicError("Microphone recording failed.");
-        setRecording(false);
+        if (alive.current && target.isCurrent()) setMicError("Microphone recording failed.");
+        if (alive.current) setRecording(false);
         stream.getTracks().forEach((track) => track.stop());
       };
       recorder.onstop = () => {
-        setRecording(false);
+        if (alive.current) setRecording(false);
         stream.getTracks().forEach((track) => track.stop());
         streamRef.current = null;
         recorderRef.current = null;
         const chunks = chunksRef.current.slice();
         chunksRef.current = [];
-        if (chunks.length === 0) return;
+        if (chunks.length === 0 || !alive.current || !target.isCurrent()) return;
         const blob = new Blob(chunks, {
           type: recorder.mimeType || chunks[0].type || "audio/webm",
         });
         setTranscribing(true);
         void transcribeAudioBlob(blob, "microphone")
           .then((result) => {
-            const transcript = result.text.trim();
-            if (!transcript) return;
-            const current = props.prompt.trim();
-            props.setPrompt(current ? `${props.prompt.trimEnd()} ${transcript}` : transcript);
-            window.setTimeout(() => textareaRef.current?.focus(), 0);
+            if (!alive.current || !target.append(result.text)) return;
+            window.setTimeout(() => {
+              if (alive.current && target.isCurrent()) textareaRef.current?.focus();
+            }, 0);
           })
           .catch((error) => {
-            setMicError(error instanceof Error ? error.message : String(error));
+            if (alive.current && target.isCurrent()) setMicError(error instanceof Error ? error.message : String(error));
           })
-          .finally(() => setTranscribing(false));
+          .finally(() => { if (alive.current) setTranscribing(false); });
       };
       recorder.start(500);
       setRecording(true);
     } catch (error) {
+      if (!alive.current || !target.isCurrent()) return;
       setMicError(
         error instanceof Error
           ? `Microphone unavailable: ${error.message}`
           : "Microphone permission was not granted.",
       );
+    } finally {
+      startingMicrophone.current = false;
     }
   };
 
@@ -201,11 +232,33 @@ export function Composer(props: {
       className="composer"
       onSubmit={(event) => {
         event.preventDefault();
-        if (!canSend || props.streaming || props.submitting || recording || transcribing) return;
+        if (!canSend || props.streaming || props.submitting || props.backgroundBusy || recording || transcribing) return;
         void props.sendMessage();
       }}
     >
       <div className="composer-box">
+        {props.pdfImportProgress ? (
+          <div className="pdf-import-progress" role="status" aria-live="polite">
+            <span>
+              Importing {props.pdfImportProgress.fileName}:{" "}
+              {props.pdfImportProgress.phase === "reading" ? "reading text" : "scanned-page OCR"}{" "}
+              {props.pdfImportProgress.completed}/{props.pdfImportProgress.total} pages
+            </span>
+            <progress
+              aria-label="PDF import progress"
+              max={Math.max(1, props.pdfImportProgress.total)}
+              value={props.pdfImportProgress.completed}
+            />
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={props.onCancelPdfImport}
+              disabled={!props.onCancelPdfImport}
+            >
+              Cancel import
+            </button>
+          </div>
+        ) : null}
         {props.attachments.length ? (
           <div className="attachment-tray">
             {props.attachments.map((attachment) => {
@@ -234,6 +287,13 @@ export function Composer(props: {
                   )}
                   <span>{attachment.name}</span>
                   <small>{attachment.kind}</small>
+                  {attachment.warning ? (
+                    <small role="status" title={attachment.warning} aria-label={attachment.warning}>
+                      {attachment.kind === "pdf" && attachment.warning.includes("OCR incomplete")
+                        ? "PDF OCR incomplete"
+                        : "Limited context"}
+                    </small>
+                  ) : null}
                   <small>{formatBytes(attachment.size)}</small>
                   {audioPreview ? (
                     <audio
@@ -255,6 +315,83 @@ export function Composer(props: {
                 </span>
               );
             })}
+          </div>
+        ) : null}
+        {contextPlan.truncatedCount > 0 ? (
+          <p className="composer-note" role="status">
+            {contextPlan.truncatedCount} of {props.attachments.length} attachment(s) will be sent as
+            excerpts. Some text will not reach the model; attach fewer files or ask about a specific
+            passage for better coverage.
+          </p>
+        ) : null}
+        {isImageRequest ? (
+          <div className="composer-image-options">
+            <button
+              type="button"
+              className="composer-image-options-toggle"
+              aria-expanded={imageSettingsOpen}
+              onClick={() => setImageSettingsOpen((open) => !open)}
+            >
+              Image settings {imageSettingsOpen ? "−" : "+"}
+            </button>
+            {imageSettingsOpen ? (
+              <div className="composer-image-options-fields">
+                <label>
+                  Steps
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    step={1}
+                    placeholder="Auto"
+                    value={props.imageOptions.steps ?? ""}
+                    onChange={(event) => {
+                      const value = event.currentTarget.value;
+                      props.setImageOptions({
+                        ...props.imageOptions,
+                        steps: value === "" ? null : Number(value),
+                      });
+                    }}
+                  />
+                </label>
+                <label>
+                  Seed
+                  <input
+                    type="number"
+                    min={0}
+                    max={2147483647}
+                    step={1}
+                    placeholder="Default"
+                    value={props.imageOptions.seed ?? ""}
+                    onChange={(event) => {
+                      const value = event.currentTarget.value;
+                      props.setImageOptions({
+                        ...props.imageOptions,
+                        seed: value === "" ? null : Number(value),
+                      });
+                    }}
+                  />
+                </label>
+                <label className="composer-image-negative">
+                  Negative prompt
+                  <input
+                    type="text"
+                    maxLength={4000}
+                    placeholder="What to avoid in the image"
+                    value={props.imageOptions.negativePrompt}
+                    onChange={(event) =>
+                      props.setImageOptions({
+                        ...props.imageOptions,
+                        negativePrompt: event.currentTarget.value,
+                      })
+                    }
+                  />
+                </label>
+                <p className="composer-image-options-note">
+                  Leave seed and steps blank to keep the default renderer settings.
+                </p>
+              </div>
+            ) : null}
           </div>
         ) : null}
         <div className="composer-row">
@@ -284,13 +421,20 @@ export function Composer(props: {
             ref={textareaRef}
             value={props.prompt}
             onChange={(event) => props.setPrompt(event.target.value)}
+            onCompositionStart={() => { composingRef.current = true; }}
+            onCompositionEnd={() => { composingRef.current = false; }}
+            onBlur={() => { composingRef.current = false; }}
             onKeyDown={(event) => {
               if (
                 props.enterToSend &&
                 event.key === "Enter" &&
+                !composingRef.current &&
+                !event.nativeEvent.isComposing &&
+                event.nativeEvent.keyCode !== 229 &&
                 !event.shiftKey &&
                 !props.streaming &&
                 !props.submitting &&
+                !props.backgroundBusy &&
                 !recording &&
                 !transcribing &&
                 canSend
@@ -309,14 +453,36 @@ export function Composer(props: {
             rows={1}
           />
           <div className="composer-trailing">
-            <ModelSelector
-              models={props.models}
-              activeModelId={props.activeModelId}
-              runtime={props.runtime}
-              switching={props.modelSwitching}
-              switchError={props.modelSwitchError}
-              onSelect={props.onSelectModel}
-            />
+            {props.cloudUnavailable ? (
+              <button type="button" className="ghost-button cloud-connect-button"
+                title="Cloud-only mode needs a signed-in account with available API models"
+                onClick={props.onConnectCloud}>Connect Cloud</button>
+            ) : props.showCloudModels ? (
+              <label className="cloud-composer-model" title="Authenticated OpenMindAI Cloud API model">
+                <span className="sr-only">Cloud API model</span>
+                <select
+                  className="cloud-model-select"
+                  aria-label="Cloud API model"
+                  value={props.activeCloudModelId ?? ""}
+                  disabled={props.backgroundBusy || props.streaming || props.submitting}
+                  onChange={(event) => props.onSelectCloudModel?.(event.currentTarget.value)}
+                >
+                  {(props.cloudModels ?? []).map((model) => (
+                    <option key={model.id} value={model.id}>{model.name || model.id}</option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <ModelSelector
+                models={props.models}
+                activeModelId={props.activeModelId}
+                runtime={props.runtime}
+                switching={props.modelSwitching}
+                disabled={props.backgroundBusy || props.streaming || props.submitting}
+                switchError={props.modelSwitchError}
+                onSelect={props.onSelectModel}
+              />
+            )}
             <button
               type="button"
               className={recording ? "icon-button mic-active" : "icon-button"}
@@ -324,7 +490,7 @@ export function Composer(props: {
                 recording ? "Stop recording" : transcribing ? "Transcribing locally" : "Voice input"
               }
               aria-pressed={recording}
-              disabled={transcribing || props.streaming || props.submitting}
+              disabled={transcribing || props.streaming || props.submitting || props.backgroundBusy}
               onClick={() => void toggleMicrophone()}
             >
               {transcribing ? (
@@ -342,9 +508,9 @@ export function Composer(props: {
             ) : (
               <button
                 type="submit"
-                title={props.submitting ? "Preparing request" : "Send"}
+                title={props.backgroundBusy ? "Generation is running in another chat" : props.submitting ? "Preparing request" : "Send"}
                 className="composer-send"
-                disabled={!canSend || props.submitting || recording || transcribing}
+                disabled={!canSend || props.submitting || props.backgroundBusy || recording || transcribing}
               >
                 <Send size={18} />
               </button>
@@ -413,7 +579,7 @@ function ComposerTools(props: {
       .then((catalog) => {
         if (cancelled) return;
         setGenerationModels({
-          image: catalog.entries.some((item) => item.installed && item.entry.kind === "image"),
+          image: catalog.entries.some((item) => item.installed && item.entry.id === "sdxl-base-1"),
           video: catalog.entries.some((item) => item.installed && item.entry.kind === "video"),
           voice: catalog.entries.some(
             (item) => item.installed && item.entry.kind === "text-to-speech",

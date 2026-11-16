@@ -32,6 +32,13 @@ export interface WorkspaceFileContent {
   path: string;
   content: string;
   sizeBytes: number;
+  revisionSha256: string;
+}
+
+export interface WorkspaceFileSaveResult {
+  path: string;
+  kind: "file";
+  revisionSha256: string;
 }
 
 export interface TerminalCommandResult {
@@ -86,13 +93,15 @@ export const localWorkspaceApi = {
     path: string,
     content: string,
     approved = true,
+    expectedSha256?: string,
   ) =>
-    desktopInvoke<{ path: string; kind: string }>("write_project_workspace_file", {
+    desktopInvoke<WorkspaceFileSaveResult>("write_project_workspace_file", {
       projectId,
       rootId,
       path,
       content,
       approved,
+      expectedSha256,
     }),
   createDirectory: (
     projectId: string,

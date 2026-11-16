@@ -9,6 +9,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::State;
 use uuid::Uuid;
 
@@ -130,6 +131,15 @@ pub struct WorkspaceFileContent {
     pub path: String,
     pub content: String,
     pub size_bytes: u64,
+    pub revision_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileSaveResult {
+    pub path: String,
+    pub kind: String,
+    pub revision_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -249,12 +259,19 @@ pub fn list_project_workspace_directory(
     if !directory.is_dir() {
         return Err(AppError::internal("workspace path is not a directory"));
     }
+    // A crash can leave a prior editor save journaled with its original bytes
+    // staged in this directory. Recover before presenting its file listing.
+    crate::coding_patch::recover_pending_transactions(&directory)?;
 
     let base = selected_root_path(&config, root_id.as_deref()).ok();
     let mut entries = Vec::new();
     for item in fs::read_dir(&directory)?.take(MAX_DIRECTORY_ENTRIES) {
         let item = item?;
         let item_path = item.path();
+        if item.file_name() == std::ffi::OsStr::new(".openmindai-patch-transactions") {
+            // Internal recovery journals must not be offered as user files.
+            continue;
+        }
         let metadata = fs::symlink_metadata(&item_path)?;
         let file_type = metadata.file_type();
         let kind = if file_type.is_symlink() {
@@ -300,6 +317,10 @@ pub fn read_project_workspace_file(
     state: State<AppState>,
 ) -> Result<WorkspaceFileContent, AppError> {
     let config = load_project_config(&state, &project_id)?;
+    let tentative_path = resolve_path(&config, root_id.as_deref(), &path, false)?;
+    if let Some(parent) = tentative_path.parent() {
+        crate::coding_patch::recover_pending_transactions(parent)?;
+    }
     let file_path = resolve_path(&config, root_id.as_deref(), &path, true)?;
     let metadata = fs::metadata(&file_path)?;
     if !metadata.is_file() {
@@ -312,13 +333,21 @@ pub fn read_project_workspace_file(
         )));
     }
     let bytes = fs::read(&file_path)?;
+    if bytes.len() as u64 > MAX_TEXT_FILE_BYTES {
+        return Err(AppError::internal(
+            "file grew beyond the local editor limit while reading",
+        ));
+    }
+    let revision_sha256 = workspace_revision(&bytes);
+    let size_bytes = bytes.len() as u64;
     let content = String::from_utf8(bytes).map_err(|_| {
         AppError::internal("binary or non-UTF-8 files cannot be opened in the text editor")
     })?;
     Ok(WorkspaceFileContent {
         path: display_path(&file_path),
         content,
-        size_bytes: metadata.len(),
+        size_bytes,
+        revision_sha256,
     })
 }
 
@@ -329,8 +358,9 @@ pub fn write_project_workspace_file(
     path: String,
     content: String,
     approved: bool,
+    expected_sha256: Option<String>,
     state: State<AppState>,
-) -> Result<WorkspaceMutationResult, AppError> {
+) -> Result<WorkspaceFileSaveResult, AppError> {
     if !approved {
         return Err(AppError::internal(
             "saving a local file requires explicit approval",
@@ -349,12 +379,83 @@ pub fn write_project_workspace_file(
     if let Some(parent) = file_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&file_path, content.as_bytes())?;
+    // Re-resolve after creating parents, so a replaced intermediate symlink cannot
+    // silently change the destination selected by the project scope check.
+    let checked_path = resolve_path(&config, root_id.as_deref(), &path, false)?;
+    if checked_path != file_path {
+        return Err(AppError::internal(
+            "workspace path changed before save; reopen the file",
+        ));
+    }
+    let revision_sha256 = transactional_workspace_save(
+        &checked_path,
+        content.as_bytes(),
+        expected_sha256.as_deref(),
+    )?;
     invalidate_project_workspace_context(&project_id);
-    Ok(WorkspaceMutationResult {
-        path: display_path(&file_path),
+    Ok(WorkspaceFileSaveResult {
+        path: display_path(&checked_path),
         kind: "file".to_string(),
+        revision_sha256,
     })
+}
+
+/// Stage changes in the existing durable patch transaction system instead of
+/// truncating the destination. A missing revision may only create a NEW file.
+fn transactional_workspace_save(
+    target: &Path,
+    bytes: &[u8],
+    expected_sha256: Option<&str>,
+) -> Result<String, AppError> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| AppError::internal("workspace file has no parent directory"))?;
+    let name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| AppError::internal("workspace file name is not valid UTF-8"))?;
+    let content = std::str::from_utf8(bytes)
+        .map_err(|_| AppError::internal("workspace editor requires UTF-8 text"))?;
+    let action = match expected_sha256 {
+        Some(expected) => {
+            if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(AppError::internal("invalid workspace revision token"));
+            }
+            serde_json::json!({
+                "operations": [{
+                    "op": "write",
+                    "path": name,
+                    "content": content,
+                    "expectedSha256": expected
+                }]
+            })
+        }
+        None => serde_json::json!({
+            "operations": [{ "op": "create", "path": name, "content": content }]
+        }),
+    };
+    // apply_patch_transaction serializes writes within this process, checks
+    // source hashes, journals old bytes, stages synced replacements and rolls
+    // back interrupted writes on the next transaction in this directory.
+    if let Err(error) = crate::coding_patch::apply_patch_transaction(parent, &action) {
+        let reason = error.to_string();
+        if reason.contains("stale-file precondition failed") {
+            return Err(AppError::internal(
+                "This file changed on disk since you opened it. Save was cancelled; your editor text is preserved. Copy your edits and reopen the file before resolving the conflict.",
+            ));
+        }
+        if reason.contains("create operation target already exists") {
+            return Err(AppError::internal(
+                "The file already exists. Open it first to obtain its revision before saving.",
+            ));
+        }
+        return Err(error);
+    }
+    Ok(workspace_revision(bytes))
+}
+
+fn workspace_revision(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 #[tauri::command]
@@ -943,6 +1044,89 @@ fn key_context_files(root: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_save_rejects_stale_or_missing_revisions() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("draft.txt");
+        let empty = workspace_revision(b"");
+        let initial = transactional_workspace_save(&target, b"initial", None).unwrap();
+        assert_eq!(initial, workspace_revision(b"initial"));
+        assert!(transactional_workspace_save(&target, b"unsafe", None).is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "initial");
+
+        fs::write(&target, "external edit").unwrap();
+        assert!(transactional_workspace_save(&target, b"overwrite", Some(&initial)).is_err());
+        assert!(transactional_workspace_save(&target, b"overwrite", Some(&empty)).is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "external edit");
+
+        let fresh = workspace_revision(b"external edit");
+        let updated =
+            transactional_workspace_save(&target, b"new saved data", Some(&fresh)).unwrap();
+        assert_eq!(updated, workspace_revision(b"new saved data"));
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new saved data");
+    }
+
+    #[test]
+    fn workspace_save_keeps_original_on_invalid_revision_and_failed_create() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("notes.txt");
+        fs::write(&target, "keep original").unwrap();
+        assert!(transactional_workspace_save(&target, b"wrong", Some("invalid")).is_err());
+        assert!(transactional_workspace_save(&target, b"wrong", None).is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "keep original");
+        // Trying to replace a directory must not delete it or its children.
+        let directory = temp.path().join("folder");
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("child.txt"), "safe").unwrap();
+        assert!(transactional_workspace_save(&directory, b"destroy", None).is_err());
+        assert_eq!(
+            fs::read_to_string(directory.join("child.txt")).unwrap(),
+            "safe"
+        );
+    }
+
+    #[test]
+    fn workspace_save_preserves_existing_permissions() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("permissions.txt");
+        fs::write(&target, "first").unwrap();
+        let original = fs::metadata(&target).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o750)).unwrap();
+        }
+        let token = workspace_revision(b"first");
+        transactional_workspace_save(&target, b"second", Some(&token)).unwrap();
+        let after = fs::metadata(&target).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(after.mode() & 0o777, 0o750);
+        }
+        #[cfg(not(unix))]
+        assert_eq!(after.readonly(), original.readonly());
+        #[cfg(unix)]
+        let _ = original;
+        assert_eq!(fs::read_to_string(&target).unwrap(), "second");
+    }
+
+    #[test]
+    fn workspace_save_failure_before_staging_leaves_original_intact() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("existing.txt");
+        fs::write(&target, "protected content").unwrap();
+        // An unsafe transaction-store entry must abort before moving the target.
+        fs::write(
+            temp.path().join(".openmindai-patch-transactions"),
+            "not a folder",
+        )
+        .unwrap();
+        let token = workspace_revision(b"protected content");
+        assert!(transactional_workspace_save(&target, b"new content", Some(&token)).is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "protected content");
+    }
 
     #[test]
     fn truncation_is_unicode_safe() {

@@ -8,6 +8,7 @@ mod github;
 mod google;
 mod hardware;
 mod inference;
+mod image_jobs;
 mod launch_planner;
 mod logging;
 mod maintenance;
@@ -22,37 +23,44 @@ mod runtime;
 mod runtime_install;
 mod sampling;
 mod settings;
+mod proxy_credentials;
 mod storage;
 mod voice_runtime;
+mod web_provider_config;
 
-use std::{path::PathBuf, sync::Mutex};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
-use artifacts::{Artifact, ArtifactManager, ArtifactRepository, LibraryEntry};
-use chat::{ChatRepository, Conversation, Message};
+use artifacts::{Artifact, ArtifactManager, ArtifactRepository, LibraryPage};
+use chat::{ChatRepository, ChatSearchPage, Conversation, Message};
 use database::Database;
 use github::{GithubAccount, GithubIssueSummary, GithubRepoSummary, GithubRepository};
 use google::{GoogleCredentialsStatus, GoogleRepository};
 use hardware::{HardwareProfile, HardwareProfiler};
 use inference::{
-    ActiveGenerations, InferenceMedia, InferenceMode, StreamRequest, StreamStartedEvent,
+    ActiveGenerations, InferenceMedia, InferenceMode, StreamDoneEvent, StreamRequest, StreamStartedEvent,
 };
+use image_jobs::ActiveImageJobs;
 use dataset_download::{DatasetDownloadManager, DatasetDownloadStatus};
 use launch_planner::{LaunchPlan, ModelLaunchPlanner};
 use maintenance::{BackupInfo, DiagnosticReport, RepairSummary};
 use model_catalog::ModelCatalogReport;
 use model_download::{DownloadStatus, ModelDownloadManager};
 use model_registry::{ModelLifecycleState, ModelRecord, ModelRegistry};
-use performance::{PerformanceProfile, PerformanceProfileManager};
+use performance::{PerformanceMode, PerformanceProfile, PerformanceProfileManager};
 use portable_root::{
     available_bytes_for_path, load_installation, preview_writable, sanitize_profile_name,
     save_installation, InstallConfig, InstallationStatus, PortableRootInfo, PortableRootManager,
     SetupState, RECOMMENDED_INITIAL_STORAGE_BYTES,
 };
 use projects::{
-    project_context_message, Project, ProjectFile, ProjectFileInput, ProjectRepository,
+    project_context_message, project_context_message_for_prompt, Project, ProjectBinaryFileDownload,
+    ProjectBinaryFileInput, ProjectFile, ProjectFileInput, ProjectRepository,
 };
 use reqwest::Client;
 use runtime::{allocate_local_port, LlamaRuntimeManager, LlamaRuntimeStatus, RuntimeInventory};
@@ -75,7 +83,7 @@ struct AppState {
     // profile name was chosen (see `run()`).
     active_database_path: PathBuf,
     database: Mutex<Database>,
-    runtime: Mutex<LlamaRuntimeManager>,
+    runtime: Arc<Mutex<LlamaRuntimeManager>>,
     // Second llama-server for the coding agent when Agent Setup places it in a dedicated
     // runtime (see agent_runtime::decide_placement). Idle unless that placement is chosen.
     agent_runtime: Mutex<LlamaRuntimeManager>,
@@ -84,6 +92,7 @@ struct AppState {
     dataset_downloads: DatasetDownloadManager,
     runtime_installer: RuntimeInstaller,
     active_generations: ActiveGenerations,
+    image_jobs: ActiveImageJobs,
     warm_start: warm_start::WarmStartCoordinator,
     http: Client,
 }
@@ -94,7 +103,7 @@ fn get_portable_root(state: State<AppState>) -> Result<PortableRootInfo, app_err
 }
 
 #[tauri::command]
-fn installation_status(state: State<AppState>) -> InstallationStatus {
+fn installation_status(state: State<AppState>) -> Result<InstallationStatus, app_error::AppError> {
     portable_root::installation_status(&state.root)
 }
 
@@ -170,7 +179,7 @@ fn save_setup_progress(
 /// not an error — there's nothing to persist for those.
 #[tauri::command]
 fn mark_runtime_ready() -> Result<(), app_error::AppError> {
-    if let Some(mut config) = load_installation() {
+    if let Some(mut config) = load_installation()? {
         config.runtime_ready = true;
         config.setup_state = Some(if config.model_ready {
             SetupState::Completed
@@ -185,7 +194,7 @@ fn mark_runtime_ready() -> Result<(), app_error::AppError> {
 
 #[tauri::command]
 fn mark_model_ready() -> Result<(), app_error::AppError> {
-    if let Some(mut config) = load_installation() {
+    if let Some(mut config) = load_installation()? {
         config.model_ready = true;
         config.setup_state = Some(if config.runtime_ready {
             SetupState::Completed
@@ -247,6 +256,19 @@ fn create_conversation(
 }
 
 #[tauri::command]
+fn fork_conversation_for_edit(
+    conversation_id: String,
+    message_id: String,
+    state: State<AppState>,
+) -> Result<chat::ForkedConversation, app_error::AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    ChatRepository::new(&db).fork_for_edit(&conversation_id, &message_id)
+}
+
+#[tauri::command]
 fn rename_conversation(
     id: String,
     title: String,
@@ -298,6 +320,23 @@ fn archive_conversation(id: String, state: State<AppState>) -> Result<(), app_er
 }
 
 #[tauri::command]
+fn list_archived_conversations(
+    limit: Option<i64>,
+    state: State<AppState>,
+) -> Result<Vec<Conversation>, app_error::AppError> {
+    let db = state.database.lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    ChatRepository::new(&db).list_archived_conversations(limit.unwrap_or(100))
+}
+
+#[tauri::command]
+fn restore_conversation(id: String, state: State<AppState>) -> Result<(), app_error::AppError> {
+    let db = state.database.lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    ChatRepository::new(&db).restore_conversation(&id)
+}
+
+#[tauri::command]
 fn delete_conversation(id: String, state: State<AppState>) -> Result<(), app_error::AppError> {
     let db = state
         .database
@@ -316,6 +355,24 @@ fn list_messages(
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
     ChatRepository::new(&db).list_messages(&conversation_id)
+}
+
+#[tauri::command]
+fn search_conversations(
+    query: String,
+    cursor: Option<String>,
+    limit: Option<i64>,
+    state: State<AppState>,
+) -> Result<ChatSearchPage, app_error::AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    ChatRepository::new(&db).search_conversations(
+        &query,
+        cursor.as_deref(),
+        limit.unwrap_or(40),
+    )
 }
 
 #[tauri::command]
@@ -379,12 +436,30 @@ fn delete_message(message_id: String, state: State<AppState>) -> Result<(), app_
 }
 
 #[tauri::command]
-fn list_projects(state: State<AppState>) -> Result<Vec<Project>, app_error::AppError> {
+fn list_projects(
+    cursor: Option<String>,
+    limit: Option<i64>,
+    state: State<AppState>,
+) -> Result<projects::ProjectListPage, app_error::AppError> {
     let db = state
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-    ProjectRepository::new(&db).list_projects()
+    ProjectRepository::new(&db).list_projects(cursor.as_deref(), limit.unwrap_or(50))
+}
+
+/// Only the selected project's conversations and full text previews cross
+/// the Tauri IPC boundary. The catalog query never includes file bodies.
+#[tauri::command]
+fn get_project(
+    project_id: String,
+    state: State<AppState>,
+) -> Result<Project, app_error::AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    ProjectRepository::new(&db).find_project(&project_id)
 }
 
 #[tauri::command]
@@ -473,6 +548,33 @@ fn add_project_file(
     Ok(file)
 }
 
+/// Binary uploads are stored in the portable database; original file names
+/// never become operating-system paths.
+#[tauri::command]
+fn add_project_binary_file(
+    input: ProjectBinaryFileInput,
+    state: State<AppState>,
+) -> Result<ProjectFile, app_error::AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    ProjectRepository::new(&db).add_binary_file(&input)
+}
+
+#[tauri::command]
+fn read_project_binary_file(
+    project_id: String,
+    file_id: String,
+    state: State<AppState>,
+) -> Result<ProjectBinaryFileDownload, app_error::AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    ProjectRepository::new(&db).read_binary_file(&project_id, &file_id)
+}
+
 #[tauri::command]
 fn delete_project_file(
     project_id: String,
@@ -514,23 +616,16 @@ fn create_text_artifact(
         .unwrap_or_else(|_| "artifact".to_string());
 
     let manager = ArtifactManager::new(&state.root);
-    let (path, filename_final, relative) =
+    let (_path, filename_final, relative) =
         manager.resolve_destination(&kind, filename.as_deref(), &fallback_title)?;
-    std::fs::write(&path, content.as_bytes())?;
-    let size = content.len() as i64;
-
-    let artifacts = ArtifactRepository::new(&db);
-    let artifact = artifacts.create(
-        &conversation_id,
-        message_id.as_deref(),
-        &filename_final,
-        &relative,
-        artifacts::mime_type_for(&kind),
-        &kind,
-        "generating",
+    let id = crate::text_artifact_save::save(
+        db.connection(), state.root.root(), crate::text_artifact_save::TextArtifactWrite {
+            conversation_id: &conversation_id, message_id: message_id.as_deref(),
+            name: &filename_final, relative: &relative,
+            mime_type: artifacts::mime_type_for(&kind), kind: &kind, content: content.as_bytes(),
+        },
     )?;
-    artifacts.set_ready(&artifact.id, size, None)?;
-    artifacts.find(&artifact.id)
+    ArtifactRepository::new(&db).find(&id)
 }
 
 #[tauri::command]
@@ -551,7 +646,10 @@ async fn create_document_artifact(
         ));
     }
 
-    let (artifact, path, document_title) = {
+    // Reserve before creating a row/staging directory: cancelled queued calls
+    // cannot strand a generating artifact. No DB mutex crosses this await.
+    let permit = crate::document_jobs::reserve().await?;
+    let (artifact, output, document_title) = {
         let db = state
             .database
             .lock()
@@ -563,8 +661,8 @@ async fn create_document_artifact(
                 .unwrap_or_else(|_| "document".to_string())
         });
         let manager = ArtifactManager::new(&state.root);
-        let (path, filename_final, relative) =
-            manager.resolve_destination(&kind, filename.as_deref(), &fallback_title)?;
+        let (output, filename_final, relative) =
+            manager.stage_destination(&kind, filename.as_deref(), &fallback_title)?;
         let artifacts = ArtifactRepository::new(&db);
         let artifact = artifacts.create(
             &conversation_id,
@@ -576,54 +674,88 @@ async fn create_document_artifact(
             "generating",
         )?;
         let document_title = title.unwrap_or_else(|| artifact.name.clone());
-        (artifact, path, document_title)
+        (artifact, output, document_title)
     };
 
-    app.emit("artifact:started", &artifact)
-        .map_err(|error| app_error::AppError::internal(error.to_string()))?;
+    let path = output.path.clone();
+    if let Err(error) = app.emit("artifact:started", &artifact) {
+        tracing::warn!(artifact_id = %artifact.id, %error, "document start event could not be delivered");
+    }
 
-    let generation_result = match kind.as_str() {
-        "pdf" => document_generator::generate_pdf(&content, &document_title, &path)
-            .map(|meta| Some(meta.page_count)),
-        "docx" => document_generator::generate_docx(&content, &document_title, &path).map(|_| None),
-        _ => unreachable!(),
-    };
-
-    let db = state
-        .database
-        .lock()
-        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-    let artifacts = ArtifactRepository::new(&db);
-    let updated = match generation_result {
-        Ok(page_count) => {
-            let size = std::fs::metadata(&path)
-                .map(|metadata| metadata.len() as i64)
-                .unwrap_or(0);
-            artifacts.set_ready(&artifact.id, size, page_count)?;
-            artifacts.find(&artifact.id)?
+    let worker_app = app.clone();
+    let worker_id = artifact.id.clone();
+    let result = crate::document_jobs::run(permit, move || {
+        let generation_result = crate::document_jobs::render(|| {
+            let generated = match kind.as_str() {
+            "pdf" => document_generator::generate_pdf(&content, &document_title, &path)
+                .map(|meta| Some(meta.page_count)),
+            "docx" => document_generator::generate_docx(&content, &document_title, &path).map(|_| None),
+            _ => unreachable!(),
+        };
+            generated.and_then(|pages| output.commit_for(&kind).map(|size| (pages, size)))
+        });
+        // The worker owns completion, including when an IPC caller disappears.
+        let state = worker_app.state::<AppState>();
+        let updated = {
+            let db = state.database.lock().map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+            let artifacts = ArtifactRepository::new(&db);
+            artifacts.finish_document(&worker_id, &output, generation_result)?
+        };
+        // Window notification failure must not turn a completed export into a failed one.
+        if let Err(error) = worker_app.emit("artifact:done", &updated) {
+            tracing::warn!(artifact_id = %worker_id, %error, "document completion event could not be delivered");
         }
-        Err(error) => {
+        Ok(updated)
+    }).await;
+    if let Err(error) = &result {
+        // A worker panic must not leave a permanent generating row. Never
+        // overwrite an already committed ready/failed outcome on a later error.
+        let db = state.database.lock().map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+        let artifacts = ArtifactRepository::new(&db);
+        if artifacts.find(&artifact.id)?.status == "generating" {
             artifacts.set_failed(&artifact.id, &error.to_string())?;
-            artifacts.find(&artifact.id)?
+            let updated = artifacts.find(&artifact.id)?;
+            let _ = app.emit("artifact:done", &updated);
         }
-    };
-    drop(db);
+    }
+    result
+}
 
-    app.emit("artifact:done", &updated)
-        .map_err(|error| app_error::AppError::internal(error.to_string()))?;
-
-    Ok(updated)
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageProgressEvent {
+    artifact_id: String,
+    stage: &'static str,
+    step: Option<u32>,
+    total_steps: Option<u32>,
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command arguments are individually deserialized.
 async fn create_generation_artifact(
     app: AppHandle,
     conversation_id: String,
     message_id: Option<String>,
     kind: String,
     prompt: String,
+    use_cpu: Option<bool>,
+    image_options: Option<diffusion_runtime::ImageRenderOptions>,
     state: State<'_, AppState>,
 ) -> Result<Artifact, app_error::AppError> {
+    if kind != "image" && image_options.is_some() {
+        return Err(app_error::AppError::internal(
+            "image rendering options are only available for images",
+        ));
+    }
+    let image_options = image_options.unwrap_or_default();
+    if kind == "image" {
+        image_options.validate()?;
+    }
+    if use_cpu == Some(true) && kind != "image" {
+        return Err(app_error::AppError::internal(
+            "CPU-only retry is available for images only",
+        ));
+    }
     if !matches!(kind.as_str(), "image" | "video" | "voice") {
         return Err(app_error::AppError::internal(
             "unsupported generation artifact kind",
@@ -638,12 +770,25 @@ async fn create_generation_artifact(
     // `state.hardware` is the startup placeholder (0 bytes RAM, no GPUs); the
     // memory and GPU checks need the completed hardware scan.
     let hardware = HardwareProfiler::for_inference(&state.hardware);
-    if let Some(report) =
-        artifacts::media_preflight::preflight_for_hardware(&state.root, artifact_kind, &hardware)?
-    {
+    let verification_root = state.root.clone();
+    let verification_kind = artifact_kind.to_owned();
+    // Rehashing a multi-gigabyte checkpoint is blocking filesystem I/O.
+    // Do not occupy a Tokio async worker or freeze unrelated chat commands.
+    let media_report = tokio::task::spawn_blocking(move || {
+        artifacts::media_preflight::preflight_for_hardware(
+            &verification_root,
+            &verification_kind,
+            &hardware,
+        )
+    })
+    .await
+    .map_err(|error| {
+        app_error::AppError::internal(format!("media integrity task failed: {error}"))
+    })??;
+    if let Some(report) = media_report {
         report.ensure_ready()?;
     }
-    let (artifact, path) = {
+    let (artifact, output) = {
         let db = state
             .database
             .lock()
@@ -653,8 +798,8 @@ async fn create_generation_artifact(
             .map(|conversation| conversation.title)
             .unwrap_or_else(|_| "generation".to_string());
         let manager = ArtifactManager::new(&state.root);
-        let (path, filename_final, relative) =
-            manager.resolve_destination(artifact_kind, None, &fallback_title)?;
+        let (output, filename_final, relative) =
+            manager.stage_destination(artifact_kind, None, &fallback_title)?;
         let artifacts = ArtifactRepository::new(&db);
         let artifact = artifacts.create(
             &conversation_id,
@@ -665,24 +810,106 @@ async fn create_generation_artifact(
             artifact_kind,
             "generating",
         )?;
-        (artifact, path)
+        (artifact, output)
     };
 
+    let image_job = if kind == "image" {
+        Some(state.image_jobs.start(&artifact.id)?)
+    } else {
+        None
+    };
+
+    let path = output.path.clone();
     app.emit("artifact:started", &artifact)
         .map_err(|error| app_error::AppError::internal(error.to_string()))?;
+    // Stage updates are advisory UI events. A detached window must not fail
+    // the render simply because it could not receive a progress notification.
+    let report_stage = |stage: &'static str| {
+        let _ = app.emit("image:progress", ImageProgressEvent {
+            artifact_id: artifact.id.clone(),
+            stage,
+            step: None,
+            total_steps: None,
+        });
+    };
+    let report_step = |step: u32, total_steps: u32| {
+        let _ = app.emit("image:progress", ImageProgressEvent {
+            artifact_id: artifact.id.clone(),
+            stage: "rendering",
+            step: Some(step),
+            total_steps: Some(total_steps),
+        });
+    };
+    let generation_result = if let Some(job) = image_job.as_ref() {
+        let render = async {
+            // Only one diffusion image runs at a time to avoid competing
+            // for the same GPU memory. Waiting jobs retain their own Stop
+            // action, and a dropped or cancelled future releases the slot.
+            let _render_slot = match state.image_jobs.try_reserve_renderer() {
+                Some(permit) => permit,
+                None => {
+                    report_stage("queued");
+                    state.image_jobs.reserve_renderer().await?
+                }
+            };
+            report_stage("preparing");
+            generate_local_media_artifact(
+                &state, &kind, &prompt, &path, use_cpu.unwrap_or(false), &image_options, &report_stage, &report_step
+            ).await
+        };
+        tokio::pin!(render);
+        // Refresh the DB timestamp while waiting for the renderer or while
+        // rendering. Otherwise an active image older than four hours could be
+        // mistaken for an abandoned job by the Library recovery check.
+        let mut heartbeat = tokio::time::interval(std::time::Duration::from_secs(60));
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                biased;
+                _ = job.cancellation().cancelled() => {
+                    break Err(app_error::AppError::ArtifactGenerationFailed(
+                        "Image generation cancelled by user.".to_string(),
+                    ));
+                }
+                result = &mut render => break result,
+                _ = heartbeat.tick() => {
+                    match state.database.lock() {
+                        Ok(db) => {
+                            if let Err(error) = ArtifactRepository::new(&db).touch_generating_image(&artifact.id) {
+                                tracing::warn!(artifact_id = %artifact.id, error = %error, "failed to refresh image job heartbeat");
+                            }
+                        }
+                        Err(_) => tracing::warn!(artifact_id = %artifact.id, "image job heartbeat could not lock database"),
+                    }
+                }
+            }
+        }
+    } else {
+        generate_local_media_artifact(
+            &state, &kind, &prompt, &path, use_cpu.unwrap_or(false), &image_options, &report_stage, &report_step
+        ).await
+    };
+    // A cancellation arriving just as inference finishes must not publish a ready image.
+    let generation_result = if image_job.as_ref().is_some_and(|job| job.cancellation().is_cancelled()) {
+        Err(app_error::AppError::ArtifactGenerationFailed(
+            "Image generation cancelled by user.".to_string(),
+        ))
+    } else {
+        generation_result
+    };
+    if generation_result.is_err() {
+        // The external renderer may have written a partial file before exiting.
+        let _ = std::fs::remove_file(&path);
+    }
 
-    let generation_result = generate_local_media_artifact(&state, &kind, &prompt, &path).await;
-
+    let generation_result = generation_result.and_then(|()| output.commit_for(artifact_kind));
     let db = state
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
     let artifacts = ArtifactRepository::new(&db);
     let updated = match generation_result {
-        Ok(()) => {
-            let size = std::fs::metadata(&path)
-                .map(|metadata| metadata.len() as i64)
-                .unwrap_or(0);
+        Ok(size) => {
             artifacts.set_ready(&artifact.id, size, None)?;
             artifacts.find(&artifact.id)?
         }
@@ -696,14 +923,20 @@ async fn create_generation_artifact(
     app.emit("artifact:done", &updated)
         .map_err(|error| app_error::AppError::internal(error.to_string()))?;
 
+    drop(image_job);
     Ok(updated)
 }
 
+#[allow(clippy::too_many_arguments)] // Image generation passes rendering options and progress callback.
 async fn generate_local_media_artifact(
     state: &AppState,
     kind: &str,
     prompt: &str,
     path: &std::path::Path,
+    use_cpu: bool,
+    image_options: &diffusion_runtime::ImageRenderOptions,
+    on_stage: &(dyn Fn(&'static str) + Send + Sync),
+    on_step: &(dyn Fn(u32, u32) + Send + Sync),
 ) -> Result<(), app_error::AppError> {
     match kind {
         "image" => {
@@ -727,6 +960,10 @@ async fn generate_local_media_artifact(
                 &model_path,
                 prompt,
                 path,
+                use_cpu,
+                image_options,
+                on_stage,
+                on_step,
             )
             .await
         }
@@ -870,16 +1107,31 @@ fn list_artifacts(
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    // Opening a chat after the safety window should also recover an old
+    // image job, without needing the user to restart the app again.
+    db.recover_stale_image_artifacts()?;
     ArtifactRepository::new(&db).list_for_conversation(&conversation_id)
 }
 
 #[tauri::command]
-fn list_library_entries(state: State<AppState>) -> Result<Vec<LibraryEntry>, app_error::AppError> {
+fn list_library_entries(
+    kind: Option<String>,
+    search: Option<String>,
+    cursor: Option<String>,
+    limit: Option<i64>,
+    state: State<AppState>,
+) -> Result<LibraryPage, app_error::AppError> {
     let db = state
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-    ArtifactRepository::new(&db).list_all(200)
+    db.recover_stale_image_artifacts()?;
+    ArtifactRepository::new(&db).list_page(
+        kind.as_deref(),
+        search.as_deref(),
+        cursor.as_deref(),
+        limit.unwrap_or(50),
+    )
 }
 
 #[tauri::command]
@@ -892,12 +1144,75 @@ fn open_artifact(artifact_id: String, state: State<AppState>) -> Result<(), app_
         let artifact = ArtifactRepository::new(&db).find(&artifact_id)?;
         state.root.resolve_relative(&artifact.path)?
     };
-    let mut command = std::process::Command::new("cmd");
-    command.args(["/C", "start", "", &path.display().to_string()]);
+    launch_artifact_path(&state.root, &path, false)
+}
+
+/// Restrict shell-open/reveal operations to real files within the current
+/// portable root. Canonicalization prevents a replaced symlink from escaping
+/// that boundary after the artifact path was read from the database.
+fn checked_artifact_path(
+    root: &PortableRootManager,
+    path: &Path,
+) -> Result<PathBuf, app_error::AppError> {
+    let canonical_root = std::fs::canonicalize(root.root())?;
+    let canonical = std::fs::canonicalize(path).map_err(|error| {
+        app_error::AppError::internal(format!("artifact file is unavailable: {error}"))
+    })?;
+    if !canonical.is_file() || !canonical.starts_with(&canonical_root) {
+        return Err(app_error::AppError::internal(
+            "artifact must be an existing file inside OpenMindAI Root",
+        ));
+    }
+    Ok(canonical)
+}
+
+fn artifact_os_command(path: &Path, reveal: bool) -> std::process::Command {
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = std::process::Command::new("explorer");
+        if reveal {
+            command.arg(format!("/select,{}", path.display()));
+        } else {
+            command.arg(path);
+        }
+        command
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = std::process::Command::new("open");
+        if reveal {
+            command.arg("-R");
+        }
+        command.arg(path);
+        command
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let mut command = std::process::Command::new("xdg-open");
+        // xdg-open has no portable reveal/select-file flag; open the containing
+        // directory instead of pretending that file selection is supported.
+        command.arg(if reveal {
+            path.parent().unwrap_or(path)
+        } else {
+            path
+        });
+        command
+    }
+}
+
+fn launch_artifact_path(
+    root: &PortableRootManager,
+    path: &Path,
+    reveal: bool,
+) -> Result<(), app_error::AppError> {
+    let canonical = checked_artifact_path(root, path)?;
+    let mut command = artifact_os_command(&canonical, reveal);
     hide_console_window(&mut command);
     command
         .spawn()
-        .map_err(|error| app_error::AppError::internal(error.to_string()))?;
+        .map_err(|error| app_error::AppError::internal(format!("cannot open artifact: {error}")))?;
     Ok(())
 }
 
@@ -956,11 +1271,7 @@ fn reveal_artifact_in_folder(
         let artifact = ArtifactRepository::new(&db).find(&artifact_id)?;
         state.root.resolve_relative(&artifact.path)?
     };
-    std::process::Command::new("explorer")
-        .arg(format!("/select,{}", path.display()))
-        .spawn()
-        .map_err(|error| app_error::AppError::internal(error.to_string()))?;
-    Ok(())
+    launch_artifact_path(&state.root, &path, true)
 }
 
 /// Waits for the completed hardware scan instead of returning the startup
@@ -972,13 +1283,25 @@ async fn detect_hardware(
     Ok(HardwareProfiler::for_inference(&state.hardware))
 }
 
+fn selected_performance_preference(state: &AppState) -> Result<String, app_error::AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    Ok(SettingsRepository::new(&db)
+        .get_preferences()?
+        .default_performance_profile)
+}
+
 #[tauri::command]
 async fn get_performance_profile(
     state: State<'_, AppState>,
 ) -> Result<PerformanceProfile, app_error::AppError> {
-    Ok(PerformanceProfileManager::auto(&HardwareProfiler::for_inference(
-        &state.hardware,
-    )))
+    let selection = selected_performance_preference(&state)?;
+    Ok(PerformanceProfileManager::select(
+        &HardwareProfiler::for_inference(&state.hardware),
+        &selection,
+    ))
 }
 
 #[tauri::command]
@@ -1099,8 +1422,13 @@ async fn plan_model_launch(
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
     let model = ModelRegistry::new(&db, &state.root).validate_model(&model_id)?;
+    let selection = SettingsRepository::new(&db)
+        .get_preferences()?
+        .default_performance_profile;
     let port = allocate_local_port()?;
-    Ok(ModelLaunchPlanner::plan(&model, &hardware, port))
+    Ok(ModelLaunchPlanner::plan_for_preference(
+        &model, &hardware, &selection, port,
+    ))
 }
 
 #[tauri::command]
@@ -1117,7 +1445,10 @@ async fn activate_model(
         ModelRegistry::new(&db, &state.root).validate_model(&model_id)?
     };
     let hardware = HardwareProfiler::for_inference(&state.hardware);
-    let plan = ModelLaunchPlanner::plan(&model, &hardware, allocate_local_port()?);
+    let selection = selected_performance_preference(&state)?;
+    let plan = ModelLaunchPlanner::plan_for_preference(
+        &model, &hardware, &selection, allocate_local_port()?,
+    );
     let (status, _lease) = runtime::ensure_model_ready(&state.runtime, &hardware, &plan.config)?;
     state.warm_start.mark_runtime_ready(&model.id);
 
@@ -1303,6 +1634,22 @@ async fn get_llama_runtime_inventory(
 }
 
 #[tauri::command]
+fn get_diffusion_runtime_status(
+    state: State<AppState>,
+) -> Result<diffusion_runtime::DiffusionRuntimeStatus, app_error::AppError> {
+    let hardware = HardwareProfiler::for_inference(&state.hardware);
+    diffusion_runtime::diffusion_runtime_status(&state.root, &hardware)
+}
+
+#[tauri::command]
+async fn install_diffusion_runtime(
+    state: State<'_, AppState>,
+) -> Result<diffusion_runtime::DiffusionRuntimeStatus, app_error::AppError> {
+    let hardware = HardwareProfiler::for_inference(&state.hardware);
+    diffusion_runtime::install_diffusion_runtime(&state.root, &state.http, &hardware).await
+}
+
+#[tauri::command]
 fn get_runtime_install_status(
     state: State<AppState>,
 ) -> Result<RuntimeInstallStatus, app_error::AppError> {
@@ -1420,6 +1767,28 @@ struct ModelRoutingDecision {
     reason: String,
 }
 
+/// A chat owns its cancellation registration from the moment it starts.
+/// Dropping the command also releases the registration after errors or an aborted future.
+struct ChatGenerationGuard<'a> {
+    active: &'a ActiveGenerations,
+    conversation_id: &'a str,
+    cancellation: tokio_util::sync::CancellationToken,
+}
+
+impl<'a> ChatGenerationGuard<'a> {
+    fn start(active: &'a ActiveGenerations, conversation_id: &'a str) -> Result<Self, app_error::AppError> {
+        let cancellation = active.start(conversation_id)?;
+        Ok(Self { active, conversation_id, cancellation })
+    }
+}
+
+impl Drop for ChatGenerationGuard<'_> {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+        self.active.finish(self.conversation_id);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_streaming_completion(
     app: &AppHandle,
@@ -1430,72 +1799,112 @@ async fn run_streaming_completion(
     mode: &str,
     media: &[InferenceMedia],
     dataset_context: Option<&str>,
+    cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<(), app_error::AppError> {
-    let hardware = HardwareProfiler::for_inference(&state.hardware);
-    let plan = ModelLaunchPlanner::plan(model, &hardware, allocate_local_port()?);
-    // A model switch in the shared runtime can take minutes; tell the chat what it waits for.
-    if let Some(replacing) = model_switch_needed(state, &plan.config.model_path)? {
-        let _ = app.emit(
-            "runtime:model-loading",
-            serde_json::json!({
-                "conversationId": conversation_id,
-                "modelName": model.name,
-                "replacing": replacing,
-            }),
+    let result = async {
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                return Err(app_error::AppError::InferenceCancelled("generation cancelled".into()));
+            }
+            _ = state.warm_start.wait_if_loading(&model.id) => {}
+        }
+        let hardware = HardwareProfiler::for_inference(&state.hardware);
+        let selection = selected_performance_preference(state)?;
+        let plan = ModelLaunchPlanner::plan_for_preference(
+            model, &hardware, &selection, allocate_local_port()?,
         );
-    }
-    // Held until this chat response finishes streaming, so a coding-agent request cannot
-    // swap the shared runtime away mid-answer.
-    let (status, _model_lease) =
-        runtime::ensure_model_ready(&state.runtime, &hardware, &plan.config)?;
-    state.warm_start.mark_runtime_ready(&model.id);
-    let endpoint = status.endpoint.ok_or_else(|| {
-        app_error::AppError::InferenceServerUnavailable("runtime endpoint missing".to_string())
-    })?;
+        if let Some(replacing) = model_switch_needed(state, &plan.config.model_path)? {
+            let _ = app.emit(
+                "runtime:model-loading",
+                serde_json::json!({
+                    "conversationId": conversation_id,
+                    "modelName": model.name,
+                    "replacing": replacing,
+                }),
+            );
+        }
+        // Keep the loaded model leased until streaming finishes. Waits are
+        // cancellable and do not block a Tokio worker with thread::sleep.
+        let (status, _model_lease) = runtime::ensure_model_ready_cancellable(
+            &state.runtime,
+            &hardware,
+            &plan.config,
+            cancellation,
+        )
+        .await?;
+        state.warm_start.mark_runtime_ready(&model.id);
+        let endpoint = status.endpoint.ok_or_else(|| {
+            app_error::AppError::InferenceServerUnavailable("runtime endpoint missing".to_string())
+        })?;
 
-    let inference_mode = if mode.eq_ignore_ascii_case("thinking") {
-        InferenceMode::Thinking
-    } else {
-        InferenceMode::Chat
-    };
-    let result = inference::stream_chat_completion(StreamRequest {
-        app,
-        database: &state.database,
-        active: &state.active_generations,
-        client: &state.http,
-        endpoint: &endpoint,
-        model: &model.id,
-        conversation_id,
-        assistant,
-        mode: inference_mode,
-        media,
-        dataset_context,
-        sampling: sampling::SamplingProfile::for_chat_model(model.family.as_deref().unwrap_or("")),
-    })
+        let inference_mode = if mode.eq_ignore_ascii_case("thinking") {
+            InferenceMode::Thinking
+        } else {
+            InferenceMode::Chat
+        };
+        inference::stream_chat_completion(StreamRequest {
+            app,
+            database: &state.database,
+            active: &state.active_generations,
+            client: &state.http,
+            endpoint: &endpoint,
+            model: &model.id,
+            conversation_id,
+            assistant,
+            mode: inference_mode,
+            media,
+            dataset_context,
+            sampling: sampling::SamplingProfile::for_chat_model(
+                model.family.as_deref().unwrap_or(""),
+            ),
+            request_mode: mode,
+            context_size: plan.config.context_size,
+        })
+        .await
+    }
     .await;
 
-    if let Ok(metrics) = &result {
-        tracing::info!(
-            model = %model.name,
-            mode,
-            time_to_first_token_ms = ?metrics.time_to_first_token_ms,
-            generated_chars = metrics.generated_chars,
-            elapsed_ms = metrics.elapsed_ms,
-            "local inference completed"
-        );
+    match result {
+        Ok(metrics) => {
+            tracing::info!(
+                model = %model.name,
+                mode,
+                time_to_first_token_ms = ?metrics.time_to_first_token_ms,
+                generated_chars = metrics.generated_chars,
+                elapsed_ms = metrics.elapsed_ms,
+                "local inference stream finished"
+            );
+            Ok(())
+        }
+        Err(error) => {
+            let stopped = cancellation.is_cancelled()
+                || matches!(&error, app_error::AppError::InferenceCancelled(_));
+            let status = if stopped { "cancelled" } else { "failed" };
+            {
+                let db = state
+                    .database
+                    .lock()
+                    .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+                ChatRepository::new(&db).set_message_status(&assistant.id, status)?;
+            }
+            // A request may end before the stream is opened. The UI still
+            // needs its final event to clear the Stop button and typing state.
+            let _ = app.emit(
+                "inference:done",
+                StreamDoneEvent {
+                    conversation_id: conversation_id.to_string(),
+                    message_id: assistant.id.clone(),
+                    status: status.to_string(),
+                },
+            );
+            if stopped {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        }
     }
-
-    if let Err(error) = result {
-        let db = state
-            .database
-            .lock()
-            .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-        let repo = ChatRepository::new(&db);
-        let _ = repo.set_message_status(&assistant.id, "failed");
-        state.active_generations.finish(conversation_id);
-        return Err(error);
-    }
-    Ok(())
 }
 
 #[tauri::command]
@@ -1529,13 +1938,15 @@ async fn send_chat_message(
     let routing = resolve_conversation_model(&state, &conversation_id, &mode, trimmed)?;
     let model = routing.model;
     state.warm_start.note_foreground_request(&model.id);
-    sync_project_context(&state, &conversation_id)?;
+    sync_project_context_for_prompt(&state, &conversation_id, trimmed)?;
     let dataset_context = dataset_context::build_dataset_context(
         &state.root,
         trimmed,
         &model.name,
         &routing.reason,
     )?;
+
+    let generation = ChatGenerationGuard::start(&state.active_generations, &conversation_id)?;
 
     let (user, assistant) = {
         let db = state
@@ -1571,7 +1982,6 @@ async fn send_chat_message(
     )
     .map_err(|error| app_error::AppError::StreamFailed(error.to_string()))?;
 
-    state.warm_start.wait_if_loading(&model.id).await;
     run_streaming_completion(
         &app,
         &state,
@@ -1581,6 +1991,7 @@ async fn send_chat_message(
         &mode,
         &media,
         dataset_context.as_deref(),
+        &generation.cancellation,
     )
     .await?;
 
@@ -1629,29 +2040,28 @@ async fn regenerate_message(
             ));
         }
 
-        repo.delete_message(&assistant_message_id)?;
         user
     };
     let routing = resolve_conversation_model(&state, &conversation_id, &mode, &user.content)?;
     let model = routing.model;
     state.warm_start.note_foreground_request(&model.id);
-    sync_project_context(&state, &conversation_id)?;
+    sync_project_context_for_prompt(&state, &conversation_id, &user.content)?;
     let dataset_context = dataset_context::build_dataset_context(
         &state.root,
         &user.content,
         &model.name,
         &routing.reason,
     )?;
+    let generation = ChatGenerationGuard::start(&state.active_generations, &conversation_id)?;
+
     let assistant = {
         let db = state
             .database
             .lock()
             .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-        ChatRepository::new(&db).add_message(
+        ChatRepository::new(&db).begin_regeneration(
             &conversation_id,
-            "assistant",
-            "",
-            "streaming",
+            &assistant_message_id,
             Some(&model.id),
         )?
     };
@@ -1667,7 +2077,6 @@ async fn regenerate_message(
     )
     .map_err(|error| app_error::AppError::StreamFailed(error.to_string()))?;
 
-    state.warm_start.wait_if_loading(&model.id).await;
     run_streaming_completion(
         &app,
         &state,
@@ -1677,6 +2086,7 @@ async fn regenerate_message(
         &mode,
         &[],
         dataset_context.as_deref(),
+        &generation.cancellation,
     )
     .await?;
     Ok(assistant)
@@ -1705,7 +2115,7 @@ fn select_conversation_model(
 
     if normalized_mode == "chat" {
         if let Some(model) =
-            active_model_id.and_then(|id| models.iter().find(|model| model.id == id))
+            active_model_id.and_then(|id| models.iter().find(|model| model.id == id && model.enabled))
         {
             return Some(model.clone());
         }
@@ -1777,11 +2187,19 @@ fn sync_project_context_in_database(
     db: &Database,
     conversation_id: &str,
 ) -> Result<(), app_error::AppError> {
+    sync_project_context_in_database_for_prompt(db, conversation_id, None)
+}
+
+fn sync_project_context_in_database_for_prompt(
+    db: &Database,
+    conversation_id: &str,
+    prompt: Option<&str>,
+) -> Result<(), app_error::AppError> {
     let project = ProjectRepository::new(db).project_for_conversation(conversation_id)?;
     let content = match project.as_ref() {
         Some(project) => {
             let mut parts = Vec::new();
-            if let Some(base) = project_context_message(project) {
+            if let Some(base) = project_context_message_for_prompt(project, prompt) {
                 parts.push(base);
             }
             if let Some(workspace) = local_workspace::workspace_context_for_project(db, &project.id)? {
@@ -1813,15 +2231,24 @@ fn sync_project_context_for_project(
     Ok(())
 }
 
-fn sync_project_context(
+pub(crate) fn sync_project_context_for_prompt(
     state: &State<'_, AppState>,
     conversation_id: &str,
+    prompt: &str,
 ) -> Result<(), app_error::AppError> {
     let db = state
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-    sync_project_context_in_database(&db, conversation_id)
+    sync_project_context_in_database_for_prompt(&db, conversation_id, Some(prompt))
+}
+
+#[tauri::command]
+fn cancel_image_generation(
+    artifact_id: String,
+    state: State<AppState>,
+) -> Result<bool, app_error::AppError> {
+    state.image_jobs.cancel(&artifact_id)
 }
 
 #[tauri::command]
@@ -1842,6 +2269,17 @@ fn get_app_preferences(state: State<AppState>) -> Result<AppPreferences, app_err
 }
 
 #[tauri::command]
+fn acknowledge_chat_history_notice(
+    state: State<AppState>,
+) -> Result<AppPreferences, app_error::AppError> {
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    SettingsRepository::new(&db).acknowledge_chat_history_notice()
+}
+
+#[tauri::command]
 fn save_app_preferences(
     preferences: AppPreferences,
     state: State<AppState>,
@@ -1854,8 +2292,17 @@ fn save_app_preferences(
         &preferences.network_proxy_mode,
         &preferences.network_proxy_url,
     )?;
+    if !web_provider_config::valid_preference(&preferences.web_search_preferred_provider) {
+        return Err(app_error::AppError::internal("invalid preferred web search provider"));
+    }
+    if PerformanceMode::from_preference(&preferences.default_performance_profile).is_none() {
+        return Err(app_error::AppError::internal("invalid performance profile"));
+    }
     let saved = SettingsRepository::new(&db).save_preferences(&preferences)?;
-    net::apply_proxy_settings(&saved.network_proxy_mode, &saved.network_proxy_url);
+    let proxy_url = if saved.network_proxy_mode == "manual" {
+        proxy_credentials::restore(&saved.network_proxy_url, saved.network_proxy_credential_id.as_deref(), github::secret_store::get_secret)?
+    } else { saved.network_proxy_url.clone() };
+    net::apply_proxy_settings(&saved.network_proxy_mode, &proxy_url);
     Ok(saved)
 }
 
@@ -1863,6 +2310,40 @@ fn save_app_preferences(
 #[tauri::command]
 fn network_proxy_for_url(url: String) -> Option<String> {
     net::proxy_for_url(&url)
+}
+
+/// Credential values never appear in preferences, logs or frontend responses.
+#[tauri::command]
+fn web_provider_credential_status() -> Result<web_provider_config::ProviderConfiguration, app_error::AppError> {
+    web_provider_config::credential_status()
+}
+
+#[tauri::command]
+fn save_web_provider_credential(
+    field: String,
+    value: String,
+) -> Result<web_provider_config::ProviderConfiguration, app_error::AppError> {
+    web_provider_config::update_credential(&field, &value)?;
+    web_provider_config::credential_status()
+}
+
+/// Checks real search responses and parsing, not merely HEAD reachability.
+/// The probe is allowed only when web retrieval is enabled in persisted prefs.
+#[tauri::command]
+async fn check_web_connectivity(state: State<'_, AppState>) -> Result<inference::ProviderHealthReport, app_error::AppError> {
+    let preferences = {
+        let db = state.database.lock()
+            .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+        SettingsRepository::new(&db).get_preferences()?
+    };
+    if !preferences.web_search_enabled && !preferences.deep_research_enabled {
+        return Ok(inference::ProviderHealthReport::disabled());
+    }
+    // A temporarily unavailable OS keyring must not prevent keyless provider diagnostics.
+    let credentials = web_provider_config::load_credentials().unwrap_or_default();
+    Ok(inference::probe_web_providers(
+        &state.http, &preferences.web_search_preferred_provider, &credentials,
+    ).await)
 }
 
 #[tauri::command]
@@ -2007,8 +2488,41 @@ fn clear_google_credentials(state: State<AppState>) -> Result<(), app_error::App
     GoogleRepository::new(&db).clear()
 }
 
+fn application_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
+
+fn show_installation_error(error: app_error::AppError) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    let message = error.to_string();
+    let result = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .setup(move |app| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.hide();
+            }
+            let handle = app.handle().clone();
+            app.dialog()
+                .message(message.clone())
+                .title("OpenMindAI installation needs repair")
+                .kind(MessageDialogKind::Error)
+                .show(move |_| handle.exit(1));
+            Ok(())
+        })
+        .run(application_context());
+    if let Err(error) = result {
+        eprintln!("Could not display installation recovery error: {error}");
+    }
+}
+
 pub fn run() {
-    let root = PortableRootManager::resolve().expect("failed to resolve OpenMindAI Root");
+    let root = match PortableRootManager::resolve() {
+        Ok(root) => root,
+        Err(error) => {
+            show_installation_error(error);
+            return;
+        }
+    };
     root.ensure_directories()
         .expect("failed to initialize OpenMindAI directories");
     // Held for the rest of this function's scope (which doesn't return
@@ -2018,7 +2532,14 @@ pub fn run() {
     tracing::info!(root = %root.root().display(), mode = ?root.mode(), "resolved OpenMindAI root");
     // When this root was set up via the first-run wizard, honor the
     // profile-named database it configured rather than the dev-mode default.
-    let database_path = portable_root::load_installation()
+    let installation = match portable_root::load_installation() {
+        Ok(installation) => installation,
+        Err(error) => {
+            show_installation_error(error);
+            return;
+        }
+    };
+    let database_path = installation
         .filter(|config| {
             config.installation_complete && config.root == root.root().display().to_string()
         })
@@ -2031,11 +2552,18 @@ pub fn run() {
         .unwrap_or_else(|| root.database_path());
     let database =
         Database::open(database_path.clone()).expect("failed to initialize SQLite database");
-    match SettingsRepository::new(&database).get_preferences() {
-        Ok(preferences) => net::apply_proxy_settings(
-            &preferences.network_proxy_mode,
-            &preferences.network_proxy_url,
-        ),
+    match SettingsRepository::new(&database).get_preferences().and_then(|preferences| {
+        let url = if preferences.network_proxy_mode == "manual" {
+            proxy_credentials::restore(&preferences.network_proxy_url, preferences.network_proxy_credential_id.as_deref(), github::secret_store::get_secret)?
+        } else { preferences.network_proxy_url.clone() };
+        Ok((preferences, url))
+    }) {
+        Ok((preferences, url)) => net::apply_proxy_settings(&preferences.network_proxy_mode, &url),
+        Err(app_error::AppError::SecretStoreFailed(_)) => {
+            // No direct-network fallback when a configured credential cannot be recovered.
+            tracing::warn!("proxy credential store unavailable; remote networking blocked until settings are repaired");
+            net::apply_proxy_settings("manual", "http://127.0.0.1:0");
+        }
         Err(error) => {
             tracing::warn!(%error, "could not load network preferences; connecting directly");
             net::apply_proxy_settings("direct", "");
@@ -2064,13 +2592,14 @@ pub fn run() {
             hardware,
             active_database_path: database_path,
             database: Mutex::new(database),
-            runtime: Mutex::new(runtime),
+            runtime: Arc::new(Mutex::new(runtime)),
             agent_runtime: Mutex::new(agent_runtime),
             agent_startup: agent_runtime::AgentStartup::default(),
             downloads,
             dataset_downloads,
             runtime_installer,
             active_generations: ActiveGenerations::default(),
+            image_jobs: ActiveImageJobs::default(),
             warm_start: warm_start::WarmStartCoordinator::default(),
             http: net::http_client(),
         })
@@ -2086,6 +2615,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_portable_root,
             network_proxy_for_url,
+            check_web_connectivity,
+            web_provider_credential_status,
+            save_web_provider_credential,
             installation_status,
             complete_setup,
             save_setup_progress,
@@ -2094,28 +2626,36 @@ pub fn run() {
             check_storage_location,
             list_conversations,
             create_conversation,
+            fork_conversation_for_edit,
             rename_conversation,
             set_conversation_pinned,
             set_conversation_model,
             archive_conversation,
+            list_archived_conversations,
+            restore_conversation,
             delete_conversation,
             list_messages,
+            search_conversations,
             add_user_message,
             create_streaming_assistant_message,
             append_message_chunk,
             complete_message,
             delete_message,
             list_projects,
+            get_project,
             create_project,
             update_project,
             delete_project,
             link_project_conversation,
             unlink_project_conversation,
             add_project_file,
+            add_project_binary_file,
+            read_project_binary_file,
             delete_project_file,
             create_text_artifact,
             create_document_artifact,
             create_generation_artifact,
+            cancel_image_generation,
             list_artifacts,
             list_library_entries,
             open_artifact,
@@ -2148,6 +2688,8 @@ pub fn run() {
             read_recent_logs,
             get_llama_runtime_status,
             get_llama_runtime_inventory,
+            get_diffusion_runtime_status,
+            install_diffusion_runtime,
             get_runtime_install_status,
             install_recommended_runtime,
             cancel_runtime_install,
@@ -2158,6 +2700,7 @@ pub fn run() {
             cancel_generation,
             get_app_preferences,
             save_app_preferences,
+            acknowledge_chat_history_notice,
             get_user_profile,
             save_user_profile,
             get_github_account,
@@ -2169,15 +2712,16 @@ pub fn run() {
             save_google_credentials,
             clear_google_credentials
         ])
-        .build(tauri::generate_context!())
+        .build(application_context())
         .expect("error while building OpenMindAI");
 
     app.run(|app_handle, event| {
         if matches!(event, tauri::RunEvent::Exit) {
             tauri::async_runtime::block_on(coding_lsp::shutdown_pooled_sessions());
             coding_agent_gateway::remove_descriptor();
+            cloud_bridge::stop_gpu_worker();
             let state = app_handle.state::<AppState>();
-            for runtime in [&state.agent_runtime, &state.runtime] {
+            for runtime in [&state.agent_runtime, state.runtime.as_ref()] {
                 if let Ok(mut runtime) = runtime.lock() {
                     let _ = runtime.stop();
                 }
@@ -2189,6 +2733,51 @@ pub fn run() {
 #[cfg(test)]
 mod milestone2_tests {
     use super::*;
+
+    #[test]
+    fn artifact_open_commands_use_native_platform_handler() {
+        let file = Path::new("folder/image test.png");
+        let open = artifact_os_command(file, false);
+        let reveal = artifact_os_command(file, true);
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(open.get_program(), std::ffi::OsStr::new("explorer"));
+            assert_eq!(reveal.get_program(), std::ffi::OsStr::new("explorer"));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(open.get_program(), std::ffi::OsStr::new("open"));
+            assert_eq!(reveal.get_program(), std::ffi::OsStr::new("open"));
+            let args = reveal.get_args().collect::<Vec<_>>();
+            assert_eq!(args[0], std::ffi::OsStr::new("-R"));
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            assert_eq!(open.get_program(), std::ffi::OsStr::new("xdg-open"));
+            assert_eq!(reveal.get_program(), std::ffi::OsStr::new("xdg-open"));
+            assert_eq!(
+                reveal.get_args().collect::<Vec<_>>(),
+                vec![std::ffi::OsStr::new("folder")]
+            );
+        }
+    }
+
+    #[test]
+    fn artifact_path_must_exist_inside_portable_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let file = root.resolve_relative("generated/images/test.png").unwrap();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"image-test").unwrap();
+        assert_eq!(
+            checked_artifact_path(&root, &file).unwrap(),
+            file.canonicalize().unwrap()
+        );
+        let outside = temp.path().join("outside.png");
+        std::fs::write(&outside, b"other").unwrap();
+        assert!(checked_artifact_path(&root, &outside).is_err());
+    }
 
     #[test]
     fn actual_or_temp_root_persistence_round_trip() {
@@ -2254,6 +2843,15 @@ mod milestone2_tests {
 
         let selected = select_conversation_model(&models, Some("other"), "chat", "hello").unwrap();
         assert_eq!(selected.id, "other");
+    }
+
+    #[test]
+    fn unavailable_active_model_cannot_override_a_usable_fallback() {
+        let unavailable = test_model("missing", None, false);
+        let fallback = test_model("available", None, true);
+        assert!(select_conversation_model(std::slice::from_ref(&unavailable), Some("missing"), "chat", "hello").is_none());
+        let selected = select_conversation_model(&[unavailable, fallback], Some("missing"), "chat", "hello").unwrap();
+        assert_eq!(selected.id, "available");
     }
 
     #[test]

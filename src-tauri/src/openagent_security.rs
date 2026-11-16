@@ -29,6 +29,7 @@ enum RiskLevel {
     ReadOnly,
     WorkspaceWrite,
     Destructive,
+    ShellExecution,
     HostExecution,
     RemoteMutation,
     Prohibited,
@@ -44,7 +45,8 @@ pub fn authorize_tool(tool: &str, action: &Value, mode: ApprovalMode) -> (Policy
             ApprovalMode::RiskBased | ApprovalMode::TrustedWorkspace => PolicyDecision::Allow,
         },
         RiskLevel::RemoteMutation => PolicyDecision::RequireApproval,
-        RiskLevel::Destructive | RiskLevel::HostExecution => match mode {
+        RiskLevel::Destructive | RiskLevel::ShellExecution | RiskLevel::HostExecution => match mode
+        {
             ApprovalMode::TrustedWorkspace => PolicyDecision::Allow,
             ApprovalMode::RiskBased | ApprovalMode::AlwaysAsk => PolicyDecision::RequireApproval,
         },
@@ -56,6 +58,7 @@ pub fn authorize_tool(tool: &str, action: &Value, mode: ApprovalMode) -> (Policy
             "trusted-workspace destructive operation"
         }
         (PolicyDecision::Allow, RiskLevel::HostExecution) => "trusted-workspace host command",
+        (PolicyDecision::Allow, RiskLevel::ShellExecution) => "trusted-workspace shell command",
         (PolicyDecision::RequireApproval, RiskLevel::WorkspaceWrite) => {
             "workspace edits require approval in Always Ask mode"
         }
@@ -64,6 +67,9 @@ pub fn authorize_tool(tool: &str, action: &Value, mode: ApprovalMode) -> (Policy
         }
         (PolicyDecision::RequireApproval, RiskLevel::HostExecution) => {
             "host command requires approval"
+        }
+        (PolicyDecision::RequireApproval, RiskLevel::ShellExecution) => {
+            "shell command requires exact approval; use read-only tools for inspection"
         }
         (PolicyDecision::RequireApproval, RiskLevel::RemoteMutation) => {
             "remote repository mutation requires exact approval"
@@ -141,24 +147,11 @@ fn classify_terminal(command: &str, host_execution: bool) -> RiskLevel {
     if host_execution {
         return RiskLevel::HostExecution;
     }
-    if normalized.starts_with("git status")
-        || normalized.starts_with("git diff")
-        || normalized.starts_with("git log")
-        || normalized.starts_with("rg ")
-        || normalized.starts_with("grep ")
-        || normalized.starts_with("ls")
-        || normalized.starts_with("dir")
-    {
-        return RiskLevel::ReadOnly;
-    }
-    if normalized.contains("rm -rf ")
-        || normalized.starts_with("remove-item ")
-        || normalized.starts_with("git reset --hard")
-        || normalized.starts_with("git clean -")
-    {
-        return RiskLevel::Destructive;
-    }
-    RiskLevel::WorkspaceWrite
+    // The executor passes the entire string to a shell (POSIX or PowerShell).
+    // Prefixes and command names cannot prove read-only behavior: operators,
+    // substitutions, command options and workspace executables can all write.
+    // Keep the read-only exemption on structured tools, never shell strings.
+    RiskLevel::ShellExecution
 }
 
 pub use crate::isolated_runtime::SandboxCapability;
@@ -208,23 +201,108 @@ mod tests {
     }
 
     #[test]
-    fn isolated_terminal_build_is_a_workspace_write() {
+    fn isolated_shell_commands_require_exact_approval() {
+        for command in [
+            "git status --short",
+            "git diff",
+            "git log -1",
+            "rg TODO src",
+            "grep TODO file.txt",
+            "ls",
+            "dir",
+            "cargo test",
+            "npm install",
+        ] {
+            for mode in [ApprovalMode::RiskBased, ApprovalMode::AlwaysAsk] {
+                let (decision, reason) = authorize_tool(
+                    "terminal",
+                    &json!({"command": command, "hostExecution": false}),
+                    mode,
+                );
+                assert_eq!(
+                    decision,
+                    PolicyDecision::RequireApproval,
+                    "{mode:?}: {command}"
+                );
+                assert!(reason.contains("exact approval"));
+            }
+        }
+    }
+
+    #[test]
+    fn shell_syntax_and_write_options_cannot_use_a_read_only_exemption() {
+        for command in [
+            "git status; printf changed > fixture.txt",
+            "git diff && touch fixture.txt",
+            "git log || touch fixture.txt",
+            "ls & touch fixture.txt",
+            "ls\nprintf changed > fixture.txt",
+            "dir\r\nSet-Content fixture.txt changed",
+            "ls > fixture.txt",
+            "ls >> fixture.txt",
+            "ls 2> fixture.txt",
+            "ls | tee fixture.txt",
+            "ls $(touch fixture.txt)",
+            "ls `touch fixture.txt`",
+            "ls <(touch fixture.txt)",
+            "ls $([IO.File]::WriteAllText('fixture.txt', 'changed'))",
+            "dir; Set-Content fixture.txt changed",
+            "dir | Out-File fixture.txt",
+            "ls --% & echo changed > fixture.txt",
+            "git diff --output=fixture.txt",
+            "git log --output=fixture.txt",
+            "rg --pre=./fixture-preprocessor TODO",
+            "git status-extra",
+            "lsof-command",
+            "directory-command",
+            "Git Status; Set-Content fixture.txt changed",
+        ] {
+            for mode in [ApprovalMode::RiskBased, ApprovalMode::AlwaysAsk] {
+                assert_eq!(
+                    authorize_tool("terminal", &json!({"command": command}), mode).0,
+                    PolicyDecision::RequireApproval,
+                    "{mode:?}: {command}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn trusted_workspace_retains_explicit_shell_trust() {
+        for host_execution in [false, true] {
+            assert_eq!(
+                authorize_tool(
+                    "terminal",
+                    &json!({"command": "cargo test", "hostExecution": host_execution}),
+                    ApprovalMode::TrustedWorkspace
+                )
+                .0,
+                PolicyDecision::Allow
+            );
+        }
+    }
+
+    #[test]
+    fn structured_inspection_and_write_policies_stay_separate() {
+        for tool in [
+            "list_dir",
+            "read_file",
+            "search_text",
+            "git_status",
+            "git_diff",
+        ] {
+            assert_eq!(
+                authorize_tool(tool, &json!({}), ApprovalMode::AlwaysAsk).0,
+                PolicyDecision::Allow,
+                "{tool}"
+            );
+        }
         assert_eq!(
-            authorize_tool(
-                "terminal",
-                &json!({"command": "cargo test", "hostExecution": false}),
-                ApprovalMode::RiskBased
-            )
-            .0,
+            authorize_tool("write_file", &json!({}), ApprovalMode::RiskBased).0,
             PolicyDecision::Allow
         );
         assert_eq!(
-            authorize_tool(
-                "terminal",
-                &json!({"command": "cargo test", "hostExecution": false}),
-                ApprovalMode::AlwaysAsk
-            )
-            .0,
+            authorize_tool("write_file", &json!({}), ApprovalMode::AlwaysAsk).0,
             PolicyDecision::RequireApproval
         );
     }

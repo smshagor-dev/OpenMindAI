@@ -1,7 +1,6 @@
 use std::fs;
 
 use chrono::Utc;
-use rusqlite::params;
 use serde::Serialize;
 
 use crate::{
@@ -56,12 +55,20 @@ pub struct RepairSummary {
     pub actions: Vec<String>,
 }
 
+/// A .db snapshot captures SQLite state, not external portable-root files.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BackupScope {
+    DatabaseOnly,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupInfo {
     pub name: String,
     pub size_bytes: u64,
     pub created_at: String,
+    pub scope: BackupScope,
 }
 
 /// Runs a read-only health sweep: storage writability, database integrity,
@@ -121,8 +128,8 @@ pub fn run_diagnostics(
         ("mediaMotion", "OpenMindAI Motion", "video"),
         ("mediaSpeak", "OpenMindAI Speak", "audio"),
     ] {
-        let report =
-            media_preflight::preflight_for_hardware(root, kind, hardware)?.ok_or_else(|| {
+        let report = media_preflight::preflight_for_hardware_fast(root, kind, hardware)?
+            .ok_or_else(|| {
                 AppError::internal(format!("no media preflight configured for {kind}"))
             })?;
         let detail = report.issue_summary();
@@ -211,20 +218,13 @@ pub fn backup_database(
     root: &PortableRootManager,
     database: &Database,
 ) -> Result<BackupInfo, AppError> {
-    let backups_dir = root.resolve_relative("backups")?;
-    fs::create_dir_all(&backups_dir)?;
-    let filename = format!("openmindai-{}.db", Utc::now().format("%Y%m%d-%H%M%S"));
-    let dest_path = backups_dir.join(&filename);
-
-    database
-        .connection()
-        .execute("VACUUM INTO ?1", params![dest_path.display().to_string()])?;
-
-    let size_bytes = fs::metadata(&dest_path)?.len();
+    let (filename, size_bytes) =
+        crate::database_backup::create_snapshot(database.connection(), root.root())?;
     Ok(BackupInfo {
         name: filename,
         size_bytes,
         created_at: Utc::now().to_rfc3339(),
+        scope: BackupScope::DatabaseOnly,
     })
 }
 
@@ -236,15 +236,26 @@ pub fn list_backups(root: &PortableRootManager) -> Result<Vec<BackupInfo>, AppEr
     let mut backups = Vec::new();
     for entry in fs::read_dir(&backups_dir)? {
         let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // Only the .db snapshots produced by this feature belong in this
+        // list. Never follow a symlink or present an arbitrary file as an
+        // OpenMindAI database backup.
+        if !name.starts_with("openmindai-") || !name.ends_with(".db") {
+            continue;
+        }
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
         let metadata = entry.metadata()?;
         if !metadata.is_file() {
             continue;
         }
         let modified: chrono::DateTime<Utc> = metadata.modified()?.into();
         backups.push(BackupInfo {
-            name: entry.file_name().to_string_lossy().to_string(),
+            name,
             size_bytes: metadata.len(),
             created_at: modified.to_rfc3339(),
+            scope: BackupScope::DatabaseOnly,
         });
     }
     backups.sort_by(|left, right| right.created_at.cmp(&left.created_at));
@@ -258,28 +269,24 @@ pub fn list_backups(root: &PortableRootManager) -> Result<Vec<BackupInfo>, AppEr
 pub fn open_folder_in_root(root: &PortableRootManager, relative: &str) -> Result<(), AppError> {
     let path = root.resolve_relative(relative)?;
     fs::create_dir_all(&path)?;
-    std::process::Command::new("explorer")
-        .arg(&path)
-        .spawn()
-        .map_err(|error| AppError::internal(error.to_string()))?;
-    Ok(())
+    crate::folder_opener::open_folder(&path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn setup() -> (PortableRootManager, Database) {
+    fn setup() -> (tempfile::TempDir, PortableRootManager, Database) {
         let temp = tempfile::tempdir().unwrap();
         let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
         root.ensure_directories().unwrap();
         let database = Database::open(root.database_path()).unwrap();
-        (root, database)
+        (temp, root, database)
     }
 
     #[test]
     fn healthy_setup_reports_ok_storage_and_database() {
-        let (root, database) = setup();
+        let (_temp, root, database) = setup();
         let hardware = crate::hardware::HardwareProfiler::detect();
         let runtime = LlamaRuntimeManager::new(root.clone());
 
@@ -300,7 +307,7 @@ mod tests {
 
     #[test]
     fn backup_produces_a_valid_openable_database() {
-        let (root, database) = setup();
+        let (_temp, root, database) = setup();
         let info = backup_database(&root, &database).unwrap();
 
         let backup_path = root.resolve_relative("backups").unwrap().join(&info.name);
@@ -323,5 +330,25 @@ mod tests {
         let backups = list_backups(&root).unwrap();
         assert_eq!(backups.len(), 1);
         assert_eq!(backups[0].name, info.name);
+        assert_eq!(backups[0].scope, BackupScope::DatabaseOnly);
+        assert_eq!(info.scope, BackupScope::DatabaseOnly);
+        assert_eq!(
+            serde_json::to_value(&info).unwrap()["scope"],
+            "databaseOnly"
+        );
+    }
+
+    #[test]
+    fn backup_listing_does_not_label_unmanaged_files_as_database_snapshots() {
+        let (_temp, root, database) = setup();
+        let created = backup_database(&root, &database).unwrap();
+        let backups_dir = root.resolve_relative("backups").unwrap();
+        fs::write(backups_dir.join("manual.db"), b"other database").unwrap();
+        fs::write(backups_dir.join("notes.txt"), b"no snapshot").unwrap();
+        fs::write(backups_dir.join(".pending-openmindai-stale.db"), b"incomplete").unwrap();
+        let entries = list_backups(&root).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, created.name);
+        assert_eq!(entries[0].scope, BackupScope::DatabaseOnly);
     }
 }

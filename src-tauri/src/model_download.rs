@@ -10,6 +10,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sysinfo::Disks;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -21,6 +22,18 @@ use crate::{
 #[path = "model_package.rs"]
 mod model_package;
 pub(crate) use model_package::validate_installed_dependencies;
+
+pub(crate) fn primary_manifest_available(path: &Path) -> bool {
+    model_package::primary_manifest_available(path)
+}
+
+pub(crate) fn read_primary_manifest(
+    root: &PortableRootManager,
+    entry: &ModelCatalogEntry,
+    primary: &Path,
+) -> Result<QwenModelManifest, AppError> {
+    model_package::read_primary_manifest(root, entry, primary)
+}
 
 const SAFE_SPACE_MARGIN: u64 = 768 * 1024 * 1024;
 
@@ -80,6 +93,21 @@ pub enum VerificationState {
     Failed,
 }
 
+/// The Hub returns a full Git commit SHA with model metadata. Always
+/// resolve downloads through that immutable snapshot, never /resolve/main/.
+/// A missing or malformed SHA must fail closed before any remote file write.
+pub(super) fn pinned_repo_revision(sha: Option<&str>) -> Result<&str, AppError> {
+    match sha {
+        Some(value) if value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) => {
+            Ok(value)
+        }
+        _ => Err(AppError::ModelDownloadFailed(
+            "Hugging Face model metadata has no valid immutable 40-character commit SHA"
+                .to_string(),
+        )),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HuggingFaceModel {
@@ -115,8 +143,37 @@ pub struct ModelDownloadManager {
     root: PortableRootManager,
     status: Arc<Mutex<DownloadStatus>>,
     cancel_token: Arc<Mutex<Option<CancellationToken>>>,
+    active_download: Arc<Semaphore>,
     client: Client,
     catalog_entry: ModelCatalogEntry,
+}
+
+/// A token alone does not prove a transfer is active: completion can precede
+/// token cleanup. Never rewrite terminal status or cancel a future job.
+fn apply_stop_if_active(
+    status: &mut DownloadStatus,
+    token: Option<&CancellationToken>,
+    requested: DownloadState,
+) -> bool {
+    if !matches!(requested, DownloadState::Cancelled | DownloadState::PausedInterrupted)
+        || !matches!(
+            status.state,
+            DownloadState::Queued
+                | DownloadState::Resolving
+                | DownloadState::Downloading
+                | DownloadState::Verifying
+        )
+    {
+        return false;
+    }
+    let Some(token) = token else {
+        return false;
+    };
+    token.cancel();
+    status.state = requested;
+    status.error = None;
+    status.speed_bytes_per_sec = None;
+    true
 }
 
 impl ModelDownloadManager {
@@ -127,6 +184,7 @@ impl ModelDownloadManager {
             root,
             status: Arc::new(Mutex::new(DownloadStatus::queued(&catalog_entry))),
             cancel_token: Arc::new(Mutex::new(None)),
+            active_download: Arc::new(Semaphore::new(1)),
             client: crate::net::download_client(),
             catalog_entry,
         }
@@ -148,16 +206,71 @@ impl ModelDownloadManager {
     }
 
     fn stop_download(&self, state: DownloadState) -> Result<DownloadStatus, AppError> {
-        if let Some(token) = self
+        // Keep the status lock through cancellation and the state transition.
+        // The install may have completed while its token is still being cleared;
+        // in that case a late Cancel/Pause must not replace Completed or Failed.
+        let mut status = self
+            .status
+            .lock()
+            .map_err(|_| AppError::internal("download status lock poisoned"))?;
+        let token = self
             .cancel_token
             .lock()
-            .map_err(|_| AppError::internal("download cancel lock poisoned"))?
-            .as_ref()
-        {
-            token.cancel();
+            .map_err(|_| AppError::internal("download cancel lock poisoned"))?;
+        apply_stop_if_active(&mut status, token.as_ref(), state);
+        Ok(status.clone())
+    }
+
+    fn begin_download(&self) -> Result<OwnedSemaphorePermit, AppError> {
+        self.active_download
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| {
+                AppError::ModelDownloadFailed(
+                    "another model download is already in progress; finish or cancel it first"
+                        .to_string(),
+                )
+            })
+    }
+
+    /// Coordinate independent OpenMindAI processes sharing one portable root.
+    ///
+    /// This file is intentionally persistent: deleting a locked file can let
+    /// another process lock a different inode. The OS releases the advisory
+    /// lock automatically if the process exits or the handle is dropped.
+    fn begin_root_install(&self) -> Result<fs::File, AppError> {
+        let root = self.root.root();
+        fs::create_dir_all(root)?;
+        let lock_path = root.join(".openmindai-model-install.lock");
+        ensure_contained(root, &lock_path)?;
+        match fs::symlink_metadata(&lock_path) {
+            Ok(info) if info.file_type().is_symlink() || !info.file_type().is_file() => {
+                return Err(AppError::ModelDownloadFailed(
+                    "model install lock is not a regular file".to_string(),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
-        self.set_state(state, None)?;
-        self.status()
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        // A replaced symlink or moved portable root must not cause the
+        // downloader to coordinate against a file outside its root.
+        ensure_contained(root, &lock_path)?;
+        match file.try_lock() {
+            Ok(()) => Ok(file),
+            Err(fs::TryLockError::WouldBlock) => Err(AppError::ModelDownloadFailed(
+                "another OpenMindAI process is installing models in this portable root".to_string(),
+            )),
+            Err(fs::TryLockError::Error(error)) => Err(AppError::ModelDownloadFailed(format!(
+                "cannot acquire model install lock: {error}"
+            ))),
+        }
     }
 
     pub async fn download_qwen_q4_k_m(&self) -> Result<DownloadStatus, AppError> {
@@ -166,6 +279,13 @@ impl ModelDownloadManager {
     }
 
     pub async fn download_catalog_model(&self, model_id: &str) -> Result<DownloadStatus, AppError> {
+        // Acquire before changing progress/cancellation state. The owned
+        // permit is shared across clones and held through the final manifest
+        // write; a parallel caller cannot clobber an active install.
+        let _in_flight = self.begin_download()?;
+        // Lock the root before changing status, cancellation, or disk files.
+        // Keep both guards alive until the install's final state is recorded.
+        let _root_lock = self.begin_root_install()?;
         let entry = entry_by_id(model_id)?;
         tracing::info!(repo = %entry.repo, model_id = %entry.id, "installing AI model package");
         self.update_status(|status| *status = DownloadStatus::queued(&entry))?;
@@ -224,8 +344,8 @@ impl ModelDownloadManager {
         let (final_path, verification) = self
             .download_primary_file(&metadata, &model_dir, package_size, &token)
             .await?;
-        self.write_manifest(&model_dir, &metadata, &final_path, verification)?;
-
+        // Do not advertise a new checkpoint as installed while its voice,
+        // config, or other required package dependencies are still pending.
         if !download.dependencies.is_empty() {
             self.update_status(|status| {
                 status.state = DownloadState::Resolving;
@@ -236,12 +356,20 @@ impl ModelDownloadManager {
                 status.speed_bytes_per_sec = None;
                 status.error = None;
             })?;
-            model_package::ensure_dependencies(&self.root, &self.client, &entry, &token).await?;
+            model_package::ensure_dependencies(
+                &self.root,
+                &self.client,
+                &entry,
+                metadata.repo_sha.as_deref(),
+                &token,
+            )
+            .await?;
         }
 
         if token.is_cancelled() {
             return Err(AppError::InferenceCancelled("download stopped".to_string()));
         }
+        self.write_manifest(&model_dir, &metadata, &final_path, verification)?;
 
         self.update_status(|status| {
             status.state = DownloadState::Completed;
@@ -264,18 +392,19 @@ impl ModelDownloadManager {
         token: &CancellationToken,
     ) -> Result<(PathBuf, VerificationState), AppError> {
         let filename = metadata.filename.clone();
-        let temp_dir = self.root.resolve_relative("temp/downloads")?;
-        fs::create_dir_all(&temp_dir)?;
-        ensure_contained(self.root.root(), &temp_dir)?;
-
-        let final_path = model_dir.join(&filename);
-        if let Some(parent) = final_path.parent() {
-            fs::create_dir_all(parent)?;
-            ensure_contained(self.root.root(), parent)?;
-        }
-        let part_path = temp_dir.join(safe_part_filename(&filename));
-        ensure_contained(self.root.root(), &final_path)?;
-        ensure_contained(self.root.root(), &part_path)?;
+        // Apply the same safe, package-confined path handling as dependency
+        // assets before creating any server-supplied nested directories.
+        let final_path =
+            model_package::prepare_dependency_destination(&self.root, model_dir, &filename)?;
+        // The old flattened <filename>.part key could collide across models.
+        // Include package, source and nested filename in the resumable key.
+        let part_path = model_package::namespaced_model_partial_path(
+            &self.root,
+            model_dir,
+            &metadata.source_url,
+            &filename,
+        )?;
+        ensure_contained(model_dir, &final_path)?;
 
         if final_path.exists() {
             let verification =
@@ -414,7 +543,18 @@ impl ModelDownloadManager {
             ))
         })?;
         let filename = sibling.rfilename.clone();
-        let source_url = format!("https://huggingface.co/{repo}/resolve/main/{filename}");
+        if sibling
+            .lfs
+            .as_ref()
+            .and_then(|lfs| lfs.sha256.as_deref())
+            .is_some_and(|digest| !model_package::valid_package_digest(digest))
+        {
+            return Err(AppError::ModelDownloadFailed(
+                "official model metadata has an invalid SHA-256".to_string(),
+            ));
+        }
+        let revision = pinned_repo_revision(model.sha.as_deref())?.to_string();
+        let source_url = format!("https://huggingface.co/{repo}/resolve/{revision}/{filename}");
         let size_bytes = sibling
             .lfs
             .as_ref()
@@ -430,7 +570,7 @@ impl ModelDownloadManager {
 
         Ok(QwenModelManifest {
             repo: repo.clone(),
-            repo_sha: model.sha,
+            repo_sha: Some(revision),
             quantization: quantization.clone(),
             filename,
             size_bytes,
@@ -462,10 +602,11 @@ impl ModelDownloadManager {
         let mut manifest = metadata.clone();
         manifest.actual_sha256 = Some(sha256_file(model_path)?);
         manifest.verification = verification;
-        fs::write(
-            model_dir.join("model-manifest.json"),
+        model_package::write_manifest_atomically(
+            &model_dir.join("model-manifest.json"),
             serde_json::to_string_pretty(&manifest)
-                .map_err(|error| AppError::internal(error.to_string()))?,
+                .map_err(|error| AppError::internal(error.to_string()))?
+                .as_bytes(),
         )?;
         Ok(())
     }
@@ -504,20 +645,6 @@ impl DownloadStatus {
             error: None,
         }
     }
-}
-
-pub(crate) fn safe_part_filename(filename: &str) -> String {
-    let flattened = filename
-        .chars()
-        .map(|character| {
-            if matches!(character, '/' | '\\') {
-                '_'
-            } else {
-                character
-            }
-        })
-        .collect::<String>();
-    format!("{flattened}.part")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -587,7 +714,10 @@ fn select_sibling<'a>(
 ) -> Option<&'a HuggingFaceSibling> {
     siblings
         .iter()
-        .filter(|sibling| wildcard_match(&download.filename_pattern, &sibling.rfilename))
+        .filter(|sibling| {
+            model_package::valid_package_filename(&sibling.rfilename)
+                && wildcard_match(&download.filename_pattern, &sibling.rfilename)
+        })
         .max_by_key(|sibling| {
             sibling
                 .lfs
@@ -749,6 +879,156 @@ mod tests {
     use super::*;
     use std::{thread, time::Duration};
 
+    #[tokio::test]
+    async fn concurrent_download_is_rejected_without_replacing_progress() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        let manager = ModelDownloadManager::new(root);
+        let other_window = manager.clone();
+
+        // Simulate an install holding the exclusive permit without reaching
+        // the network. A second window must not change the active status.
+        let first = manager.begin_download().unwrap();
+        let before = manager.status().unwrap();
+        let rejected = other_window
+            .download_catalog_model("kokoro-82m-onnx")
+            .await
+            .unwrap_err();
+        assert!(
+            rejected.to_string().contains("already in progress"),
+            "{rejected}"
+        );
+        let after = manager.status().unwrap();
+        assert_eq!(after.model_id, before.model_id);
+        assert_eq!(after.state, before.state);
+        assert!(other_window.begin_download().is_err());
+
+        drop(first);
+        assert!(other_window.begin_download().is_ok());
+    }
+
+    #[test]
+    fn stop_preserves_terminal_download_states_even_with_stale_token() {
+        let entry = crate::model_catalog::required_entry().unwrap();
+        for terminal in [
+            DownloadState::Completed,
+            DownloadState::Failed,
+            DownloadState::Cancelled,
+            DownloadState::PausedInterrupted,
+        ] {
+            for requested in [DownloadState::Cancelled, DownloadState::PausedInterrupted] {
+                let mut status = DownloadStatus::queued(&entry);
+                status.state = terminal.clone();
+                status.error = Some("original diagnostic".into());
+                let token = CancellationToken::new();
+                assert!(!apply_stop_if_active(&mut status, Some(&token), requested));
+                assert_eq!(status.state, terminal);
+                assert_eq!(status.error.as_deref(), Some("original diagnostic"));
+                assert!(!token.is_cancelled());
+            }
+        }
+    }
+
+    #[test]
+    fn stop_requires_token_and_cancels_only_live_downloads() {
+        let entry = crate::model_catalog::required_entry().unwrap();
+        for active in [
+            DownloadState::Queued,
+            DownloadState::Resolving,
+            DownloadState::Downloading,
+            DownloadState::Verifying,
+        ] {
+            let mut status = DownloadStatus::queued(&entry);
+            status.state = active.clone();
+            assert!(!apply_stop_if_active(&mut status, None, DownloadState::Cancelled));
+            assert_eq!(status.state, active);
+            let token = CancellationToken::new();
+            assert!(apply_stop_if_active(
+                &mut status,
+                Some(&token),
+                DownloadState::PausedInterrupted
+            ));
+            assert!(token.is_cancelled());
+            assert_eq!(status.state, DownloadState::PausedInterrupted);
+        }
+    }
+
+    #[test]
+    fn independent_managers_share_one_os_model_install_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let shared_root = temp.path().join("OpenMindAI");
+        let first_root = PortableRootManager::from_root(shared_root.clone());
+        let second_root = PortableRootManager::from_root(shared_root.clone());
+        let first = ModelDownloadManager::new(first_root);
+        let second = ModelDownloadManager::new(second_root);
+        let first_lock = first.begin_root_install().unwrap();
+        let rejected = second.begin_root_install().unwrap_err().to_string();
+        assert!(
+            rejected.contains("another OpenMindAI process"),
+            "{rejected}"
+        );
+        assert_eq!(second.status().unwrap().state, DownloadState::Queued);
+
+        // A separate portable installation must remain usable.
+        let other_root = PortableRootManager::from_root(temp.path().join("OtherOpenMindAI"));
+        let other = ModelDownloadManager::new(other_root);
+        let other_lock = other.begin_root_install().unwrap();
+        drop(other_lock);
+        drop(first_lock);
+
+        // The lock file must stay at its stable path, even after release.
+        assert!(shared_root.join(".openmindai-model-install.lock").is_file());
+        let reacquired = second.begin_root_install().unwrap();
+        drop(reacquired);
+    }
+
+    #[test]
+    fn install_lock_rejects_symlink_or_non_file_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("OpenMindAI");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join(".openmindai-model-install.lock");
+        fs::create_dir(&path).unwrap();
+        let portable_root = PortableRootManager::from_root(root.clone());
+        let manager = ModelDownloadManager::new(portable_root);
+        assert!(manager.begin_root_install().is_err());
+        assert!(path.is_dir());
+    }
+
+    #[tokio::test]
+    async fn cross_process_lock_rejection_does_not_replace_download_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        let owner = ModelDownloadManager::new(root.clone());
+        let other = ModelDownloadManager::new(root);
+        let lock = owner.begin_root_install().unwrap();
+        let before = other.status().unwrap();
+        let rejected = other.download_catalog_model("kokoro-82m-onnx").await;
+        assert!(rejected.is_err());
+        assert!(rejected
+            .unwrap_err()
+            .to_string()
+            .contains("another OpenMindAI process"));
+        let after = other.status().unwrap();
+        assert_eq!(after.model_id, before.model_id);
+        assert_eq!(after.state, before.state);
+        drop(lock);
+    }
+
+    #[test]
+    fn pause_and_cancel_when_idle_do_not_corrupt_download_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        let manager = ModelDownloadManager::new(root);
+        let initial = manager.status().unwrap();
+        assert_eq!(manager.cancel().unwrap().state, initial.state);
+        assert_eq!(manager.pause().unwrap().state, initial.state);
+
+        manager.set_state(DownloadState::Completed, None).unwrap();
+        assert_eq!(manager.cancel().unwrap().state, DownloadState::Completed);
+        assert_eq!(manager.pause().unwrap().state, DownloadState::Completed);
+    }
+
     #[test]
     fn byte_pairs_show_enough_precision_to_differ() {
         let at = |gib: f64| (gib * GIB as f64) as u64;
@@ -852,15 +1132,84 @@ mod tests {
     }
 
     #[test]
-    fn nested_hugging_face_paths_get_safe_partial_names() {
+    fn primary_sibling_selection_rejects_unsafe_remote_paths() {
+        let download = ModelCatalogDownload {
+            strategy: crate::model_catalog::ModelDownloadStrategy::SingleFile,
+            filename_pattern: "*.gguf".to_string(),
+            destination_dir: "models/llm/test".to_string(),
+            format: "gguf".to_string(),
+            dependencies: Vec::new(),
+        };
+        let siblings = vec![
+            HuggingFaceSibling {
+                rfilename: "../oversized.gguf".to_string(),
+                size: Some(1000),
+                lfs: None,
+            },
+            HuggingFaceSibling {
+                rfilename: "nested/model.gguf".to_string(),
+                size: Some(100),
+                lfs: None,
+            },
+        ];
         assert_eq!(
-            safe_part_filename("split_files/diffusion_models/model.safetensors"),
-            "split_files_diffusion_models_model.safetensors.part"
+            select_sibling(&siblings, &download).unwrap().rfilename,
+            "nested/model.gguf"
         );
+        assert!(select_sibling(&siblings[..1], &download).is_none());
+    }
+
+    #[test]
+    fn model_download_revision_guard_rejects_missing_and_unsafe_hashes() {
+        let revision = "04393022a04dcb701fd2061b8d5dbe23ac7be751";
+        assert_eq!(pinned_repo_revision(Some(revision)).unwrap(), revision);
+        assert!(pinned_repo_revision(None).is_err());
+        for invalid in [
+            "main",
+            "HEAD",
+            "04393022",
+            "../1234567890123456789012345678901234567890",
+            "z4393022a04dcb701fd2061b8d5dbe23ac7be751",
+            "04393022a04dcb701fd2061b8d5dbe23ac7be75/",
+        ] {
+            assert!(pinned_repo_revision(Some(invalid)).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn primary_download_partials_are_namespaced_and_portable() {
+        let temp_a = tempfile::tempdir().unwrap();
+        let temp_b = tempfile::tempdir().unwrap();
+        let root_a = PortableRootManager::from_root(temp_a.path().join("OpenMindAI"));
+        let root_b = PortableRootManager::from_root(temp_b.path().join("OpenMindAI"));
+        root_a.ensure_directories().unwrap();
+        root_b.ensure_directories().unwrap();
+        let dir_a = root_a.resolve_relative("models/llm/test").unwrap();
+        let dir_b = root_b.resolve_relative("models/llm/test").unwrap();
+        let other_a = root_a.resolve_relative("models/llm/other").unwrap();
+        fs::create_dir_all(&dir_a).unwrap();
+        fs::create_dir_all(&dir_b).unwrap();
+        fs::create_dir_all(&other_a).unwrap();
+        let key = |root: &PortableRootManager, dir: &Path, url: &str, name: &str| {
+            model_package::namespaced_model_partial_path(root, dir, url, name).unwrap()
+        };
+        let source = "https://example.invalid/model.gguf";
+        let first = key(&root_a, &dir_a, source, "nested/model.gguf");
         assert_eq!(
-            safe_part_filename("onnx\\model.onnx"),
-            "onnx_model.onnx.part"
+            first.file_name(),
+            key(&root_b, &dir_b, source, "nested/model.gguf").file_name()
         );
+        assert_ne!(first, key(&root_a, &other_a, source, "nested/model.gguf"));
+        assert_ne!(
+            first,
+            key(
+                &root_a,
+                &dir_a,
+                "https://other.invalid/model.gguf",
+                "nested/model.gguf"
+            )
+        );
+        assert_ne!(first, key(&root_a, &dir_a, source, "nested_model.gguf"));
     }
 
     #[test]

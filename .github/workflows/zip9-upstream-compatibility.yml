@@ -1,0 +1,104 @@
+name: ZIP 9 Upstream Compatibility
+
+on:
+  pull_request:
+    paths:
+      - scripts/probe-zip9-upgrade.py
+      - scripts/verify-zip9-candidate.py
+      - scripts/zip9-reader-regressions.rs
+      - .github/workflows/zip9-upstream-compatibility.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: ZIP 9-patched TTS and checkpoint readers (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Tauri system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Cache compiled Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Verify probe source transformation
+        run: python scripts/probe-zip9-upgrade.py --self-test
+
+      - name: Install RustSec audit tool
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Validate locked source-pinned ZIP 9 candidate and unignored audit (Linux)
+        if: runner.os == 'Linux'
+        env:
+          ZIP9_EVIDENCE_DIR: ${{ runner.temp }}/zip9-source-evidence
+          ZIP9_CANDIDATE_DIR: ${{ runner.temp }}/zip9-production-candidate
+        run: python scripts/probe-zip9-upgrade.py --audit
+
+      - name: Validate locked source-pinned ZIP 9 candidate (Windows/macOS)
+        if: runner.os != 'Linux'
+        env:
+          ZIP9_EVIDENCE_DIR: ${{ runner.temp }}/zip9-source-evidence
+          ZIP9_CANDIDATE_DIR: ${{ runner.temp }}/zip9-production-candidate
+        run: python scripts/probe-zip9-upgrade.py
+
+      - name: Verify candidate artifact checker self-test
+        run: python scripts/verify-zip9-candidate.py --self-test
+
+      - name: Upload complete ZIP 9 source-pinned candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: zip9-source-pinned-candidate-${{ matrix.os }}
+          path: ${{ runner.temp }}/zip9-production-candidate/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Download ZIP 9 candidate as a consumer
+        uses: actions/download-artifact@v8
+        with:
+          name: zip9-source-pinned-candidate-${{ matrix.os }}
+          path: ${{ runner.temp }}/zip9-candidate-roundtrip/
+
+      - name: Verify downloaded candidate hashes, lockfile and source patch list
+        env:
+          ZIP9_ROUNDTRIP_DIR: ${{ runner.temp }}/zip9-candidate-roundtrip
+        run: python scripts/verify-zip9-candidate.py
+
+      - name: Upload ZIP 9 candidate source provenance and exact patches
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: zip9-source-evidence-${{ matrix.os }}
+          path: ${{ runner.temp }}/zip9-source-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Verify no tracked build input changed
+        if: always()
+        run: git diff --exit-code -- src-tauri/Cargo.toml src-tauri/Cargo.lock

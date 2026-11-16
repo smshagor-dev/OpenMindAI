@@ -1554,6 +1554,7 @@ mod real_runtime {
     fn config(model_path: &str, on_gpu: bool) -> ModelLaunchConfig {
         ModelLaunchConfig {
             model_path: model_path.to_string(),
+            mmproj_path: None,
             backend: if on_gpu {
                 BackendKind::Vulkan
             } else {

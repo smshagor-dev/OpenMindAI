@@ -1,3 +1,6 @@
+#[path = "validation_command.rs"]
+mod validation_command;
+
 use std::{
     collections::{HashSet, VecDeque},
     fs,
@@ -18,14 +21,14 @@ use uuid::Uuid;
 use crate::{
     app_error::AppError,
     chat::{ChatRepository, Message},
-    coding_control, coding_delivery, coding_intelligence, coding_lsp, coding_patch,
+    cloud_bridge, coding_control, coding_delivery, coding_intelligence, coding_lsp, coding_patch,
     database::Database,
     inference::{StreamChunkEvent, StreamDoneEvent, StreamStartedEvent},
     isolated_runtime,
     launch_planner::ModelLaunchPlanner,
     local_workspace,
     model_catalog::entry_by_id,
-    model_registry::{ModelRecord, ModelRegistry},
+    model_registry::{ModelLifecycleState, ModelRecord, ModelRegistry},
     openagent_parallel,
     openagent_prompt_context::{build_prompt_context, PromptContextInput},
     openagent_runs::OpenAgentRunRepository,
@@ -91,6 +94,7 @@ struct AgentWorkspaceRoot {
 
 #[derive(Debug, Clone)]
 struct AgentTurnResult {
+    validation_command: Option<String>,
     trace_label: String,
     transcript_result: String,
 }
@@ -184,7 +188,7 @@ pub async fn send_project_agent_message(
     content: String,
     state: State<'_, AppState>,
 ) -> Result<Message, AppError> {
-    run_agent_message(&app, &state, &conversation_id, &content, None, None).await
+    run_agent_message(&app, &state, &conversation_id, &content, None, None, None).await
 }
 
 #[tauri::command]
@@ -205,18 +209,25 @@ pub async fn regenerate_project_agent_message(
             .iter()
             .position(|message| message.id == assistant_message_id)
             .ok_or_else(|| AppError::internal("assistant message not found"))?;
-        let user = messages[..target_index]
+        messages[..target_index]
             .iter()
             .rev()
             .find(|message| message.role == "user")
             .cloned()
-            .ok_or_else(|| AppError::internal("no user message found for regeneration"))?;
-        repo.delete_message(&assistant_message_id)?;
-        user
+            .ok_or_else(|| AppError::internal("no user message found for regeneration"))?
     };
 
     let content = user.content.clone();
-    run_agent_message(&app, &state, &conversation_id, &content, Some(user), None).await
+    run_agent_message(
+        &app,
+        &state,
+        &conversation_id,
+        &content,
+        Some(user),
+        None,
+        Some(&assistant_message_id),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -240,7 +251,16 @@ pub async fn resume_coding_run(
             "only interrupted or failed coding runs can be resumed",
         ));
     }
-    run_agent_message(&app, &state, &conversation_id, &goal, None, Some(run_id)).await
+    run_agent_message(
+        &app,
+        &state,
+        &conversation_id,
+        &goal,
+        None,
+        Some(run_id),
+        None,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -355,7 +375,7 @@ pub fn restore_openagent_checkpoint(
     }
 }
 
-#[allow(unused_assignments)]
+#[allow(unused_assignments, clippy::too_many_arguments)]
 async fn run_agent_message(
     app: &AppHandle,
     state: &State<'_, AppState>,
@@ -363,6 +383,7 @@ async fn run_agent_message(
     content: &str,
     existing_user: Option<Message>,
     resume_parent: Option<String>,
+    regeneration_target: Option<&str>,
 ) -> Result<Message, AppError> {
     if content.trim().is_empty() {
         return Err(AppError::internal("OpenAgent request cannot be empty"));
@@ -386,7 +407,8 @@ async fn run_agent_message(
     let runtime_budget_minutes = preferences.coding_runtime_budget_minutes;
     let ci_repair_limit = usize::from(preferences.coding_ci_repair_limit.clamp(1, 5));
 
-    let mut agent_context = load_agent_context(state, conversation_id, content)?;
+    let mut agent_context =
+        load_agent_context(state, conversation_id, content, regeneration_target)?;
     if let Some(parent) = resume_parent.as_deref() {
         let seed = {
             let db = state
@@ -412,48 +434,80 @@ async fn run_agent_message(
         crate::sync_project_context_in_database(&db, conversation_id)?;
     }
 
-    let (model, routing_reason) = resolve_openagent_model(state, conversation_id, content)?;
-    let hardware = crate::hardware::HardwareProfiler::for_inference(&state.hardware);
-    let agent_plan = crate::agent_runtime::plan_agent_runtime(app)?
-        .plan
-        .filter(|plan| plan.model.id == model.id);
-    // The lease keeps the model resident for the whole OpenAgent run.
-    let (endpoint, launch_config, _model_lease) = match agent_plan {
-        // The Agent Setup model: same placement, startup coordination and launch settings
-        // as VS Code requests, so the two never reload each other.
-        Some(plan) => {
-            let (endpoint, lease) = crate::agent_runtime::acquire_agent_runtime(app, &plan).await?;
-            (endpoint, plan.config, lease)
+    let requested_local_only = local_only_agent_request(content);
+    let cloud_model_id = match preferences.coding_agent_execution_mode.as_str() {
+        "local" => None,
+        "cloud" if requested_local_only => {
+            return Err(AppError::internal(
+                "Cloud Only conflicts with this prompt's local-only instruction. Choose Local or Both.",
+            ));
         }
-        // General reasoning fallback when no agent model is installed.
-        None => {
-            let launch_config =
-                openagent_launch_config(&model, &hardware, &preferences, allocate_local_port()?);
-            let (status, lease) =
-                crate::runtime::ensure_model_ready(&state.runtime, &hardware, &launch_config)?;
-            let endpoint = status.endpoint.ok_or_else(|| {
-                AppError::InferenceServerUnavailable("runtime endpoint missing".to_string())
-            })?;
-            (endpoint, launch_config, lease)
-        }
+        "cloud" => Some(cloud_bridge::coding_cloud_model().await?),
+        "auto" if !requested_local_only => cloud_bridge::coding_cloud_model().await.ok(),
+        _ => None,
     };
-    // Prompt budgets must fit one llama-server slot, not the whole configured context.
-    let context_window_tokens = crate::agent_runtime::effective_context(
-        crate::agent_runtime::slot_context_size(&state.http, &endpoint).await,
-        launch_config.context_size,
-        launch_config.parallelism,
-    )
-    .0 as usize;
-
-    let cancellation = state.active_generations.start(conversation_id)?;
-    let (user, assistant) =
-        match create_agent_messages(state, conversation_id, content, &model.id, existing_user) {
-            Ok(messages) => messages,
-            Err(error) => {
-                state.active_generations.finish(conversation_id);
-                return Err(error);
+    let (model, routing_reason) = if let Some(remote) = cloud_model_id.as_deref() {
+        (
+            ensure_hosted_agent_record(state, remote)?,
+            "OpenAgent · authenticated Cloud model, device-side tools and permissions".to_string(),
+        )
+    } else {
+        resolve_openagent_model(state, conversation_id, content)?
+    };
+    let hardware = crate::hardware::HardwareProfiler::for_inference(&state.hardware);
+    // Cloud inference has no local model to download/load. In Both mode
+    // preflight failure is the only point at which Local fallback occurs.
+    let (endpoint, context_window_tokens, _model_lease) = if cloud_model_id.is_some() {
+        (String::new(), 16_384usize, None)
+    } else {
+        let agent_plan = crate::agent_runtime::plan_agent_runtime(app)?
+            .plan
+            .filter(|plan| plan.model.id == model.id);
+        let (endpoint, launch_config, lease) = match agent_plan {
+            Some(plan) => {
+                let (endpoint, lease) =
+                    crate::agent_runtime::acquire_agent_runtime(app, &plan).await?;
+                (endpoint, plan.config, lease)
+            }
+            None => {
+                let launch_config = openagent_launch_config(
+                    &model,
+                    &hardware,
+                    &preferences,
+                    allocate_local_port()?,
+                );
+                let (status, lease) =
+                    crate::runtime::ensure_model_ready(&state.runtime, &hardware, &launch_config)?;
+                let endpoint = status.endpoint.ok_or_else(|| {
+                    AppError::InferenceServerUnavailable("runtime endpoint missing".to_string())
+                })?;
+                (endpoint, launch_config, lease)
             }
         };
+        let context_window_tokens = crate::agent_runtime::effective_context(
+            crate::agent_runtime::slot_context_size(&state.http, &endpoint).await,
+            launch_config.context_size,
+            launch_config.parallelism,
+        )
+        .0 as usize;
+        (endpoint, context_window_tokens, Some(lease))
+    };
+
+    let cancellation = state.active_generations.start(conversation_id)?;
+    let (user, assistant) = match create_agent_messages(
+        state,
+        conversation_id,
+        content,
+        &model.id,
+        existing_user,
+        regeneration_target,
+    ) {
+        Ok(messages) => messages,
+        Err(error) => {
+            state.active_generations.finish(conversation_id);
+            return Err(error);
+        }
+    };
     let run_id = {
         let db = state
             .database
@@ -529,7 +583,7 @@ async fn run_agent_message(
         return Err(error);
     }
 
-    if preferences.coding_max_parallel_workers > 1 {
+    if cloud_model_id.is_none() && preferences.coding_max_parallel_workers > 1 {
         let parallel_result = tokio::select! {
             result = openagent_parallel::run_parallel_analysis(openagent_parallel::ParallelAnalysisInput {
                 client: state.http.clone(),
@@ -655,6 +709,7 @@ async fn run_agent_message(
                 &sandbox_mode,
                 context_window_tokens,
                 &plan_text,
+                cloud_model_id.as_deref(),
             ) => result?,
                 _ = cancellation.cancelled() => {
                     status = "cancelled";
@@ -910,13 +965,11 @@ async fn run_agent_message(
                 Ok(outcome) => {
                     consecutive_failures = 0;
                     let mut workspace_changed = tool_mutates_workspace(tool);
-                    let mut successful_validation: Option<String> = None;
+                    let successful_validation = if tool == "terminal" { outcome.validation_command.clone() } else { None };
 
                     if tool == "terminal" {
                         if let Some(command) = optional_string(&decision, "command") {
-                            if is_validation_command(&command) {
-                                successful_validation = Some(command);
-                            } else if terminal_command_may_mutate_workspace(&command) {
+                            if successful_validation.is_none() && terminal_command_may_mutate_workspace(&command) {
                                 workspace_changed = true;
                             }
                         }
@@ -1625,6 +1678,7 @@ fn load_agent_context(
     state: &State<'_, AppState>,
     conversation_id: &str,
     goal: &str,
+    regeneration_target: Option<&str>,
 ) -> Result<AgentContext, AppError> {
     let db = state
         .database
@@ -1636,7 +1690,8 @@ fn load_agent_context(
     let workspace = load_workspace_config(&db, &project.id)?;
     let workspace_context = local_workspace::workspace_context_for_project(&db, &project.id)?
         .unwrap_or_else(|| "No workspace snapshot is available yet.".to_string());
-    let conversation_context = recent_conversation_context(&db, conversation_id)?;
+    let conversation_context =
+        recent_conversation_context(&db, conversation_id, regeneration_target)?;
     let workers = usize::from(
         SettingsRepository::new(&db)
             .get_preferences()?
@@ -1697,8 +1752,13 @@ fn refresh_agent_workspace_context(
 fn recent_conversation_context(
     database: &Database,
     conversation_id: &str,
+    regeneration_target: Option<&str>,
 ) -> Result<String, AppError> {
-    let messages = ChatRepository::new(database).list_messages(conversation_id)?;
+    let repo = ChatRepository::new(database);
+    let messages = match regeneration_target {
+        Some(target) => repo.history_before_regeneration(conversation_id, target)?,
+        None => repo.list_messages(conversation_id)?,
+    };
     let mut recent = messages
         .into_iter()
         .filter(|message| message.role == "user" || message.role == "assistant")
@@ -1720,12 +1780,78 @@ fn recent_conversation_context(
         .join("\n\n"))
 }
 
+const HOSTED_AGENT_RECORD_ID: &str = "openmindai-hosted-coding-agent";
+
+fn local_only_agent_request(prompt: &str) -> bool {
+    let lower = prompt.to_lowercase();
+    [
+        "offline only",
+        "local only",
+        "no cloud",
+        "without internet",
+        "do not use cloud",
+        "don't use cloud",
+        "শুধু লোকাল",
+        "শুধু অফলাইন",
+        "только локально",
+        "без интернета",
+    ]
+    .iter()
+    .any(|phrase| lower.contains(phrase))
+}
+
+/// Stores one virtual model for SQLite foreign-key integrity. It is never
+/// downloaded, loaded into llama-server, or listed as an installable GGUF.
+fn ensure_hosted_agent_record(
+    state: &State<'_, AppState>,
+    hosted_model: &str,
+) -> Result<ModelRecord, AppError> {
+    let now = Utc::now().to_rfc3339();
+    let db = state
+        .database
+        .lock()
+        .map_err(|_| AppError::internal("database lock poisoned"))?;
+    db.connection().execute(
+        "INSERT INTO model_registry
+         (id, name, family, path, format, quantization, size_bytes, capabilities,
+          context_length, preferred_backend, enabled, created_at, updated_at)
+         VALUES (?1, ?2, 'cloud', 'cloud://openmindai/coding-agent', 'cloud',
+                 NULL, 0, ?4, 16384, NULL, 1, ?3, ?3)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at",
+        params![
+            HOSTED_AGENT_RECORD_ID,
+            format!("OpenMindAI Cloud ({hosted_model})"),
+            now,
+            r#"["chat","coding"]"#
+        ],
+    )?;
+    Ok(ModelRecord {
+        id: HOSTED_AGENT_RECORD_ID.to_string(),
+        name: format!("OpenMindAI Cloud ({hosted_model})"),
+        family: Some("cloud".to_string()),
+        path: "cloud://openmindai/coding-agent".to_string(),
+        format: "cloud".to_string(),
+        quantization: None,
+        size_bytes: 0,
+        capabilities: r#"["chat","coding"]"#.to_string(),
+        context_length: Some(16_384),
+        preferred_backend: None,
+        enabled: true,
+        source_repository: None,
+        verification: Some("verified".to_string()),
+        state: ModelLifecycleState::Ready,
+        created_at: now.clone(),
+        updated_at: now,
+    })
+}
+
 fn create_agent_messages(
     state: &State<'_, AppState>,
     conversation_id: &str,
     content: &str,
     model_id: &str,
     existing_user: Option<Message>,
+    regeneration_target: Option<&str>,
 ) -> Result<(Message, Message), AppError> {
     let db = state
         .database
@@ -1736,13 +1862,16 @@ fn create_agent_messages(
         Some(user) => user,
         None => repo.add_message(conversation_id, "user", content, "completed", None)?,
     };
-    let assistant = repo.add_message(
-        conversation_id,
-        "assistant",
-        "",
-        "streaming",
-        Some(model_id),
-    )?;
+    let assistant = match regeneration_target {
+        Some(target) => repo.begin_regeneration(conversation_id, target, Some(model_id))?,
+        None => repo.add_message(
+            conversation_id,
+            "assistant",
+            "",
+            "streaming",
+            Some(model_id),
+        )?,
+    };
     Ok((user, assistant))
 }
 
@@ -1758,6 +1887,7 @@ async fn request_agent_decision(
     sandbox_mode: &str,
     context_window_tokens: usize,
     plan_text: &str,
+    cloud_model_id: Option<&str>,
 ) -> Result<AgentDecisionResult, AppError> {
     let root_summary = context
         .workspace
@@ -1789,7 +1919,7 @@ async fn request_agent_decision(
     };
 
     let system = format!(
-        "You are OpenAgent, OpenMindAI's local coding agent. You operate directly on a user's local project only to fulfill the latest user request.\n\
+        "You are OpenAgent, OpenMindAI's coding agent. You operate on an explicitly attached user project only to fulfill the latest user request.\n\
 Active sandbox policy: {sandbox_mode}. When isolated_sandbox is selected, explicit hostExecution is forbidden.\n\
 Return EXACTLY one JSON object and no markdown, commentary, chain-of-thought, or code fences.\n\
 Choose either a tool action or a final answer.\n\
@@ -1852,6 +1982,12 @@ Attached roots:\n{root_summary}"
         transcript,
         context_window_tokens,
         system_chars: system.chars().count(),
+        // The active persisted plan and project header are inserted outside
+        // the selected evidence sections; reserve their actual characters.
+        additional_user_chars: plan_text
+            .chars()
+            .count()
+            .saturating_add(context.project.name.chars().count()),
     });
     let user = format!(
         "Project: {}\nStep: {}/{}\nActive persisted plan:\n{}\n\nContext selection: selectedChars={}/{} compressed={}\nProject instructions:\n{}\n\nDiscovered repository context:\n{}\n\nWorkspace snapshot:\n{}\n\nRecent project chat:\n{}\n\nUser goal:\n{}\n\nRecent tool history:\n{}\n\nReturn the next single JSON action.",
@@ -1908,50 +2044,66 @@ Attached roots:\n{root_summary}"
     crate::sampling::SamplingProfile::AGENT.apply(&mut body);
 
     let model_started = Instant::now();
-    let url = format!("{}/v1/chat/completions", endpoint.trim_end_matches('/'));
-    let mut retry = 0u8;
-    let response = loop {
-        let response = client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|error| {
-                AppError::InferenceFailed(format!("agent model request failed: {error}"))
-            })?;
-        if response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE && retry < 5 {
-            retry += 1;
-            tokio::time::sleep(Duration::from_millis(600)).await;
-            continue;
-        }
-        break response;
-    };
-    let status = response.status();
-    let response_body = response.text().await.map_err(|error| {
-        AppError::InferenceFailed(format!("failed to read agent model response: {error}"))
-    })?;
-    if !status.is_success() {
-        let detail = response_body.trim();
-        return Err(AppError::InferenceFailed(format!(
-            "agent model returned HTTP {status}: {}",
-            if detail.is_empty() {
-                "empty response body".to_string()
-            } else {
-                bounded(detail, 2_000)
+    let payload: Value = if let Some(hosted) = cloud_model_id {
+        let messages = body["messages"]
+            .as_array()
+            .ok_or_else(|| AppError::internal("Coding Agent messages missing"))?;
+        // No retry/fallback after a hosted POST. The Cloud response is an
+        // inference decision only; local tool policy gates still execute here.
+        let (_, remote) = cloud_bridge::coding_cloud_completion(
+            hosted,
+            messages,
+            prompt_context.max_output_tokens as i64,
+        )
+        .await?;
+        remote
+    } else {
+        let url = format!("{}/v1/chat/completions", endpoint.trim_end_matches('/'));
+        let mut retry = 0u8;
+        let response = loop {
+            let response = client
+                .post(&url)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|error| {
+                    AppError::InferenceFailed(format!("agent model request failed: {error}"))
+                })?;
+            if response.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE && retry < 5 {
+                retry += 1;
+                tokio::time::sleep(Duration::from_millis(600)).await;
+                continue;
             }
-        )));
-    }
-    if response_body.trim().is_empty() {
-        return Err(AppError::InferenceFailed(
-            "agent model returned an empty response body".to_string(),
-        ));
-    }
-    let payload: Value = serde_json::from_str(&response_body).map_err(|error| {
-        AppError::InferenceFailed(format!(
-            "invalid agent model response JSON: {error}; body: {}",
-            bounded(response_body.trim(), 2_000)
-        ))
-    })?;
+            break response;
+        };
+        let status = response.status();
+        let response_body = response.text().await.map_err(|error| {
+            AppError::InferenceFailed(format!("failed to read agent model response: {error}"))
+        })?;
+        if !status.is_success() {
+            let detail = response_body.trim();
+            return Err(AppError::InferenceFailed(format!(
+                "agent model returned HTTP {status}: {}",
+                if detail.is_empty() {
+                    "empty response body".to_string()
+                } else {
+                    bounded(detail, 2_000)
+                }
+            )));
+        }
+        if response_body.trim().is_empty() {
+            return Err(AppError::InferenceFailed(
+                "agent model returned an empty response body".to_string(),
+            ));
+        }
+        let payload: Value = serde_json::from_str(&response_body).map_err(|error| {
+            AppError::InferenceFailed(format!(
+                "invalid agent model response JSON: {error}; body: {}",
+                bounded(response_body.trim(), 2_000)
+            ))
+        })?;
+        payload
+    };
     let content = payload
         .pointer("/choices/0/message/content")
         .and_then(Value::as_str)
@@ -2014,6 +2166,7 @@ async fn execute_delivery_tool(
     }
     let result = coding_delivery::execute(state, operation, params, exact_approved).await?;
     Ok(AgentTurnResult {
+        validation_command: None,
         trace_label: format!("Delivery operation {operation} completed"),
         transcript_result: bounded(&result.to_string(), MAX_TOOL_RESULT_CHARS),
     })
@@ -2067,6 +2220,7 @@ async fn execute_tool(
                     )
             });
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!("Listed {}", display_path(&directory)),
                 transcript_result: bounded(
                     &Value::Array(entries).to_string(),
@@ -2112,6 +2266,7 @@ async fn execute_tool(
                 }
             }
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!("Read {} (lines {}-{})", display_path(&file), start, end),
                 transcript_result: bounded(&output, MAX_TOOL_RESULT_CHARS),
             })
@@ -2125,6 +2280,7 @@ async fn execute_tool(
             let path = optional_string(action, "path").unwrap_or_default();
             let result = search_workspace(config, root_id.as_deref(), &path, &query)?;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!("Searched workspace for `{}`", one_line(&query, 80)),
                 transcript_result: bounded(&result, MAX_TOOL_RESULT_CHARS),
             })
@@ -2139,6 +2295,7 @@ async fn execute_tool(
                 AppError::internal(format!("failed to encode symbol_search result: {error}"))
             })?;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!("Searched symbols for `{}`", one_line(&query, 80)),
                 transcript_result: bounded(&result, MAX_TOOL_RESULT_CHARS),
             })
@@ -2152,6 +2309,7 @@ async fn execute_tool(
                 AppError::internal(format!("failed to encode symbol_outline result: {error}"))
             })?;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!("Outlined symbols in {path}"),
                 transcript_result: bounded(&result, MAX_TOOL_RESULT_CHARS),
             })
@@ -2167,6 +2325,7 @@ async fn execute_tool(
                 ))
             })?;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!("Collected diagnostics for {path}"),
                 transcript_result: bounded(&result, MAX_TOOL_RESULT_CHARS),
             })
@@ -2191,6 +2350,7 @@ async fn execute_tool(
                 AppError::internal(format!("failed to encode call hierarchy result: {error}"))
             })?;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!(
                     "{} calls at {path}:{}:{}",
                     if tool == "symbol_incoming_calls" {
@@ -2226,6 +2386,7 @@ async fn execute_tool(
                 ))
             })?;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!(
                     "{} {}:{}:{}",
                     if tool == "symbol_definition" {
@@ -2261,6 +2422,7 @@ async fn execute_tool(
                 }
                 fs::write(&file, content.as_bytes())?;
                 return Ok(AgentTurnResult {
+                    validation_command: None,
                     trace_label: format!("Wrote host file {}", display_path(&file)),
                     transcript_result: format!(
                         "ok path={} chars={} host_write=true",
@@ -2297,6 +2459,7 @@ async fn execute_tool(
                 collect_post_edit_diagnostics(config, root_id.as_deref(), "write_file", action)
                     .await;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!("Wrote {} transactionally", display_path(&file)),
                 transcript_result: format!(
                     "ok path={} chars={} transaction={}\npost_edit_diagnostics={}",
@@ -2337,6 +2500,7 @@ async fn execute_tool(
             if Path::new(&path).is_absolute() {
                 fs::write(&file, updated.as_bytes())?;
                 return Ok(AgentTurnResult {
+                    validation_command: None,
                     trace_label: format!("Updated host file {}", display_path(&file)),
                     transcript_result: format!(
                         "ok path={} exact_replacements=1 host_write=true",
@@ -2361,6 +2525,7 @@ async fn execute_tool(
                 collect_post_edit_diagnostics(config, root_id.as_deref(), "replace_text", action)
                     .await;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!("Updated {} transactionally", display_path(&file)),
                 transcript_result: format!(
                     "ok path={} exact_replacements=1 transaction={}\npost_edit_diagnostics={}",
@@ -2387,6 +2552,7 @@ async fn execute_tool(
             )
             .await;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!(
                     "Applied patch transaction {} across {} files",
                     outcome.transaction_id, outcome.changed_files
@@ -2403,6 +2569,7 @@ async fn execute_tool(
             let directory = resolve_agent_path(config, root_id.as_deref(), &path, false)?;
             fs::create_dir_all(&directory)?;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!("Created folder {}", display_path(&directory)),
                 transcript_result: format!("ok path={}", display_path(&directory)),
             })
@@ -2422,6 +2589,7 @@ async fn execute_tool(
             }
             fs::rename(&source, &target)?;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!(
                     "Moved {} → {}",
                     display_path(&source),
@@ -2442,6 +2610,7 @@ async fn execute_tool(
                 fs::remove_file(&target)?;
             }
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: format!("Deleted {}", display_path(&target)),
                 transcript_result: format!("ok deleted={}", display_path(&target)),
             })
@@ -2460,6 +2629,7 @@ async fn execute_tool(
             )
             .await?;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: "Inspected Git status".to_string(),
                 transcript_result: result,
             })
@@ -2490,6 +2660,7 @@ async fn execute_tool(
             )
             .await?;
             Ok(AgentTurnResult {
+                validation_command: None,
                 trace_label: "Reviewed Git diff".to_string(),
                 transcript_result: bounded(
                     &format!("UNSTAGED\n{unstaged}\n\nSTAGED\n{staged}"),
@@ -2539,6 +2710,7 @@ async fn execute_tool(
                 )));
             }
             Ok(AgentTurnResult {
+                validation_command: validation_command::successful(&command, result.exit_code, result.timed_out),
                 trace_label: format!(
                     "Ran `{}` via {} (exit {})",
                     one_line(&command, 120),
@@ -2547,7 +2719,8 @@ async fn execute_tool(
                 ),
                 transcript_result: bounded(
                     &format!(
-                        "backend={}\nisolated={}\nnetwork_disabled={}\ncwd={}\nexit_code={}\ntimed_out={}\nstdout:\n{}\nstderr:\n{}",
+                        "validation_invocation_eligible={}\nbackend={}\nisolated={}\nnetwork_disabled={}\ncwd={}\nexit_code={}\ntimed_out={}\nstdout:\n{}\nstderr:\n{}",
+                        validation_command::recognized(&command),
                         result.backend,
                         result.isolated,
                         result.network_disabled,
@@ -3285,48 +3458,10 @@ fn tool_mutates_workspace(tool: &str) -> bool {
 }
 
 fn terminal_command_may_mutate_workspace(command: &str) -> bool {
-    let command = command.trim().to_ascii_lowercase();
-    if command.is_empty() {
-        return false;
-    }
-    let mutation_markers = [">", "out-file", "set-content", "add-content", "tee "];
-    if mutation_markers
-        .iter()
-        .any(|marker| command.contains(marker))
-    {
-        return true;
-    }
-    let read_only_prefixes = [
-        "pwd",
-        "ls",
-        "dir",
-        "get-childitem",
-        "cat ",
-        "type ",
-        "get-content",
-        "rg ",
-        "grep ",
-        "findstr ",
-        "where ",
-        "which ",
-        "git status",
-        "git diff",
-        "git log",
-        "git show",
-        "git branch --show-current",
-        "node --version",
-        "npm --version",
-        "pnpm --version",
-        "yarn --version",
-        "cargo --version",
-        "rustc --version",
-        "python --version",
-        "python3 --version",
-        "go version",
-    ];
-    !read_only_prefixes
-        .iter()
-        .any(|prefix| command == *prefix || command.starts_with(prefix))
+    // Match the approval policy: a shell string cannot be proven read-only.
+    // Snapshot even inspection-looking commands before execution, so chained
+    // commands and write-capable options cannot skip mutation recovery.
+    !command.trim().is_empty()
 }
 
 fn workspace_has_validation_targets(config: &AgentWorkspaceConfig) -> bool {
@@ -3379,50 +3514,9 @@ fn is_validation_manifest_name(name: &str) -> bool {
         || name.ends_with(".sln")
 }
 
+#[cfg(test)]
 fn is_validation_command(command: &str) -> bool {
-    let command = command.to_ascii_lowercase();
-    if command.contains("&&")
-        || command.contains("||")
-        || command.contains(';')
-        || command.contains('\n')
-        || command.contains('\r')
-    {
-        return false;
-    }
-    [
-        "cargo test",
-        "cargo check",
-        "cargo clippy",
-        "cargo build",
-        "cargo fmt --check",
-        "npm test",
-        "npm run test",
-        "npm run lint",
-        "npm run build",
-        "npm run typecheck",
-        "pnpm test",
-        "pnpm lint",
-        "pnpm build",
-        "yarn test",
-        "yarn lint",
-        "yarn build",
-        "pytest",
-        "python -m pytest",
-        "go test",
-        "go vet",
-        "mvn test",
-        "mvn verify",
-        "gradle test",
-        "gradlew test",
-        "dotnet test",
-        "composer test",
-        "phpunit",
-        "eslint",
-        "tsc --noemit",
-        "ruff check",
-    ]
-    .iter()
-    .any(|needle| command.contains(needle))
+    validation_command::recognized(command)
 }
 
 fn terminal_timeout_secs(action: &Value) -> u64 {
@@ -3473,6 +3567,19 @@ fn display_path(path: &Path) -> String {
 mod tests {
     use super::*;
     use crate::model_registry::ModelLifecycleState;
+
+    #[test]
+    fn offline_only_coding_prompts_never_enter_hosted_inference() {
+        for prompt in [
+            "Only use local only models for these files",
+            "No cloud, this is confidential",
+            "শুধু লোকাল ব্যবহার করো",
+            "Только локально",
+        ] {
+            assert!(local_only_agent_request(prompt), "{prompt}");
+        }
+        assert!(!local_only_agent_request("Implement Cloud account sign-in"));
+    }
 
     fn decoded_checkpoint_entries(values: Vec<Value>) -> Vec<CheckpointEntry> {
         values
@@ -3848,14 +3955,24 @@ mod tests {
 
     #[test]
     fn classifies_terminal_workspace_mutation_conservatively() {
-        assert!(!terminal_command_may_mutate_workspace("git status --short"));
-        assert!(!terminal_command_may_mutate_workspace("rg TODO src"));
+        assert!(!terminal_command_may_mutate_workspace(" \t\r\n"));
+        assert!(terminal_command_may_mutate_workspace("git status --short"));
+        assert!(terminal_command_may_mutate_workspace("rg TODO src"));
         assert!(terminal_command_may_mutate_workspace("npm install"));
         assert!(terminal_command_may_mutate_workspace(
             "python scripts/codegen.py"
         ));
         assert!(terminal_command_may_mutate_workspace(
             "git diff > patch.txt"
+        ));
+        assert!(terminal_command_may_mutate_workspace(
+            "git status; touch fixture.txt"
+        ));
+        assert!(terminal_command_may_mutate_workspace(
+            "git diff --output=fixture.txt"
+        ));
+        assert!(terminal_command_may_mutate_workspace(
+            "dir; Set-Content fixture.txt changed"
         ));
     }
 

@@ -45,6 +45,11 @@ export interface Conversation {
   activeModelId: string | null;
 }
 
+export interface ChatSearchPage {
+  conversations: Conversation[];
+  nextCursor: string | null;
+}
+
 export interface Message {
   id: string;
   conversationId: string;
@@ -54,6 +59,11 @@ export interface Message {
   modelId: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ForkedConversation {
+  conversation: Conversation;
+  messages: Message[];
 }
 
 export interface HardwareProfile {
@@ -201,6 +211,18 @@ export interface BackupInfo {
   name: string;
   sizeBytes: number;
   createdAt: string;
+  scope: "databaseOnly";
+}
+
+export interface DiffusionRuntimeStatus {
+  state: "missing" | "unsupported" | "ready" | "repairNeeded" | "browserPreview"
+    | "resolving" | "downloading" | "verifying" | "extracting" | "failed";
+  backend: BackendKind | null;
+  version: string | null;
+  detail: string;
+  downloadedBytes: number;
+  totalBytes: number | null;
+  percentage: number | null;
 }
 
 export interface RuntimeInstallStatus {
@@ -257,6 +279,7 @@ export interface DatasetDownloadStatus {
   currentFile: string | null;
   destination: string | null;
   error: string | null;
+  verification?: string | null;
 }
 
 export interface LaunchPlan {
@@ -302,8 +325,37 @@ export interface StreamDoneEvent {
   status: Message["status"];
 }
 
+/** Measured progress sent by the local Rust retrieval engine. */
+export interface WebResearchProgressEvent {
+  conversationId: string;
+  messageId: string;
+  mode: "search" | "research";
+  stage: "searching" | "reading" | "generating" | "unavailable" | "stopped";
+  completed: number;
+  total: number;
+  sources: number;
+  pagesRead: number;
+}
+
 export type ArtifactKind = "text" | "markdown" | "code" | "pdf" | "docx" | "image" | "audio" | "video";
 export type ArtifactStatus = "generating" | "ready" | "failed";
+
+export type ImageRenderStage = "queued" | "preparing" | "rendering" | "validating";
+
+/** Leave seed and steps unset to use the current hardware-aware renderer defaults. */
+export interface ImageGenerationOptions {
+  negativePrompt: string;
+  seed: number | null;
+  steps: number | null;
+}
+
+export interface ImageRenderProgress {
+  artifactId: string;
+  stage: ImageRenderStage;
+  step?: number | null;
+  totalSteps?: number | null;
+}
+
 
 export interface Artifact {
   id: string;
@@ -338,6 +390,12 @@ export interface LibraryEntry {
   updatedAt: string;
 }
 
+export interface LibraryPage {
+  entries: LibraryEntry[];
+  nextCursor: string | null;
+  totalCount: number;
+}
+
 export interface ProjectFile {
   id: string;
   projectId: string;
@@ -345,9 +403,31 @@ export interface ProjectFile {
   sizeBytes: number;
   mimeType: string | null;
   contentText: string | null;
-  status: "ready" | "tracked" | "skipped" | "failed";
+  status: "ready" | "attached" | "tracked" | "skipped" | "failed";
   error: string | null;
   addedAt: string;
+  sha256: string | null;
+}
+
+export interface ProjectBinaryFileDownload {
+  name: string;
+  mimeType: string | null;
+  sizeBytes: number;
+  sha256: string;
+  dataBase64: string;
+}
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  updatedAt: string;
+  conversationCount: number;
+  fileCount: number;
+}
+
+export interface ProjectListPage {
+  projects: ProjectSummary[];
+  nextCursor: string | null;
 }
 
 export interface Project {
@@ -418,11 +498,16 @@ export interface AppPreferences {
   markdownRendering: boolean;
   defaultPerformanceProfile: string;
   telemetryEnabled: boolean;
-  saveChatHistory: boolean;
+  /** Read-only compatibility state: local history is always saved in this release. */
+  readonly saveChatHistory: boolean;
+  chatHistoryNoticeRequired: boolean;
   localRuntimeAutostart: boolean;
+  aiExecutionMode: "auto" | "local" | "cloud";
+  codingAgentExecutionMode: "auto" | "local" | "cloud";
   confirmBeforeDelete: boolean;
   webSearchEnabled: boolean;
   deepResearchEnabled: boolean;
+  webSearchPreferredProvider: "auto" | "brave" | "google" | "duckduckgo" | "bing";
   thinkingModeEnabled: boolean;
   typingIndicatorEnabled: boolean;
   socketRealtimeEnabled: boolean;
@@ -431,6 +516,7 @@ export interface AppPreferences {
   autoCheckAppUpdates: boolean;
   autoDownloadAppUpdates: boolean;
   notifyModelUpdates: boolean;
+  /** Compatibility field; automatic model downloading is not available. */
   autoDownloadModelUpdates: boolean;
   updateChannel: string;
   openagentModelId: string;
@@ -450,6 +536,7 @@ export interface AppPreferences {
   /** How downloads and online services reach the internet. */
   networkProxyMode: "direct" | "manual" | "system";
   networkProxyUrl: string;
+  networkProxyCredentialId?: string | null;
 }
 
 /** Live state of the Agent Setup coding agent (desktop OpenAgent and VS Code). */

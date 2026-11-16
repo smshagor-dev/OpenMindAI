@@ -1,8 +1,14 @@
 import type { Message } from "../types";
 import { formatBytes } from "./format";
 import { analyzeVideoFile, transcribeAudioFile } from "./media";
-import { extractPdfText } from "./pdf";
+import { extractPdfText, type PdfExtractionOptions, type PdfExtractionProgress } from "./pdf";
 import { isImageGenerationIntent } from "./imageGeneration";
+import {
+  MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS,
+  planAttachmentContext,
+  serializeAttachmentContext,
+  type AttachmentContextSource,
+} from "./attachmentContext";
 
 export type ChatMode =
   | "chat"
@@ -30,6 +36,7 @@ export interface AttachmentDraft {
   size: number;
   type: string;
   kind: "text" | "image" | "pdf" | "audio" | "video" | "binary";
+  warning?: string;
   contentPreview: string | null;
   mediaDataUrl: string | null;
   mediaMimeType: "image/png" | "image/jpeg" | null;
@@ -43,9 +50,6 @@ export interface UserMessageDisplay {
 }
 
 const MAX_TEXT_ATTACHMENT_BYTES = 1024 * 1024;
-const MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS = 8_000;
-const MAX_TOTAL_ATTACHMENT_CONTEXT_CHARS = 16_000;
-const ATTACHMENT_TRUNCATION_MARKER = "\n[truncated to fit local chat context]";
 const MAX_VISION_IMAGE_INPUT_BYTES = 16 * 1024 * 1024;
 const MAX_VISION_IMAGE_DATA_URL_CHARS = 6_000_000;
 const MAX_VISION_IMAGE_DIMENSION = 2048;
@@ -63,13 +67,6 @@ const CHAT_MODES: ChatMode[] = [
   "sound",
   "vision",
 ];
-
-function takeAttachmentContext(value: string, limit: number) {
-  if (limit <= 0) return "";
-  if (value.length <= limit) return value;
-  if (limit <= ATTACHMENT_TRUNCATION_MARKER.length) return value.slice(0, limit);
-  return `${value.slice(0, limit - ATTACHMENT_TRUNCATION_MARKER.length)}${ATTACHMENT_TRUNCATION_MARKER}`;
-}
 
 function visionMimeType(file: File) {
   const declared = file.type.toLowerCase();
@@ -158,7 +155,15 @@ export function mergeStreamingSnapshot(current: Message[], snapshot: Message[]) 
   });
 }
 
-export async function readAttachment(file: File): Promise<AttachmentDraft> {
+export interface AttachmentReadOptions {
+  signal?: PdfExtractionOptions["signal"];
+  onPdfProgress?: (progress: PdfExtractionProgress) => void;
+}
+
+export async function readAttachment(
+  file: File,
+  options: AttachmentReadOptions = {},
+): Promise<AttachmentDraft> {
   const kind = attachmentKind(file);
   const isTextLike =
     file.type.startsWith("text/") ||
@@ -173,13 +178,19 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
     throw new Error("Text and code attachments must be 1 MB or smaller for local chat context.");
   }
 
+  let warning: string | undefined;
   let contentPreview: string | null = null;
   let mediaDataUrl: string | null = null;
   let mediaMimeType: "image/png" | "image/jpeg" | null = null;
   let mediaItems: InferenceMediaDraft[] = [];
 
   if (isTextLike) {
-    contentPreview = takeAttachmentContext(await file.text(), MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS);
+    // Retain the full bounded source until the user's query is known. Selecting
+    // only the first 8,000 characters here permanently loses deep evidence.
+    contentPreview = await file.text();
+    if (contentPreview.length > MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS) {
+      warning = "Long text file: OpenMindAI will send selected excerpts (8,000 characters per file, 16,000 total). Unselected text is not analyzed.";
+    }
   } else if (kind === "image") {
     const encoded = await encodeVisionImage(file);
     mediaDataUrl = encoded.dataUrl;
@@ -194,7 +205,10 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
     ];
     contentPreview = `[Image attached: ${file.name}. The actual optimized image bytes are supplied to OpenMindAI Lens for this request.]`;
   } else if (kind === "pdf") {
-    const extracted = await extractPdfText(file);
+    const extracted = await extractPdfText(file, {
+      signal: options.signal,
+      onProgress: options.onPdfProgress,
+    });
     mediaItems = extracted.visionPages.map((page) => ({
       kind: "image",
       name: `${file.name} - page ${page.pageNumber}`,
@@ -210,14 +224,20 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
       extracted.visionPages.length
         ? `${extracted.visionPages.length} representative page(s) sent to Lens`
         : null,
-      extracted.truncated ? "text truncated to fit local chat context" : null,
+      extracted.truncated ? "text or scanned-page coverage limited for local chat context" : null,
     ]
       .filter(Boolean)
       .join(", ");
     const body = extracted.text
       ? extracted.text
       : "[No reliable selectable text was found. Use the supplied rendered PDF page images for visual/OCR analysis.]";
-    contentPreview = `[PDF processed locally: ${status}. Page markers below correspond to the original PDF.]\n\n${body}`;
+    contentPreview = `[${extracted.unreadPages.length ? "PDF text-only" : "PDF processed locally"}: ${status}. Page markers below correspond to the original PDF.]\n${extracted.warnings.join("\n")}\n${body}`;
+    warning = [
+      ...extracted.warnings,
+      ...(extracted.truncated
+        ? ["PDF text extraction was truncated before chat-context excerpt selection."]
+        : []),
+    ].join(" ") || undefined;
   } else if (kind === "audio") {
     const transcript = await transcribeAudioFile(file);
     const language = transcript.language ? `, language ${transcript.language}` : "";
@@ -238,6 +258,7 @@ export async function readAttachment(file: File): Promise<AttachmentDraft> {
     type: file.type || "unknown",
     kind,
     contentPreview,
+    warning,
     mediaDataUrl,
     mediaMimeType,
     mediaItems,
@@ -250,6 +271,23 @@ export function attachmentMedia(attachments: AttachmentDraft[]): InferenceMediaD
     .slice(0, MAX_INFERENCE_MEDIA_ITEMS);
 }
 
+function attachmentContextSources(attachments: AttachmentDraft[]): AttachmentContextSource[] {
+  return attachments.map((attachment) => {
+    // Prevent file metadata from injecting fake attachment headers or prompt lines.
+    const safeName = attachment.name.replace(/[\r\n,]/g, " ").split("[").join(" ").split("]").join(" ").trim().slice(0, 160) || "unnamed";
+    const safeType = attachment.type.replace(/[^a-zA-Z0-9.+/-]/g, "").slice(0, 80);
+    return {
+      name: attachment.name,
+      header: `[Attachment: ${safeName}, ${attachment.kind}, ${formatBytes(attachment.size)}, ${safeType}]`,
+      content: attachment.contentPreview,
+    };
+  });
+}
+
+export function attachmentContextStats(attachments: AttachmentDraft[]) {
+  return planAttachmentContext(attachmentContextSources(attachments));
+}
+
 export function buildMessageContent(
   prompt: string,
   attachments: AttachmentDraft[],
@@ -258,28 +296,10 @@ export function buildMessageContent(
   const modePrefix = modeInstruction(mode);
   if (attachments.length === 0) return [modePrefix, prompt].filter(Boolean).join("\n\n");
 
-  let remaining = MAX_TOTAL_ATTACHMENT_CONTEXT_CHARS;
-  const attachmentParts: string[] = [];
-  for (const attachment of attachments) {
-    if (remaining <= 0) break;
-    const header = `[Attachment: ${attachment.name}, ${attachment.kind}, ${formatBytes(attachment.size)}, ${attachment.type}]`;
-    const previewBudget = Math.max(0, remaining - header.length - 1);
-    const preview = attachment.contentPreview
-      ? takeAttachmentContext(
-          attachment.contentPreview,
-          Math.min(MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS, previewBudget),
-        )
-      : "";
-    const serialized = preview ? `${header}\n${preview}` : header.slice(0, remaining);
-    attachmentParts.push(serialized);
-    remaining -= serialized.length + 2;
-  }
-
-  if (attachments.length > attachmentParts.length && remaining > 0) {
-    attachmentParts.push("[Additional attachments omitted to fit local chat context]");
-  }
-
-  const attachmentText = attachmentParts.join("\n\n");
+  const { text: attachmentText } = serializeAttachmentContext(
+    attachmentContextSources(attachments),
+    prompt,
+  );
   return [modePrefix, prompt, attachmentText].filter(Boolean).join("\n\n");
 }
 
@@ -330,18 +350,63 @@ export function userMessageDisplay(content: string): UserMessageDisplay {
   };
 }
 
+// Only explicit output commands outrank attachment analysis and topic keywords.
+// Keep explanatory/search prose out of this fast path.
+function explicitMediaMode(text: string): ChatMode | null {
+  const command = text.replace(/^(?:please\s+|(?:can|could|would) you (?:please )?)/, "");
+  const action = /^(create|make|generate|design|render|draw|paint|illustrate|sketch|animate)\b\s*(.*)/.exec(command);
+  if (action) {
+    const object = /\b(image|photo|photograph|picture|artwork|graphic|poster|logo|thumbnail|illustration|wallpaper|banner|icon|video|animation|voiceover|voice|narration|speech|tts|music|sound|sfx|soundscape|ambience|pdf|document|report|proposal|resume|cv|letter|contract|outline|function|script|code|tutorial|guide|explanation|comparison|summary)\b/.exec(action[2]);
+    if (object && action[2].slice(0, object.index).trim().split(/\s+/).length <= 7) {
+      const noun = object[1];
+      if (/^(video|animation)$/.test(noun)) return "video";
+      if (/^(voiceover|voice|narration|speech|tts)$/.test(noun)) return "voice";
+      if (/^(music|sound|sfx|soundscape|ambience)$/.test(noun)) return "sound";
+      if (/^(image|photo|photograph|picture|artwork|graphic|poster|logo|thumbnail|illustration|wallpaper|banner|icon)$/.test(noun) && isImageGenerationIntent(command)) return "image";
+      return null;
+    }
+    if (/^(draw|paint|illustrate|sketch)$/.test(action[1]) && isImageGenerationIntent(command)) return "image";
+  }
+  if (/^(?:пожалуйста[, ]+)?(?:создай|создайте|сгенерируй|сгенерируйте|сделай|сделайте|нарисуй|нарисуйте)\s+/u.test(command)) {
+    const object = /(?:изображени[ея]|картинк[уаие]|фото|рисунок|логотип|постер|баннер|видео|анимаци[юя]|озвучк[уа]|голос|речь|музык[уа]|звук|отчёт|отчет|документ|код|функци[юя])/u.exec(command);
+    if (object) {
+      if (/^(видео|анимаци)/u.test(object[0])) return "video";
+      if (/^(озвучк|голос|речь)/u.test(object[0])) return "voice";
+      if (/^(музык|звук)/u.test(object[0])) return "sound";
+      if (/^(изображени|картинк|фото|рисунок|логотип|постер|баннер)/u.test(object[0]) && isImageGenerationIntent(command)) return "image";
+      return null;
+    }
+  }
+  if (!/(কীভাবে|কিভাবে|ব্যাখ্যা|সম্পর্কে)/u.test(command) &&
+      /(?:তৈরি\s*(?:করো|করুন|করে\s*দাও)|বানাও|বানান|জেনারেট\s*(?:করো|করুন)|আঁকো|আঁকুন)/u.test(command)) {
+    const object = Array.from(command.matchAll(/(?:ছবি|ইমেজ|ফটো|চিত্র|পোস্টার|লোগো|ভিডিও|অ্যানিমেশন|ভয়েসওভার|ভয়েসওভার|ভয়েস|ভয়েস|কণ্ঠ|বর্ণনা|মিউজিক|সঙ্গীত|সংগীত|সাউন্ড|শব্দ|রিপোর্ট|ডকুমেন্ট|কোড|ফাংশন)/gu)).find((match) => !/^(?:র|ের)(?:\s|$)/u.test(command.slice((match.index ?? 0) + match[0].length)));
+    if (object) {
+      if (/^(ভিডিও|অ্যানিমেশন)/u.test(object[0])) return "video";
+      if (/^(ভয়েস|ভয়েস|কণ্ঠ|বর্ণনা)/u.test(object[0])) return "voice";
+      if (/^(মিউজিক|সঙ্গীত|সংগীত|সাউন্ড|শব্দ)/u.test(object[0])) return "sound";
+      if (/^(ছবি|ইমেজ|ফটো|চিত্র|পোস্টার|লোগো)/u.test(object[0]) && isImageGenerationIntent(command)) return "image";
+    }
+  }
+  return null;
+}
+
 export function inferChatMode(prompt: string, attachments: AttachmentDraft[]): ChatMode {
-  const text = prompt.toLowerCase();
+  const text = prompt.trim().toLowerCase().normalize("NFKC");
+  const explicitOutput = explicitMediaMode(text);
+  if (explicitOutput) return explicitOutput;
   if (attachments.some((attachment) => attachment.mediaItems.length > 0)) return "vision";
   if (attachments.some((attachment) => attachment.kind === "pdf")) return "pdf";
-  if (/\b(web|search|google|latest|today|current|news|source|sources|verify)\b/.test(text))
-    return "search";
+  // Prioritize explicit research intent over generic words such as "search".
   if (
-    /\b(research|deep research|analyze deeply|investigate|market study|literature review)\b/.test(
-      text,
-    )
+    /\b(deep research|analyze deeply|investigate|market study|literature review)\b/.test(text) ||
+    /(গভীর গবেষণা|গবেষণা কর|বিস্তারিত গবেষণা|গবেষণা করে|углублённое исследование|глубокое исследование|исследуй подробно)/u.test(text)
   )
     return "research";
+  if (
+    /\b(web|search|google|latest|today|current|news|sources?|verify|recent|up.to.date|look up|browse|online)\b/.test(text) ||
+    /(খুঁজে|খোঁজ|সার্চ|সার্চ কর|ওয়েব|ওয়েব|ইন্টারনেট|আজকের|আজকে|সর্বশেষ|নতুন খবর|যাচাই কর|অনলাইনে|তথ্য বের কর|খবর|гугл|поиск|найди|поищи|интернет|сегодня|последние новости|проверь|актуальн|онлайн)/u.test(text)
+  )
+    return "search";
   if (/\b(pdf|export pdf|make a pdf|pdf ready)\b/.test(text)) return "pdf";
   if (/\b(document|write a doc|report|proposal|resume|cv|letter|contract|outline)\b/.test(text))
     return "document";
@@ -360,9 +425,7 @@ export function inferChatMode(prompt: string, attachments: AttachmentDraft[]): C
     )
   )
     return "sound";
-  if (
-    /\b(think deeply|reason deeply|reason carefully|step by step|show your reasoning)\b/.test(text)
-  )
+  if (/\b(think deeply|reason deeply|reason carefully|step by step|show your reasoning)\b/.test(text))
     return "thinking";
   return "chat";
 }
@@ -412,12 +475,12 @@ export function modeInstruction(mode: ChatMode) {
     case "search":
       return [
         "[Mode: Web Search]",
-        "Use live web evidence supplied by the local retrieval backend when available. Cite current factual claims with the numbered sources provided by that backend. If retrieval fails, state that clearly and do not fabricate current sources.",
+        "Use the local live web retrieval evidence when available. Cite each current factual claim with the exact numbered source [n], and end with a References section containing clickable Markdown links to the matching URLs. Distinguish full-page evidence from snippets. If retrieval fails, say so clearly and do not fabricate sources or verification.",
       ].join("\n");
     case "research":
       return [
         "[Mode: Deep Research]",
-        "Use the live evidence supplied by the local research retrieval backend, cross-check claims across sources, distinguish evidence from inference, surface uncertainty, and cite numbered sources. If live retrieval fails, say so rather than inventing evidence.",
+        "Produce an evidence-driven research brief from retrieved full webpages and search snippets. Evaluate each key claim against independent domains, explicitly identify contradictions and limitations, label snippet-only evidence, cite the exact [n] markers, and include clickable Markdown links to every cited URL in a References section. Do not claim independent verification where it was unavailable, and never invent citations.",
       ].join("\n");
     case "thinking":
       return "[Mode: Think carefully before answering. Give the final answer clearly, with concise reasoning.]";

@@ -17,8 +17,6 @@ use crate::{
 const UI_STREAM_CHUNK_BYTES: usize = 32;
 const DB_STREAM_FLUSH_BYTES: usize = 2_048;
 const TOKEN_CHANNEL_CAPACITY: usize = 64;
-const MAX_CONTEXT_MESSAGES: usize = 18;
-const MAX_CONTEXT_CHARS: usize = 24_000;
 
 pub struct NativeStreamRequest<'a> {
     pub app: &'a AppHandle,
@@ -67,16 +65,15 @@ impl NativeStreamError {
 
 // Release the conversation on every exit, including DB/event errors and a
 // dropped request future. Cancelling also stops a worker whose consumer left.
-struct ActiveNativeGeneration<'a> {
-    active: &'a ActiveGenerations,
-    conversation_id: &'a str,
+struct ActiveNativeGeneration {
     cancellation: CancellationToken,
 }
 
-impl Drop for ActiveNativeGeneration<'_> {
+impl Drop for ActiveNativeGeneration {
     fn drop(&mut self) {
+        // Only stop this native attempt. The caller owns the conversation
+        // registration, which must survive a fallback to llama-server.
         self.cancellation.cancel();
-        self.active.finish(self.conversation_id);
     }
 }
 
@@ -97,8 +94,13 @@ async fn next_token(
 pub async fn stream_native_completion(
     request: NativeStreamRequest<'_>,
 ) -> Result<InferenceMetrics, NativeStreamError> {
-    let messages = build_text_context(request.database, request.conversation_id)
-        .map_err(NativeStreamError::before_output)?;
+    let (messages, omitted_messages) = build_text_context(
+        request.database,
+        request.conversation_id,
+        &request.assistant.id,
+        request.config.n_ctx,
+    )
+    .map_err(NativeStreamError::before_output)?;
     let inference_request = InferenceRequest::from_messages(messages).with_config(request.config);
     inference_request.validate().map_err(|error| {
         NativeStreamError::before_output(AppError::InferenceFailed(error.to_string()))
@@ -106,11 +108,10 @@ pub async fn stream_native_completion(
 
     let cancellation = request
         .active
-        .start(request.conversation_id)
-        .map_err(NativeStreamError::before_output)?;
+        .token(request.conversation_id)
+        .map_err(NativeStreamError::before_output)?
+        .child_token();
     let _active_generation = ActiveNativeGeneration {
-        active: request.active,
-        conversation_id: request.conversation_id,
         cancellation: cancellation.clone(),
     };
     let started = Instant::now();
@@ -253,6 +254,16 @@ pub async fn stream_native_completion(
 
     match worker_result {
         Ok(()) => {
+            if omitted_messages > 0 {
+                let notice = crate::sampling::context_omission_notice(omitted_messages);
+                generated_chars += notice.chars().count();
+                flush_buffer.push_str(&notice);
+                ui_buffer.push_str(&notice);
+                emit_stream_chunk(&request, &mut ui_buffer)
+                    .map_err(NativeStreamError::after_output)?;
+                flush(request.database, &request.assistant.id, &mut flush_buffer)
+                    .map_err(NativeStreamError::after_output)?;
+            }
             finalize(&request, "completed")?;
             Ok(InferenceMetrics {
                 time_to_first_token_ms: first_token_at,
@@ -273,37 +284,18 @@ pub async fn stream_native_completion(
 fn build_text_context(
     database: &Mutex<Database>,
     conversation_id: &str,
-) -> Result<Vec<ChatMessage>, AppError> {
+    assistant_id: &str,
+    context_size: u32,
+) -> Result<(Vec<ChatMessage>, usize), AppError> {
     let db = database
         .lock()
         .map_err(|_| AppError::internal("database lock poisoned"))?;
     let repo = ChatRepository::new(&db);
-    let mut messages = repo.list_messages(conversation_id)?;
+    let mut messages = repo.messages_for_generation(conversation_id, assistant_id)?;
     messages.retain(|message| {
         message.status == "completed"
             && matches!(message.role.as_str(), "system" | "user" | "assistant")
     });
-
-    if messages.len() > MAX_CONTEXT_MESSAGES {
-        let split_at = messages.len() - MAX_CONTEXT_MESSAGES;
-        let system_messages: Vec<_> = messages
-            .iter()
-            .take(split_at)
-            .filter(|message| message.role == "system")
-            .cloned()
-            .collect();
-        messages = system_messages
-            .into_iter()
-            .chain(messages.into_iter().skip(split_at))
-            .collect();
-    }
-
-    let estimated_chars: usize = messages.iter().map(|message| message.content.len()).sum();
-    if estimated_chars > MAX_CONTEXT_CHARS {
-        return Err(AppError::ContextOverflow(
-            "conversation context is too large for the initial 8K target".to_string(),
-        ));
-    }
 
     let mut prepared = Vec::with_capacity(messages.len());
     for message in messages {
@@ -315,14 +307,56 @@ fn build_text_context(
         if message.content.trim().is_empty() {
             continue;
         }
-        prepared.push(ChatMessage::new(message.role, message.content));
+        prepared.push(serde_json::json!({
+            "role": message.role,
+            "content": message.content,
+        }));
     }
     if prepared.is_empty() {
         return Err(AppError::InferenceFailed(
             "conversation has no completed text context".to_string(),
         ));
     }
-    Ok(prepared)
+
+    let window = crate::sampling::compact_chat_context(prepared, context_size)?;
+    let messages = window
+        .messages
+        .into_iter()
+        .filter_map(|message| {
+            Some(ChatMessage::new(
+                message["role"].as_str()?,
+                message["content"].as_str()?,
+            ))
+        })
+        .collect::<Vec<_>>();
+    Ok((messages, window.omitted_messages))
+}
+
+/// Native chat uses the same model-context output limits as llama-server.
+/// Read the same trimmed conversation that the native worker will receive.
+pub(crate) fn native_chat_output_budget(
+    database: &Mutex<Database>,
+    conversation_id: &str,
+    assistant_id: &str,
+    mode: &str,
+    context_size: u32,
+) -> Result<u32, AppError> {
+    let (messages, _) = build_text_context(database, conversation_id, assistant_id, context_size)?;
+    let prepared = messages
+        .into_iter()
+        .map(|message| {
+            serde_json::json!({
+                "role": message.role,
+                "content": message.content,
+            })
+        })
+        .collect::<Vec<_>>();
+    crate::sampling::chat_output_budget(mode, context_size, &prepared).ok_or_else(|| {
+        AppError::ContextOverflow(
+            "The chat history leaves too little room for a reply. Shorten the input or start a new conversation."
+                .to_string(),
+        )
+    })
 }
 
 fn emit_stream_chunk(
@@ -475,17 +509,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dropped_request_releases_conversation_and_cancels_worker() {
+    async fn dropped_request_cancels_worker_without_releasing_caller_registration() {
         let active = Arc::new(ActiveGenerations::default());
         let cancellation = active.start("conversation").unwrap();
-        let worker_cancellation = cancellation.clone();
-        let task_active = Arc::clone(&active);
+        let worker_cancellation = cancellation.child_token();
+        let native_cancellation = worker_cancellation.clone();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let request = tokio::spawn(async move {
             let _guard = ActiveNativeGeneration {
-                active: &task_active,
-                conversation_id: "conversation",
-                cancellation,
+                cancellation: native_cancellation,
             };
             started_tx.send(()).unwrap();
             std::future::pending::<()>().await;
@@ -495,6 +527,12 @@ mod tests {
         request.abort();
         assert!(request.await.unwrap_err().is_cancelled());
         assert!(worker_cancellation.is_cancelled());
+        assert!(!cancellation.is_cancelled());
+        // The parent request still owns the registration and may safely
+        // fall back to the llama-server stream after a native failure.
+        assert!(!active.is_idle());
+        assert!(active.token("conversation").is_ok());
+        active.finish("conversation");
         assert!(active.is_idle());
         assert!(active.start("conversation").is_ok());
     }
