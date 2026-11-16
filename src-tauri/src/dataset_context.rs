@@ -177,7 +177,12 @@ fn collect_manifests(
         }
         let name = entry.file_name();
         if kind.is_dir() {
-            collect_manifests(base, &dir.join(name), keywords, candidates, scan, depth + 1)?;
+            // A damaged optional dataset subtree must never block ordinary chat.
+            if let Err(error) =
+                collect_manifests(base, &dir.join(name), keywords, candidates, scan, depth + 1)
+            {
+                tracing::warn!(%error, "skipping unreadable dataset subtree");
+            }
             continue;
         }
         if !kind.is_file() || name != "openmindai-dataset.json" {
@@ -209,9 +214,14 @@ fn collect_manifests(
         );
         let score = score_text(&haystack, keywords);
         if score > 0 {
+            // Failure to duplicate a handle is local to this optional dataset.
+            let Ok(root) = directory.try_clone() else {
+                tracing::warn!("skipping dataset whose directory handle cannot be cloned");
+                continue;
+            };
             candidates.push(DatasetCandidate {
                 id: manifest.dataset_id,
-                root: directory.try_clone()?,
+                root,
                 score,
                 files: manifest.files,
             });
@@ -242,9 +252,7 @@ fn dataset_snippets(
 
     let mut snippets = Vec::new();
     for (_, file) in scored.into_iter().take(MAX_FILES_PER_DATASET) {
-        let Ok(content) =
-            read_bounded_text_sample(dataset_root, Path::new(&file.path))
-        else {
+        let Ok(content) = read_bounded_text_sample(dataset_root, Path::new(&file.path)) else {
             continue;
         };
         let selected = best_text_window(&content, keywords);
@@ -319,7 +327,10 @@ fn read_bounded_text(directory: &Dir, path: &Path, limit: u64) -> io::Result<Str
 /// excluded rather than causing the entire dataset to be ignored.
 fn read_bounded_text_sample(directory: &Dir, path: &Path) -> io::Result<String> {
     if !directory.symlink_metadata(path)?.is_file() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a regular dataset file"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular dataset file",
+        ));
     }
     let mut options = cap_std::fs::OpenOptions::new();
     options.read(true);
@@ -329,16 +340,23 @@ fn read_bounded_text_sample(directory: &Dir, path: &Path) -> io::Result<String> 
         options.custom_flags(libc::O_NONBLOCK);
     }
     let mut file = directory.open_with(path, &options)?;
-    if !file.metadata()?.is_file() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a regular dataset file"));
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > MAX_TEXT_FILE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "dataset file exceeds read limit or is not a regular file",
+        ));
     }
     let mut bytes = Vec::new();
-    (&mut file).take(MAX_TEXT_SAMPLE_BYTES).read_to_end(&mut bytes)?;
+    (&mut file)
+        .take(MAX_TEXT_SAMPLE_BYTES)
+        .read_to_end(&mut bytes)?;
     match std::str::from_utf8(&bytes) {
         Ok(text) => Ok(text.to_owned()),
         Err(error) if error.error_len().is_none() => {
             bytes.truncate(error.valid_up_to());
-            String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+            String::from_utf8(bytes)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
         }
         Err(error) => Err(io::Error::new(io::ErrorKind::InvalidData, error)),
     }
@@ -520,9 +538,11 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let missing = temp.path().join("removed-portable-root");
         let root = PortableRootManager::from_root(missing);
-        assert!(build_dataset_context(&root, "alpha evidence", "test", "routing")
-            .unwrap()
-            .is_none());
+        assert!(
+            build_dataset_context(&root, "alpha evidence", "test", "routing")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -686,6 +706,22 @@ mod tests {
         fs::write(dataset.join("alpha.txt"), "alpha INSIDE_MARKER").unwrap();
         manifest(&dataset, &["alpha.txt".into()]);
         assert!(context(&root).unwrap().contains("INSIDE_MARKER"));
+    }
+
+    #[test]
+    fn missing_and_corrupt_optional_manifests_do_not_interrupt_chat() {
+        let (_temp, root, dataset) = fixture();
+        let base = root.root().join("datasets/openmindai");
+        let missing = base.join("missing");
+        fs::create_dir(&missing).unwrap();
+        let corrupt = base.join("corrupt");
+        fs::create_dir(&corrupt).unwrap();
+        fs::write(corrupt.join("openmindai-dataset.json"), [0xff, 0xfe]).unwrap();
+        // The chat path must remain usable even if no valid dataset exists.
+        assert!(context(&root).is_none());
+        fs::write(dataset.join("alpha.txt"), "alpha VALID_EVIDENCE").unwrap();
+        manifest(&dataset, &["alpha.txt".into()]);
+        assert!(context(&root).unwrap().contains("VALID_EVIDENCE"));
     }
 
     #[test]
