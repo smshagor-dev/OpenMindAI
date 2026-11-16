@@ -394,7 +394,11 @@ pub async fn generate_image(
     })?;
 
     if !output.status.success() {
-        let detail = process_error_detail(&output.stdout, &output.stderr, &[prompt, options.negative_prompt.as_deref().unwrap_or("")]);
+        let detail = process_error_detail(
+            &output.stdout,
+            &output.stderr,
+            &[prompt, options.negative_prompt.as_deref().unwrap_or("")],
+        );
         return Err(AppError::ArtifactGenerationFailed(format!(
             "stable-diffusion.cpp exited with {}: {detail}",
             output.status
@@ -1275,7 +1279,11 @@ fn process_error_detail(stdout: &[u8], stderr: &[u8], sensitive: &[&str]) -> Str
     }
     // The renderer may echo its command line or input on failure. Scrub before
     // truncating, otherwise the truncated suffix could expose prompt fragments.
-    for secret in sensitive.iter().copied().filter(|secret| !secret.is_empty()) {
+    for secret in sensitive
+        .iter()
+        .copied()
+        .filter(|secret| !secret.is_empty())
+    {
         combined = combined.replace(secret, "[redacted prompt]");
     }
     let chars = combined.chars().collect::<Vec<_>>();
@@ -1330,9 +1338,11 @@ mod tests {
 
     #[test]
     fn renderer_errors_keep_non_sensitive_diagnostics() {
-        assert_eq!(process_error_detail(b"missing model", b"", &["secret"]), "missing model");
+        assert_eq!(
+            process_error_detail(b"missing model", b"", &["secret"]),
+            "missing model"
+        );
     }
-
 
     use crate::hardware::{BackendProfile, CpuProfile, GpuInfo, MemoryProfile};
 
