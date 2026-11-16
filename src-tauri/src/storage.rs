@@ -34,6 +34,26 @@ pub struct StorageSummary {
     pub available_bytes: Option<u64>,
 }
 
+fn empty_storage_summary(root: String) -> StorageSummary {
+    StorageSummary {
+        root,
+        models_bytes: 0,
+        database_bytes: 0,
+        cache_bytes: 0,
+        generated_bytes: 0,
+        available_bytes: None,
+    }
+}
+
+fn snapshot_for_root(
+    cached: &Option<(String, Instant, StorageSummary)>,
+    requested_root: &str,
+) -> Option<StorageSummary> {
+    cached.as_ref().and_then(|(root, _, summary)| {
+        (root == requested_root).then(|| summary.clone())
+    })
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CacheClearResult {
@@ -81,14 +101,16 @@ impl<'a> StorageMonitor<'a> {
             });
         }
 
-        Ok(StorageSummary {
-            root: root_key,
-            models_bytes: 0,
-            database_bytes: 0,
-            cache_bytes: 0,
-            generated_bytes: 0,
-            available_bytes: None,
-        })
+        // A refresh can take seconds on large model directories. Preserve the
+        // last completed snapshot for this root while the scan runs instead of
+        // presenting misleading zero usage on every expired-cache request.
+        if let Ok(current) = cache.read() {
+            if let Some(summary) = snapshot_for_root(&current, &root_key) {
+                return Ok(summary);
+            }
+        }
+
+        Ok(empty_storage_summary(root_key))
     }
 
     fn compute_summary(&self) -> Result<StorageSummary, AppError> {
@@ -172,6 +194,23 @@ mod cache_tests {
         assert!(!snapshot_is_fresh("root-a", recent, "root-b"));
         let old = Instant::now() - STORAGE_CACHE_TTL - Duration::from_secs(1);
         assert!(!snapshot_is_fresh("root-a", old, "root-a"));
+    }
+
+    #[test]
+    fn stale_snapshot_is_returned_only_for_its_own_root() {
+        let mut summary = empty_storage_summary("root-a".into());
+        summary.models_bytes = 123_456;
+        summary.generated_bytes = 789;
+        let cached = Some((
+            "root-a".to_string(),
+            Instant::now() - STORAGE_CACHE_TTL - Duration::from_secs(1),
+            summary,
+        ));
+        let restored = snapshot_for_root(&cached, "root-a").unwrap();
+        assert_eq!(restored.models_bytes, 123_456);
+        assert_eq!(restored.generated_bytes, 789);
+        assert!(snapshot_for_root(&cached, "root-b").is_none());
+        assert!(snapshot_for_root(&None, "root-a").is_none());
     }
 
     #[test]
