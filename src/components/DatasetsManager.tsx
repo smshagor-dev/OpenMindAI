@@ -298,13 +298,10 @@ export function DatasetsManager() {
   const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [downloadStatus, setDownloadStatus] = useState<DatasetDownloadStatus | null>(null);
-  const [installedDatasets, setInstalledDatasets] = useState<Set<string>>(() => {
-    try {
-      return new Set(JSON.parse(window.localStorage.getItem("openmindaiInstalledDatasets") ?? "[]"));
-    } catch {
-      return new Set();
-    }
-  });
+  // Only a completion observed in this session is trustworthy. Historical
+  // localStorage IDs cannot prove that files still exist under the portable root.
+  // A validated backend inventory is required before restoring installed badges.
+  const [installedDatasets, setInstalledDatasets] = useState<Set<string>>(() => new Set());
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const selectedType = DATASET_TYPES.find((type) => type.id === category) ?? DATASET_TYPES[0];
 
@@ -401,16 +398,6 @@ export function DatasetsManager() {
     });
   }, [downloadStatus?.datasetId, downloadStatus?.state]);
 
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(
-        "openmindaiInstalledDatasets",
-        JSON.stringify(Array.from(installedDatasets)),
-      );
-    } catch {
-      // Download progress must remain usable when local storage is unavailable.
-    }
-  }, [installedDatasets]);
 
   async function openDataset(id: string) {
     await api.openExternalUrl(openMindDatasetPageUrl(id));
