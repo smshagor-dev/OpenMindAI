@@ -229,44 +229,40 @@ impl ImageRenderOptions {
     }
 }
 
-// Renderer stdout/stderr is untrusted and may echo the user's private prompt.
-// Redact before returning diagnostics to the UI; argv exposure is tracked separately.
-fn redact_renderer_diagnostics(detail: String, secrets: &[&str]) -> String {
-    let mut safe = detail;
-    for secret in secrets {
-        if !secret.is_empty() {
-            safe = safe.replace(secret, "[redacted prompt]");
-        }
-    }
-    safe
-}
-
 #[cfg(test)]
 mod renderer_diagnostic_privacy_tests {
-    use super::redact_renderer_diagnostics;
+    use super::process_error_detail;
 
     #[test]
     fn removes_image_and_negative_prompt_from_renderer_errors() {
         let prompt = "SENTINEL private image request";
         let negative = "SENTINEL private negative request";
         let stderr = format!("failed for {prompt}; negative={negative}");
-        let sanitized = redact_renderer_diagnostics(stderr, &[prompt, negative]);
+        let sanitized = process_error_detail(b"", stderr.as_bytes(), &[prompt, negative]);
         assert!(!sanitized.contains("SENTINEL"));
         assert!(sanitized.contains("[redacted prompt]"));
     }
 
     #[test]
     fn empty_secret_does_not_modify_diagnostics() {
-        assert_eq!(redact_renderer_diagnostics("failed".into(), &[""]), "failed");
+        assert_eq!(process_error_detail(b"failed", b"", &[""]), "failed");
     }
 
     #[test]
     fn video_prompt_is_removed_from_renderer_errors() {
         let prompt = "SENTINEL video context";
-        let sanitized = redact_renderer_diagnostics(
-            format!("renderer rejected {prompt}"), &[prompt],
-        );
+        let stdout = format!("renderer rejected {prompt}");
+        let sanitized = process_error_detail(stdout.as_bytes(), b"", &[prompt]);
         assert!(!sanitized.contains(prompt));
+    }
+
+    #[test]
+    fn long_unicode_prompt_is_redacted_before_diagnostic_truncation() {
+        let prompt = "ব্যক্তিগত секрет".repeat(500);
+        let stderr = format!("renderer rejected {prompt}; failed");
+        let sanitized = process_error_detail(b"", stderr.as_bytes(), &[&prompt]);
+        assert_eq!(sanitized, "renderer rejected [redacted prompt]; failed");
+        assert!(!sanitized.contains("секрет"));
     }
 }
 
@@ -398,10 +394,7 @@ pub async fn generate_image(
     })?;
 
     if !output.status.success() {
-        let detail = redact_renderer_diagnostics(
-            process_error_detail(&output.stdout, &output.stderr),
-            &[prompt, options.negative_prompt.as_deref().unwrap_or("").trim()],
-        );
+        let detail = process_error_detail(&output.stdout, &output.stderr, &[prompt, options.negative_prompt.as_deref().unwrap_or("")]);
         return Err(AppError::ArtifactGenerationFailed(format!(
             "stable-diffusion.cpp exited with {}: {detail}",
             output.status
@@ -544,10 +537,7 @@ pub async fn generate_video(
     })?;
 
     if !output.status.success() {
-        let detail = redact_renderer_diagnostics(
-            process_error_detail(&output.stdout, &output.stderr),
-            &[prompt],
-        );
+        let detail = process_error_detail(&output.stdout, &output.stderr, &[prompt]);
         return Err(AppError::ArtifactGenerationFailed(format!(
             "stable-diffusion.cpp video generation exited with {}: {detail}",
             output.status
@@ -1275,13 +1265,18 @@ fn parse_sampling_step(line: &str, expected_total: u32) -> Option<u32> {
     None
 }
 
-fn process_error_detail(stdout: &[u8], stderr: &[u8]) -> String {
+fn process_error_detail(stdout: &[u8], stderr: &[u8], sensitive: &[&str]) -> String {
     let mut combined = String::from_utf8_lossy(stderr).trim().to_string();
     if combined.is_empty() {
         combined = String::from_utf8_lossy(stdout).trim().to_string();
     }
     if combined.is_empty() {
         return "no process output".to_string();
+    }
+    // The renderer may echo its command line or input on failure. Scrub before
+    // truncating, otherwise the truncated suffix could expose prompt fragments.
+    for secret in sensitive.iter().copied().filter(|secret| !secret.is_empty()) {
+        combined = combined.replace(secret, "[redacted prompt]");
     }
     let chars = combined.chars().collect::<Vec<_>>();
     let start = chars.len().saturating_sub(4_000);
@@ -1322,6 +1317,23 @@ fn hide_console_window(_command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn renderer_errors_redact_private_prompts_before_display() {
+        let prompt = "private sentinel image request";
+        let negative = "private negative sentinel";
+        let stderr = format!("error: -p {prompt} --negative-prompt {negative}");
+        let detail = process_error_detail(b"", stderr.as_bytes(), &[prompt, negative]);
+        assert!(!detail.contains(prompt));
+        assert!(!detail.contains(negative));
+        assert!(detail.contains("[redacted prompt]"));
+    }
+
+    #[test]
+    fn renderer_errors_keep_non_sensitive_diagnostics() {
+        assert_eq!(process_error_detail(b"missing model", b"", &["secret"]), "missing model");
+    }
+
+
     use crate::hardware::{BackendProfile, CpuProfile, GpuInfo, MemoryProfile};
 
     fn hardware(vendor: Option<GpuVendor>, vram: Option<u64>) -> HardwareProfile {

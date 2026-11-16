@@ -38,6 +38,7 @@
     "test:chat-search": "node --test tests/chatSearchPaging.test.mjs",
     "test:project-catalog": "node --test tests/projectCatalogPaging.test.mjs",
     "test:project-binary": "node --test tests/projectBinaryAttachments.test.mjs",
+    "test:backup-scope": "node --experimental-strip-types --test tests/backupScope.test.mjs",
     "test:setup-storage": "node --test tests/setupStorageValidation.test.mjs"
   },
   "allowScripts": {

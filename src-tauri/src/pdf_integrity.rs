@@ -71,6 +71,27 @@ pub(super) fn validate(source: &mut File) -> Result<(), AppError> {
                     }
                 }
                 b"Page" => {
+                    // Reject unreadable page geometry before publishing the export.
+                    let values = dict.get(b"MediaBox")?.as_array()?;
+                    if values.len() != 4 {
+                        return Err("invalid MediaBox length".into());
+                    }
+                    let mut coords = [0.0_f64; 4];
+                    for (index, value) in values.iter().enumerate() {
+                        coords[index] = match value {
+                            Object::Integer(n) => *n as f64,
+                            Object::Real(n) => f64::from(*n),
+                            _ => return Err("non-numeric MediaBox".into()),
+                        };
+                        if !coords[index].is_finite() {
+                            return Err("non-finite MediaBox".into());
+                        }
+                    }
+                    let width = coords[2] - coords[0];
+                    let height = coords[3] - coords[1];
+                    if !(width > 0.0 && height > 0.0 && width <= 20_000.0 && height <= 20_000.0) {
+                        return Err("invalid MediaBox dimensions".into());
+                    }
                     if let Ok(contents) = dict.get(b"Contents") {
                         let refs = match contents {
                             Object::Reference(id) => vec![*id],
@@ -187,6 +208,28 @@ mod tests {
             .unwrap()
             .set("Kids", vec![Object::Reference(pages)]);
         assert!(check(&serialized(doc)).is_err());
+    }
+    #[test]
+    fn invalid_page_geometry_is_rejected_before_publication() {
+        let (mut missing, _, _) = fixture_document();
+        let page_id = *missing.get_pages().values().next().unwrap();
+        missing.objects.get_mut(&page_id).unwrap().as_dict_mut().unwrap().remove(b"MediaBox");
+        assert!(check(&serialized(missing)).is_err());
+
+        for coordinates in [
+            [0_i64, 0, 0, 100],
+            [0, 0, 100, -1],
+            [0, 0, 30_000, 100],
+        ] {
+            let (mut doc, _, _) = fixture_document();
+            let page_id = *doc.get_pages().values().next().unwrap();
+            doc.objects.get_mut(&page_id).unwrap().as_dict_mut().unwrap().set(
+                "MediaBox",
+                coordinates.into_iter().map(Object::Integer).collect::<Vec<_>>(),
+            );
+            assert!(check(&serialized(doc)).is_err(), "accepted {coordinates:?}");
+        }
+        assert!(check(&fixture_pdf()).is_ok());
     }
     #[test]
     fn missing_and_malformed_content_streams_are_rejected() {

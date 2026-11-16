@@ -211,6 +211,7 @@ export interface BackupInfo {
   name: string;
   sizeBytes: number;
   createdAt: string;
+  scope: "databaseOnly";
 }
 
 export interface DiffusionRuntimeStatus {

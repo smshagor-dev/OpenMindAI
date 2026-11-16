@@ -17,6 +17,8 @@ const MAX_SNIPPET_CHARS: usize = 1_200;
 const MAX_CONTEXT_CHARS: usize = 5_500;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_TEXT_FILE_BYTES: u64 = 4 * 1024 * 1024;
+// Evidence selection uses a bounded prefix, not a full multi-megabyte allocation.
+const MAX_TEXT_SAMPLE_BYTES: u64 = 256 * 1024;
 const MAX_MANIFEST_FILES: usize = 4_096;
 const MAX_SCAN_ENTRIES: usize = 8_192;
 const MAX_SCAN_DEPTH: usize = 16;
@@ -59,7 +61,15 @@ pub(crate) fn build_dataset_context(
 
     // Ambient authority is used only for the user-selected portable root.
     // Every subsequent lookup stays relative to an already-open directory.
-    let portable = Dir::open_ambient_dir(root.root(), ambient_authority())?;
+    let portable = match Dir::open_ambient_dir(root.root(), ambient_authority()) {
+        Ok(portable) => portable,
+        Err(error) => {
+            // Dataset enrichment is optional. A missing, inaccessible or
+            // concurrently removed portable root must not fail chat sending.
+            tracing::warn!(%error, "dataset portable root unavailable; skipping optional context");
+            return Ok(None);
+        }
+    };
     let base = match open_dataset_base(&portable) {
         Ok(base) => base,
         Err(error) => {
@@ -233,7 +243,7 @@ fn dataset_snippets(
     let mut snippets = Vec::new();
     for (_, file) in scored.into_iter().take(MAX_FILES_PER_DATASET) {
         let Ok(content) =
-            read_bounded_text(dataset_root, Path::new(&file.path), MAX_TEXT_FILE_BYTES)
+            read_bounded_text_sample(dataset_root, Path::new(&file.path))
         else {
             continue;
         };
@@ -302,6 +312,36 @@ fn read_bounded_text(directory: &Dir, path: &Path, limit: u64) -> io::Result<Str
         ));
     }
     read_limited_utf8(file, limit)
+}
+
+/// Read only a bounded prefix for retrieval. Large local files must not be
+/// fully allocated on every chat request. A truncated UTF-8 codepoint is
+/// excluded rather than causing the entire dataset to be ignored.
+fn read_bounded_text_sample(directory: &Dir, path: &Path) -> io::Result<String> {
+    if !directory.symlink_metadata(path)?.is_file() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a regular dataset file"));
+    }
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let mut file = directory.open_with(path, &options)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a regular dataset file"));
+    }
+    let mut bytes = Vec::new();
+    (&mut file).take(MAX_TEXT_SAMPLE_BYTES).read_to_end(&mut bytes)?;
+    match std::str::from_utf8(&bytes) {
+        Ok(text) => Ok(text.to_owned()),
+        Err(error) if error.error_len().is_none() => {
+            bytes.truncate(error.valid_up_to());
+            String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        }
+        Err(error) => Err(io::Error::new(io::ErrorKind::InvalidData, error)),
+    }
 }
 
 fn read_limited_utf8(reader: impl Read, limit: u64) -> io::Result<String> {
@@ -476,6 +516,26 @@ mod tests {
     }
 
     #[test]
+    fn missing_portable_root_does_not_block_chat_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("removed-portable-root");
+        let root = PortableRootManager::from_root(missing);
+        assert!(build_dataset_context(&root, "alpha evidence", "test", "routing")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn portable_root_removed_between_requests_is_optional() {
+        let (temp, root, dataset) = fixture();
+        fs::write(dataset.join("alpha.txt"), "alpha INSIDE_MARKER").unwrap();
+        manifest(&dataset, &["alpha.txt".into()]);
+        assert!(context(&root).unwrap().contains("INSIDE_MARKER"));
+        fs::remove_dir_all(temp.path().join("portable")).unwrap();
+        assert!(context(&root).is_none());
+    }
+
+    #[test]
     fn normal_nested_evidence_is_retained() {
         let (_temp, root, dataset) = fixture();
         fs::create_dir(dataset.join("nested")).unwrap();
@@ -624,6 +684,31 @@ mod tests {
             .set_len(1024 * 1024 + 1)
             .unwrap();
         fs::write(dataset.join("alpha.txt"), "alpha INSIDE_MARKER").unwrap();
+        manifest(&dataset, &["alpha.txt".into()]);
+        assert!(context(&root).unwrap().contains("INSIDE_MARKER"));
+    }
+
+    #[test]
+    fn large_dataset_evidence_uses_bounded_prefix_without_loading_tail() {
+        let (_temp, root, dataset) = fixture();
+        let mut content = String::from("alpha EARLY_MARKER ");
+        content.push_str(&"x".repeat(MAX_TEXT_SAMPLE_BYTES as usize + 1024));
+        content.push_str(" alpha LATE_MARKER");
+        fs::write(dataset.join("alpha.txt"), content).unwrap();
+        manifest(&dataset, &["alpha.txt".into()]);
+        let output = context(&root).unwrap();
+        assert!(output.contains("EARLY_MARKER"));
+        assert!(!output.contains("LATE_MARKER"));
+    }
+
+    #[test]
+    fn sample_truncation_preserves_valid_utf8_boundary() {
+        let (_temp, root, dataset) = fixture();
+        let mut content = String::from("alpha INSIDE_MARKER ");
+        let padding = MAX_TEXT_SAMPLE_BYTES as usize - content.len() - 1;
+        content.push_str(&"x".repeat(padding));
+        content.push('é'); // two-byte character crosses the sample boundary
+        fs::write(dataset.join("alpha.txt"), content).unwrap();
         manifest(&dataset, &["alpha.txt".into()]);
         assert!(context(&root).unwrap().contains("INSIDE_MARKER"));
     }
