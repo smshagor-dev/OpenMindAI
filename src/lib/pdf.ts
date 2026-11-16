@@ -119,7 +119,11 @@ export async function extractPdfText(
       }
     }
     const pagesRead = pageTexts.length;
-    const ocrPages = selectOcrPages(scannedPages, MAX_OCR_PAGES);
+    // Selectable text already fills the entire prompt budget: OCR cannot add
+    // useful content and would waste rendering/native OCR time on scanned pages.
+    const ocrPages = selectableChars >= MAX_EXTRACTED_CHARS
+      ? []
+      : selectOcrPages(scannedPages, MAX_OCR_PAGES);
     const ocrPageSet = new Set(ocrPages);
     const deferred = scannedPages.filter(pageNumber => !ocrPageSet.has(pageNumber));
     const selectedVisionPages = new Set(selectRepresentativePages(ocrPages, MAX_VISION_PAGES));
