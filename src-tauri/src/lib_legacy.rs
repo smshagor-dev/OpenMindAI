@@ -320,6 +320,23 @@ fn archive_conversation(id: String, state: State<AppState>) -> Result<(), app_er
 }
 
 #[tauri::command]
+fn list_archived_conversations(
+    limit: Option<i64>,
+    state: State<AppState>,
+) -> Result<Vec<Conversation>, app_error::AppError> {
+    let db = state.database.lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    ChatRepository::new(&db).list_archived_conversations(limit.unwrap_or(100))
+}
+
+#[tauri::command]
+fn restore_conversation(id: String, state: State<AppState>) -> Result<(), app_error::AppError> {
+    let db = state.database.lock()
+        .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+    ChatRepository::new(&db).restore_conversation(&id)
+}
+
+#[tauri::command]
 fn delete_conversation(id: String, state: State<AppState>) -> Result<(), app_error::AppError> {
     let db = state
         .database
@@ -2614,6 +2631,8 @@ pub fn run() {
             set_conversation_pinned,
             set_conversation_model,
             archive_conversation,
+            list_archived_conversations,
+            restore_conversation,
             delete_conversation,
             list_messages,
             search_conversations,
