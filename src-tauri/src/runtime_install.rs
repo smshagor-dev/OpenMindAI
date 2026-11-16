@@ -693,8 +693,8 @@ fn safe_runtime_zip_mode(mode: Option<u32>, is_dir: bool) -> bool {
     }
 }
 
-fn validate_runtime_zip_archive(
-    archive: &mut zip::ZipArchive<fs::File>,
+fn validate_runtime_zip_archive<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
     max_entries: usize,
     max_unpacked: u64,
 ) -> Result<(), AppError> {

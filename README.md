@@ -29,7 +29,7 @@
 
 ## OpenMindAI v4.0.0
 
-**Current source version:** `v4.0.0`  
+**Current source version:** `v5.0.0`  
 **Release target:** [v4.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v4.0.0)  
 **Previous stable release:** [v3.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v3.0.0)
 

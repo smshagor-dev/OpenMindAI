@@ -599,7 +599,7 @@ fn docx_block(xml: &mut String, block: Block) {
             docx_paragraph(&mut paragraph, &text, size, true, false);
             paragraph = paragraph.replacen(
                 "<w:pPr>",
-                &format!("<w:pPr><w:pStyle w:val=\\\"{style}\\\"/>"),
+                &format!("<w:pPr><w:pStyle w:val=\"{style}\"/>"),
                 1,
             );
             xml.push_str(&paragraph);
@@ -701,11 +701,11 @@ mod tests {
 
     #[test]
     fn docx_headings_use_word_outline_styles() {
-        let xml = word_document_xml(parse_markdown_blocks("# Main\\n\\n## Details\\n\\n### Nested"), "Report");
-        assert!(xml.contains("<w:pStyle w:val=\\\"Heading1\\\"/>"));
-        assert!(xml.contains("<w:pStyle w:val=\\\"Heading2\\\"/>"));
-        assert!(xml.contains("<w:pStyle w:val=\\\"Heading3\\\"/>"));
-        assert!(xml.contains("<w:t xml:space=\\\"preserve\\\">Nested</w:t>"));
+        let xml = word_document_xml(parse_markdown_blocks("# Main\n\n## Details\n\n### Nested"), "Report");
+        assert!(xml.contains("<w:pStyle w:val=\"Heading1\"/>"));
+        assert!(xml.contains("<w:pStyle w:val=\"Heading2\"/>"));
+        assert!(xml.contains("<w:pStyle w:val=\"Heading3\"/>"));
+        assert!(xml.contains("<w:t xml:space=\"preserve\">Nested</w:t>"));
     }
 
     const SAMPLE_MARKDOWN: &str = "# Report Title\n\nThis is an introductory paragraph with real content.\n\n## Section One\n\n- First point\n- Second point\n\n1. Step one\n2. Step two\n\n```text\nfn main() {}\n```\n\n| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n| Beta | 2 |\n";

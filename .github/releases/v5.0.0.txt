@@ -1,0 +1,33 @@
+# OpenMindAI v5.0.0
+
+OpenMindAI v5.0.0 is a desktop release that fixes a first-run provisioning defect which could leave a fresh installation unable to chat ("no usable llama.cpp runtime found" / "server failed"), and restores a green build after a dependency-group bump. It packages the current validated `main` branch as a synchronized release and keeps v4.0.0 as the supported previous-release baseline for upgrade testing.
+
+## Release scope
+
+- Fixed: a setup interrupted after the data root was created (runtime and/or model not yet provisioned) is no longer treated as a completed installation. First-run setup now resumes and finishes provisioning instead of dropping the user into a chat that can only answer "server failed". Installation completion is now gated on the authoritative `setupState` reaching `Completed`, not on the early `installationComplete` marker alone. Legacy installs written before `setupState` existed continue to load unchanged.
+- Fixed: restored compilation after the `rust-dependencies` group bump by holding `sha2` and `sysinfo` at their last API-compatible versions, aligning the iOS `llama-cpp-2` pin with the desktop/Android pin, generalizing the runtime ZIP validator over readers, and updating SQLite row reads for `rusqlite` 0.42.
+- Version metadata synchronized to `5.0.0` across Node, Tauri, Rust, lockfiles, portable marker, and platform bootstrap launchers.
+- Windows NSIS installer and updater metadata produced under the `v5.0.0` release contract.
+- Clean-install validation retained for the native Windows package.
+- Upgrade validation targets `v4.0.0` → `v5.0.0` so existing 4.0.0 installations can be tested before publication.
+- Native runtime ABI checks, application version checks, updater signature validation, checksums, and release-asset verification remain release gates.
+- CI, Rust formatting, Clippy, Rust tests, frontend validation, CodeQL, and dependency audits remain required before release.
+
+## Upgrade from v4.0.0
+
+Users on v4.0.0 should be able to install v5.0.0 over the existing installation. The release validation path verifies that the resulting executable reports `5.0.0` and that the packaged native runtime remains present and ABI-aligned.
+
+## Release assets
+
+The production release contract requires:
+
+- `OpenMindAI_5.0.0_x64-setup.exe`
+- `OpenMindAI_5.0.0_x64-setup.exe.sig`
+- `latest.json`
+- `SHA256SUMS.txt`
+- `OpenMindAI-Setup.bat`
+- `OpenMindAI-Setup.command`
+- `openmindai-setup.sh`
+- `openmindai.marker`
+
+The GitHub release should remain a draft until signing, updater metadata, checksums, clean installation, and v4.0.0 → v5.0.0 upgrade validation have passed.
