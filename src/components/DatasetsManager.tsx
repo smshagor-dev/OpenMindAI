@@ -14,6 +14,7 @@ import {
 import { api } from "../api";
 import type { DatasetDownloadStatus } from "../types";
 import { formatBytes } from "../lib/format";
+import { initialInstalledDatasets, recordCompletedDataset } from "../lib/datasetInstalledState";
 
 type DatasetCategory =
   | "recommended"
@@ -301,7 +302,7 @@ export function DatasetsManager() {
   // Only a completion observed in this session is trustworthy. Historical
   // localStorage IDs cannot prove that files still exist under the portable root.
   // A validated backend inventory is required before restoring installed badges.
-  const [installedDatasets, setInstalledDatasets] = useState<Set<string>>(() => new Set());
+  const [installedDatasets, setInstalledDatasets] = useState<Set<string>>(initialInstalledDatasets);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const selectedType = DATASET_TYPES.find((type) => type.id === category) ?? DATASET_TYPES[0];
 
@@ -390,12 +391,7 @@ export function DatasetsManager() {
 
   useEffect(() => {
     if (downloadStatus?.state !== "completed" || !downloadStatus.datasetId) return;
-    setInstalledDatasets((current) => {
-      if (current.has(downloadStatus.datasetId)) return current;
-      const next = new Set(current);
-      next.add(downloadStatus.datasetId);
-      return next;
-    });
+    setInstalledDatasets((current) => recordCompletedDataset(current, downloadStatus.state, downloadStatus.datasetId));
   }, [downloadStatus?.datasetId, downloadStatus?.state]);
 
 
