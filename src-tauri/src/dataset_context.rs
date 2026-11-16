@@ -167,7 +167,10 @@ fn collect_manifests(
         }
         let name = entry.file_name();
         if kind.is_dir() {
-            collect_manifests(base, &dir.join(name), keywords, candidates, scan, depth + 1)?;
+            // A damaged optional dataset subtree must never block ordinary chat.
+            if let Err(error) = collect_manifests(base, &dir.join(name), keywords, candidates, scan, depth + 1) {
+                tracing::warn!(%error, "skipping unreadable dataset subtree");
+            }
             continue;
         }
         if !kind.is_file() || name != "openmindai-dataset.json" {
@@ -199,9 +202,14 @@ fn collect_manifests(
         );
         let score = score_text(&haystack, keywords);
         if score > 0 {
+            // Failure to duplicate a handle is local to this optional dataset.
+            let Ok(root) = directory.try_clone() else {
+                tracing::warn!("skipping dataset whose directory handle cannot be cloned");
+                continue;
+            };
             candidates.push(DatasetCandidate {
                 id: manifest.dataset_id,
-                root: directory.try_clone()?,
+                root,
                 score,
                 files: manifest.files,
             });
@@ -626,6 +634,22 @@ mod tests {
         fs::write(dataset.join("alpha.txt"), "alpha INSIDE_MARKER").unwrap();
         manifest(&dataset, &["alpha.txt".into()]);
         assert!(context(&root).unwrap().contains("INSIDE_MARKER"));
+    }
+
+    #[test]
+    fn missing_and_corrupt_optional_manifests_do_not_interrupt_chat() {
+        let (_temp, root, dataset) = fixture();
+        let base = root.root().join("datasets/openmindai");
+        let missing = base.join("missing");
+        fs::create_dir(&missing).unwrap();
+        let corrupt = base.join("corrupt");
+        fs::create_dir(&corrupt).unwrap();
+        fs::write(corrupt.join("openmindai-dataset.json"), [0xff, 0xfe]).unwrap();
+        // The chat path must remain usable even if no valid dataset exists.
+        assert!(context(&root).is_none());
+        fs::write(dataset.join("alpha.txt"), "alpha VALID_EVIDENCE").unwrap();
+        manifest(&dataset, &["alpha.txt".into()]);
+        assert!(context(&root).unwrap().contains("VALID_EVIDENCE"));
     }
 
     #[test]
