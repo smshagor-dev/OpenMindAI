@@ -3,7 +3,7 @@ import {
   Boxes,
   CheckCircle2,
   Cloud,
-  Github,
+  Code2,
   Loader2,
   Mail,
   MessageSquare,
@@ -283,7 +283,7 @@ export function AppsSettings() {
         <article className="app-card">
           <div className="app-card-main">
             <span className="app-card-icon">
-              <Github size={19} />
+              <Code2 size={19} />
             </span>
             <div>
               <strong>GitHub</strong>
