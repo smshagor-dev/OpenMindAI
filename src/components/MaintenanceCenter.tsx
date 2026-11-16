@@ -11,6 +11,7 @@ import type {
   StorageSummary,
 } from "../types";
 import { formatBytes, formatError, formatTime } from "../lib/format";
+import { DATABASE_BACKUP_NOTICE, DATABASE_BACKUP_RESTORE_GUIDE, backupScopeLabel } from "../lib/backupScope";
 import { ConfirmDialog } from "./ConfirmDialog";
 
 export function MaintenanceCenter(props: {
@@ -29,6 +30,7 @@ export function MaintenanceCenter(props: {
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [backupCreating, setBackupCreating] = useState(false);
   const [backupError, setBackupError] = useState<string | null>(null);
+  const [backupSuccess, setBackupSuccess] = useState<string | null>(null);
   const [recentLogs, setRecentLogs] = useState<string | null>(null);
   const [logsLoading, setLogsLoading] = useState(false);
   const [clearCacheConfirmOpen, setClearCacheConfirmOpen] = useState(false);
@@ -92,9 +94,11 @@ export function MaintenanceCenter(props: {
   const createBackup = async () => {
     setBackupCreating(true);
     setBackupError(null);
+    setBackupSuccess(null);
     try {
-      await api.backupDatabase();
+      const snapshot = await api.backupDatabase();
       setBackups(await api.listBackups());
+      setBackupSuccess(`Created database-only snapshot: ${snapshot.name}`);
     } catch (caught) {
       setBackupError(formatError(caught));
     } finally {
@@ -179,29 +183,32 @@ export function MaintenanceCenter(props: {
       </div>
 
       <div className="maintenance-block">
-        <h3>Backups</h3>
+        <h3>Database Snapshots</h3>
+        <p className="setup-warning" role="note">{DATABASE_BACKUP_NOTICE}</p>
+        <p className="muted">{DATABASE_BACKUP_RESTORE_GUIDE}</p>
         <div className="button-row">
           <button type="button" className="ghost-button" onClick={() => void createBackup()} disabled={backupCreating}>
-            {backupCreating ? "Creating…" : "Create Backup Now"}
+            {backupCreating ? "Creating database snapshot…" : "Create Database Snapshot"}
           </button>
           <button type="button" className="ghost-button" onClick={() => void api.openMaintenanceFolder("backups")}>
-            Open Backups Folder
+            Open Database Snapshots Folder
           </button>
         </div>
         {backupError ? <p className="setup-warning">{backupError}</p> : null}
+        {backupSuccess ? <p role="status" className="muted">{backupSuccess}</p> : null}
         {backups.length > 0 ? (
           <ul className="maintenance-check-list">
             {backups.map((backup) => (
               <li key={backup.name}>
                 <span>{backup.name}</span>
                 <span className="muted">
-                  {formatBytes(backup.sizeBytes)} · {formatTime(backup.createdAt)}
+                  {backupScopeLabel(backup.scope)} · {formatBytes(backup.sizeBytes)} · {formatTime(backup.createdAt)}
                 </span>
               </li>
             ))}
           </ul>
         ) : (
-          <p className="muted">No backups yet.</p>
+          <p className="muted">No database snapshots yet.</p>
         )}
       </div>
 
