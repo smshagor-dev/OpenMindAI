@@ -148,6 +148,34 @@ pub struct ModelDownloadManager {
     catalog_entry: ModelCatalogEntry,
 }
 
+/// A token alone does not prove a transfer is active: completion can precede
+/// token cleanup. Never rewrite terminal status or cancel a future job.
+fn apply_stop_if_active(
+    status: &mut DownloadStatus,
+    token: Option<&CancellationToken>,
+    requested: DownloadState,
+) -> bool {
+    if !matches!(requested, DownloadState::Cancelled | DownloadState::PausedInterrupted)
+        || !matches!(
+            status.state,
+            DownloadState::Queued
+                | DownloadState::Resolving
+                | DownloadState::Downloading
+                | DownloadState::Verifying
+        )
+    {
+        return false;
+    }
+    let Some(token) = token else {
+        return false;
+    };
+    token.cancel();
+    status.state = requested;
+    status.error = None;
+    status.speed_bytes_per_sec = None;
+    true
+}
+
 impl ModelDownloadManager {
     pub fn new(root: PortableRootManager) -> Self {
         let catalog_entry = crate::model_catalog::required_entry()
@@ -178,19 +206,19 @@ impl ModelDownloadManager {
     }
 
     fn stop_download(&self, state: DownloadState) -> Result<DownloadStatus, AppError> {
-        let active_token = self
+        // Keep the status lock through cancellation and the state transition.
+        // The install may have completed while its token is still being cleared;
+        // in that case a late Cancel/Pause must not replace Completed or Failed.
+        let mut status = self
+            .status
+            .lock()
+            .map_err(|_| AppError::internal("download status lock poisoned"))?;
+        let token = self
             .cancel_token
             .lock()
-            .map_err(|_| AppError::internal("download cancel lock poisoned"))?
-            .clone();
-        let Some(token) = active_token else {
-            // A late pause/cancel after completion must never rewrite the
-            // completed/failed state or interfere with the next download.
-            return self.status();
-        };
-        token.cancel();
-        self.set_state(state, None)?;
-        self.status()
+            .map_err(|_| AppError::internal("download cancel lock poisoned"))?;
+        apply_stop_if_active(&mut status, token.as_ref(), state);
+        Ok(status.clone())
     }
 
     fn begin_download(&self) -> Result<OwnedSemaphorePermit, AppError> {
@@ -877,6 +905,52 @@ mod tests {
 
         drop(first);
         assert!(other_window.begin_download().is_ok());
+    }
+
+    #[test]
+    fn stop_preserves_terminal_download_states_even_with_stale_token() {
+        let entry = crate::model_catalog::required_entry().unwrap();
+        for terminal in [
+            DownloadState::Completed,
+            DownloadState::Failed,
+            DownloadState::Cancelled,
+            DownloadState::PausedInterrupted,
+        ] {
+            for requested in [DownloadState::Cancelled, DownloadState::PausedInterrupted] {
+                let mut status = DownloadStatus::queued(&entry);
+                status.state = terminal.clone();
+                status.error = Some("original diagnostic".into());
+                let token = CancellationToken::new();
+                assert!(!apply_stop_if_active(&mut status, Some(&token), requested));
+                assert_eq!(status.state, terminal);
+                assert_eq!(status.error.as_deref(), Some("original diagnostic"));
+                assert!(!token.is_cancelled());
+            }
+        }
+    }
+
+    #[test]
+    fn stop_requires_token_and_cancels_only_live_downloads() {
+        let entry = crate::model_catalog::required_entry().unwrap();
+        for active in [
+            DownloadState::Queued,
+            DownloadState::Resolving,
+            DownloadState::Downloading,
+            DownloadState::Verifying,
+        ] {
+            let mut status = DownloadStatus::queued(&entry);
+            status.state = active.clone();
+            assert!(!apply_stop_if_active(&mut status, None, DownloadState::Cancelled));
+            assert_eq!(status.state, active);
+            let token = CancellationToken::new();
+            assert!(apply_stop_if_active(
+                &mut status,
+                Some(&token),
+                DownloadState::PausedInterrupted
+            ));
+            assert!(token.is_cancelled());
+            assert_eq!(status.state, DownloadState::PausedInterrupted);
+        }
     }
 
     #[test]
