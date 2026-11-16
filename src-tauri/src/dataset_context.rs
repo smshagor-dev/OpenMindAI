@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    io::{self, Read},
+    io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
 
@@ -347,10 +347,35 @@ fn read_bounded_text_sample(directory: &Dir, path: &Path) -> io::Result<String> 
             "dataset file exceeds read limit or is not a regular file",
         ));
     }
-    let mut bytes = Vec::new();
-    (&mut file)
-        .take(MAX_TEXT_SAMPLE_BYTES)
-        .read_to_end(&mut bytes)?;
+    // Sample both ends without reading the middle of a large dataset. The
+    // total I/O remains capped at MAX_TEXT_SAMPLE_BYTES and the tail can
+    // contain recent append-only observations absent from the prefix.
+    let split = metadata.len() > MAX_TEXT_SAMPLE_BYTES;
+    let head_limit = if split { MAX_TEXT_SAMPLE_BYTES / 2 } else { MAX_TEXT_SAMPLE_BYTES };
+    let mut head = Vec::new();
+    (&mut file).take(head_limit).read_to_end(&mut head)?;
+    let mut result = valid_utf8_sample(head, false)?;
+    if split {
+        let tail_limit = MAX_TEXT_SAMPLE_BYTES - head_limit;
+        file.seek(SeekFrom::End(-(tail_limit as i64)))?;
+        let mut tail = Vec::new();
+        (&mut file).take(tail_limit).read_to_end(&mut tail)?;
+        let tail = valid_utf8_sample(tail, true)?;
+        result.push_str("\n[dataset middle omitted]\n");
+        result.push_str(&tail);
+    }
+    Ok(result)
+}
+
+/// UTF-8 truncation at either end of a bounded sample must not discard
+/// otherwise valid evidence; malformed interior bytes still fail closed.
+fn valid_utf8_sample(mut bytes: Vec<u8>, trim_start: bool) -> io::Result<String> {
+    if trim_start {
+        // A seek may land inside a multibyte scalar. At most three leading
+        // continuation bytes can belong to that partial scalar.
+        let skip = bytes.iter().take(3).take_while(|byte| **byte & 0xc0 == 0x80).count();
+        bytes.drain(..skip);
+    }
     match std::str::from_utf8(&bytes) {
         Ok(text) => Ok(text.to_owned()),
         Err(error) if error.error_len().is_none() => {
@@ -360,6 +385,7 @@ fn read_bounded_text_sample(directory: &Dir, path: &Path) -> io::Result<String> 
         }
         Err(error) => Err(io::Error::new(io::ErrorKind::InvalidData, error)),
     }
+}
 }
 
 fn read_limited_utf8(reader: impl Read, limit: u64) -> io::Result<String> {
@@ -735,6 +761,32 @@ mod tests {
         let output = context(&root).unwrap();
         assert!(output.contains("EARLY_MARKER"));
         assert!(!output.contains("LATE_MARKER"));
+    }
+
+    #[test]
+    fn bounded_sampling_finds_append_only_tail_evidence() {
+        let (_temp, root, dataset) = fixture();
+        let content = format!(
+            "alpha EARLY_MARKER {} alpha LATE_MARKER",
+            "x".repeat(MAX_TEXT_SAMPLE_BYTES as usize + 4_096)
+        );
+        fs::write(dataset.join("alpha.txt"), content).unwrap();
+        manifest(&dataset, &["alpha.txt".into()]);
+        let output = context(&root).unwrap();
+        assert!(output.contains("EARLY_MARKER"));
+        assert!(output.contains("LATE_MARKER"));
+    }
+
+    #[test]
+    fn tail_sampling_skips_partial_utf8_character_at_seek_boundary() {
+        let (_temp, root, dataset) = fixture();
+        let head = "alpha EARLY_MARKER ";
+        let tail_bytes = (MAX_TEXT_SAMPLE_BYTES / 2) as usize;
+        let padding = MAX_TEXT_SAMPLE_BYTES as usize + 4096 - head.len();
+        let content = format!("{head}{}é{} alpha TAIL_MARKER", "x".repeat(padding), "y".repeat(tail_bytes / 2));
+        fs::write(dataset.join("alpha.txt"), content).unwrap();
+        manifest(&dataset, &["alpha.txt".into()]);
+        assert!(context(&root).unwrap().contains("TAIL_MARKER"));
     }
 
     #[test]
