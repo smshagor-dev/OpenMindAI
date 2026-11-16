@@ -3814,6 +3814,73 @@ button {
   color: var(--text);
 }
 
+.cloud-account {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 460px;
+}
+
+.cloud-account-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.cloud-account-head strong {
+  display: block;
+}
+
+.cloud-account-form {
+  display: grid;
+  gap: 12px;
+}
+
+.cloud-account-form input {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 6px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.cloud-account-form input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.cloud-account-note {
+  margin: 0;
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.cloud-account-register {
+  font-size: 13px;
+}
+
+.cloud-account-disconnect {
+  align-self: flex-start;
+  padding: 8px 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.cloud-account-disconnect:hover {
+  background: var(--bubble);
+}
+
+.cloud-account-disconnect:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 @media (max-width: 540px) {
   .setup-wizard { padding: 12px; }
   .setup-card { padding: 18px; max-height: calc(100dvh - 24px); overflow-y: auto; }

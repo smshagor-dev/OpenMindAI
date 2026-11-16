@@ -2043,7 +2043,7 @@ export function App() {
             onSelectModel={selectModel}
             showCloudModels={showCloudApiModels}
             cloudUnavailable={executionMode === "cloud" && !showCloudApiModels}
-            onConnectCloud={() => setView("research-studio")}
+            onConnectCloud={() => { setSettingsSection("cloud"); setView("settings"); }}
             cloudModels={showCloudApiModels ? cloudModels : []}
             activeCloudModelId={showCloudApiModels ? cloudModel : ""}
             onSelectCloudModel={setCloudModel}
@@ -2125,7 +2125,7 @@ export function App() {
               onSelectModel={selectModel}
               showCloudModels={showCloudApiModels}
               cloudUnavailable={executionMode === "cloud" && !showCloudApiModels}
-              onConnectCloud={() => setView("research-studio")}
+              onConnectCloud={() => { setSettingsSection("cloud"); setView("settings"); }}
               cloudModels={showCloudApiModels ? cloudModels : []}
               activeCloudModelId={showCloudApiModels ? cloudModel : ""}
               onSelectCloudModel={setCloudModel}

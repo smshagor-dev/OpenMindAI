@@ -25,6 +25,7 @@ import {
   User,
   Wrench,
   Bot,
+  Cloud,
 } from "lucide-react";
 import packageJson from "../../package.json";
 import type {
@@ -43,6 +44,7 @@ import { formatBytes, formatError } from "../lib/format";
 import { readImageAsDataUrl } from "../lib/avatar";
 import { ModelsManager } from "./ModelsManager";
 import { AppsSettings } from "./AppsSettings";
+import { CloudAccountSection } from "./CloudAccountSection";
 import { MaintenanceCenter } from "./MaintenanceCenter";
 import { UpdatesPanel } from "./UpdatesPanel";
 import { AgentSettings } from "./AgentSettings";
@@ -209,6 +211,7 @@ export function SettingsDialog(props: {
     { id: "chat", label: "Chat", icon: MessageSquarePlus },
     { id: "capabilities", label: "Capabilities", icon: Brain },
     { id: "openagent", label: "Agent Setup", icon: Bot },
+    { id: "cloud", label: "Cloud", icon: Cloud },
     { id: "connectors", label: "Apps", icon: Plug },
     { id: "models", label: "Models", icon: Database },
     { id: "runtime", label: "AI Runtime", icon: Server },
@@ -503,6 +506,12 @@ export function SettingsDialog(props: {
             <SaveBar state={saveState} onSave={savePreferences} />
           </SettingsGroup>
         ) : null}
+
+        {activeSection === "cloud" && (
+          <SettingsGroup title="Cloud account">
+            <CloudAccountSection />
+          </SettingsGroup>
+        )}
 
         {activeSection === "connectors" && (
           <SettingsGroup title="Apps">
