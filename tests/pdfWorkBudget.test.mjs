@@ -152,6 +152,42 @@ test("complete small scanned document preserves OCR and representative vision be
   fx.assertClean();
 });
 
+test("OCR deadline expiring inside a batch skips rendering and native dispatch", async () => {
+  const fx = fixture(6, (page) => page === 1 ? "Readable selectable text from the first page." : "");
+  const originalNow = Date.now;
+  let clockReads = 0;
+  Date.now = () => [0, 30_000, 61_000][Math.min(clockReads++, 2)];
+  try {
+    const result = await extractPdfText(file);
+    assert.equal(fx.renders.length, 0, "no page should render after deadline");
+    assert.equal(fx.calls.length, 0, "native OCR must not start after deadline");
+    assert(result.truncated);
+    assert(result.unreadPages.length > 0);
+    assert.match(result.warnings.join(" "), /time budget reached/);
+    fx.assertClean();
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("deadline after rendering skips native OCR and preserves readable text", async () => {
+  const fx = fixture(6, (page) => page === 1 ? "Readable selectable text from the first page." : "");
+  const originalNow = Date.now;
+  let clockReads = 0;
+  Date.now = () => [0, 0, 0, 61_000][Math.min(clockReads++, 3)];
+  try {
+    const result = await extractPdfText(file);
+    assert.equal(fx.renders.length, 1);
+    assert.equal(fx.calls.length, 0, "expired batch must not dispatch native OCR");
+    assert.match(result.text, /Readable selectable text/);
+    assert(result.truncated);
+    assert.match(result.warnings.join(" "), /time budget reached/);
+    fx.assertClean();
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test.after(async () => {
   globalThis.document = originalDocument;
   delete globalThis.__pdf;
