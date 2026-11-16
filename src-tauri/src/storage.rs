@@ -153,8 +153,11 @@ fn clear_directory_contents(path: &Path) -> Result<u64, AppError> {
     let mut freed = 0;
     for entry in fs::read_dir(path)? {
         let entry = entry?;
-        let metadata = entry.metadata()?;
-        if metadata.is_dir() {
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if metadata.file_type().is_symlink() {
+            // Remove only the link; never follow a redirected cache directory.
+            fs::remove_file(entry.path())?;
+        } else if metadata.is_dir() {
             freed += directory_size(&entry.path())?;
             fs::remove_dir_all(entry.path())?;
         } else {
@@ -173,8 +176,11 @@ fn directory_size(path: &Path) -> Result<u64, AppError> {
     let mut total = 0;
     for entry in fs::read_dir(path)? {
         let entry = entry?;
-        let metadata = entry.metadata()?;
-        if metadata.is_dir() {
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if metadata.file_type().is_symlink() {
+            // A link inside portable storage must not count or traverse external data.
+            continue;
+        } else if metadata.is_dir() {
             total += directory_size(&entry.path())?;
         } else {
             total += metadata.len();
@@ -186,6 +192,39 @@ fn directory_size(path: &Path) -> Result<u64, AppError> {
 #[cfg(test)]
 mod cache_tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn storage_size_does_not_follow_external_directory_symlinks() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("storage-link-root-{}", uuid::Uuid::new_v4()));
+        let external = std::env::temp_dir().join(format!("storage-link-external-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&external).unwrap();
+        fs::write(external.join("private.bin"), vec![7u8; 8192]).unwrap();
+        fs::write(root.join("local.bin"), vec![3u8; 13]).unwrap();
+        symlink(&external, root.join("redirect")).unwrap();
+        assert_eq!(directory_size(&root).unwrap(), 13);
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&external).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_clear_unlinks_symlink_without_deleting_external_files() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("cache-link-root-{}", uuid::Uuid::new_v4()));
+        let external = std::env::temp_dir().join(format!("cache-link-external-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&external).unwrap();
+        fs::write(external.join("keep.bin"), b"keep").unwrap();
+        symlink(&external, root.join("redirect")).unwrap();
+        assert_eq!(clear_directory_contents(&root).unwrap(), 0);
+        assert!(external.join("keep.bin").exists());
+        assert!(!root.join("redirect").exists());
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&external).unwrap();
+    }
 
     #[test]
     fn storage_cache_ttl_expires_stale_snapshots() {
