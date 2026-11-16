@@ -59,7 +59,15 @@ pub(crate) fn build_dataset_context(
 
     // Ambient authority is used only for the user-selected portable root.
     // Every subsequent lookup stays relative to an already-open directory.
-    let portable = Dir::open_ambient_dir(root.root(), ambient_authority())?;
+    let portable = match Dir::open_ambient_dir(root.root(), ambient_authority()) {
+        Ok(portable) => portable,
+        Err(error) => {
+            // Dataset enrichment is optional. A missing, inaccessible or
+            // concurrently removed portable root must not fail chat sending.
+            tracing::warn!(%error, "dataset portable root unavailable; skipping optional context");
+            return Ok(None);
+        }
+    };
     let base = match open_dataset_base(&portable) {
         Ok(base) => base,
         Err(error) => {
@@ -473,6 +481,26 @@ mod tests {
             }
             Err(error) => panic!("symlink fixture failed: {error}"),
         }
+    }
+
+    #[test]
+    fn missing_portable_root_does_not_block_chat_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("removed-portable-root");
+        let root = PortableRootManager::from_root(missing);
+        assert!(build_dataset_context(&root, "alpha evidence", "test", "routing")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn portable_root_removed_between_requests_is_optional() {
+        let (temp, root, dataset) = fixture();
+        fs::write(dataset.join("alpha.txt"), "alpha INSIDE_MARKER").unwrap();
+        manifest(&dataset, &["alpha.txt".into()]);
+        assert!(context(&root).unwrap().contains("INSIDE_MARKER"));
+        fs::remove_dir_all(temp.path().join("portable")).unwrap();
+        assert!(context(&root).is_none());
     }
 
     #[test]
