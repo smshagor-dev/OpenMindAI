@@ -403,11 +403,12 @@ export function SettingsDialog(props: {
 
         {activeSection === "capabilities" && preferenceDraft ? (
           <SettingsGroup title="Capabilities">
-            <ToggleRow
-              label="Thinking mode"
-              checked={preferenceDraft.thinkingModeEnabled}
-              onChange={(value) => setPreference("thinkingModeEnabled", value)}
-            />
+            <Info label="Thinking mode" value="Not configurable in this release" />
+            <p className="muted">
+              Reasoning behavior depends on the selected model and provider. This app does not
+              currently apply the saved Thinking mode preference to inference requests, so
+              changing it would not enable or disable model reasoning.
+            </p>
             <ToggleRow
               label="Web search mode"
               checked={preferenceDraft.webSearchEnabled}
