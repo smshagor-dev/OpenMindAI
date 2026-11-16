@@ -592,7 +592,17 @@ fn docx_block(xml: &mut String, block: Block) {
                 4 => 24,
                 _ => 22,
             };
-            docx_paragraph(xml, &text, size, true, false);
+            // Native heading styles enable Word navigation, outlines and TOCs.
+            // Keep explicit sizing for compatibility with minimal DOCX readers.
+            let style = format!("Heading{}", level.min(6));
+            let mut paragraph = String::new();
+            docx_paragraph(&mut paragraph, &text, size, true, false);
+            paragraph = paragraph.replacen(
+                "<w:pPr>",
+                &format!("<w:pPr><w:pStyle w:val=\\\"{style}\\\"/>"),
+                1,
+            );
+            xml.push_str(&paragraph);
         }
         Block::Paragraph { text } => docx_paragraph(xml, &text, 22, false, false),
         Block::UnorderedList { items } => {
@@ -687,6 +697,16 @@ pub fn generate_docx(markdown: &str, title: &str, dest: &Path) -> Result<(), App
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn docx_headings_use_word_outline_styles() {
+        let xml = word_document_xml(parse_markdown_blocks("# Main\\n\\n## Details\\n\\n### Nested"), "Report");
+        assert!(xml.contains("<w:pStyle w:val=\\\"Heading1\\\"/>"));
+        assert!(xml.contains("<w:pStyle w:val=\\\"Heading2\\\"/>"));
+        assert!(xml.contains("<w:pStyle w:val=\\\"Heading3\\\"/>"));
+        assert!(xml.contains("<w:t xml:space=\\\"preserve\\\">Nested</w:t>"));
+    }
 
     const SAMPLE_MARKDOWN: &str = "# Report Title\n\nThis is an introductory paragraph with real content.\n\n## Section One\n\n- First point\n- Second point\n\n1. Step one\n2. Step two\n\n```text\nfn main() {}\n```\n\n| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n| Beta | 2 |\n";
 

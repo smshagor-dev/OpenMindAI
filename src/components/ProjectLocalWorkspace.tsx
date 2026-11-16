@@ -169,6 +169,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
   };
 
   const attachFolder = async () => {
+    if (editorDirty && !window.confirm("Discard unsaved editor changes before attaching another folder?")) return;
     const selected = await open({
       directory: true,
       multiple: false,
@@ -190,6 +191,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
 
   const detachFolder = async () => {
     if (!detachTarget) return;
+    if (editorDirty && !window.confirm("Discard unsaved editor changes before detaching this folder?")) return;
     const next = await run("detach", () =>
       localWorkspaceApi.detachFolder(props.projectId, detachTarget.id),
     );
@@ -407,6 +409,8 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
                 className={root.id === activeRoot?.id ? "local-root-tab active" : "local-root-tab"}
                 key={root.id}
                 onClick={() => {
+                  if (root.id === activeRoot?.id) return;
+                  if (editorDirty && !window.confirm("Discard unsaved editor changes and switch attached folders?")) return;
                   if (root.id === activeRoot?.id) return;
                   if (editorDirty && !window.confirm("Discard unsaved editor changes and switch attached folders?")) return;
                   directoryGate.current.select(props.projectId, root.id);

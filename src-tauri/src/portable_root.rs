@@ -55,10 +55,16 @@ pub fn available_bytes_for_path(path: &Path) -> Option<u64> {
 /// candidate setup location shouldn't leave stray folders behind.
 pub fn preview_writable(path: &Path) -> bool {
     if path.exists() {
-        let probe = path.join(".openmindai-write-test");
-        let writable = fs::write(&probe, b"ok").is_ok();
-        let _ = fs::remove_file(&probe);
-        return writable;
+        // Never truncate or delete a pre-existing file (or follow a planted
+        // symlink) merely to check whether a storage location is writable.
+        let probe = path.join(format!(".openmindai-write-test-{}", uuid::Uuid::new_v4()));
+        return match fs::OpenOptions::new().write(true).create_new(true).open(&probe) {
+            Ok(file) => {
+                drop(file);
+                fs::remove_file(&probe).is_ok()
+            }
+            Err(_) => false,
+        };
     }
     match path.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => preview_writable(parent),
@@ -343,9 +349,17 @@ impl PortableRootManager {
 
     pub fn validate_root(&self) -> Result<(), AppError> {
         fs::create_dir_all(&self.root)?;
-        let probe = self.root.join(".write-test");
-        fs::write(&probe, b"ok").map_err(|error| AppError::RootNotWritable(error.to_string()))?;
-        fs::remove_file(probe).ok();
+        // A fixed .write-test name could be a symlink to unrelated user data.
+        // Use an unpredictable exclusive file so validation cannot overwrite it.
+        let probe = self.root.join(format!(".write-test-{}", uuid::Uuid::new_v4()));
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+            .map_err(|error| AppError::RootNotWritable(error.to_string()))?;
+        drop(file);
+        fs::remove_file(&probe)
+            .map_err(|error| AppError::RootNotWritable(error.to_string()))?;
         Ok(())
     }
 
@@ -833,5 +847,49 @@ pub(crate) mod tests {
         assert_eq!(sanitize_profile_name("  My Profile!! "), "myprofile");
         assert_eq!(sanitize_profile_name(""), DEFAULT_PROFILE_NAME);
         assert_eq!(sanitize_profile_name("!!!"), DEFAULT_PROFILE_NAME);
+    }
+}
+
+#[cfg(test)]
+mod writability_probe_regression_tests {
+    use super::*;
+
+    #[test]
+    fn validation_does_not_modify_existing_probe_file() {
+        let root = tempfile::tempdir().unwrap();
+        let sentinel = root.path().join(".write-test");
+        fs::write(&sentinel, b"important user data").unwrap();
+        PortableRootManager::from_root(root.path().to_path_buf())
+            .validate_root()
+            .unwrap();
+        assert_eq!(fs::read(&sentinel).unwrap(), b"important user data");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn preview_does_not_modify_existing_probe_file() {
+        let root = tempfile::tempdir().unwrap();
+        let sentinel = root.path().join(".openmindai-write-test");
+        fs::write(&sentinel, b"keep").unwrap();
+        assert!(preview_writable(root.path()));
+        assert_eq!(fs::read(&sentinel).unwrap(), b"keep");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_probe_cannot_overwrite_external_file() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("protected");
+        fs::write(&target, b"protected").unwrap();
+        symlink(&target, root.path().join(".write-test")).unwrap();
+        symlink(&target, root.path().join(".openmindai-write-test")).unwrap();
+        assert!(preview_writable(root.path()));
+        PortableRootManager::from_root(root.path().to_path_buf())
+            .validate_root()
+            .unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"protected");
     }
 }

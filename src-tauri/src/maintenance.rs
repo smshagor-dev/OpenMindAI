@@ -55,12 +55,20 @@ pub struct RepairSummary {
     pub actions: Vec<String>,
 }
 
+/// A .db snapshot captures SQLite state, not external portable-root files.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum BackupScope {
+    DatabaseOnly,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupInfo {
     pub name: String,
     pub size_bytes: u64,
     pub created_at: String,
+    pub scope: BackupScope,
 }
 
 /// Runs a read-only health sweep: storage writability, database integrity,
@@ -216,6 +224,7 @@ pub fn backup_database(
         name: filename,
         size_bytes,
         created_at: Utc::now().to_rfc3339(),
+        scope: BackupScope::DatabaseOnly,
     })
 }
 
@@ -227,7 +236,14 @@ pub fn list_backups(root: &PortableRootManager) -> Result<Vec<BackupInfo>, AppEr
     let mut backups = Vec::new();
     for entry in fs::read_dir(&backups_dir)? {
         let entry = entry?;
-        if entry.file_name().to_string_lossy().starts_with(".pending-") {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // Only the .db snapshots produced by this feature belong in this
+        // list. Never follow a symlink or present an arbitrary file as an
+        // OpenMindAI database backup.
+        if !name.starts_with("openmindai-") || !name.ends_with(".db") {
+            continue;
+        }
+        if !entry.file_type()?.is_file() {
             continue;
         }
         let metadata = entry.metadata()?;
@@ -236,9 +252,10 @@ pub fn list_backups(root: &PortableRootManager) -> Result<Vec<BackupInfo>, AppEr
         }
         let modified: chrono::DateTime<Utc> = metadata.modified()?.into();
         backups.push(BackupInfo {
-            name: entry.file_name().to_string_lossy().to_string(),
+            name,
             size_bytes: metadata.len(),
             created_at: modified.to_rfc3339(),
+            scope: BackupScope::DatabaseOnly,
         });
     }
     backups.sort_by(|left, right| right.created_at.cmp(&left.created_at));
@@ -313,5 +330,25 @@ mod tests {
         let backups = list_backups(&root).unwrap();
         assert_eq!(backups.len(), 1);
         assert_eq!(backups[0].name, info.name);
+        assert_eq!(backups[0].scope, BackupScope::DatabaseOnly);
+        assert_eq!(info.scope, BackupScope::DatabaseOnly);
+        assert_eq!(
+            serde_json::to_value(&info).unwrap()["scope"],
+            "databaseOnly"
+        );
+    }
+
+    #[test]
+    fn backup_listing_does_not_label_unmanaged_files_as_database_snapshots() {
+        let (_temp, root, database) = setup();
+        let created = backup_database(&root, &database).unwrap();
+        let backups_dir = root.resolve_relative("backups").unwrap();
+        fs::write(backups_dir.join("manual.db"), b"other database").unwrap();
+        fs::write(backups_dir.join("notes.txt"), b"no snapshot").unwrap();
+        fs::write(backups_dir.join(".pending-openmindai-stale.db"), b"incomplete").unwrap();
+        let entries = list_backups(&root).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, created.name);
+        assert_eq!(entries[0].scope, BackupScope::DatabaseOnly);
     }
 }

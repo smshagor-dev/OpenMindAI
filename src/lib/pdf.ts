@@ -144,6 +144,12 @@ export async function extractPdfText(
       const rendered: { pageNumber: number; dataUrl: string }[] = [];
       for (const pageNumber of batchNumbers) {
         assertNotCancelled(options.signal);
+        // Rendering can be expensive even before native OCR starts. Enforce
+        // the deadline for each page, not only at batch boundaries.
+        if (Date.now() - startedOcrAt >= MAX_OCR_ELAPSED_MS) {
+          stoppedForTime = true;
+          break;
+        }
         try {
           const page = await pdf.getPage(pageNumber);
           assertNotCancelled(options.signal);
@@ -158,7 +164,10 @@ export async function extractPdfText(
           void error;
         }
       }
-      if (rendered.length) {
+      if (rendered.length && Date.now() - startedOcrAt >= MAX_OCR_ELAPSED_MS) {
+        stoppedForTime = true;
+      }
+      if (rendered.length && !stoppedForTime) {
         try {
           // Only one small batch exists at a time. Cancellation applies
           // between native OCR batches; the current Tauri invoke is not an
@@ -193,6 +202,7 @@ export async function extractPdfText(
         completed: completedOcr,
         total: ocrPages.length,
       });
+      if (stoppedForTime) break;
       if (extractedChars >= MAX_EXTRACTED_CHARS && offset + batchNumbers.length < ocrPages.length) {
         stoppedForTextBudget = true;
         break;
