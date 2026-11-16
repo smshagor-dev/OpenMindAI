@@ -69,6 +69,8 @@ jobs:
 
       - name: Project binary persistence and recovery regression
         run: npm run test:project-binary
+      - name: Database snapshot scope disclosure
+        run: npm run test:backup-scope
 
       - name: PDF ingestion fallback regression
         run: npm run test:pdf

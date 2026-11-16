@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::Path,
+    time::{Duration, Instant},
     sync::{
         atomic::{AtomicBool, Ordering},
         OnceLock, RwLock,
@@ -14,8 +15,13 @@ use crate::{
     portable_root::{available_bytes_for_path, PortableRootManager},
 };
 
-static STORAGE_SUMMARY_CACHE: OnceLock<RwLock<Option<(String, StorageSummary)>>> = OnceLock::new();
+const STORAGE_CACHE_TTL: Duration = Duration::from_secs(30);
+static STORAGE_SUMMARY_CACHE: OnceLock<RwLock<Option<(String, Instant, StorageSummary)>>> = OnceLock::new();
 static STORAGE_SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
+
+fn snapshot_is_fresh(cached_root: &str, scanned_at: Instant, requested_root: &str) -> bool {
+    cached_root == requested_root && scanned_at.elapsed() < STORAGE_CACHE_TTL
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,8 +56,8 @@ impl<'a> StorageMonitor<'a> {
         let root_key = self.root.root().display().to_string();
         let cache = STORAGE_SUMMARY_CACHE.get_or_init(|| RwLock::new(None));
         if let Ok(current) = cache.read() {
-            if let Some((cached_root, summary)) = current.as_ref() {
-                if cached_root == &root_key {
+            if let Some((cached_root, scanned_at, summary)) = current.as_ref() {
+                if snapshot_is_fresh(cached_root, *scanned_at, &root_key) {
                     return Ok(summary.clone());
                 }
             }
@@ -68,7 +74,7 @@ impl<'a> StorageMonitor<'a> {
                 if let Ok(summary) = monitor.compute_summary() {
                     let cache = STORAGE_SUMMARY_CACHE.get_or_init(|| RwLock::new(None));
                     if let Ok(mut current) = cache.write() {
-                        *current = Some((key, summary));
+                        *current = Some((key, Instant::now(), summary));
                     }
                 }
                 STORAGE_SCAN_RUNNING.store(false, Ordering::Release);
@@ -153,4 +159,24 @@ fn directory_size(path: &Path) -> Result<u64, AppError> {
         }
     }
     Ok(total)
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    fn storage_cache_ttl_expires_stale_snapshots() {
+        let recent = Instant::now();
+        assert!(snapshot_is_fresh("root-a", recent, "root-a"));
+        assert!(!snapshot_is_fresh("root-a", recent, "root-b"));
+        let old = Instant::now() - STORAGE_CACHE_TTL - Duration::from_secs(1);
+        assert!(!snapshot_is_fresh("root-a", old, "root-a"));
+    }
+
+    #[test]
+    fn storage_cache_ttl_is_bounded() {
+        assert!(STORAGE_CACHE_TTL <= Duration::from_secs(60));
+        assert!(!STORAGE_CACHE_TTL.is_zero());
+    }
 }

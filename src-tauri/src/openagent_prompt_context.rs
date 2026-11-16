@@ -3,7 +3,9 @@ use std::collections::VecDeque;
 const CHARS_PER_TOKEN_ESTIMATE: usize = 3;
 const PROMPT_MARGIN_TOKENS: usize = 256;
 const MIN_OUTPUT_TOKENS: usize = 640;
-const MAX_OUTPUT_TOKENS: usize = 1_536;
+// Large slots must leave enough generation room for structured multi-action JSON.
+// Small slots retain the proportional cap to avoid starving prompt evidence.
+const MAX_OUTPUT_TOKENS: usize = 4_096;
 const FIXED_USER_OVERHEAD_CHARS: usize = 900;
 // The legacy 24K-character hard ceiling discarded evidence even in 64K/128K
 // llama-server slots. Keep section priorities, but scale caps with the actual
@@ -429,6 +431,39 @@ mod tests {
         assert_eq!(baseline.budget_chars - with_plan.budget_chars, 40_000);
         assert!(with_plan.selected_chars < baseline.selected_chars);
         assert!(with_plan.selected_chars <= with_plan.budget_chars);
+    }
+
+    #[test]
+    fn structured_output_reservation_scales_without_overcommitting_real_slots() {
+        let transcript = VecDeque::from(["tool evidence ".repeat(40_000)]);
+        let repository = "repository evidence ".repeat(30_000);
+        let mut previous_output = 0;
+        for slot in [4_096usize, 8_192, 32_768, 65_536, 131_072] {
+            let pack = build_prompt_context(input(
+                "produce a valid multi-action JSON decision",
+                &repository,
+                &transcript,
+                slot,
+            ));
+            assert!(pack.max_output_tokens >= previous_output);
+            assert!(pack.max_output_tokens <= MAX_OUTPUT_TOKENS);
+            assert!(pack.selected_chars <= pack.budget_chars);
+            let overhead = 7_000 + FIXED_USER_OVERHEAD_CHARS;
+            let estimated_input_tokens =
+                (pack.selected_chars + overhead).div_ceil(CHARS_PER_TOKEN_ESTIMATE);
+            assert!(
+                estimated_input_tokens + pack.max_output_tokens + PROMPT_MARGIN_TOKENS <= slot,
+                "output reservation exceeds actual slot {slot}"
+            );
+            previous_output = pack.max_output_tokens;
+        }
+        let large = build_prompt_context(input(
+            "produce a valid multi-action JSON decision",
+            &repository,
+            &transcript,
+            65_536,
+        ));
+        assert_eq!(large.max_output_tokens, 4_096);
     }
 
     #[test]
