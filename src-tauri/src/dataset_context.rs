@@ -751,7 +751,7 @@ mod tests {
     }
 
     #[test]
-    fn large_dataset_evidence_uses_bounded_prefix_without_loading_tail() {
+    fn large_dataset_evidence_samples_both_ends_without_loading_middle() {
         let (_temp, root, dataset) = fixture();
         let mut content = String::from("alpha EARLY_MARKER ");
         content.push_str(&"x".repeat(MAX_TEXT_SAMPLE_BYTES as usize + 1024));
@@ -760,7 +760,7 @@ mod tests {
         manifest(&dataset, &["alpha.txt".into()]);
         let output = context(&root).unwrap();
         assert!(output.contains("EARLY_MARKER"));
-        assert!(!output.contains("LATE_MARKER"));
+        assert!(output.contains("LATE_MARKER"));
     }
 
     #[test]
