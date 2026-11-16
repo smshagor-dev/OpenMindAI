@@ -159,6 +159,27 @@ impl<'a> ChatRepository<'a> {
         })
     }
 
+    /// Archived conversations remain in SQLite and are never deleted by listing.
+    /// Use a bounded result to avoid loading an unbounded archive into the UI.
+    pub fn list_archived_conversations(&self, limit: i64) -> Result<Vec<Conversation>, AppError> {
+        let mut statement = self.database.connection().prepare(
+            "SELECT id, title, created_at, updated_at, archived_at, pinned, active_model_id
+             FROM conversations WHERE archived_at IS NOT NULL
+             ORDER BY archived_at DESC, id DESC LIMIT ?1",
+        )?;
+        let rows = statement.query_map(params![limit.clamp(1, 200)], map_conversation)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+    }
+
+    /// Restore in place: message IDs, artifacts and project links stay intact.
+    pub fn restore_conversation(&self, id: &str) -> Result<(), AppError> {
+        self.touch_conversation_with(
+            id,
+            "UPDATE conversations SET archived_at = NULL, updated_at = ?1 WHERE id = ?2",
+            params![Utc::now().to_rfc3339(), id],
+        )
+    }
+
     pub fn create_conversation(&self, title: Option<&str>) -> Result<Conversation, AppError> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
@@ -1682,4 +1703,41 @@ mod tests {
         );
         assert_eq!(std::fs::read(output).unwrap(), b"precious original bytes");
     }
+    #[test]
+    fn archived_chat_can_be_restored_after_database_reopen_without_losing_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("archive-recovery.db");
+        let (id, message_id) = {
+            let db = Database::open(path.clone()).unwrap();
+            let repo = ChatRepository::new(&db);
+            let chat = repo.create_conversation(Some("Keep me")).unwrap();
+            let message = repo.add_message(&chat.id, "user", "important", "completed", None).unwrap();
+            repo.archive_conversation(&chat.id).unwrap();
+            assert!(repo.list_conversations().unwrap().is_empty());
+            assert_eq!(repo.list_archived_conversations(10).unwrap()[0].id, chat.id);
+            (chat.id, message.id)
+        };
+        let db = Database::open(path).unwrap();
+        let repo = ChatRepository::new(&db);
+        assert_eq!(repo.list_archived_conversations(10).unwrap()[0].id, id);
+        repo.restore_conversation(&id).unwrap();
+        assert!(repo.list_archived_conversations(10).unwrap().is_empty());
+        assert_eq!(repo.list_conversations().unwrap()[0].id, id);
+        assert_eq!(repo.find_message(&message_id).unwrap().content, "important");
+    }
+
+    #[test]
+    fn archived_listing_is_bounded_and_restore_rejects_unknown_chat() {
+        let db = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&db);
+        for _ in 0..3 {
+            let chat = repo.create_conversation(None).unwrap();
+            repo.archive_conversation(&chat.id).unwrap();
+        }
+        assert_eq!(repo.list_archived_conversations(1).unwrap().len(), 1);
+        assert_eq!(repo.list_archived_conversations(0).unwrap().len(), 1);
+        assert_eq!(repo.list_archived_conversations(500).unwrap().len(), 3);
+        assert!(repo.restore_conversation("missing-id").is_err());
+    }
+
 }
