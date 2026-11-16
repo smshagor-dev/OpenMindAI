@@ -31,6 +31,7 @@ import {
 import { formatBytes, formatError } from "../lib/format";
 import { WorkspaceDirectoryGate } from "../lib/workspaceDirectoryGate";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { confirmWorkspaceDiscard } from "../lib/workspaceDiscardGuard";
 import "../projects-local-workspace.css";
 
 export function ProjectLocalWorkspace(props: { projectId: string; projectName: string }) {
@@ -270,6 +271,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
     if (!activeRoot || !newItemKind || !isCurrentListing()) return;
     const name = newItemName.trim();
     if (!name) return;
+    if (newItemKind === "file" && !confirmWorkspaceDiscard(editorDirty, "create and open another file")) return;
     const path = joinWorkspacePath(currentPath, name);
     const created = await run(`create-${newItemKind}`, () =>
       newItemKind === "directory"
@@ -338,6 +340,9 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
     if (!activeRoot || !isCurrentListing()) return;
     const raw = locationInput.trim();
     if (!raw) return;
+    if (!confirmWorkspaceDiscard(editorDirty, "navigate to another folder")) return;
+    setEditorPath(null);
+    setEditorRevision(null);
     let path = raw;
     if (!status?.fullPcAccess && sameDisplayPath(raw, activeRoot.path)) path = "";
     await run("go", () => loadDirectory(activeRoot.id, path));
@@ -346,6 +351,9 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
   const goUp = async () => {
     if (!activeRoot || !isCurrentListing()) return;
     if (!currentPath) return;
+    if (!confirmWorkspaceDiscard(editorDirty, "navigate to the parent folder")) return;
+    setEditorPath(null);
+    setEditorRevision(null);
     const parent = parentWorkspacePath(currentPath);
     await run("navigate", () => loadDirectory(activeRoot.id, parent));
   };
@@ -410,9 +418,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
                 key={root.id}
                 onClick={() => {
                   if (root.id === activeRoot?.id) return;
-                  if (editorDirty && !window.confirm("Discard unsaved editor changes and switch attached folders?")) return;
-                  if (root.id === activeRoot?.id) return;
-                  if (editorDirty && !window.confirm("Discard unsaved editor changes and switch attached folders?")) return;
+                  if (!confirmWorkspaceDiscard(editorDirty, "switch attached folders")) return;
                   directoryGate.current.select(props.projectId, root.id);
                   setEntries([]);
                   setListedAt(null);
