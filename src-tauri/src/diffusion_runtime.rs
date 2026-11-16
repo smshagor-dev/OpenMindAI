@@ -229,6 +229,43 @@ impl ImageRenderOptions {
     }
 }
 
+#[cfg(test)]
+mod renderer_diagnostic_privacy_tests {
+    use super::process_error_detail;
+
+    #[test]
+    fn removes_image_and_negative_prompt_from_renderer_errors() {
+        let prompt = "SENTINEL private image request";
+        let negative = "SENTINEL private negative request";
+        let stderr = format!("failed for {prompt}; negative={negative}");
+        let sanitized = process_error_detail(b"", stderr.as_bytes(), &[prompt, negative]);
+        assert!(!sanitized.contains("SENTINEL"));
+        assert!(sanitized.contains("[redacted prompt]"));
+    }
+
+    #[test]
+    fn empty_secret_does_not_modify_diagnostics() {
+        assert_eq!(process_error_detail(b"failed", b"", &[""]), "failed");
+    }
+
+    #[test]
+    fn video_prompt_is_removed_from_renderer_errors() {
+        let prompt = "SENTINEL video context";
+        let stdout = format!("renderer rejected {prompt}");
+        let sanitized = process_error_detail(stdout.as_bytes(), b"", &[prompt]);
+        assert!(!sanitized.contains(prompt));
+    }
+
+    #[test]
+    fn long_unicode_prompt_is_redacted_before_diagnostic_truncation() {
+        let prompt = "ব্যক্তিগত секрет".repeat(500);
+        let stderr = format!("renderer rejected {prompt}; failed");
+        let sanitized = process_error_detail(b"", stderr.as_bytes(), &[&prompt]);
+        assert_eq!(sanitized, "renderer rejected [redacted prompt]; failed");
+        assert!(!sanitized.contains("секрет"));
+    }
+}
+
 // Keep the render's independent progress callback alongside its existing inputs.
 #[allow(clippy::too_many_arguments)]
 pub async fn generate_image(
@@ -357,7 +394,11 @@ pub async fn generate_image(
     })?;
 
     if !output.status.success() {
-        let detail = process_error_detail(&output.stdout, &output.stderr, &[prompt, options.negative_prompt.as_deref().unwrap_or("")]);
+        let detail = process_error_detail(
+            &output.stdout,
+            &output.stderr,
+            &[prompt, options.negative_prompt.as_deref().unwrap_or("")],
+        );
         return Err(AppError::ArtifactGenerationFailed(format!(
             "stable-diffusion.cpp exited with {}: {detail}",
             output.status
@@ -1238,7 +1279,11 @@ fn process_error_detail(stdout: &[u8], stderr: &[u8], sensitive: &[&str]) -> Str
     }
     // The renderer may echo its command line or input on failure. Scrub before
     // truncating, otherwise the truncated suffix could expose prompt fragments.
-    for secret in sensitive.iter().copied().filter(|secret| !secret.is_empty()) {
+    for secret in sensitive
+        .iter()
+        .copied()
+        .filter(|secret| !secret.is_empty())
+    {
         combined = combined.replace(secret, "[redacted prompt]");
     }
     let chars = combined.chars().collect::<Vec<_>>();
@@ -1293,9 +1338,11 @@ mod tests {
 
     #[test]
     fn renderer_errors_keep_non_sensitive_diagnostics() {
-        assert_eq!(process_error_detail(b"missing model", b"", &["secret"]), "missing model");
+        assert_eq!(
+            process_error_detail(b"missing model", b"", &["secret"]),
+            "missing model"
+        );
     }
-
 
     use crate::hardware::{BackendProfile, CpuProfile, GpuInfo, MemoryProfile};
 
