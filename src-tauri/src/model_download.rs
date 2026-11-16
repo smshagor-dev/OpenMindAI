@@ -288,15 +288,19 @@ impl ModelDownloadManager {
         let _root_lock = self.begin_root_install()?;
         let entry = entry_by_id(model_id)?;
         tracing::info!(repo = %entry.repo, model_id = %entry.id, "installing AI model package");
-        self.update_status(|status| *status = DownloadStatus::queued(&entry))?;
-        self.set_state(DownloadState::Resolving, None)?;
-
+        // Publish the cancellation token and Resolving status together under
+        // the same lock order as stop_download. Otherwise Cancel can arrive
+        // after Resolving becomes visible but before a token exists.
         let token = CancellationToken::new();
-        *self
-            .cancel_token
-            .lock()
-            .map_err(|_| AppError::internal("download cancel lock poisoned"))? =
-            Some(token.clone());
+        {
+            let mut status = self.status.lock()
+                .map_err(|_| AppError::internal("download status lock poisoned"))?;
+            let mut active_token = self.cancel_token.lock()
+                .map_err(|_| AppError::internal("download cancel lock poisoned"))?;
+            *status = DownloadStatus::queued(&entry);
+            status.state = DownloadState::Resolving;
+            *active_token = Some(token.clone());
+        }
 
         let result = self.download_entry_inner(entry, token).await;
         *self
@@ -905,6 +909,17 @@ mod tests {
 
         drop(first);
         assert!(other_window.begin_download().is_ok());
+    }
+
+    #[test]
+    fn resolving_download_is_immediately_cancellable_with_published_token() {
+        let entry = crate::model_catalog::required_entry().unwrap();
+        let token = CancellationToken::new();
+        let mut status = DownloadStatus::queued(&entry);
+        status.state = DownloadState::Resolving;
+        assert!(apply_stop_if_active(&mut status, Some(&token), DownloadState::Cancelled));
+        assert!(token.is_cancelled());
+        assert!(matches!(status.state, DownloadState::Cancelled));
     }
 
     #[test]
