@@ -1326,6 +1326,14 @@ fn get_model_download_status(
 }
 
 #[tauri::command]
+fn list_installed_datasets(
+    dataset_ids: Vec<String>,
+    state: State<AppState>,
+) -> Result<Vec<String>, app_error::AppError> {
+    state.dataset_downloads.installed_dataset_ids(&dataset_ids)
+}
+
+#[tauri::command]
 fn get_dataset_download_status(
     state: State<AppState>,
 ) -> Result<DatasetDownloadStatus, app_error::AppError> {
@@ -2676,6 +2684,7 @@ pub fn run() {
             get_qwen_download_status,
             get_model_download_status,
             get_dataset_download_status,
+            list_installed_datasets,
             download_qwen_model,
             download_catalog_model,
             download_openmindai_dataset,

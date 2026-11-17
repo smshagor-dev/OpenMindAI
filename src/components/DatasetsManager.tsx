@@ -389,6 +389,22 @@ export function DatasetsManager() {
     };
   }, []);
 
+  // Revalidate against real files whenever visible Hub results change. A
+  // stale async inventory response must not replace a newer search result.
+  useEffect(() => {
+    let cancelled = false;
+    const ids = [...new Set([
+      ...CURATED_DATASETS.map((dataset) => dataset.sourceId),
+      ...datasets.map((dataset) => dataset.id),
+    ])].slice(0, 200);
+    void api.installedDatasetIds(ids).then((installed) => {
+      if (!cancelled) setInstalledDatasets(new Set(installed));
+    }).catch(() => {
+      if (!cancelled) setInstalledDatasets(new Set());
+    });
+    return () => { cancelled = true; };
+  }, [datasets]);
+
   useEffect(() => {
     if (downloadStatus?.state !== "completed" || !downloadStatus.datasetId) return;
     setInstalledDatasets((current) => recordCompletedDataset(current, downloadStatus.state, downloadStatus.datasetId));
