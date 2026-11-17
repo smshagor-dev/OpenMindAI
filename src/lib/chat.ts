@@ -322,7 +322,11 @@ export function buildMessageContent(
     attachmentContextSources(attachments),
     prompt,
   );
-  return [modePrefix, prompt, attachmentText].filter(Boolean).join("\n\n");
+  const coverage = attachmentMediaCoverage(attachments);
+  const visualNotice = coverage.omitted > 0
+    ? `[Visual evidence limit: ${coverage.sent} of ${coverage.available} prepared images/pages/frames supplied to Lens; ${coverage.omitted} omitted. Images are allocated across attachments in order. Do not claim to have inspected omitted pages or frames.]`
+    : "";
+  return [modePrefix, prompt, attachmentText, visualNotice].filter(Boolean).join("\n\n");
 }
 
 /**
