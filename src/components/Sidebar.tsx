@@ -91,7 +91,7 @@ export function Sidebar(props: {
           {!props.collapsed ? (
             <div>
               <strong>OpenMindAI</strong>
-              <small>{t("tagline")}<small>
+              <small>{t("tagline")}</small>
             </div>
           ) : null}
         </div>
@@ -123,7 +123,7 @@ export function Sidebar(props: {
         )}
       </div>
 
-      <button className="primary-command" onClick={props.onNewChat} title="New chat">
+      <button className="primary-command" onClick={props.onNewChat} title={t("newChat")}>
         <SquarePen size={18} /> {!props.collapsed ? t("newChat") : null}
       </button>
 
@@ -225,28 +225,28 @@ export function Sidebar(props: {
                 props.onOpenSettings("general");
                 setProfileMenuOpen(false);
               }}
-            >{t("settings")}<button>
+            >{t("settings")}</button>
             <button
               role="menuitem"
               onClick={() => {
                 props.onOpenSettings("personalization");
                 setProfileMenuOpen(false);
               }}
-            >{t("personalization")}<button>
+            >{t("personalization")}</button>
             <button
               role="menuitem"
               onClick={() => {
                 props.onOpenSettings("appearance");
                 setProfileMenuOpen(false);
               }}
-            >{t("appearance")}<button>
+            >{t("appearance")}</button>
             <button
               role="menuitem"
               onClick={() => {
                 props.onOpenSettings("about");
                 setProfileMenuOpen(false);
               }}
-            >{t("about")}<button>
+            >{t("about")}</button>
           </div>
         ) : null}
       </div>
