@@ -33,8 +33,11 @@ use crate::{
 };
 
 const WEB_SEARCH_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
+// Search front-ends (DuckDuckGo HTML, Bing) serve an empty consent/robot page
+// to self-identified bot agents, so present a mainstream desktop browser UA to
+// get real result markup back.
 const WEB_SEARCH_USER_AGENT: &str =
-    "OpenMindAI-Desktop/2.0 (+https://github.com/smshagor-dev/OpenMindAI)";
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const WEB_SEARCH_RESULTS: usize = 8;
 const MAX_VISION_DATA_URL_CHARS: usize = 6_000_000;
 const MAX_INFERENCE_MEDIA_ITEMS: usize = 4;
@@ -680,6 +683,34 @@ async fn append_live_web_context(
         pdf_sources: evidence.pdf_sources,
         mirrored_sources: evidence.mirrored_sources,
     })
+}
+
+/// Runs the app's own web search (keyless DuckDuckGo/Bing, plus Brave/Google
+/// when configured) and returns grounding context ready to prepend as a system
+/// message. This lets Cloud chat use live web results even when the Cloud API
+/// key is scoped to the model gateway only (whose web-search endpoint returns
+/// HTTP 403).
+pub(crate) async fn fetch_web_context(query: &str, mode: &str) -> Result<String, AppError> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(String::new());
+    }
+    let credentials = crate::web_provider_config::load_credentials().unwrap_or_default();
+    let client = Client::builder()
+        .no_proxy()
+        .connect_timeout(std::time::Duration::from_secs(8))
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        )
+        .build()
+        .map_err(|error| AppError::internal(error.to_string()))?;
+    let lookup = if mode == "research" { "research" } else { "search" };
+    let cancellation = CancellationToken::new();
+    let evidence =
+        web_research::gather(&client, query, lookup, &cancellation, "auto", &credentials, &|_| {})
+            .await;
+    Ok(evidence.context)
 }
 
 fn latest_user_text(messages: &[serde_json::Value]) -> Option<String> {

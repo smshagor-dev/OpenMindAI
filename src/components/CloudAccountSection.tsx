@@ -3,11 +3,11 @@ import { cloud, type CloudConnection } from "../cloudApi";
 import { formatError } from "../lib/format";
 
 /**
- * Cloud account panel shown in Settings → Cloud. Reuses the existing
- * email/password (+ optional verification code) sign-in that the backend
- * already supports via `cloud_login`. Registration and in-app OTP delivery are
- * not wired yet (the cloud server API for them is not part of this client), so
- * account creation points to the web for now.
+ * Cloud account panel shown in Settings → Cloud. Connection uses a developer
+ * API key (issued at api.openmindai.org) rather than an email/password login:
+ * the key is validated and stored by the existing `cloud_connect` backend
+ * command, which keeps it in secure native storage and authenticates every
+ * hosted request. No password or OTP handling is needed.
  */
 function accountName(status: CloudConnection | null): string | null {
   const user = status?.user as { name?: string; user?: { name?: string } } | null;
@@ -16,9 +16,7 @@ function accountName(status: CloudConnection | null): string | null {
 
 export function CloudAccountSection() {
   const [status, setStatus] = useState<CloudConnection | null>(null);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [code, setCode] = useState("");
+  const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -27,22 +25,29 @@ export function CloudAccountSection() {
     let active = true;
     void cloud
       .status()
-      .then((result) => { if (active) setStatus(result); })
-      .catch(() => { if (active) setStatus({ connected: false, user: null, message: null }); });
-    return () => { active = false; };
+      .then((result) => {
+        if (active) setStatus(result);
+      })
+      .catch(() => {
+        if (active) setStatus({ connected: false, user: null, message: null });
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
-  const signIn = async (event: FormEvent) => {
+  const connect = async (event: FormEvent) => {
     event.preventDefault();
+    const key = apiKey.trim();
+    if (!key) return;
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      const session = await cloud.login(email.trim(), password, code.trim() || undefined);
+      const session = await cloud.connect(key);
       setStatus(session);
-      setPassword("");
-      setCode("");
-      setNotice("Signed in to OpenMindAI Cloud.");
+      setApiKey("");
+      setNotice("Connected to OpenMindAI Cloud.");
     } catch (caught) {
       setError(formatError(caught));
     } finally {
@@ -77,12 +82,25 @@ export function CloudAccountSection() {
           </div>
         </div>
         <p className="muted">
-          Your session is stored in secure native storage; your password is never saved.
-          Cloud unlocks hosted chat models, web search, Research Studio and 3D Studio. Local AI keeps working without an account.
+          Your API key is stored in secure native storage. Cloud unlocks hosted chat models, web
+          search, Research Studio and 3D Studio. Local AI keeps working without it.
         </p>
-        {notice ? <p className="cloud-account-note" role="status">{notice}</p> : null}
-        {error ? <p className="setup-warning" role="alert">{error}</p> : null}
-        <button type="button" className="cloud-account-disconnect" disabled={busy} onClick={() => void disconnect()}>
+        {notice ? (
+          <p className="cloud-account-note" role="status">
+            {notice}
+          </p>
+        ) : null}
+        {error ? (
+          <p className="setup-warning" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <button
+          type="button"
+          className="cloud-account-disconnect"
+          disabled={busy}
+          onClick={() => void disconnect()}
+        >
           {busy ? "Working…" : "Disconnect"}
         </button>
       </div>
@@ -92,32 +110,43 @@ export function CloudAccountSection() {
   return (
     <div className="cloud-account">
       <p className="muted">
-        Sign in to OpenMindAI Cloud to use hosted models, web search, Research Studio and 3D Studio.
-        Local AI keeps working without an account.
+        Connect OpenMindAI Cloud with your developer API key to use hosted models, web search,
+        Research Studio and 3D Studio. Local AI keeps working without it.
       </p>
-      {status?.message ? <p className="cloud-account-note" role="status">{status.message}</p> : null}
-      <form className="cloud-account-form" onSubmit={signIn}>
+      {status?.message ? (
+        <p className="cloud-account-note" role="status">
+          {status.message}
+        </p>
+      ) : null}
+      <form className="cloud-account-form" onSubmit={connect}>
         <label className="setup-field-label">
-          Email
-          <input type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} required />
+          API key
+          <input
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            value={apiKey}
+            onChange={(event) => setApiKey(event.target.value)}
+            placeholder="Paste your OpenMindAI API key"
+            required
+          />
         </label>
-        <label className="setup-field-label">
-          Password
-          <input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required />
-        </label>
-        <label className="setup-field-label">
-          Verification code (if required)
-          <input inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(event) => setCode(event.target.value)} placeholder="6-digit code" />
-        </label>
-        {error ? <p className="setup-warning" role="alert">{error}</p> : null}
-        {notice ? <p className="cloud-account-note" role="status">{notice}</p> : null}
-        <button type="submit" className="primary-button" disabled={busy}>
-          {busy ? "Signing in…" : "Sign in to Cloud"}
+        {error ? (
+          <p className="setup-warning" role="alert">
+            {error}
+          </p>
+        ) : null}
+        {notice ? (
+          <p className="cloud-account-note" role="status">
+            {notice}
+          </p>
+        ) : null}
+        <button type="submit" className="primary-button" disabled={busy || !apiKey.trim()}>
+          {busy ? "Connecting…" : "Connect Cloud"}
         </button>
       </form>
       <p className="muted cloud-account-register">
-        Don&apos;t have an account yet? Create one at <strong>cloud.openmindai.org</strong>.
-        In-app registration and email verification are coming soon.
+        Get your API key from the developer dashboard at <strong>api.openmindai.org</strong>.
       </p>
     </div>
   );

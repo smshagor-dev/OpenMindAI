@@ -692,12 +692,10 @@ export function App() {
         "runtime:model-loading",
         (event) => {
           const { conversationId, modelName, replacing } = event.payload;
-          chatState
-            .scope(conversationId)
-            .setActivity((current) => ({
-              ...current,
-              detail: `Loading ${modelName}…${replacing ? ` (switching from ${replacing})` : ""} This can take a few minutes.`,
-            }));
+          chatState.scope(conversationId).setActivity((current) => ({
+            ...current,
+            detail: `Loading ${modelName}…${replacing ? ` (switching from ${replacing})` : ""} This can take a few minutes.`,
+          }));
         },
       ),
       listen<WebResearchProgressEvent>("web-research:progress", (event) => {
@@ -2043,7 +2041,10 @@ export function App() {
             onSelectModel={selectModel}
             showCloudModels={showCloudApiModels}
             cloudUnavailable={executionMode === "cloud" && !showCloudApiModels}
-            onConnectCloud={() => { setSettingsSection("cloud"); setView("settings"); }}
+            onConnectCloud={() => {
+              setSettingsSection("cloud");
+              setView("settings");
+            }}
             cloudModels={showCloudApiModels ? cloudModels : []}
             activeCloudModelId={showCloudApiModels ? cloudModel : ""}
             onSelectCloudModel={setCloudModel}
@@ -2125,7 +2126,10 @@ export function App() {
               onSelectModel={selectModel}
               showCloudModels={showCloudApiModels}
               cloudUnavailable={executionMode === "cloud" && !showCloudApiModels}
-              onConnectCloud={() => { setSettingsSection("cloud"); setView("settings"); }}
+              onConnectCloud={() => {
+                setSettingsSection("cloud");
+                setView("settings");
+              }}
               cloudModels={showCloudApiModels ? cloudModels : []}
               activeCloudModelId={showCloudApiModels ? cloudModel : ""}
               onSelectCloudModel={setCloudModel}

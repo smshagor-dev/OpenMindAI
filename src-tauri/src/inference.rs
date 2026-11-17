@@ -16,6 +16,7 @@ mod native_chat_router;
 
 #[cfg(not(feature = "native-cxx-llama"))]
 pub use legacy::stream_chat_completion;
+pub(crate) use legacy::fetch_web_context;
 
 #[cfg(feature = "native-cxx-llama")]
 pub async fn stream_chat_completion(
