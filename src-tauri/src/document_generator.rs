@@ -217,7 +217,7 @@ fn parse_markdown_blocks(markdown: &str) -> Vec<Block> {
             Event::Start(Tag::Emphasis) => emphasis_depth += 1,
             Event::End(TagEnd::Emphasis) => emphasis_depth = emphasis_depth.saturating_sub(1),
             Event::Rule => blocks.push(Block::Rule),
-            Event::Text(text) | Event::Code(text) => {
+            Event::Text(ref text) | Event::Code(ref text) => {
                 if in_paragraph && !in_item && !in_cell && !in_code_block {
                     let run = InlineRun {
                         text: text.to_string(),
@@ -763,7 +763,7 @@ mod tests {
     #[test]
     fn docx_preserves_nested_inline_styles_and_escapes_xml() {
         let xml = word_document_xml(
-            parse_markdown_blocks("বাংলা **bold *nested* & <safe>** and `code<&>`."),
+            parse_markdown_blocks("বাংলা **bold *nested* & \\<safe\\>** and `code<&>`."),
             "Report",
         );
         assert!(xml.contains("<w:b/>"));
