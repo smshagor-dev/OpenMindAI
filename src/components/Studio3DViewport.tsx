@@ -18,15 +18,25 @@ function base64ToArrayBuffer(data: string): ArrayBuffer {
 export function Studio3DViewport({ dataBase64 }: { dataBase64: string }) {
   const host = useRef<HTMLDivElement>(null);
   const reset = useRef<() => void>(() => {});
+  const controlsRef = useRef<OrbitControls | null>(null);
+  const renderRef = useRef<() => void>(() => {});
+  const objectRef = useRef<THREE.Object3D | null>(null);
+  const rafRef = useRef<number | null>(null);
   const [error, setError] = useState("");
   const [ready, setReady] = useState(false);
   const [selected, setSelected] = useState("");
+  const [autoRotate, setAutoRotate] = useState(false);
+  const [wireframe, setWireframe] = useState(false);
 
   useEffect(() => {
     let disposed = false;
     const cleaners: (() => void)[] = [];
     const cleanup = () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
       while (cleaners.length) cleaners.pop()?.();
+      controlsRef.current = null;
+      objectRef.current = null;
     };
     const disposeObject = (object: THREE.Object3D) =>
       object.traverse((o) => {
@@ -54,10 +64,12 @@ export function Studio3DViewport({ dataBase64 }: { dataBase64: string }) {
           return;
         }
         cleaners.push(() => disposeObject(object));
+        objectRef.current = object;
         const container = host.current!;
-        const surface = new THREE.Color(
-          getComputedStyle(container).getPropertyValue("--bg").trim() || "#303030",
-        );
+        const read = (token: string, fallback: string) =>
+          getComputedStyle(container).getPropertyValue(token).trim() || fallback;
+        const surface = new THREE.Color(read("--bg", "#303030"));
+
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         cleaners.push(() => {
@@ -67,15 +79,37 @@ export function Studio3DViewport({ dataBase64 }: { dataBase64: string }) {
 
         const scene = new THREE.Scene();
         scene.background = surface;
-        scene.add(new THREE.AmbientLight(0xffffff, 1.5));
-        const light = new THREE.DirectionalLight(0xffffff, 3);
-        light.position.set(5, 8, 4);
-        scene.add(light);
+        scene.add(new THREE.AmbientLight(0xffffff, 1.4));
+        const key = new THREE.DirectionalLight(0xffffff, 2.6);
+        key.position.set(5, 8, 4);
+        scene.add(key);
+        const fill = new THREE.DirectionalLight(0xffffff, 0.8);
+        fill.position.set(-6, 3, -4);
+        scene.add(fill);
         scene.add(object);
 
         const bounds = new THREE.Box3().setFromObject(object);
         const center = bounds.getCenter(new THREE.Vector3());
-        const size = bounds.getSize(new THREE.Vector3()).length();
+        const span = bounds.getSize(new THREE.Vector3());
+        const size = span.length();
+
+        // Subtle ground grid for spatial context, sized to the model and sunk to
+        // its base so it reads as a floor rather than a slice through the mesh.
+        const gridColor = new THREE.Color(read("--muted", "#8a8a8a"));
+        const grid = new THREE.GridHelper(Math.max(size * 1.6, 1), 24, gridColor, gridColor);
+        const gridMaterial = grid.material as THREE.Material | THREE.Material[];
+        for (const material of Array.isArray(gridMaterial) ? gridMaterial : [gridMaterial]) {
+          material.transparent = true;
+          material.opacity = 0.18;
+        }
+        grid.position.set(center.x, bounds.min.y, center.z);
+        scene.add(grid);
+        cleaners.push(() => {
+          grid.geometry.dispose();
+          for (const material of Array.isArray(gridMaterial) ? gridMaterial : [gridMaterial])
+            material.dispose();
+        });
+
         const camera = new THREE.PerspectiveCamera(
           45,
           1,
@@ -83,12 +117,16 @@ export function Studio3DViewport({ dataBase64 }: { dataBase64: string }) {
           Math.max(100, size * 20),
         );
         const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.08;
+        controlsRef.current = controls;
         cleaners.push(() => controls.dispose());
         controls.target.copy(center);
 
         function render() {
           renderer.render(scene, camera);
         }
+        renderRef.current = render;
         reset.current = () => {
           camera.position
             .copy(center)
@@ -143,6 +181,42 @@ export function Studio3DViewport({ dataBase64 }: { dataBase64: string }) {
     };
   }, [dataBase64]);
 
+  // Auto-rotate runs a render loop only while enabled; otherwise the viewport
+  // renders on demand (on orbit) to stay idle-friendly.
+  useEffect(() => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+    controls.autoRotate = autoRotate;
+    controls.autoRotateSpeed = 1.6;
+    if (!autoRotate) {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+      return;
+    }
+    const tick = () => {
+      controls.update();
+      renderRef.current();
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    };
+  }, [autoRotate, ready]);
+
+  // Wireframe reveals the underlying triangle mesh the local GPU produced.
+  useEffect(() => {
+    const object = objectRef.current;
+    if (!object) return;
+    object.traverse((o) => {
+      if (o instanceof THREE.Mesh)
+        for (const material of Array.isArray(o.material) ? o.material : [o.material])
+          if ("wireframe" in material) (material as THREE.MeshStandardMaterial).wireframe = wireframe;
+    });
+    renderRef.current();
+  }, [wireframe, ready]);
+
   return (
     <section aria-label="3D mesh preview">
       <div className="studio-viewer">
@@ -151,9 +225,35 @@ export function Studio3DViewport({ dataBase64 }: { dataBase64: string }) {
           <button type="button" disabled={!ready} onClick={() => reset.current()}>
             Reset view
           </button>
+          <button
+            type="button"
+            disabled={!ready}
+            className={autoRotate ? "active" : ""}
+            aria-pressed={autoRotate}
+            onClick={() => setAutoRotate((value) => !value)}
+          >
+            {autoRotate ? "Stop spin" : "Auto-rotate"}
+          </button>
+          <button
+            type="button"
+            disabled={!ready}
+            className={wireframe ? "active" : ""}
+            aria-pressed={wireframe}
+            onClick={() => setWireframe((value) => !value)}
+          >
+            Wireframe
+          </button>
         </div>
-        {error && <p className="studio-preview-error" role="alert">{error}</p>}
-        {!ready && !error && <p className="studio-preview-error" role="status">Loading validated geometry…</p>}
+        {error && (
+          <p className="studio-preview-error" role="alert">
+            {error}
+          </p>
+        )}
+        {!ready && !error && (
+          <p className="studio-preview-error" role="status">
+            Loading validated geometry…
+          </p>
+        )}
         {selected && <div className="studio-node">Selected: {selected}</div>}
       </div>
     </section>

@@ -141,7 +141,54 @@
   color: var(--text);
   font-size: 13px;
 }
-.studio3d-status { max-width: 768px; margin: 10px auto 0; text-align: center; }
+.studio3d-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  max-width: 768px;
+  margin: 10px auto 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.studio3d-cancel {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.studio3d-cancel:hover { background: var(--s-hover); }
+.studio3d-badge {
+  margin-left: 10px;
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  vertical-align: middle;
+}
+/* Secondary action inside the accent-styled tool row. */
+.studio-tool-row button.studio3d-secondary {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.studio-tool-row button.studio3d-secondary:hover { background: var(--s-hover); filter: none; }
+/* Active state for viewport toggle buttons (auto-rotate, wireframe). */
+.studio-viewer-tools button.active {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  background: color-mix(in srgb, var(--accent) 16%, var(--s-elevated));
+}
 
 /* Viewer */
 .studio-viewer {
