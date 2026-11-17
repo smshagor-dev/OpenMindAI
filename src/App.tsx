@@ -53,6 +53,8 @@ import { ToolsWorkspace } from "./components/ToolsWorkspace";
 import { ProjectsWorkspace } from "./components/ProjectsWorkspace";
 import { WorkWorkspace } from "./components/WorkWorkspace";
 import { StudioHub } from "./components/StudioHub";
+import { Studio3D } from "./components/Studio3D";
+import { ResearchStudio } from "./components/ResearchStudio";
 import {
   cloud,
   hostedChat,
@@ -2057,7 +2059,15 @@ export function App() {
             imageProgressByArtifact={imageProgressByArtifact}
             onPreview={setPreviewTarget}
           />
-        ) : view === "research-studio" || view === "3d-studio" || view === "web-search" ? (
+        ) : view === "3d-studio" ? (
+          <Studio3D
+            mode={executionMode}
+            internetAvailable={internetAvailable}
+            connection={cloudConnection}
+          />
+        ) : view === "research-studio" ? (
+          <ResearchStudio />
+        ) : view === "web-search" ? (
           <StudioHub
             section={view}
             mode={executionMode}
