@@ -3,7 +3,7 @@ use std::{
     path::Path,
     time::{Duration, Instant},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         OnceLock, RwLock,
     },
 };
@@ -18,6 +18,12 @@ use crate::{
 const STORAGE_CACHE_TTL: Duration = Duration::from_secs(30);
 static STORAGE_SUMMARY_CACHE: OnceLock<RwLock<Option<(String, Instant, StorageSummary)>>> = OnceLock::new();
 static STORAGE_SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
+// Invalidations must also reject scans started before the filesystem changed.
+static STORAGE_CACHE_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+fn scan_epoch_is_current(started: u64, current: u64) -> bool {
+    started == current
+}
 
 fn snapshot_is_fresh(cached_root: &str, scanned_at: Instant, requested_root: &str) -> bool {
     cached_root == requested_root && scanned_at.elapsed() < STORAGE_CACHE_TTL
@@ -89,12 +95,20 @@ impl<'a> StorageMonitor<'a> {
         {
             let root = self.root.clone();
             let key = root_key.clone();
+            let scan_epoch = STORAGE_CACHE_EPOCH.load(Ordering::Acquire);
             std::thread::spawn(move || {
                 let monitor = StorageMonitor::new(&root);
                 if let Ok(summary) = monitor.compute_summary() {
                     let cache = STORAGE_SUMMARY_CACHE.get_or_init(|| RwLock::new(None));
                     if let Ok(mut current) = cache.write() {
-                        *current = Some((key, Instant::now(), summary));
+                        // Hold the cache lock while comparing the epoch. A cache
+                        // invalidation takes the same lock before advancing it.
+                        if scan_epoch_is_current(
+                            scan_epoch,
+                            STORAGE_CACHE_EPOCH.load(Ordering::Acquire),
+                        ) {
+                            *current = Some((key, Instant::now(), summary));
+                        }
                     }
                 }
                 STORAGE_SCAN_RUNNING.store(false, Ordering::Release);
@@ -137,6 +151,7 @@ impl<'a> StorageMonitor<'a> {
 
         if let Some(cache) = STORAGE_SUMMARY_CACHE.get() {
             if let Ok(mut current) = cache.write() {
+                STORAGE_CACHE_EPOCH.fetch_add(1, Ordering::AcqRel);
                 *current = None;
             }
         }
@@ -211,6 +226,14 @@ mod cache_tests {
         assert_eq!(restored.generated_bytes, 789);
         assert!(snapshot_for_root(&cached, "root-b").is_none());
         assert!(snapshot_for_root(&None, "root-a").is_none());
+    }
+
+    #[test]
+    fn invalidation_epoch_rejects_old_inflight_scan_results() {
+        let started = 41;
+        assert!(scan_epoch_is_current(started, 41));
+        assert!(!scan_epoch_is_current(started, 42));
+        assert!(!scan_epoch_is_current(started, 43));
     }
 
     #[test]
