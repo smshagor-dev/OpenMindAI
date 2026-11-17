@@ -176,6 +176,20 @@ fn apply_stop_if_active(
     true
 }
 
+/// Publish a new download's cancellation handle before exposing an active state.
+/// Both locks must be held by the caller in status-then-token order.
+fn activate_download(
+    status: &mut DownloadStatus,
+    cancel_slot: &mut Option<CancellationToken>,
+    entry: &ModelCatalogEntry,
+    token: CancellationToken,
+) {
+    *cancel_slot = Some(token);
+    *status = DownloadStatus::queued(entry);
+    status.state = DownloadState::Resolving;
+    status.error = None;
+}
+
 impl ModelDownloadManager {
     pub fn new(root: PortableRootManager) -> Self {
         let catalog_entry = crate::model_catalog::required_entry()
@@ -288,15 +302,20 @@ impl ModelDownloadManager {
         let _root_lock = self.begin_root_install()?;
         let entry = entry_by_id(model_id)?;
         tracing::info!(repo = %entry.repo, model_id = %entry.id, "installing AI model package");
-        self.update_status(|status| *status = DownloadStatus::queued(&entry))?;
-        self.set_state(DownloadState::Resolving, None)?;
-
         let token = CancellationToken::new();
-        *self
-            .cancel_token
-            .lock()
-            .map_err(|_| AppError::internal("download cancel lock poisoned"))? =
-            Some(token.clone());
+        // A concurrent Cancel/Pause must never observe Resolving without its
+        // matching token. Use the same lock ordering as stop_download.
+        {
+            let mut status = self
+                .status
+                .lock()
+                .map_err(|_| AppError::internal("download status lock poisoned"))?;
+            let mut cancel_slot = self
+                .cancel_token
+                .lock()
+                .map_err(|_| AppError::internal("download cancel lock poisoned"))?;
+            activate_download(&mut status, &mut cancel_slot, &entry, token.clone());
+        }
 
         let result = self.download_entry_inner(entry, token).await;
         *self
@@ -1262,6 +1281,44 @@ mod tests {
         let state = prepare_partial_download(&path, 100, Some("unused")).unwrap();
         assert_eq!(state, PartialDownloadState::Resume(7));
         assert!(path.exists());
+    }
+
+    #[test]
+    fn activating_download_publishes_matching_cancel_handle() {
+        let entry = crate::model_catalog::required_entry().unwrap();
+        let mut status = DownloadStatus::queued(&entry);
+        status.state = DownloadState::Failed;
+        let mut slot = None;
+        let token = CancellationToken::new();
+        activate_download(&mut status, &mut slot, &entry, token.clone());
+        assert_eq!(status.state, DownloadState::Resolving);
+        assert!(slot.is_some());
+        assert!(apply_stop_if_active(
+            &mut status,
+            slot.as_ref(),
+            DownloadState::Cancelled,
+        ));
+        assert!(token.is_cancelled());
+        assert_eq!(status.state, DownloadState::Cancelled);
+    }
+
+    #[test]
+    fn activating_next_download_replaces_cancelled_handle() {
+        let entry = crate::model_catalog::required_entry().unwrap();
+        let mut status = DownloadStatus::queued(&entry);
+        let old = CancellationToken::new();
+        old.cancel();
+        let mut slot = Some(old);
+        let next = CancellationToken::new();
+        activate_download(&mut status, &mut slot, &entry, next.clone());
+        assert_eq!(status.state, DownloadState::Resolving);
+        assert!(!next.is_cancelled());
+        assert!(apply_stop_if_active(
+            &mut status,
+            slot.as_ref(),
+            DownloadState::PausedInterrupted,
+        ));
+        assert!(next.is_cancelled());
     }
 
     #[test]
