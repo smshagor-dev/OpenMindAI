@@ -223,7 +223,7 @@ fn parse_markdown_blocks(markdown: &str) -> Vec<Block> {
                         text: text.to_string(),
                         bold: strong_depth > 0,
                         italic: emphasis_depth > 0,
-                        code: matches!(event, Event::Code(_)),
+                        code: matches!(&event, Event::Code(_)),
                     };
                     if let Some(last) = inline_runs.last_mut() {
                         if last.bold == run.bold && last.italic == run.italic && last.code == run.code {
