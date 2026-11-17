@@ -222,7 +222,7 @@ export async function readAttachment(
         ? `${extracted.scannedPages.length} image/scanned page(s) detected`
         : null,
       extracted.visionPages.length
-        ? `${extracted.visionPages.length} representative page(s) sent to Lens`
+        ? `${extracted.visionPages.length} representative page(s) prepared for Lens (shared request limit applies)`
         : null,
       extracted.truncated ? "text or scanned-page coverage limited for local chat context" : null,
     ]
@@ -248,7 +248,7 @@ export async function readAttachment(
     const transcript = analysis.transcript?.text
       ? `\n\n--- Audio transcript ---\n${analysis.transcript.text}`
       : "\n\n[No local audio transcript was available; analyze the supplied representative video frames.]";
-    contentPreview = `[Video processed locally: ${analysis.durationSeconds.toFixed(1)} seconds, ${analysis.frames.length} representative frame(s) sent to OpenMindAI Lens.]${transcript}`;
+    contentPreview = `[Video processed locally: ${analysis.durationSeconds.toFixed(1)} seconds, ${analysis.frames.length} representative frame(s) prepared for OpenMindAI Lens (shared request limit applies).]${transcript}`;
   }
 
   return {
@@ -265,10 +265,32 @@ export async function readAttachment(
   };
 }
 
+/**
+ * Allocate the four-image inference limit across sources, not just the first
+ * attachment. Each source gets one image before any source gets a second.
+ * Preserve frame order within each source and attachment order for ties.
+ */
 export function attachmentMedia(attachments: AttachmentDraft[]): InferenceMediaDraft[] {
-  return attachments
-    .flatMap((attachment) => attachment.mediaItems)
-    .slice(0, MAX_INFERENCE_MEDIA_ITEMS);
+  const selected: InferenceMediaDraft[] = [];
+  const sources = attachments.filter((attachment) => attachment.mediaItems.length > 0);
+  for (let frame = 0; selected.length < MAX_INFERENCE_MEDIA_ITEMS; frame += 1) {
+    let added = false;
+    for (const source of sources) {
+      const item = source.mediaItems[frame];
+      if (!item) continue;
+      selected.push(item);
+      added = true;
+      if (selected.length === MAX_INFERENCE_MEDIA_ITEMS) break;
+    }
+    if (!added) break;
+  }
+  return selected;
+}
+
+export function attachmentMediaCoverage(attachments: AttachmentDraft[]) {
+  const available = attachments.reduce((sum, attachment) => sum + attachment.mediaItems.length, 0);
+  const sent = Math.min(available, MAX_INFERENCE_MEDIA_ITEMS);
+  return { available, sent, omitted: available - sent };
 }
 
 function attachmentContextSources(attachments: AttachmentDraft[]): AttachmentContextSource[] {
