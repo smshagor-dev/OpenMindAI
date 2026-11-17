@@ -4,6 +4,7 @@ use std::{
     path::Path,
 };
 
+use cap_std::{ambient_authority, fs::{Dir, OpenOptions as CapabilityOpenOptions}};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use serde::{Deserialize, Serialize};
@@ -362,12 +363,51 @@ fn save_media_index(
     if media.is_empty() {
         return Ok(());
     }
-    let index_dir = root.resolve_relative("data/media-index")?;
-    fs::create_dir_all(&index_dir)?;
-    let index_path = index_dir.join(format!("{message_id}.json"));
+    // A message ID is a path component, never a path. Only canonical UUIDs
+    // may be passed to filesystem publication.
+    let parsed = uuid::Uuid::parse_str(message_id)
+        .map_err(|_| AppError::InferenceFailed("invalid media message ID".to_string()))?;
+    if parsed.to_string() != message_id {
+        return Err(AppError::InferenceFailed(
+            "non-canonical media message ID".to_string(),
+        ));
+    }
     let bytes = serde_json::to_vec(media).map_err(|error| AppError::internal(error.to_string()))?;
-    fs::write(index_path, bytes)?;
-    Ok(())
+    // Hold the root and child directory capabilities for the entire write.
+    // Avoid a second ambient path resolution after preparing the bytes.
+    let root_dir = Dir::open_ambient_dir(root.root(), ambient_authority())?;
+    root_dir.create_dir_all("data/media-index")?;
+    let directory = root_dir.open_dir("data/media-index")?;
+    publish_media_index(&directory, message_id, &bytes)
+}
+
+/// Write a complete index privately and atomically publish it under the same
+/// directory capability. A failed write must leave the previous final index
+/// intact, and cleanup must only unlink this operation's private staging file.
+fn publish_media_index(directory: &Dir, message_id: &str, bytes: &[u8]) -> Result<(), AppError> {
+    let target = format!("{message_id}.json");
+    let temporary = format!(".pending-{}-{}.json", message_id, uuid::Uuid::new_v4());
+    let mut options = CapabilityOpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let result = (|| -> Result<(), AppError> {
+        let mut file = directory.open_with(&temporary, &options)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        directory.rename(&temporary, directory, &target)?;
+        #[cfg(unix)]
+        directory.open(".")?.sync_all()?;
+        Ok(())
+    })();
+    // Never remove the existing final index when publication fails. The
+    // publisher already holds the SQLite writer lock in the calling path.
+    let _ = directory.remove_file(&temporary);
+    result
 }
 
 fn load_media_index(
@@ -769,6 +809,86 @@ impl XorShift64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const INDEX_ID: &str = "00000000-0000-4000-8000-000000000004";
+
+    fn media_fixture() -> (tempfile::TempDir, PortableRootManager) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        (temp, root)
+    }
+
+    fn image_ref(name: &str) -> PersistedMediaRef {
+        PersistedMediaRef {
+            sha256: "0".repeat(64),
+            name: name.to_string(),
+            mime_type: "image/png".to_string(),
+        }
+    }
+
+    #[test]
+    fn index_replacement_is_atomic_and_leaves_no_private_staging_files() {
+        let (_temp, root) = media_fixture();
+        let original = vec![image_ref("original.png")];
+        save_media_index(&root, INDEX_ID, &original).unwrap();
+        let index = root
+            .resolve_relative("data/media-index")
+            .unwrap()
+            .join(format!("{INDEX_ID}.json"));
+        let replacement = vec![image_ref("new.png")];
+        save_media_index(&root, INDEX_ID, &replacement).unwrap();
+        let stored: Vec<PersistedMediaRef> =
+            serde_json::from_slice(&fs::read(index).unwrap()).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].name, "new.png");
+        let entries: Vec<_> = fs::read_dir(root.resolve_relative("data/media-index").unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries.len(), 1, "temporary indexes must not remain");
+    }
+
+    #[test]
+    fn unsafe_message_ids_cannot_escape_media_index_directory() {
+        let (_temp, root) = media_fixture();
+        let outside = root.root().join("sentinel.json");
+        fs::write(&outside, b"preserve").unwrap();
+        for id in ["../sentinel", "AAAA0000-0000-4000-8000-000000000004", "bad-id"] {
+            assert!(save_media_index(&root, id, &[image_ref("private")]).is_err());
+        }
+        assert_eq!(fs::read(outside).unwrap(), b"preserve");
+    }
+
+    #[test]
+    fn failed_final_publication_keeps_existing_entry_and_cleans_staging() {
+        let (_temp, root) = media_fixture();
+        let dir = root.resolve_relative("data/media-index").unwrap();
+        let target = dir.join(format!("{INDEX_ID}.json"));
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("sentinel"), b"preserve").unwrap();
+        assert!(save_media_index(&root, INDEX_ID, &[image_ref("new")]).is_err());
+        assert_eq!(fs::read(target.join("sentinel")).unwrap(), b"preserve");
+        assert_eq!(fs::read_dir(dir).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn final_index_symlink_is_replaced_without_writing_external_target() {
+        let (_temp, root) = media_fixture();
+        let outside = tempfile::tempdir().unwrap();
+        let sentinel = outside.path().join("private.json");
+        fs::write(&sentinel, b"external").unwrap();
+        let path = root
+            .resolve_relative("data/media-index")
+            .unwrap()
+            .join(format!("{INDEX_ID}.json"));
+        std::os::unix::fs::symlink(&sentinel, &path).unwrap();
+        save_media_index(&root, INDEX_ID, &[image_ref("inside")]).unwrap();
+        assert_eq!(fs::read(&sentinel).unwrap(), b"external");
+        assert!(path.is_file());
+        assert!(!path.is_symlink());
+    }
 
     #[test]
     fn soundscape_generator_creates_valid_wav() {
