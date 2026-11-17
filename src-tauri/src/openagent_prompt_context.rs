@@ -46,7 +46,12 @@ pub(crate) fn build_prompt_context(input: PromptContextInput<'_>) -> PromptConte
     // Never round a smaller real slot up: the caller already resolved the
     // runtime's /props n_ctx or divided configured context across workers.
     let context_window_tokens = input.context_window_tokens.min(MAX_MODEL_CONTEXT_TOKENS);
-    let max_output_tokens = (context_window_tokens / 6).clamp(MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS);
+    // A misreported or tiny slot must never reserve more output tokens than
+    // the slot can hold. The minimum applies only when capacity permits it.
+    let available_for_output = context_window_tokens.saturating_sub(PROMPT_MARGIN_TOKENS);
+    let max_output_tokens = (context_window_tokens / 6)
+        .clamp(MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS)
+        .min(available_for_output);
     let input_tokens = context_window_tokens
         .saturating_sub(max_output_tokens)
         .saturating_sub(PROMPT_MARGIN_TOKENS);
@@ -292,6 +297,20 @@ mod tests {
             context_window_tokens: window,
             system_chars: 7_000,
             additional_user_chars: 0,
+        }
+    }
+
+    #[test]
+    fn tiny_or_missing_slot_never_reserves_more_tokens_than_available() {
+        let transcript = VecDeque::new();
+        for window in [0, 1, 255, 256, 257, 512, 640, 1_024] {
+            let pack = build_prompt_context(input("task", "repository", &transcript, window));
+            assert!(
+                pack.max_output_tokens + PROMPT_MARGIN_TOKENS <= window
+                    || window < PROMPT_MARGIN_TOKENS,
+                "invalid output reservation for {window}-token slot"
+            );
+            assert!(pack.selected_chars <= pack.budget_chars);
         }
     }
 
