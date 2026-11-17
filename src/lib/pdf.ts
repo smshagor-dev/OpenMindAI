@@ -136,6 +136,13 @@ export async function extractPdfText(
 
     for (let offset = 0; offset < ocrPages.length; offset += OCR_BATCH_SIZE) {
       assertNotCancelled(options.signal);
+      // Selectable text may already consume the entire chat budget. In that
+      // case rendering and sending scanned pages to native OCR cannot add
+      // usable text, so avoid the expensive work altogether.
+      if (extractedChars >= MAX_EXTRACTED_CHARS) {
+        stoppedForTextBudget = true;
+        break;
+      }
       if (Date.now() - startedOcrAt >= MAX_OCR_ELAPSED_MS) {
         stoppedForTime = true;
         break;
