@@ -217,7 +217,12 @@ impl ModelDownloadManager {
             .cancel_token
             .lock()
             .map_err(|_| AppError::internal("download cancel lock poisoned"))?;
-        apply_stop_if_active(&mut status, token.as_ref(), state);
+        // A queued status and a leftover token are not proof that a transfer
+        // owns the manager. The semaphore permit is held for the entire job;
+        // without it Cancel/Pause must not mutate idle or terminal state.
+        if self.active_download.available_permits() == 0 {
+            apply_stop_if_active(&mut status, token.as_ref(), state);
+        }
         Ok(status.clone())
     }
 
@@ -1210,6 +1215,29 @@ mod tests {
             )
         );
         assert_ne!(first, key(&root_a, &dir_a, source, "nested_model.gguf"));
+    }
+
+    #[test]
+    fn cancel_does_not_rewrite_queued_status_without_active_permit() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ModelDownloadManager::new(PortableRootManager::from_root(temp.path().to_path_buf()));
+        let token = CancellationToken::new();
+        *manager.cancel_token.lock().unwrap() = Some(token.clone());
+        assert_eq!(manager.cancel().unwrap().state, DownloadState::Queued);
+        assert!(!token.is_cancelled());
+    }
+
+    #[test]
+    fn pause_only_applies_while_a_transfer_owns_the_permit() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ModelDownloadManager::new(PortableRootManager::from_root(temp.path().to_path_buf()));
+        let permit = manager.active_download.clone().try_acquire_owned().unwrap();
+        let token = CancellationToken::new();
+        *manager.cancel_token.lock().unwrap() = Some(token.clone());
+        assert_eq!(manager.pause().unwrap().state, DownloadState::PausedInterrupted);
+        assert!(token.is_cancelled());
+        drop(permit);
+        assert_eq!(manager.cancel().unwrap().state, DownloadState::PausedInterrupted);
     }
 
     #[test]
