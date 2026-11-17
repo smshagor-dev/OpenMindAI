@@ -352,8 +352,13 @@ impl DatasetDownloadManager {
             encode_path(relative_path)
         );
         let part_path = final_path.with_extension("openmindai-part");
-        // A leftover partial from an earlier run may belong to an older revision.
-        async_fs::remove_file(&part_path).await.ok();
+        // Preserve validated partial transfers across restarts. The shared
+        // downloader checks the source URL hash, strong ETag/Last-Modified
+        // validator, expected length and Content-Range before appending.
+        // Without a usable sidecar it restarts from byte zero itself.
+        // Never let a linked or non-regular partial/sidecar become a write
+        // target outside the portable root.
+        validate_partial_targets(self.root.root(), &part_path)?;
         let downloaded = crate::net::download_resumable(
             &self.client,
             &url,
@@ -415,6 +420,27 @@ impl DatasetDownloadManager {
         mutate(&mut status);
         Ok(())
     }
+}
+
+fn validate_partial_targets(root: &Path, part: &Path) -> Result<(), AppError> {
+    ensure_contained(root, part)?;
+    let mut sidecar = part.as_os_str().to_os_string();
+    sidecar.push(".resume.json");
+    let sidecar = std::path::PathBuf::from(sidecar);
+    ensure_contained(root, &sidecar)?;
+    for target in [part, sidecar.as_path()] {
+        match fs::symlink_metadata(target) {
+            Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
+                return Err(AppError::ModelDownloadFailed(
+                    "dataset partial download target is not a regular file".into(),
+                ))
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
 }
 
 fn validate_dataset_id(dataset_id: &str) -> Result<(), AppError> {
@@ -523,6 +549,78 @@ mod tests {
         net::TcpListener,
         sync::oneshot,
     };
+
+    #[test]
+    fn partial_validation_preserves_existing_bytes_and_rejects_non_regular_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let part = dir.path().join("dataset.openmindai-part");
+        fs::write(&part, b"completed-prefix").unwrap();
+        validate_partial_targets(dir.path(), &part).unwrap();
+        assert_eq!(fs::read(&part).unwrap(), b"completed-prefix");
+        fs::remove_file(&part).unwrap();
+        fs::create_dir(&part).unwrap();
+        assert!(validate_partial_targets(dir.path(), &part).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_partial_and_resume_metadata_cannot_redirect_writes_outside_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let part = dir.path().join("dataset.openmindai-part");
+        let sentinel = outside.path().join("private");
+        fs::write(&sentinel, b"secret").unwrap();
+        std::os::unix::fs::symlink(&sentinel, &part).unwrap();
+        assert!(validate_partial_targets(dir.path(), &part).is_err());
+        fs::remove_file(&part).unwrap();
+        fs::write(&part, b"da").unwrap();
+        std::os::unix::fs::symlink(&sentinel, dir.path().join("dataset.openmindai-part.resume.json")).unwrap();
+        assert!(validate_partial_targets(dir.path(), &part).is_err());
+        assert_eq!(fs::read(&sentinel).unwrap(), b"secret");
+    }
+
+    #[tokio::test]
+    async fn dataset_reuses_validator_guarded_range_after_restart() {
+        use sha2::{Digest, Sha256};
+        let dir = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let url = format!("{base}/datasets/owner/example/resolve/main/data.txt");
+        let part = dir.path().join("data.openmindai-part");
+        let final_path = dir.path().join("data.txt");
+        fs::write(&part, b"da").unwrap();
+        let sidecar = dir.path().join("data.openmindai-part.resume.json");
+        fs::write(&sidecar, serde_json::json!({
+            "source": format!("{:x}", Sha256::digest(url.as_bytes())),
+            "validator": {"ETag": "\"etag-v1\""},
+            "total": 4
+        }).to_string()).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut buffer = [0_u8; 1024];
+                let n = socket.read(&mut buffer).await.unwrap();
+                assert!(n > 0);
+                request.extend_from_slice(&buffer[..n]);
+                if request.ends_with(b"\r\n\r\n") { break; }
+            }
+            let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
+            assert!(request.contains("range: bytes=2-"));
+            assert!(request.contains("if-range: \"etag-v1\""));
+            socket.write_all(
+                b"HTTP/1.1 206 Partial Content\r\nETag: \"etag-v1\"\r\nContent-Range: bytes 2-3/4\r\nContent-Length: 2\r\nConnection: close\r\n\r\nta"
+            ).await.unwrap();
+        });
+        let mut manager = DatasetDownloadManager::new(PortableRootManager::from_root(dir.path().to_path_buf()));
+        manager.client = Client::builder().no_proxy().build().unwrap();
+        manager.resolve_base = format!("{base}/datasets/");
+        let hash = format!("{:x}", Sha256::digest(b"data"));
+        assert_eq!(manager.download_file("owner/example", "data.txt", &final_path, Some(4), Some(&hash)).await.unwrap(), 4);
+        server.await.unwrap();
+        assert_eq!(fs::read(final_path).unwrap(), b"data");
+        assert!(!part.exists());
+    }
 
     async fn fixture(
         root: &Path,
