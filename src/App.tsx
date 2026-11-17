@@ -54,6 +54,7 @@ import { ProjectsWorkspace } from "./components/ProjectsWorkspace";
 import { WorkWorkspace } from "./components/WorkWorkspace";
 import { StudioHub } from "./components/StudioHub";
 import { Studio3D } from "./components/Studio3D";
+import { ResearchStudio } from "./components/ResearchStudio";
 import {
   cloud,
   hostedChat,
@@ -2064,7 +2065,9 @@ export function App() {
             internetAvailable={internetAvailable}
             connection={cloudConnection}
           />
-        ) : view === "research-studio" || view === "web-search" ? (
+        ) : view === "research-studio" ? (
+          <ResearchStudio />
+        ) : view === "web-search" ? (
           <StudioHub
             section={view}
             mode={executionMode}
