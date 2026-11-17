@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FileText, Globe, Loader2, MessageSquare, Pencil, Search, Sparkles, Trash2 } from "lucide-react";
+import {
+  FileText,
+  Globe,
+  Loader2,
+  MessageSquare,
+  Pencil,
+  Search,
+  Sparkles,
+  Trash2,
+} from "lucide-react";
 import { api as local } from "../api_legacy";
 import type { Message } from "../types";
 import "../research-studio.css";
@@ -44,8 +53,10 @@ const LANGUAGES = [
 ];
 
 const DESKTOP_PHASE: Partial<Record<View, string>> = {
-  "Live agents": "Live agent activity will stream here as the desktop research loop runs on your local model.",
-  Literature: "Literature search and screening is being brought to the desktop build on local web research.",
+  "Live agents":
+    "Live agent activity will stream here as the desktop research loop runs on your local model.",
+  Literature:
+    "Literature search and screening is being brought to the desktop build on local web research.",
   "PDF reader": "Attach and read source PDFs here; desktop PDF grounding is on the roadmap.",
   "Research gaps": "Gap analysis across your evidence will appear here.",
   Experiments: "Design and track experiments against your research questions here.",
@@ -231,10 +242,22 @@ export function ResearchStudio() {
   return (
     <div className="research-root">
       <aside className="rs-nav">
-        <button className="rs-primary rs-new-btn" type="button" disabled={busy} onClick={() => { setCreating(true); setActiveId(null); }}>
+        <button
+          className="rs-primary rs-new-btn"
+          type="button"
+          disabled={busy}
+          onClick={() => {
+            setCreating(true);
+            setActiveId(null);
+          }}
+        >
           <Pencil size={16} /> New research
         </button>
-        <button className={`rs-nav-item ${dashboard ? "selected" : ""}`} type="button" onClick={() => choose(null)}>
+        <button
+          className={`rs-nav-item ${dashboard ? "selected" : ""}`}
+          type="button"
+          onClick={() => choose(null)}
+        >
           <Sparkles size={17} /> Research dashboard
         </button>
 
@@ -262,11 +285,22 @@ export function ResearchStudio() {
         ) : (
           <div className="rs-projects">
             {projects.map((project) => (
-              <div key={project.id} className={`rs-project-row ${activeId === project.id ? "active" : ""}`}>
-                <button className="rs-project-title" title={project.title} onClick={() => choose(project.id)}>
+              <div
+                key={project.id}
+                className={`rs-project-row ${activeId === project.id ? "active" : ""}`}
+              >
+                <button
+                  className="rs-project-title"
+                  title={project.title}
+                  onClick={() => choose(project.id)}
+                >
                   {project.title}
                 </button>
-                <button className="rs-project-delete" aria-label={`Delete ${project.title}`} onClick={() => removeProject(project)}>
+                <button
+                  className="rs-project-delete"
+                  aria-label={`Delete ${project.title}`}
+                  onClick={() => removeProject(project)}
+                >
                   <Trash2 size={13} />
                 </button>
               </div>
@@ -279,19 +313,33 @@ export function ResearchStudio() {
         {error && (
           <div className="rs-error" role="alert">
             {error}
-            <button aria-label="Dismiss error" onClick={() => setError(null)}>×</button>
+            <button aria-label="Dismiss error" onClick={() => setError(null)}>
+              ×
+            </button>
           </div>
         )}
-        {notice && <div className="rs-notice" role="status">{notice}</div>}
+        {notice && (
+          <div className="rs-notice" role="status">
+            {notice}
+          </div>
+        )}
 
         {creating ? (
           <section className="rs-card rs-new">
             <span className="rs-eyebrow">New research project</span>
             <h1>Start with a question.</h1>
-            <p>Your original language, research constraints and source evidence stay with the project on this computer.</p>
+            <p>
+              Your original language, research constraints and source evidence stay with the project
+              on this computer.
+            </p>
             <label>
               Project title
-              <input value={title} maxLength={200} onChange={(event) => setTitle(event.target.value)} placeholder="e.g. Robustness of UAV swarm coordination" />
+              <input
+                value={title}
+                maxLength={200}
+                onChange={(event) => setTitle(event.target.value)}
+                placeholder="e.g. Robustness of UAV swarm coordination"
+              />
             </label>
             <label>
               Research prompt
@@ -307,31 +355,56 @@ export function ResearchStudio() {
             <div className="rs-grid">
               <label>
                 Progress language
-                <select value={progressLanguage} onChange={(event) => setProgressLanguage(event.target.value)}>
-                  {LANGUAGES.map((language) => <option key={language}>{language}</option>)}
+                <select
+                  value={progressLanguage}
+                  onChange={(event) => setProgressLanguage(event.target.value)}
+                >
+                  {LANGUAGES.map((language) => (
+                    <option key={language}>{language}</option>
+                  ))}
                 </select>
               </label>
               <label>
                 Manuscript language
-                <select value={outputLanguage} onChange={(event) => setOutputLanguage(event.target.value)}>
-                  {LANGUAGES.map((language) => <option key={language}>{language}</option>)}
+                <select
+                  value={outputLanguage}
+                  onChange={(event) => setOutputLanguage(event.target.value)}
+                >
+                  {LANGUAGES.map((language) => (
+                    <option key={language}>{language}</option>
+                  ))}
                 </select>
               </label>
             </div>
             <div className="rs-actions">
-              <button className="rs-primary" type="button" disabled={busy} onClick={() => void createProject()}>
-                {busy ? <Loader2 size={16} className="rs-spin" /> : <Sparkles size={16} />} Create project
+              <button
+                className="rs-primary"
+                type="button"
+                disabled={busy}
+                onClick={() => void createProject()}
+              >
+                {busy ? <Loader2 size={16} className="rs-spin" /> : <Sparkles size={16} />} Create
+                project
               </button>
-              <button type="button" disabled={busy} onClick={() => setCreating(false)}>Cancel</button>
+              <button type="button" disabled={busy} onClick={() => setCreating(false)}>
+                Cancel
+              </button>
             </div>
           </section>
         ) : dashboard ? (
           <section>
             <span className="rs-eyebrow">Research Studio</span>
             <h1>Evidence-led research on this computer.</h1>
-            <p>Investigate a question with your local model and live web research. Projects, prompts and evidence stay on this device.</p>
+            <p>
+              Investigate a question with your local model and live web research. Projects, prompts
+              and evidence stay on this device.
+            </p>
             <div className="rs-dashboard">
-              <button className="rs-card rs-dash-cta" type="button" onClick={() => setCreating(true)}>
+              <button
+                className="rs-card rs-dash-cta"
+                type="button"
+                onClick={() => setCreating(true)}
+              >
                 <Pencil size={20} />
                 <strong>Start new research</strong>
                 <span>Define a question, language and scope.</span>
@@ -346,7 +419,12 @@ export function ResearchStudio() {
               <div className="rs-card">
                 <h3>Recent projects</h3>
                 {projects.slice(0, 6).map((project) => (
-                  <button key={project.id} className="rs-recent" type="button" onClick={() => choose(project.id)}>
+                  <button
+                    key={project.id}
+                    className="rs-recent"
+                    type="button"
+                    onClick={() => choose(project.id)}
+                  >
                     <FileText size={15} /> <span>{project.title}</span>
                   </button>
                 ))}
@@ -358,28 +436,51 @@ export function ResearchStudio() {
             <header className="rs-project-header">
               <span className="rs-eyebrow">{view}</span>
               <h1>{active.title}</h1>
-              <p>{active.prompt.slice(0, 220)}{active.prompt.length > 220 ? "…" : ""}</p>
-              <span className="rs-status">Local model · {active.outputLanguage === "auto" ? "Auto language" : active.outputLanguage}</span>
+              <p>
+                {active.prompt.slice(0, 220)}
+                {active.prompt.length > 220 ? "…" : ""}
+              </p>
+              <span className="rs-status">
+                Local model ·{" "}
+                {active.outputLanguage === "auto" ? "Auto language" : active.outputLanguage}
+              </span>
             </header>
 
             {view === "Chat" && (
               <section className="rs-chat-view">
                 <div className="rs-messages" ref={scrollRef}>
                   {messages.length === 0 && !sending ? (
-                    <p className="rs-chat-empty">Ask a question about “{active.title}”. Answers come from your local model; switch to Web activity for live sources.</p>
+                    <p className="rs-chat-empty">
+                      Ask a question about “{active.title}”. Answers come from your local model;
+                      switch to Web activity for live sources.
+                    </p>
                   ) : (
                     messages.map((message) => (
                       <div key={message.id} className={`rs-msg rs-msg-${message.role}`}>
-                        <div className="rs-msg-role">{message.role === "user" ? "You" : "Assistant"}</div>
-                        <div className="rs-msg-body">{message.content || (message.status === "streaming" ? "…" : "")}</div>
+                        <div className="rs-msg-role">
+                          {message.role === "user" ? "You" : "Assistant"}
+                        </div>
+                        <div className="rs-msg-body">
+                          {message.content || (message.status === "streaming" ? "…" : "")}
+                        </div>
                       </div>
                     ))
                   )}
-                  {sending && <div className="rs-msg rs-msg-assistant"><div className="rs-msg-role">Assistant</div><div className="rs-msg-body rs-typing"><Loader2 size={14} className="rs-spin" /> Thinking…</div></div>}
+                  {sending && (
+                    <div className="rs-msg rs-msg-assistant">
+                      <div className="rs-msg-role">Assistant</div>
+                      <div className="rs-msg-body rs-typing">
+                        <Loader2 size={14} className="rs-spin" /> Thinking…
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <form
                   className="rs-composer"
-                  onSubmit={(event) => { event.preventDefault(); void send(); }}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void send();
+                  }}
                 >
                   <textarea
                     ref={inputRef}
@@ -390,14 +491,27 @@ export function ResearchStudio() {
                     placeholder="Ask about your research question…"
                     onChange={(event) => setInput(event.target.value)}
                     onKeyDown={(event) => {
-                      if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                      if (
+                        event.key === "Enter" &&
+                        !event.shiftKey &&
+                        !event.nativeEvent.isComposing
+                      ) {
                         event.preventDefault();
                         void send();
                       }
                     }}
                   />
-                  <button className="rs-primary rs-send" type="submit" disabled={sending || !input.trim()} aria-label="Send">
-                    {sending ? <Loader2 size={16} className="rs-spin" /> : <MessageSquare size={16} />}
+                  <button
+                    className="rs-primary rs-send"
+                    type="submit"
+                    disabled={sending || !input.trim()}
+                    aria-label="Send"
+                  >
+                    {sending ? (
+                      <Loader2 size={16} className="rs-spin" />
+                    ) : (
+                      <MessageSquare size={16} />
+                    )}
                   </button>
                 </form>
               </section>
@@ -406,11 +520,23 @@ export function ResearchStudio() {
             {view === "Overview" && (
               <section className="rs-card">
                 <h3>Project overview</h3>
-                <label>Research prompt<textarea readOnly rows={8} value={active.prompt} /></label>
+                <label>
+                  Research prompt
+                  <textarea readOnly rows={8} value={active.prompt} />
+                </label>
                 <div className="rs-grid">
-                  <div><span className="rs-eyebrow">Progress language</span><p>{active.progressLanguage}</p></div>
-                  <div><span className="rs-eyebrow">Manuscript language</span><p>{active.outputLanguage}</p></div>
-                  <div><span className="rs-eyebrow">Created</span><p>{new Date(active.createdAt).toLocaleString()}</p></div>
+                  <div>
+                    <span className="rs-eyebrow">Progress language</span>
+                    <p>{active.progressLanguage}</p>
+                  </div>
+                  <div>
+                    <span className="rs-eyebrow">Manuscript language</span>
+                    <p>{active.outputLanguage}</p>
+                  </div>
+                  <div>
+                    <span className="rs-eyebrow">Created</span>
+                    <p>{new Date(active.createdAt).toLocaleString()}</p>
+                  </div>
                 </div>
               </section>
             )}
@@ -421,19 +547,49 @@ export function ResearchStudio() {
               <section className="rs-card">
                 <h3>Project settings</h3>
                 <div className="rs-grid">
-                  <label>Progress language
-                    <select value={active.progressLanguage} onChange={(event) => save(projects.map((item) => item.id === active.id ? { ...item, progressLanguage: event.target.value } : item))}>
-                      {LANGUAGES.map((language) => <option key={language}>{language}</option>)}
+                  <label>
+                    Progress language
+                    <select
+                      value={active.progressLanguage}
+                      onChange={(event) =>
+                        save(
+                          projects.map((item) =>
+                            item.id === active.id
+                              ? { ...item, progressLanguage: event.target.value }
+                              : item,
+                          ),
+                        )
+                      }
+                    >
+                      {LANGUAGES.map((language) => (
+                        <option key={language}>{language}</option>
+                      ))}
                     </select>
                   </label>
-                  <label>Manuscript language
-                    <select value={active.outputLanguage} onChange={(event) => save(projects.map((item) => item.id === active.id ? { ...item, outputLanguage: event.target.value } : item))}>
-                      {LANGUAGES.map((language) => <option key={language}>{language}</option>)}
+                  <label>
+                    Manuscript language
+                    <select
+                      value={active.outputLanguage}
+                      onChange={(event) =>
+                        save(
+                          projects.map((item) =>
+                            item.id === active.id
+                              ? { ...item, outputLanguage: event.target.value }
+                              : item,
+                          ),
+                        )
+                      }
+                    >
+                      {LANGUAGES.map((language) => (
+                        <option key={language}>{language}</option>
+                      ))}
                     </select>
                   </label>
                 </div>
                 <div className="rs-actions">
-                  <button type="button" onClick={() => removeProject(active)}><Trash2 size={15} /> Delete project</button>
+                  <button type="button" onClick={() => removeProject(active)}>
+                    <Trash2 size={15} /> Delete project
+                  </button>
                 </div>
               </section>
             )}
@@ -480,11 +636,18 @@ function WebActivity({ prompt }: { prompt: string }) {
   return (
     <section className="rs-card">
       <div className="rs-source-heading">
-        <h3><Globe size={16} /> Live web activity</h3>
+        <h3>
+          <Globe size={16} /> Live web activity
+        </h3>
       </div>
       <label>
         Search query
-        <textarea rows={2} dir="auto" value={query} onChange={(event) => setQuery(event.target.value)} />
+        <textarea
+          rows={2}
+          dir="auto"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
       </label>
       <div className="rs-actions">
         <button className="rs-primary" type="button" disabled={busy} onClick={() => void run()}>

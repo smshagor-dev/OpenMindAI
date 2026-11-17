@@ -212,7 +212,8 @@ export function Studio3DViewport({ dataBase64 }: { dataBase64: string }) {
     object.traverse((o) => {
       if (o instanceof THREE.Mesh)
         for (const material of Array.isArray(o.material) ? o.material : [o.material])
-          if ("wireframe" in material) (material as THREE.MeshStandardMaterial).wireframe = wireframe;
+          if ("wireframe" in material)
+            (material as THREE.MeshStandardMaterial).wireframe = wireframe;
     });
     renderRef.current();
   }, [wireframe, ready]);
