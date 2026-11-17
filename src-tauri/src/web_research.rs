@@ -196,13 +196,6 @@ async fn research_inner(
         if found_in_query { successful_queries += 1; }
         on_progress(ResearchProgress { stage: "searching", completed: index + 1, total: queries.len(), sources: results.len(), pages_read: 0 });
     }
-    tracing::info!(
-        total_results = results.len(),
-        successful_queries,
-        provider_counts = ?provider_counts,
-        provider_errors = ?errors,
-        "web research search phase complete"
-    );
     if results.is_empty() {
         on_progress(ResearchProgress { stage: "unavailable", completed: 0, total: 0, sources: 0, pages_read: 0 });
         return unavailable(&format!(
@@ -612,15 +605,7 @@ async fn search_provider(
                 .timeout(REQUEST_TIMEOUT).send().await
                 .map_err(|_| ProviderFailure::Transport)?;
             let html = provider_text(response).await?;
-            let hits = parse_duckduckgo_results(&html);
-            tracing::info!(
-                provider = "DuckDuckGo",
-                http_bytes = html.len(),
-                result_markers = html.matches("result__a").count(),
-                parsed = hits.len(),
-                "web provider parsed"
-            );
-            Ok(hits)
+            Ok(parse_duckduckgo_results(&html))
         }
         Provider::Bing => {
             let html = async {
@@ -629,15 +614,7 @@ async fn search_provider(
                     .timeout(REQUEST_TIMEOUT).send().await
                     .map_err(|_| ProviderFailure::Transport)?;
                 let html = provider_text(response).await?;
-                let hits = parse_bing(&html);
-                tracing::info!(
-                    provider = "Bing HTML",
-                    http_bytes = html.len(),
-                    algo_blocks = html.matches("b_algo").count(),
-                    parsed = hits.len(),
-                    "web provider parsed"
-                );
-                Ok::<_, ProviderFailure>(hits)
+                Ok::<_, ProviderFailure>(parse_bing(&html))
             }.await;
             match html {
                 Ok(found) if !found.is_empty() => Ok(found),

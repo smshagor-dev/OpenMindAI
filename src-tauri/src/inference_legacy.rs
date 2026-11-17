@@ -710,13 +710,6 @@ pub(crate) async fn fetch_web_context(query: &str, mode: &str) -> Result<String,
     let evidence =
         web_research::gather(&client, query, lookup, &cancellation, "auto", &credentials, &|_| {})
             .await;
-    tracing::info!(
-        query_chars = query.chars().count(),
-        mode = lookup,
-        context_chars = evidence.context.chars().count(),
-        sources = evidence.sources.len(),
-        "web search context fetched"
-    );
     Ok(evidence.context)
 }
 
@@ -2607,31 +2600,6 @@ mod tests {
         assert_eq!(results[0].title, "Example & Result");
         assert_eq!(results[0].url, "https://example.com");
         assert_eq!(results[0].snippet, "Useful live snippet.");
-    }
-
-    // Live network check of the real app path (DuckDuckGo/Bing -> parser ->
-    // gather). Ignored by default; run explicitly:
-    //   cargo test --release live_web_search_returns_sources -- --ignored --nocapture
-    #[tokio::test]
-    #[ignore = "hits the live public web; run manually"]
-    async fn live_web_search_returns_sources() {
-        let context = fetch_web_context("todays news bangladesh", "search")
-            .await
-            .expect("fetch_web_context should not error");
-        println!("--- context_chars={} ---", context.chars().count());
-        println!(
-            "{}",
-            context.chars().take(600).collect::<String>()
-        );
-        assert!(
-            !context.contains("LIVE RETRIEVAL FAILED"),
-            "web retrieval returned the failure sentinel: {}",
-            context.chars().take(200).collect::<String>()
-        );
-        assert!(
-            context.contains("Page text retrieved") || context.contains("search snippet"),
-            "expected at least one search result in the evidence context"
-        );
     }
 
     #[test]
