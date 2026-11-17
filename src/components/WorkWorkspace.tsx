@@ -159,7 +159,12 @@ export function WorkWorkspace(props: {
     try {
       for (const file of Array.from(files)) {
         try {
-          if (file.size <= MAX_PROJECT_FILE_BYTES && !isTextFile(file)) {
+          // Do not register metadata for files whose original bytes cannot be retained.
+          // A skipped database row otherwise looks like a recoverable project attachment.
+          if (file.size > MAX_PROJECT_FILE_BYTES) {
+            throw new Error(`File exceeds the ${Math.floor(MAX_PROJECT_FILE_BYTES / (1024 * 1024))} MiB project attachment limit; nothing was saved.`);
+          }
+          if (!isTextFile(file)) {
             await attachProjectBinaryFile(activeProject.id, file);
           } else {
             const ingestion = await ingestProjectFile(file);
