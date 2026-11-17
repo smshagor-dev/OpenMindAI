@@ -493,12 +493,11 @@ pub(crate) async fn create_soundscape_artifact(
     }
     state.root.validate_root()?;
 
-    let stable_audio_installed =
-        crate::installed_catalog_entry_by_id(&state, "stable-audio-open")?.is_some();
-    tracing::info!(
-        stable_audio_installed,
-        "preparing OpenMindAI Soundscape generation"
-    );
+    // No Stable Audio Open inference backend is wired to this command.
+    // Reject arbitrary model-style prompts instead of silently substituting
+    // unrelated procedural music (even when the model is installed).
+    validate_procedural_soundscape_prompt(&prompt)?;
+    tracing::info!(backend = "procedural", "preparing local sound effect");
 
     let (artifact, output) = {
         let db = state
@@ -511,7 +510,7 @@ pub(crate) async fn create_soundscape_artifact(
             .unwrap_or_else(|_| "soundscape".to_string());
         let manager = ArtifactManager::new(&state.root);
         let (output, filename, relative) =
-            manager.stage_destination("audio", Some("soundscape.wav"), &fallback_title)?;
+            manager.stage_destination("audio", Some("procedural-soundscape.wav"), &fallback_title)?;
         let artifacts = ArtifactRepository::new(&db);
         let artifact = artifacts.create(
             &conversation_id,
@@ -559,7 +558,25 @@ pub(crate) async fn create_soundscape_artifact(
     Ok(updated)
 }
 
+/// Only supported procedural presets may be rendered. Unrecognized requests
+/// must not silently become a generic music loop or impersonate model inference.
+fn validate_procedural_soundscape_prompt(prompt: &str) -> Result<(), AppError> {
+    let normalized = prompt.to_ascii_lowercase();
+    const PRESETS: &[&str] = &[
+        "rain", "ocean", "wave", "sea", "wind", "beep",
+        "notification", "alert", "ui sound", "music", "lofi",
+        "ambient", "beat", "melody", "cinematic", "sound effect",
+    ];
+    if PRESETS.iter().any(|preset| normalized.contains(preset)) {
+        return Ok(());
+    }
+    Err(AppError::ArtifactGenerationFailed(
+        "This release supports only procedural rain, ocean, wind, alert and basic music presets. Stable Audio Open inference is not available; try a supported preset.".to_string(),
+    ))
+}
+
 fn generate_soundscape_wav(prompt: &str, output: &Path) -> Result<(), AppError> {
+    validate_procedural_soundscape_prompt(prompt)?;
     let duration = requested_duration(prompt).clamp(2.0, MAX_SOUNDSCAPE_SECONDS);
     let frames = (duration * SOUNDSCAPE_SAMPLE_RATE as f32) as usize;
     let mut writer = WavWriter::create(
@@ -778,6 +795,27 @@ mod tests {
         let bytes = fs::read(path).unwrap();
         assert!(bytes.len() > 44);
         assert_eq!(&bytes[..4], b"RIFF");
+    }
+
+    #[test]
+    fn rejects_unimplemented_audio_model_requests_without_creating_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("model.wav");
+        let result = generate_soundscape_wav(
+            "Generate realistic human speech in a crowded subway station",
+            &output,
+        );
+        assert!(result.is_err());
+        assert!(!output.exists());
+        assert!(result.unwrap_err().to_string().contains("Stable Audio Open"));
+    }
+
+    #[test]
+    fn accepts_explicit_procedural_presets() {
+        for prompt in ["gentle rain for 4 seconds", "ocean waves", "wind",
+            "notification beep", "ambient lofi at 90 BPM"] {
+            assert!(validate_procedural_soundscape_prompt(prompt).is_ok());
+        }
     }
 
     #[test]
