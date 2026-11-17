@@ -492,7 +492,15 @@ pub fn generate_pdf(markdown: &str, title: &str, dest: &Path) -> Result<PdfMeta,
         mono: doc.add_font(&mono),
     };
     let mut layout = PdfLayout::new(fonts);
-    layout.push_wrapped(title, PdfFontKind::Bold, 20.0, 5.0);
+    // An empty title and whitespace-only Markdown would otherwise produce no
+    // text operations and fail export. Publish a valid, readable one-page PDF
+    // rather than leaving the artifact in a failed state for an empty note.
+    let display_title = if title.trim().is_empty() && blocks.is_empty() {
+        "Untitled document"
+    } else {
+        title
+    };
+    layout.push_wrapped(display_title, PdfFontKind::Bold, 20.0, 5.0);
     for block in blocks {
         layout.push_block(block);
     }
@@ -736,6 +744,26 @@ mod tests {
         let lines = wrap_text(input, 16);
         assert!(lines.len() > 1);
         assert_eq!(lines.join(" "), input);
+    }
+
+    #[test]
+    fn empty_note_still_generates_valid_single_page_pdf() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("empty-note.pdf");
+        let meta = generate_pdf("  \n\t", "  ", &dest).unwrap();
+        assert_eq!(meta.page_count, 1);
+        let bytes = std::fs::read(&dest).unwrap();
+        assert!(bytes.starts_with(b"%PDF-"));
+        assert!(bytes.len() > 100);
+    }
+
+    #[test]
+    fn whitespace_title_with_content_does_not_insert_fallback_heading() {
+        let blocks = parse_markdown_blocks("## Actual heading");
+        assert_eq!(blocks.len(), 1);
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("content.pdf");
+        assert!(generate_pdf("## Actual heading", " ", &dest).unwrap().page_count >= 1);
     }
 
     #[test]
