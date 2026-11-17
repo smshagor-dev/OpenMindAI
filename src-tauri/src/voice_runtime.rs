@@ -32,9 +32,14 @@ const WAV_HEADER_BYTES: u64 = 44;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn validate_narration_language(text: &str) -> Result<(), AppError> {
     let unsupported = text.chars().any(|ch| matches!(ch as u32,
-        0x0400..=0x052f | 0x0900..=0x097f | 0x0980..=0x09ff |
-        0x0600..=0x06ff | 0x4e00..=0x9fff | 0x3040..=0x30ff |
-        0xac00..=0xd7af | 0x0e00..=0x0e7f
+        0x0370..=0x03ff | 0x1f00..=0x1fff | // Greek and extended Greek
+        0x0400..=0x052f | 0x0530..=0x058f | // Cyrillic and Armenian
+        0x0590..=0x05ff | 0x0600..=0x06ff | // Hebrew and Arabic
+        0x0750..=0x077f | 0x08a0..=0x08ff | // Arabic supplements
+        0x0900..=0x097f | 0x0980..=0x09ff | // Devanagari and Bengali
+        0x0e00..=0x0e7f | 0x10a0..=0x10ff | // Thai and Georgian
+        0x1c90..=0x1cbf | 0x3040..=0x30ff | // Georgian Mtavruli, Japanese
+        0x4e00..=0x9fff | 0xac00..=0xd7af
     ));
     if unsupported {
         return Err(AppError::ArtifactGenerationFailed(
@@ -855,7 +860,11 @@ mod narration_language_tests {
 
     #[test]
     fn unsupported_scripts_fail_before_model_or_output_access() {
-        for text in ["বাংলা", "Привет", "नमस्ते", "مرحبا", "你好", "こんにちは"] {
+        for text in [
+            "বাংলা", "Привет", "नमस्ते", "مرحبا", "你好", "こんにちは",
+            "Γειά σου", "שלום", "Բարեւ", "გამარჯობა", "ᲒᲐᲛᲐᲠᲯᲝᲑᲐ",
+            "مَرْحَبًا",
+        ] {
             let error = validate_narration_language(text).unwrap_err();
             assert!(error.to_string().contains("English narration only"));
         }
@@ -863,6 +872,8 @@ mod narration_language_tests {
 
     #[test]
     fn mixed_script_narration_is_rejected() {
-        assert!(validate_narration_language("Hello বাংলা").is_err());
+        for text in ["Hello বাংলা", "English + Ελληνικά", "English שלום"] {
+            assert!(validate_narration_language(text).is_err());
+        }
     }
 }
