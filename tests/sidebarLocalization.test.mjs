@@ -14,10 +14,10 @@ test("sidebar receives persisted locale and translates navigation and accessibil
 });
 test("Bangla and Hindi catalogs include the same keys as English and an explicit fallback", () => {
   const keys = [...nav.matchAll(/^    ([a-zA-Z0-9]+): /gm)].map(x => x[1]);
-  assert.equal(keys.length, 3 * 19);
-  for (let i = 0; i < 19; i++) {
-    assert.equal(keys[i], keys[i+19]);
-    assert.equal(keys[i], keys[i+38]);
+  assert.equal(keys.length, 3 * 20);
+  for (let i = 0; i < 20; i++) {
+    assert.equal(keys[i], keys[i+20]);
+    assert.equal(keys[i], keys[i+40]);
   }
   assert.match(nav, /language === "Bangla" \|\| language === "Hindi"/);
   assert.match(nav, /navigationMessages\.English\[key\]/);
