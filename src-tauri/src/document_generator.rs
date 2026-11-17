@@ -599,7 +599,7 @@ fn docx_block(xml: &mut String, block: Block) {
             docx_paragraph(&mut paragraph, &text, size, true, false);
             paragraph = paragraph.replacen(
                 "<w:pPr>",
-                &format!("<w:pPr><w:pStyle w:val=\"{style}\"/>"),
+                &format!("<w:pPr><w:pStyle w:val=\"{style}\"/><w:keepNext/><w:keepLines/><w:widowControl/>"),
                 1,
             );
             xml.push_str(&paragraph);
@@ -698,6 +698,22 @@ pub fn generate_docx(markdown: &str, title: &str, dest: &Path) -> Result<(), App
 mod tests {
     use super::*;
 
+
+    #[test]
+    fn docx_headings_stay_with_following_paragraph_and_keep_lines_together() {
+        let xml = word_document_xml(
+            parse_markdown_blocks("# বাংলা Heading & Details\\n\\nBody content\\n\\n## Nested\\n\\nMore text"),
+            "Document",
+        );
+        for level in [1, 2] {
+            let style = format!(
+                "<w:pStyle w:val=\\"Heading{level}\\"/><w:keepNext/><w:keepLines/><w:widowControl/>"
+            );
+            assert!(xml.contains(&style), "missing pagination rules for heading {level}");
+        }
+        assert!(xml.contains("বাংলা Heading &amp; Details"));
+        assert!(xml.contains("Body content"));
+    }
 
     #[test]
     fn docx_headings_use_word_outline_styles() {
