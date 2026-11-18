@@ -290,8 +290,15 @@ async function selectablePageText(page: PDFPageProxy) {
 
 async function renderPdfPage(page: PDFPageProxy, signal?: PdfExtractionOptions["signal"]) {
   const base = page.getViewport({ scale: 1 });
+  // Very large PDF media boxes must not force a minimum scale: a 20,000pt
+  // page at scale 0.5 would allocate a 10,000px bitmap despite the cap.
+  // Reject invalid dimensions rather than attempting an unbounded canvas.
+  if (!Number.isFinite(base.width) || !Number.isFinite(base.height)
+      || base.width <= 0 || base.height <= 0) {
+    throw new Error("PDF page has invalid dimensions.");
+  }
   const scale = Math.min(2, MAX_RENDER_DIMENSION / Math.max(base.width, base.height));
-  const viewport = page.getViewport({ scale: Math.max(0.5, scale) });
+  const viewport = page.getViewport({ scale });
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(viewport.width));
   canvas.height = Math.max(1, Math.round(viewport.height));
