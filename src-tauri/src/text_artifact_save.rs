@@ -262,10 +262,14 @@ fn save_with(
         return Err(AppError::internal("unsupported text artifact kind"));
     }
     let relative = Path::new(input.relative);
+    // Match the four-component layout required by recovery. In particular,
+    // never allow a caller-controlled export to enter the private intent journal.
     if !relative.starts_with("generated/files")
+        || relative.components().count() != 4
         || relative
             .components()
             .any(|part| !matches!(part, Component::Normal(_)))
+        || relative.components().nth(2).is_some_and(|part| part.as_os_str() == ".text-export-journal")
     {
         return Err(AppError::internal("invalid text artifact destination"));
     }
@@ -617,6 +621,24 @@ mod tests {
             request.message_id = message;
             assert!(save(&db, root.path(), request).is_err());
             assert_empty(root.path(), &db);
+        }
+    }
+    #[test]
+    fn export_rejects_journal_and_noncanonical_paths_without_touching_files() {
+        for relative in [
+            "generated/files/.text-export-journal/intent.json",
+            "generated/files/reserved/nested/report.txt",
+            "generated/files/report.txt",
+        ] {
+            let (root, db) = fixture();
+            let journal = root.path().join(JOURNAL);
+            fs::create_dir_all(&journal).unwrap();
+            fs::write(journal.join("sentinel"), b"keep journal").unwrap();
+            let mut request = input();
+            request.relative = relative;
+            assert!(save(&db, root.path(), request).is_err(), "{relative}");
+            assert_eq!(fs::read(journal.join("sentinel")).unwrap(), b"keep journal");
+            assert_empty(&root, &db);
         }
     }
     #[test]
