@@ -316,6 +316,16 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
 
   const deleteItem = async () => {
     if (!activeRoot || !deleteTarget || !isCurrentListing() || !visibleEntries.includes(deleteTarget)) return;
+    // A directory removal can also delete the currently edited file. Do not
+    // discard its unsaved buffer without explicit consent.
+    const editedFileIsTarget = editorPath !== null && (
+      editorPath === deleteTarget.relativePath ||
+      (deleteTarget.kind === "directory" && (
+        editorPath.startsWith(`${deleteTarget.relativePath}/`) ||
+        editorPath.startsWith(`${deleteTarget.relativePath}\\`)
+      ))
+    );
+    if (editedFileIsTarget && !confirmWorkspaceDiscard(editorDirty, "delete the edited file or its parent folder")) return;
     const removed = await run("delete-path", async () => {
       await localWorkspaceApi.deletePath(
         props.projectId,
