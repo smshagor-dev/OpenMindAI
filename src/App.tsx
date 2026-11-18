@@ -1840,16 +1840,6 @@ export function App() {
                 Cloud
               </button>
             </div>
-            {view === "work" && !workThreadId && showCloudApiModels ? (
-              <select
-                className="cloud-model-select"
-                aria-label="Cloud API model"
-                value={cloudModel}
-                onChange={(event) => setCloudModel(event.target.value)}
-              >
-                <option value={cloudModel}>OpenMindAI Cloud</option>
-              </select>
-            ) : null}
           </div>
           <div className="topbar-actions">
             {view === "chat" && activeConversation ? (
@@ -2037,6 +2027,7 @@ export function App() {
             modelSwitching={modelSwitching}
             modelSwitchError={modelSwitchError}
             onSelectModel={selectModel}
+            executionMode={executionMode}
             showCloudModels={showCloudApiModels}
             cloudUnavailable={executionMode === "cloud" && !showCloudApiModels}
             onConnectCloud={() => {
@@ -2136,6 +2127,7 @@ export function App() {
               modelSwitching={modelSwitching}
               modelSwitchError={modelSwitchError}
               onSelectModel={selectModel}
+              executionMode={executionMode}
               showCloudModels={showCloudApiModels}
               cloudUnavailable={executionMode === "cloud" && !showCloudApiModels}
               onConnectCloud={() => {
