@@ -341,12 +341,15 @@ fn read_bounded_text_sample(directory: &Dir, path: &Path) -> io::Result<String> 
     }
     let mut file = directory.open_with(path, &options)?;
     let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.len() > MAX_TEXT_FILE_BYTES {
+    if !metadata.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "dataset file exceeds read limit or is not a regular file",
+            "dataset source is not a regular file",
         ));
     }
+    // The read is independently bounded to 256 KiB below. Rejecting files
+    // based on their total size excluded large logs and JSONL datasets even
+    // when their first records contained useful evidence.
     let mut bytes = Vec::new();
     (&mut file)
         .take(MAX_TEXT_SAMPLE_BYTES)
@@ -888,6 +891,24 @@ mod safety_tests {
         ] {
             assert!(safe_manifest_path(path), "{path}");
         }
+    }
+
+    #[test]
+    fn large_dataset_uses_bounded_prefix_without_reading_entire_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("large.txt");
+        let mut file = std::fs::File::create(&path).unwrap();
+        use std::io::{Seek, Write};
+        file.write_all(b"alpha EVIDENCE_AT_START\\n").unwrap();
+        file.set_len(MAX_TEXT_FILE_BYTES + 1024).unwrap();
+        file.seek(std::io::SeekFrom::Start(MAX_TEXT_FILE_BYTES)).unwrap();
+        file.write_all(b"TAIL_NOT_SAMPLED").unwrap();
+        drop(file);
+        let directory = Dir::open_ambient_dir(temp.path(), ambient_authority()).unwrap();
+        let sample = read_bounded_text_sample(&directory, Path::new("large.txt")).unwrap();
+        assert!(sample.starts_with("alpha EVIDENCE_AT_START"));
+        assert!(!sample.contains("TAIL_NOT_SAMPLED"));
+        assert!(sample.len() <= MAX_TEXT_SAMPLE_BYTES as usize);
     }
 
     #[test]
