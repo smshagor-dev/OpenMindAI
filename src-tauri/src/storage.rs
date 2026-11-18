@@ -18,6 +18,20 @@ use crate::{
 const STORAGE_CACHE_TTL: Duration = Duration::from_secs(30);
 static STORAGE_SUMMARY_CACHE: OnceLock<RwLock<Option<(String, Instant, StorageSummary)>>> = OnceLock::new();
 static STORAGE_SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
+static STORAGE_CACHE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn invalidate_storage_cache() {
+    STORAGE_CACHE_GENERATION.fetch_add(1, Ordering::AcqRel);
+    if let Some(cache) = STORAGE_SUMMARY_CACHE.get() {
+        if let Ok(mut current) = cache.write() {
+            *current = None;
+        }
+    }
+}
+
+fn scan_result_is_current(start_generation: u64, current_generation: u64) -> bool {
+    start_generation == current_generation
+}
 
 fn snapshot_is_fresh(cached_root: &str, scanned_at: Instant, requested_root: &str) -> bool {
     cached_root == requested_root && scanned_at.elapsed() < STORAGE_CACHE_TTL
@@ -87,6 +101,7 @@ impl<'a> StorageMonitor<'a> {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
+            let generation = STORAGE_CACHE_GENERATION.load(Ordering::Acquire);
             let root = self.root.clone();
             let key = root_key.clone();
             std::thread::spawn(move || {
@@ -94,7 +109,11 @@ impl<'a> StorageMonitor<'a> {
                 if let Ok(summary) = monitor.compute_summary() {
                     let cache = STORAGE_SUMMARY_CACHE.get_or_init(|| RwLock::new(None));
                     if let Ok(mut current) = cache.write() {
-                        *current = Some((key, Instant::now(), summary));
+                        // An explicit clear may occur while the slow scan is running.
+                        // Never resurrect a snapshot computed before that clear.
+                        if scan_result_is_current(generation, STORAGE_CACHE_GENERATION.load(Ordering::Acquire)) {
+                            *current = Some((key, Instant::now(), summary));
+                        }
                     }
                 }
                 STORAGE_SCAN_RUNNING.store(false, Ordering::Release);
@@ -135,11 +154,7 @@ impl<'a> StorageMonitor<'a> {
             bytes_freed += clear_directory_contents(&path)?;
         }
 
-        if let Some(cache) = STORAGE_SUMMARY_CACHE.get() {
-            if let Ok(mut current) = cache.write() {
-                *current = None;
-            }
-        }
+        invalidate_storage_cache();
 
         Ok(CacheClearResult { bytes_freed })
     }
@@ -211,6 +226,13 @@ mod cache_tests {
         assert_eq!(restored.generated_bytes, 789);
         assert!(snapshot_for_root(&cached, "root-b").is_none());
         assert!(snapshot_for_root(&None, "root-a").is_none());
+    }
+
+    #[test]
+    fn invalidated_scan_cannot_repopulate_cache() {
+        assert!(scan_result_is_current(4, 4));
+        assert!(!scan_result_is_current(4, 5));
+        assert!(!scan_result_is_current(5, 6));
     }
 
     #[test]
