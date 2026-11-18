@@ -27,40 +27,32 @@
 
 ---
 
-## OpenMindAI v4.0.0
+## OpenMindAI v5.0.0
 
 **Current source version:** `v5.0.0`  
-**Release target:** [v4.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v4.0.0)  
-**Previous stable release:** [v3.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v3.0.0)
+**Release documentation:** [v5.0.0 notes](.github/releases/v5.0.0.txt)  
+**Previous release:** [v4.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v4.0.0)
 
-v4.0.0 is the maintenance release for the current OpenMindAI 3.x desktop line. It keeps the existing local-first architecture while consolidating the latest validated fixes, native runtime work, model routing improvements, and release-pipeline hardening on top of v3.0.0.
+v5.0.0 focuses on reliable first-run setup and native build compatibility. It fixes installations that previously reached the chat screen without a usable local llama.cpp runtime and restores compilation after dependency updates. OpenMindAI remains a local-first AI desktop application.
 
 ### Download
 
-| Platform | Package |
-| --- | --- |
-| Android | [Get it on Google Play](https://play.google.com/store/apps/details?id=com.openmindai.mobile) |
-| Android | [Get it on RuStore](https://www.rustore.ru/catalog/app/com.openmindai.mobile) |
-| Linux | [OpenMindAI_4.0.0_amd64.AppImage](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_amd64.AppImage) |
-| Linux | [OpenMindAI_4.0.0_amd64.deb](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_amd64.deb) |
-| macOS | [OpenMindAI-Setup.command](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI-Setup.command) |
-| Windows | [OpenMindAI_4.0.0_x64-setup.exe](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x64-setup.exe) |
-| Windows | [OpenMindAI_4.0.0_x86-setup.exe](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x86-setup.exe) |
+**[View GitHub releases and available installers](https://github.com/smshagor-dev/OpenMindAI/releases)**
 
-The links above point to the published v4.0.0 release assets and the Android app's Google Play and RuStore listings. macOS installation uses the `.command` setup script; iOS packages and direct mobile APK downloads are not listed here.
+Use the official [v5.0.0 release page](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v5.0.0) to check publication status, supported platforms, download assets, and checksums. Release packaging and signing must finish before installers are treated as published or verified.
 
-`release-output-SHA256SUMS.txt` and platform-specific checksum files, when available, can be found among the release assets.
+Android distribution: [Google Play](https://play.google.com/store/apps/details?id=com.openmindai.mobile) · [RuStore](https://www.rustore.ru/catalog/app/com.openmindai.mobile). Mobile app versioning is independent of the desktop v5.0.0 release.
 
-### What changed in v4.0.0
+### What's new in v5.0.0
 
-- Synchronizes the desktop application, Tauri bundle, Rust crate, lockfiles, bootstrap launchers, and portable marker on version `4.0.0`.
-- Preserves the local-first desktop architecture and current native model/runtime behavior from the validated `main` branch.
-- Carries forward the native personalization and runtime integration work merged after v3.0.0.
-- Keeps CI, CodeQL, dependency auditing, multi-platform Rust validation, Windows Tauri build validation, and release-contract checks as release gates.
-- Adds explicit v3.0.0 → v4.0.0 upgrade validation in addition to clean-install validation.
-- Produces release-specific notes and installer naming for `v4.0.0` while retaining v3.0.0 as the upgrade source.
+- **First-run setup recovery:** interrupted provisioning is resumed instead of incorrectly treating the installation as complete when only the data root has been created.
+- **Runtime readiness:** the setup is considered complete only when the authoritative `setupState` reaches `Completed`, reducing the risk of starting chat without a usable local llama.cpp runtime.
+- **Legacy installation compatibility:** installations created before `setupState` was introduced continue to load.
+- **Native build fixes:** retains API-compatible `sha2` and `sysinfo` versions, aligns the iOS `llama-cpp-2` pin with desktop/Android, updates SQLite row reads for `rusqlite` 0.42, and improves runtime ZIP-reader compatibility.
+- **Version consistency:** synchronizes application, native, Tauri, and packaging metadata to `5.0.0`.
+- **Release validation:** preserves CI, native ABI, updater signature, checksum, clean-install, and v4.0.0 → v5.0.0 upgrade requirements.
 
-For the focused release summary, see [`.github/releases/v4.0.0.txt`](.github/releases/v4.0.0.txt).
+See [full v5.0.0 release notes](.github/releases/v5.0.0.txt). The release notes distinguish intended release assets and validation gates from verified published installers.
 
 ## Why OpenMindAI
 
@@ -292,7 +284,7 @@ A configured storage location that is temporarily unavailable should be reported
 
 ## Default Local Model
 
-The v4.0.0 baseline setup targets **Qwen3 4B (`Q4_K_M`)** as the default local language model.
+The existing local model baseline targets **Qwen3 4B (`Q4_K_M`)** as the default local language model.
 
 Model weights are deliberately excluded from this repository. They are downloaded separately and stored under the selected AI data root, keeping multi-gigabyte model binaries out of normal Git history.
 
@@ -436,13 +428,13 @@ Tagged releases use the dedicated release workflow in [`.github/workflows/releas
 
 The release path checks version consistency, application builds, installer output, updater configuration, release metadata, and other release-readiness requirements. Signing and trust requirements are handled by the production release workflow rather than being embedded in source code or committed secrets.
 
-For v4.0.0 release expectations and validation scope, see [`.github/releases/v4.0.0.txt`](.github/releases/v4.0.0.txt).
+For v5.0.0 release expectations and validation scope, see [`.github/releases/v5.0.0.txt`](.github/releases/v5.0.0.txt).
 
 ## Platform Notes
 
 ### Windows
 
-Windows x64 is the primary packaged and tested platform for v4.0.0. The desktop release uses a Tauri NSIS installer. GPU/runtime behavior depends on installed hardware and backend support, while CPU execution remains the compatibility path when acceleration is unavailable.
+Windows x64 is the primary release-validation platform for v5.0.0. The desktop release uses a Tauri NSIS installer. GPU/runtime behavior depends on installed hardware and backend support, while CPU execution remains the compatibility path when acceleration is unavailable.
 
 ### Linux
 
