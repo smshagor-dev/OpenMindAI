@@ -1311,7 +1311,9 @@ mod tests {
         assert_eq!(repo.list_conversations().unwrap().len(), 1);
         let count: usize = database
             .connection()
-            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM messages", [], |row| {
+                Ok(row.get::<_, i64>(0)? as usize)
+            })
             .unwrap();
         assert_eq!(count, before.as_array().unwrap().len());
         assert_eq!(saved_messages(&repo, &source.id), before);
@@ -1341,7 +1343,9 @@ mod tests {
         assert_eq!(repo.list_conversations().unwrap().len(), 1);
         let count: usize = database
             .connection()
-            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM messages", [], |row| {
+                Ok(row.get::<_, i64>(0)? as usize)
+            })
             .unwrap();
         assert_eq!(count, before.as_array().unwrap().len());
         assert_eq!(saved_messages(&repo, &source.id), before);
@@ -1455,7 +1459,7 @@ mod tests {
             .query_row(
                 "SELECT COUNT(*), message_id FROM artifacts WHERE id = 'original-artifact'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get::<_, i64>(0)? as usize, row.get(1)?)),
             )
             .unwrap();
         assert_eq!(artifact_count, 1);

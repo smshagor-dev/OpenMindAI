@@ -1,6 +1,14 @@
 import { Archive, Check, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type SetStateAction } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type SetStateAction,
+} from "react";
 import { io, type Socket } from "socket.io-client";
 import { api } from "./api";
 import type {
@@ -45,9 +53,30 @@ import { ToolsWorkspace } from "./components/ToolsWorkspace";
 import { ProjectsWorkspace } from "./components/ProjectsWorkspace";
 import { WorkWorkspace } from "./components/WorkWorkspace";
 import { StudioHub } from "./components/StudioHub";
-import { cloud, hostedChat, submitQueuedScene, type CloudConnection, type CloudModel, type ExecutionMode, type StudioSection } from "./cloudApi";
-import { cloudProbeDelayMs, offlineSourceNotice, requestsLocalOnly, runWithFallback, selectExecutionRoute, shouldShowCloudModels } from "./lib/executionRouting";
-import { completeSetupPreparation, setupExecutionMode, setupPreparationPending } from "./lib/setupExecutionMode";
+import { Studio3D } from "./components/Studio3D";
+import { ResearchStudio } from "./components/ResearchStudio";
+import {
+  cloud,
+  hostedChat,
+  submitQueuedScene,
+  type CloudConnection,
+  type CloudModel,
+  type ExecutionMode,
+  type StudioSection,
+} from "./cloudApi";
+import {
+  cloudProbeDelayMs,
+  offlineSourceNotice,
+  requestsLocalOnly,
+  runWithFallback,
+  selectExecutionRoute,
+  shouldShowCloudModels,
+} from "./lib/executionRouting";
+import {
+  completeSetupPreparation,
+  setupExecutionMode,
+  setupPreparationPending,
+} from "./lib/setupExecutionMode";
 import { notifyUser } from "./lib/notify";
 import {
   attachmentKind,
@@ -63,7 +92,11 @@ import {
 } from "./lib/chat";
 import { formatError } from "./lib/format";
 import type { PdfExtractionProgress } from "./lib/pdf";
-import { imageRendererPrompt, persistDirectImageRequest, plainImageRequest } from "./lib/imageGeneration";
+import {
+  imageRendererPrompt,
+  persistDirectImageRequest,
+  plainImageRequest,
+} from "./lib/imageGeneration";
 import { ConversationState } from "./lib/conversationState";
 
 type View = "chat" | "work" | "settings" | "tools" | "projects" | StudioSection;
@@ -85,7 +118,11 @@ function optimisticRuntimeStatus(
 
 export function App() {
   const [chatState] = useState(() => new ConversationState());
-  const chatSnapshot = useSyncExternalStore(chatState.subscribe, chatState.getSnapshot, chatState.getSnapshot);
+  const chatSnapshot = useSyncExternalStore(
+    chatState.subscribe,
+    chatState.getSnapshot,
+    chatState.getSnapshot,
+  );
   const { activeId, messages, artifacts } = chatSnapshot;
   const setActiveId = chatState.selectConversation;
   const chatScope = useMemo(() => chatState.scope(activeId), [chatState, activeId]);
@@ -96,10 +133,14 @@ export function App() {
   const activity = activeRun.activity;
   const webProgress = activeRun.webProgress;
   const backgroundBusy = chatState.anyBusy() && !chatState.isBusy(activeId);
-  const backgroundRuns = [...chatSnapshot.runs.keys()].filter((id) => id !== activeId && chatState.isBusy(id));
+  const backgroundRuns = [...chatSnapshot.runs.keys()].filter(
+    (id) => id !== activeId && chatState.isBusy(id),
+  );
   const copyrightYear = new Date().getFullYear();
   const [view, setView] = useState<View>("chat");
-  const [executionMode, setExecutionMode] = useState<ExecutionMode>(() => setupExecutionMode() ?? "auto");
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>(
+    () => setupExecutionMode() ?? "auto",
+  );
   const [internetAvailable, setInternetAvailable] = useState(() => window.navigator.onLine);
   const [routeNotice, setRouteNotice] = useState<string | null>(null);
   const [studioSubmission, setStudioSubmission] = useState<string | null>(null);
@@ -107,24 +148,40 @@ export function App() {
   const [cloudConnection, setCloudConnection] = useState<CloudConnection | null>(null);
   const [cloudModels, setCloudModels] = useState<CloudModel[]>([]);
   const [cloudModel, setCloudModel] = useState("");
-  const showCloudApiModels = shouldShowCloudModels(executionMode, internetAvailable,
-    Boolean(cloudConnection?.connected), cloudModels.length);
+  const showCloudApiModels = shouldShowCloudModels(
+    executionMode,
+    internetAvailable,
+    Boolean(cloudConnection?.connected),
+    cloudModels.length,
+  );
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
     let active = true;
-    void cloud.outboxRecover().then(() => {
-      if (active) setStudioOutboxReady(true);
-    }).catch(() => undefined);
-    return () => { active = false; };
+    void cloud
+      .outboxRecover()
+      .then(() => {
+        if (active) setStudioOutboxReady(true);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
   }, []);
   useEffect(() => {
-    if (!studioOutboxReady || !internetAvailable || !cloudConnection?.connected || executionMode === "local") return;
+    if (
+      !studioOutboxReady ||
+      !internetAvailable ||
+      !cloudConnection?.connected ||
+      executionMode === "local"
+    )
+      return;
     let active = true;
     void (async () => {
       // Only a saved, never-submitted job is dispatched automatically.
       // Interrupted/uncertain jobs stay in review state, not silently replayed.
-      const pending = (await cloud.outboxList()).filter((item) =>
-        item.status === "queued" && !requestsLocalOnly(item.payload.prompt));
+      const pending = (await cloud.outboxList()).filter(
+        (item) => item.status === "queued" && !requestsLocalOnly(item.payload.prompt),
+      );
       if (!pending.length) return;
       await cloud.studioEngines(); // read-only connectivity and capability preflight
       for (const item of pending) {
@@ -133,12 +190,17 @@ export function App() {
           const accepted = await submitQueuedScene(item, "cloud");
           if (accepted && active) setRouteNotice("Saved offline 3D request accepted by Cloud.");
         } catch {
-          if (active) setRouteNotice("A queued 3D submission needs review. Open 3D Studio to check its status.");
+          if (active)
+            setRouteNotice(
+              "A queued 3D submission needs review. Open 3D Studio to check its status.",
+            );
           return;
         }
       }
     })().catch(() => undefined);
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, [studioOutboxReady, internetAvailable, cloudConnection?.connected, executionMode]);
   useEffect(() => {
     let alive = true;
@@ -149,7 +211,7 @@ export function App() {
       try {
         if (!window.navigator.onLine) {
           if (alive) {
-            setCloudConnection((current) => current ? { ...current, connected: false } : current);
+            setCloudConnection((current) => (current ? { ...current, connected: false } : current));
             setCloudModels([]);
             setCloudModel("");
           }
@@ -157,19 +219,25 @@ export function App() {
           const status = await cloud.status();
           if (!alive) return;
           setCloudConnection(status);
-          if (!status.connected) { setCloudModels([]); setCloudModel(""); }
+          if (!status.connected) {
+            setCloudModels([]);
+            setCloudModel("");
+          }
           if (status.connected) {
             const available = await cloud.models();
             if (!alive) return;
             setCloudModels(available);
-            setCloudModel((selected) => available.some((entry) => entry.id === selected)
-              ? selected : available[0]?.id ?? "");
+            setCloudModel((selected) =>
+              available.some((entry) => entry.id === selected)
+                ? selected
+                : (available[0]?.id ?? ""),
+            );
           }
           healthy = status.connected || status.message == null;
         }
       } catch {
         if (alive) {
-          setCloudConnection((current) => current ? { ...current, connected: false } : current);
+          setCloudConnection((current) => (current ? { ...current, connected: false } : current));
           setCloudModels([]);
           setCloudModel("");
         }
@@ -178,8 +246,10 @@ export function App() {
           failures = healthy ? 0 : failures + 1;
           // Like Mobile: 5s → 10s → 20s → 40s → 60s after failure.
           // Health checks only read session status and model catalog, never replay POSTs.
-          timer = window.setTimeout(() => void checkCloud(),
-            cloudProbeDelayMs(healthy, failures, 0.9 + Math.random() * 0.2));
+          timer = window.setTimeout(
+            () => void checkCloud(),
+            cloudProbeDelayMs(healthy, failures, 0.9 + Math.random() * 0.2),
+          );
         }
       }
     };
@@ -193,16 +263,30 @@ export function App() {
     let active = true;
     const reconnect = () => {
       setInternetAvailable(true);
-      void cloud.status().then((status) => {
-        if (!active) return;
-        setCloudConnection(status);
-        if (!status.connected) { setCloudModels([]); setCloudModel(""); }
-        if (status.connected) void cloud.models().then((available) => {
+      void cloud
+        .status()
+        .then((status) => {
           if (!active) return;
-          setCloudModels(available);
-          setCloudModel((current) => available.some((item) => item.id === current) ? current : available[0]?.id ?? "");
-        }).catch(() => undefined);
-      }).catch(() => undefined);
+          setCloudConnection(status);
+          if (!status.connected) {
+            setCloudModels([]);
+            setCloudModel("");
+          }
+          if (status.connected)
+            void cloud
+              .models()
+              .then((available) => {
+                if (!active) return;
+                setCloudModels(available);
+                setCloudModel((current) =>
+                  available.some((item) => item.id === current)
+                    ? current
+                    : (available[0]?.id ?? ""),
+                );
+              })
+              .catch(() => undefined);
+        })
+        .catch(() => undefined);
     };
     const disconnect = () => setInternetAvailable(false);
     window.addEventListener("online", reconnect);
@@ -217,10 +301,18 @@ export function App() {
     setCloudConnection(connection);
     setCloudModels([]);
     setCloudModel("");
-    void cloud.models().then((models) => {
-      setCloudModels(models);
-      setCloudModel((selected) => models.some((model) => model.id === selected) ? selected : models[0]?.id ?? "");
-    }).catch(() => { setCloudModels([]); setCloudModel(""); });
+    void cloud
+      .models()
+      .then((models) => {
+        setCloudModels(models);
+        setCloudModel((selected) =>
+          models.some((model) => model.id === selected) ? selected : (models[0]?.id ?? ""),
+        );
+      })
+      .catch(() => {
+        setCloudModels([]);
+        setCloudModel("");
+      });
   };
   const [root, setRoot] = useState<PortableRootInfo | null>(null);
   const [installationStatus, setInstallationStatus] = useState<InstallationStatus | null>(null);
@@ -231,7 +323,9 @@ export function App() {
   const [models, setModels] = useState<ModelRecord[]>([]);
   const [runtime, setRuntime] = useState<RuntimeInventory | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<LlamaRuntimeStatus | null>(null);
-  const [runtimeInstallStatus, setRuntimeInstallStatus] = useState<RuntimeInstallStatus | null>(null);
+  const [runtimeInstallStatus, setRuntimeInstallStatus] = useState<RuntimeInstallStatus | null>(
+    null,
+  );
   const [runtimeInstallError, setRuntimeInstallError] = useState<string | null>(null);
   const [runtimeInstalling, setRuntimeInstalling] = useState(false);
   const [performance, setPerformance] = useState<PerformanceProfile | null>(null);
@@ -243,14 +337,21 @@ export function App() {
     seed: null,
     steps: null,
   });
-  const [imageProgressByArtifact, setImageProgressByArtifact] = useState<Record<string, ImageRenderProgress>>({});
+  const [imageProgressByArtifact, setImageProgressByArtifact] = useState<
+    Record<string, ImageRenderProgress>
+  >({});
   const [prompt, setPromptState] = useState("");
   const [attachments, setAttachmentsState] = useState<AttachmentDraft[]>([]);
   const attachmentItems = useRef<AttachmentDraft[]>([]);
   const attachmentClearVersion = useRef(0);
   const attachmentQueue = useRef<Promise<void>>(Promise.resolve());
-  const activePdfImport = useRef<{ abort: () => void; signal: { readonly aborted: boolean } } | null>(null);
-  const [pdfImportProgress, setPdfImportProgress] = useState<(PdfExtractionProgress & { fileName: string }) | null>(null);
+  const activePdfImport = useRef<{
+    abort: () => void;
+    signal: { readonly aborted: boolean };
+  } | null>(null);
+  const [pdfImportProgress, setPdfImportProgress] = useState<
+    (PdfExtractionProgress & { fileName: string }) | null
+  >(null);
   const cancelPdfImport = useCallback(() => {
     activePdfImport.current?.abort();
     activePdfImport.current = null;
@@ -291,16 +392,19 @@ export function App() {
       },
     };
   }, [chatState, setPrompt]);
-  const setAttachments = useCallback((change: SetStateAction<AttachmentDraft[]>) => {
-    const next = typeof change === "function" ? change(attachmentItems.current) : change;
-    if (typeof change !== "function" && next.length === 0) {
-      attachmentClearVersion.current += 1;
-      cancelPdfImport();
-    }
-    attachmentItems.current = next;
-    draftRevision.current += 1;
-    setAttachmentsState(next);
-  }, [cancelPdfImport]);
+  const setAttachments = useCallback(
+    (change: SetStateAction<AttachmentDraft[]>) => {
+      const next = typeof change === "function" ? change(attachmentItems.current) : change;
+      if (typeof change !== "function" && next.length === 0) {
+        attachmentClearVersion.current += 1;
+        cancelPdfImport();
+      }
+      attachmentItems.current = next;
+      draftRevision.current += 1;
+      setAttachmentsState(next);
+    },
+    [cancelPdfImport],
+  );
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -331,13 +435,16 @@ export function App() {
     setError(formatError(caught));
   }, []);
 
-  const refreshMessages = useCallback(async (conversationId: string) => {
-    try {
-      await chatState.loadMessages(conversationId, api.messages);
-    } catch (caught) {
-      chatState.scope(conversationId).setError(formatError(caught));
-    }
-  }, [chatState]);
+  const refreshMessages = useCallback(
+    async (conversationId: string) => {
+      try {
+        await chatState.loadMessages(conversationId, api.messages);
+      } catch (caught) {
+        chatState.scope(conversationId).setError(formatError(caught));
+      }
+    },
+    [chatState],
+  );
 
   const refreshApp = useCallback(async () => {
     const initialView = chatState.captureView();
@@ -373,11 +480,12 @@ export function App() {
     if (rootInfo) setRoot(rootInfo);
     if (conversationList) {
       setConversations(conversationList);
-      if (chatState.isCurrent(initialView)) setActiveId((current) =>
-        current && conversationList.some((conversation) => conversation.id === current)
-          ? current
-          : null,
-      );
+      if (chatState.isCurrent(initialView))
+        setActiveId((current) =>
+          current && conversationList.some((conversation) => conversation.id === current)
+            ? current
+            : null,
+        );
     }
     if (hardwareInfo) setHardware(hardwareInfo);
     if (storageInfo) setStorage(storageInfo);
@@ -394,7 +502,8 @@ export function App() {
           ...preferencesInfo,
           aiExecutionMode: selected,
           codingAgentExecutionMode: selected,
-          localRuntimeAutostart: selected === "cloud" ? false : preferencesInfo.localRuntimeAutostart,
+          localRuntimeAutostart:
+            selected === "cloud" ? false : preferencesInfo.localRuntimeAutostart,
         });
       }
       setPreferences(nextPreferences);
@@ -412,7 +521,10 @@ export function App() {
   useEffect(() => {
     if (!runtimeInstalling) return;
     const refreshProgress = () => {
-      void api.runtimeInstallStatus().then(setRuntimeInstallStatus).catch(() => undefined);
+      void api
+        .runtimeInstallStatus()
+        .then(setRuntimeInstallStatus)
+        .catch(() => undefined);
     };
     refreshProgress();
     const timer = window.setInterval(refreshProgress, 750);
@@ -420,10 +532,17 @@ export function App() {
   }, [runtimeInstalling]);
 
   useEffect(() => {
-    if (!refreshedOnce || !installationStatus || installationStatus.setupRequired ||
-        preferences?.aiExecutionMode === "cloud" ||
-        (setupPreparationPending() && setupExecutionMode() === "cloud") ||
-        runtime === null || runtime.selected !== null || runtimeAutoInstallAttemptedRef.current) return;
+    if (
+      !refreshedOnce ||
+      !installationStatus ||
+      installationStatus.setupRequired ||
+      preferences?.aiExecutionMode === "cloud" ||
+      (setupPreparationPending() && setupExecutionMode() === "cloud") ||
+      runtime === null ||
+      runtime.selected !== null ||
+      runtimeAutoInstallAttemptedRef.current
+    )
+      return;
     runtimeAutoInstallAttemptedRef.current = true;
     void installRuntime();
     // One automatic attempt per application launch; manual retry remains available.
@@ -442,7 +561,13 @@ export function App() {
       runtimeAutostartAttemptedRef.current = false;
       return;
     }
-    if (runtimeAutostartAttemptedRef.current || !refreshedOnce || !runtime?.selected || runtimeAction) return;
+    if (
+      runtimeAutostartAttemptedRef.current ||
+      !refreshedOnce ||
+      !runtime?.selected ||
+      runtimeAction
+    )
+      return;
     const state = runtimeStatus?.state ?? "stopped";
     if (state !== "stopped" && state !== "failed") {
       runtimeAutostartAttemptedRef.current = true;
@@ -507,15 +632,21 @@ export function App() {
 
   useEffect(() => {
     if (!preferences?.socketRealtimeEnabled || !preferences.socketUrl.trim()) return;
-    const socket: Socket = io(preferences.socketUrl, { transports: ["websocket"], reconnectionAttempts: 3 });
+    const socket: Socket = io(preferences.socketUrl, {
+      transports: ["websocket"],
+      reconnectionAttempts: 3,
+    });
     const owners = new Set<string>();
-    const activityEvent = (field: "typing" | "searching" | "researching", enabled: boolean) =>
+    const activityEvent =
+      (field: "typing" | "searching" | "researching", enabled: boolean) =>
       (payload?: { conversationId?: string; detail?: string }) => {
         // Untagged legacy broadcasts cannot safely identify their destination chat.
         if (!payload || typeof payload.conversationId !== "string") return;
         owners.add(payload.conversationId);
         chatState.scope(payload.conversationId).setActivity((current) => ({
-          ...current, [field]: enabled, detail: typeof payload.detail === "string" ? payload.detail : current.detail,
+          ...current,
+          [field]: enabled,
+          detail: typeof payload.detail === "string" ? payload.detail : current.detail,
         }));
       };
     socket.on("typing:start", activityEvent("typing", true));
@@ -526,16 +657,23 @@ export function App() {
     socket.on("research:stop", activityEvent("researching", false));
     return () => {
       socket.disconnect();
-      for (const owner of owners) if (!chatState.isBusy(owner)) {
-        chatState.scope(owner).setActivity({ typing: false, searching: false, researching: false, detail: null });
-      }
+      for (const owner of owners)
+        if (!chatState.isBusy(owner)) {
+          chatState
+            .scope(owner)
+            .setActivity({ typing: false, searching: false, researching: false, detail: null });
+        }
     };
   }, [preferences?.socketRealtimeEnabled, preferences?.socketUrl, chatState]);
 
   useEffect(() => {
-    if (!activeId) { setEditingMessageId(null); return; }
+    if (!activeId) {
+      setEditingMessageId(null);
+      return;
+    }
     void refreshMessages(activeId);
-    void chatState.loadArtifacts(activeId, api.listArtifacts)
+    void chatState
+      .loadArtifacts(activeId, api.listArtifacts)
       .catch((caught) => chatState.scope(activeId).setError(formatError(caught)));
   }, [activeId, chatState, refreshMessages]);
 
@@ -544,38 +682,59 @@ export function App() {
       listen<StreamStartedEvent>("inference:started", (event) => {
         if (!chatState.startStream(event.payload)) return;
         if (event.payload.assistant.conversationId !== event.payload.conversationId) return;
-        setConversations((items) => items.map((item) => item.id === event.payload.conversationId
-          ? { ...item, activeModelId: event.payload.assistant.modelId } : item));
+        setConversations((items) =>
+          items.map((item) =>
+            item.id === event.payload.conversationId
+              ? { ...item, activeModelId: event.payload.assistant.modelId }
+              : item,
+          ),
+        );
       }),
-      listen<{ conversationId: string; modelName: string; replacing: string | null }>("runtime:model-loading", (event) => {
-        const { conversationId, modelName, replacing } = event.payload;
-        chatState.scope(conversationId).setActivity((current) => ({ ...current,
-          detail: `Loading ${modelName}…${replacing ? ` (switching from ${replacing})` : ""} This can take a few minutes.`,
-        }));
-      }),
+      listen<{ conversationId: string; modelName: string; replacing: string | null }>(
+        "runtime:model-loading",
+        (event) => {
+          const { conversationId, modelName, replacing } = event.payload;
+          chatState.scope(conversationId).setActivity((current) => ({
+            ...current,
+            detail: `Loading ${modelName}…${replacing ? ` (switching from ${replacing})` : ""} This can take a few minutes.`,
+          }));
+        },
+      ),
       listen<WebResearchProgressEvent>("web-research:progress", (event) => {
         chatState.scope(event.payload.conversationId).setWebProgress(event.payload);
       }),
       listen<StreamChunkEvent>("inference:chunk", (event) => chatState.streamChunk(event.payload)),
       listen<StreamDoneEvent>("inference:done", (event) => {
         chatState.finishStream(event.payload);
-        if (chatState.run(event.payload.conversationId).request === null) void refreshMessages(event.payload.conversationId);
+        if (chatState.run(event.payload.conversationId).request === null)
+          void refreshMessages(event.payload.conversationId);
       }),
       listen<Artifact>("artifact:started", (event) => {
-        chatState.scope(event.payload.conversationId).setArtifacts((items) => upsertArtifactInList(items, event.payload));
+        chatState
+          .scope(event.payload.conversationId)
+          .setArtifacts((items) => upsertArtifactInList(items, event.payload));
       }),
       listen<Artifact>("artifact:done", (event) => {
-        chatState.scope(event.payload.conversationId).setArtifacts((items) => upsertArtifactInList(items, event.payload));
+        chatState
+          .scope(event.payload.conversationId)
+          .setArtifacts((items) => upsertArtifactInList(items, event.payload));
         setImageProgressByArtifact((current) => {
           if (!(event.payload.id in current)) return current;
-          const next = { ...current }; delete next[event.payload.id]; return next;
+          const next = { ...current };
+          delete next[event.payload.id];
+          return next;
         });
       }),
       listen<ImageRenderProgress>("image:progress", (event) => {
-        setImageProgressByArtifact((current) => ({ ...current, [event.payload.artifactId]: event.payload }));
+        setImageProgressByArtifact((current) => ({
+          ...current,
+          [event.payload.artifactId]: event.payload,
+        }));
       }),
     ];
-    return () => { void Promise.all(unlisteners).then((items) => items.forEach((unlisten) => unlisten())); };
+    return () => {
+      void Promise.all(unlisteners).then((items) => items.forEach((unlisten) => unlisten()));
+    };
   }, [chatState, refreshMessages]);
 
   const newConversation = useCallback(() => {
@@ -605,7 +764,8 @@ export function App() {
     const messageContent = buildMessageContent(content, attachments, inferredMode);
     const inferenceMedia = attachmentMedia(attachments);
     let conversationId = activeId;
-    let conversationForTitle = conversations.find((conversation) => conversation.id === conversationId) ?? null;
+    let conversationForTitle =
+      conversations.find((conversation) => conversation.id === conversationId) ?? null;
     let optimisticUser: Message | null = null;
     let editForkCreated = false;
     const lease = chatState.beginRequest(conversationId);
@@ -627,7 +787,9 @@ export function App() {
         if (chatState.isCurrent(requestView)) {
           setActiveId(conversationId);
           requestView = chatState.captureView();
-          setWorkThreadId((current) => current === sourceConversationId ? fork.conversation.id : current);
+          setWorkThreadId((current) =>
+            current === sourceConversationId ? fork.conversation.id : current,
+          );
           requestScope.setMessages(fork.messages);
           requestScope.setArtifacts([]);
         }
@@ -646,7 +808,11 @@ export function App() {
           if (chatState.isCurrent(requestView)) setModelSwitching(true);
           try {
             await api.activateModel(conversationId, pendingModelId);
-            setConversations((items) => items.map((item) => item.id === conversationId ? { ...item, activeModelId: pendingModelId } : item));
+            setConversations((items) =>
+              items.map((item) =>
+                item.id === conversationId ? { ...item, activeModelId: pendingModelId } : item,
+              ),
+            );
           } catch (caught) {
             if (chatState.isCurrent(requestView)) setModelSwitchError(formatError(caught));
           } finally {
@@ -656,38 +822,70 @@ export function App() {
         }
       }
       if (chatState.isCurrent(requestView) && draftRevision.current === originalDraftRevision) {
-        setPrompt(""); setAttachments([]); setEditingMessageId(null);
+        setPrompt("");
+        setAttachments([]);
+        setEditingMessageId(null);
         clearedDraftRevision = draftRevision.current;
       }
       optimisticUser = {
-        id: `local-${crypto.randomUUID()}`, conversationId, role: "user", content: messageContent,
-        status: "completed", modelId: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        id: `local-${crypto.randomUUID()}`,
+        conversationId,
+        role: "user",
+        content: messageContent,
+        status: "completed",
+        modelId: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       };
       requestScope.setMessages((items) => [...items, optimisticUser as Message]);
       if (preferences?.autoGenerateTitles ?? true) {
-        const generatedTitle = titleFromPrompt(content || attachments[0]?.name || "New conversation");
-        if (conversationForTitle && isUntitledConversation(conversationForTitle.title) && generatedTitle) {
+        const generatedTitle = titleFromPrompt(
+          content || attachments[0]?.name || "New conversation",
+        );
+        if (
+          conversationForTitle &&
+          isUntitledConversation(conversationForTitle.title) &&
+          generatedTitle
+        ) {
           await api.renameConversation(conversationId, generatedTitle);
-          setConversations((items) => items.map((conversation) => conversation.id === conversationId ? { ...conversation, title: generatedTitle } : conversation));
+          setConversations((items) =>
+            items.map((conversation) =>
+              conversation.id === conversationId
+                ? { ...conversation, title: generatedTitle }
+                : conversation,
+            ),
+          );
         }
       }
-      const cloudChatCapable = inferenceMedia.length === 0 &&
-        ["chat", "thinking", "search", "research"].includes(inferredMode) && Boolean(cloudModel);
-      if (executionMode === "cloud" && !["chat", "thinking", "search", "research"].includes(inferredMode)) {
-        throw new Error("Cloud Only does not yet support this media operation. Select Both or Local to use installed device tools.");
+      const cloudChatCapable =
+        inferenceMedia.length === 0 &&
+        ["chat", "thinking", "search", "research"].includes(inferredMode) &&
+        Boolean(cloudModel);
+      if (
+        executionMode === "cloud" &&
+        !["chat", "thinking", "search", "research"].includes(inferredMode)
+      ) {
+        throw new Error(
+          "Cloud Only does not yet support this media operation. Select Both or Local to use installed device tools.",
+        );
       }
       if (executionMode === "cloud" && inferenceMedia.length > 0) {
-        throw new Error("Cloud Only does not yet support these attachments. Switch to Both or Local before sending.");
+        throw new Error(
+          "Cloud Only does not yet support these attachments. Switch to Both or Local before sending.",
+        );
       }
       const route = selectExecutionRoute({
-        preference: executionMode === "cloud" ? "cloud" : cloudChatCapable ? executionMode : "local",
-        task: inferredMode === "search" ? "search" : inferredMode === "research" ? "research" : "chat",
+        preference:
+          executionMode === "cloud" ? "cloud" : cloudChatCapable ? executionMode : "local",
+        task:
+          inferredMode === "search" ? "search" : inferredMode === "research" ? "research" : "chat",
         online: internetAvailable,
         cloudConnected: Boolean(cloudConnection?.connected),
         cloudModelReady: Boolean(cloudModel),
         forceLocal: requestsLocalOnly(content),
       });
-      const localOffline = (!internetAvailable || requestsLocalOnly(content)) &&
+      const localOffline =
+        (!internetAvailable || requestsLocalOnly(content)) &&
         ["search", "research"].includes(inferredMode);
       const localContent = localOffline
         ? offlineSourceNotice(buildMessageContent(content, attachments, "chat"))
@@ -698,34 +896,62 @@ export function App() {
       const response = await runWithFallback(
         route,
         () => hostedChat(requestConversationId, messageContent, cloudModel, inferredMode),
-        () => inferredMode === "image"
-          ? persistDirectImageRequest(requestConversationId, localContent, api)
-          : api.sendChatMessage(requestConversationId, localContent, localMode, inferenceMedia),
+        () =>
+          inferredMode === "image"
+            ? persistDirectImageRequest(requestConversationId, localContent, api)
+            : api.sendChatMessage(requestConversationId, localContent, localMode, inferenceMedia),
         (reason) => {
           setRouteNotice(reason);
-          setCloudConnection((current) => current ? { ...current, connected: false } : current);
+          setCloudConnection((current) => (current ? { ...current, connected: false } : current));
         },
       );
       const assistant = response.result;
-      if (route.offline) setRouteNotice("Offline: processed locally. Live web sources cannot be verified.");
+      if (route.offline)
+        setRouteNotice("Offline: processed locally. Live web sources cannot be verified.");
       else if (!response.fallback && route.target === "local" && executionMode !== "local")
-        setRouteNotice(cloudChatCapable ? route.reason
-          : "This media operation uses the local processor; an equivalent Cloud API is not available.");
-      requestScope.setMessages((items) => items.filter((message) => message.id !== optimisticUser?.id));
+        setRouteNotice(
+          cloudChatCapable
+            ? route.reason
+            : "This media operation uses the local processor; an equivalent Cloud API is not available.",
+        );
+      requestScope.setMessages((items) =>
+        items.filter((message) => message.id !== optimisticUser?.id),
+      );
       const generationKind = generationKindForMode(inferredMode);
       if (generationKind) {
-        const generationPrompt = generationKind === "image" ? plainImageRequest(messageContent) : assistant.content.trim() || content;
-        const artifact = await api.createGenerationArtifact(conversationId, assistant.id, generationKind, generationPrompt, false, generationKind === "image" ? imageOptions : undefined);
+        const generationPrompt =
+          generationKind === "image"
+            ? plainImageRequest(messageContent)
+            : assistant.content.trim() || content;
+        const artifact = await api.createGenerationArtifact(
+          conversationId,
+          assistant.id,
+          generationKind,
+          generationPrompt,
+          false,
+          generationKind === "image" ? imageOptions : undefined,
+        );
         requestScope.setArtifacts((items) => upsertArtifactInList(items, artifact));
-        if (preferences?.openArtifactsAfterGeneration && artifact.status === "ready") void api.openArtifact(artifact.id).catch(showError);
+        if (preferences?.openArtifactsAfterGeneration && artifact.status === "ready")
+          void api.openArtifact(artifact.id).catch(showError);
       }
       await refreshMessages(conversationId);
       setConversations(await api.conversations());
     } catch (caught) {
-      if (optimisticUser) requestScope.setMessages((items) => items.filter((message) => message.id !== optimisticUser?.id)
-        .map((message) => message.status === "streaming" ? { ...message, status: "failed" } : message));
-      if (chatState.isCurrent(requestView) && draftRevision.current === (clearedDraftRevision ?? originalDraftRevision)) {
-        setPrompt(draftPrompt); setAttachments(draftAttachments);
+      if (optimisticUser)
+        requestScope.setMessages((items) =>
+          items
+            .filter((message) => message.id !== optimisticUser?.id)
+            .map((message) =>
+              message.status === "streaming" ? { ...message, status: "failed" } : message,
+            ),
+        );
+      if (
+        chatState.isCurrent(requestView) &&
+        draftRevision.current === (clearedDraftRevision ?? originalDraftRevision)
+      ) {
+        setPrompt(draftPrompt);
+        setAttachments(draftAttachments);
         setEditingMessageId(editForkCreated ? null : editTargetId);
       }
       requestScope.setError(formatError(caught));
@@ -733,80 +959,155 @@ export function App() {
     } finally {
       chatState.finishRequest(lease);
     }
-  }, [activeId, attachments, chatState, conversations, editingMessageId, imageOptions, pendingModelId,
-    executionMode, cloudModel, internetAvailable, cloudConnection?.connected, preferences?.autoGenerateTitles, preferences?.openArtifactsAfterGeneration, prompt, refreshMessages, setActiveId, setAttachments, setPrompt, showError]);
+  }, [
+    activeId,
+    attachments,
+    chatState,
+    conversations,
+    editingMessageId,
+    imageOptions,
+    pendingModelId,
+    executionMode,
+    cloudModel,
+    internetAvailable,
+    cloudConnection?.connected,
+    preferences?.autoGenerateTitles,
+    preferences?.openArtifactsAfterGeneration,
+    prompt,
+    refreshMessages,
+    setActiveId,
+    setAttachments,
+    setPrompt,
+    showError,
+  ]);
 
-  const sendWorkTask = useCallback(async (conversationId: string, content: string) => {
-    const task = content.trim();
-    if (!task) return;
-    const lease = chatState.beginRequest(conversationId);
-    if (!lease) return;
-    const requestScope = chatState.scope(conversationId);
-    const inferredMode = inferChatMode(task, []);
-    const messageContent = buildMessageContent(task, [], inferredMode);
-    setPrompt(""); setAttachments([]); setEditingMessageId(null);
-    setActiveId(conversationId); setWorkThreadId(conversationId);
-    try {
-      const generatedTitle = titleFromPrompt(task);
-      if (generatedTitle) {
-        await api.renameConversation(conversationId, generatedTitle);
-        setConversations((items) => items.map((conversation) => conversation.id === conversationId ? { ...conversation, title: generatedTitle } : conversation));
+  const sendWorkTask = useCallback(
+    async (conversationId: string, content: string) => {
+      const task = content.trim();
+      if (!task) return;
+      const lease = chatState.beginRequest(conversationId);
+      if (!lease) return;
+      const requestScope = chatState.scope(conversationId);
+      const inferredMode = inferChatMode(task, []);
+      const messageContent = buildMessageContent(task, [], inferredMode);
+      setPrompt("");
+      setAttachments([]);
+      setEditingMessageId(null);
+      setActiveId(conversationId);
+      setWorkThreadId(conversationId);
+      try {
+        const generatedTitle = titleFromPrompt(task);
+        if (generatedTitle) {
+          await api.renameConversation(conversationId, generatedTitle);
+          setConversations((items) =>
+            items.map((conversation) =>
+              conversation.id === conversationId
+                ? { ...conversation, title: generatedTitle }
+                : conversation,
+            ),
+          );
+        }
+        const availableForCloud =
+          ["chat", "thinking", "search", "research"].includes(inferredMode) && Boolean(cloudModel);
+        if (
+          executionMode === "cloud" &&
+          !["chat", "thinking", "search", "research"].includes(inferredMode)
+        ) {
+          throw new Error(
+            "Cloud Only does not support this Work task type. Choose Both or Local to use the device processor.",
+          );
+        }
+        const route = selectExecutionRoute({
+          preference:
+            executionMode === "cloud" ? "cloud" : availableForCloud ? executionMode : "local",
+          task:
+            inferredMode === "search"
+              ? "search"
+              : inferredMode === "research"
+                ? "research"
+                : "chat",
+          online: internetAvailable,
+          cloudConnected: Boolean(cloudConnection?.connected),
+          cloudModelReady: Boolean(cloudModel),
+          forceLocal: requestsLocalOnly(task),
+        });
+        await runWithFallback(
+          route,
+          () => hostedChat(conversationId, messageContent, cloudModel, inferredMode),
+          () =>
+            api.sendChatMessage(
+              conversationId,
+              (!internetAvailable || requestsLocalOnly(task)) &&
+                ["search", "research"].includes(inferredMode)
+                ? offlineSourceNotice(buildMessageContent(task, [], "chat"))
+                : messageContent,
+              (!internetAvailable || requestsLocalOnly(task)) &&
+                ["search", "research"].includes(inferredMode)
+                ? "chat"
+                : inferredMode,
+              [],
+            ),
+          (reason) => {
+            setRouteNotice(reason);
+            setCloudConnection((current) => (current ? { ...current, connected: false } : current));
+          },
+        );
+        await refreshMessages(conversationId);
+        setConversations(await api.conversations());
+      } catch (caught) {
+        requestScope.setError(formatError(caught));
+        await refreshMessages(conversationId);
+      } finally {
+        chatState.finishRequest(lease);
       }
-      const availableForCloud = ["chat", "thinking", "search", "research"].includes(inferredMode) && Boolean(cloudModel);
-      if (executionMode === "cloud" && !["chat", "thinking", "search", "research"].includes(inferredMode)) {
-        throw new Error("Cloud Only does not support this Work task type. Choose Both or Local to use the device processor.");
-      }
-      const route = selectExecutionRoute({
-        preference: executionMode === "cloud" ? "cloud" : availableForCloud ? executionMode : "local",
-        task: inferredMode === "search" ? "search" : inferredMode === "research" ? "research" : "chat",
-        online: internetAvailable,
-        cloudConnected: Boolean(cloudConnection?.connected),
-        cloudModelReady: Boolean(cloudModel),
-        forceLocal: requestsLocalOnly(task),
-      });
-      await runWithFallback(
-        route,
-        () => hostedChat(conversationId, messageContent, cloudModel, inferredMode),
-        () => api.sendChatMessage(conversationId,
-          (!internetAvailable || requestsLocalOnly(task)) && ["search", "research"].includes(inferredMode)
-            ? offlineSourceNotice(buildMessageContent(task, [], "chat")) : messageContent,
-          (!internetAvailable || requestsLocalOnly(task)) && ["search", "research"].includes(inferredMode)
-            ? "chat" : inferredMode, []),
-        (reason) => {
-          setRouteNotice(reason);
-          setCloudConnection((current) => current ? { ...current, connected: false } : current);
-        },
-      );
-      await refreshMessages(conversationId);
-      setConversations(await api.conversations());
-    } catch (caught) {
-      requestScope.setError(formatError(caught));
-      await refreshMessages(conversationId);
-    } finally { chatState.finishRequest(lease); }
-  }, [chatState, refreshMessages, setActiveId, setAttachments, setPrompt, executionMode, cloudModel, internetAvailable, cloudConnection?.connected]);
+    },
+    [
+      chatState,
+      refreshMessages,
+      setActiveId,
+      setAttachments,
+      setPrompt,
+      executionMode,
+      cloudModel,
+      internetAvailable,
+      cloudConnection?.connected,
+    ],
+  );
 
-  const cancelConversationGeneration = useCallback(async (conversationId: string) => {
-    try { await chatState.cancelGeneration(conversationId, api.cancelGeneration); }
-    catch (caught) { chatState.scope(conversationId).setError(formatError(caught)); }
-  }, [chatState]);
+  const cancelConversationGeneration = useCallback(
+    async (conversationId: string) => {
+      try {
+        await chatState.cancelGeneration(conversationId, api.cancelGeneration);
+      } catch (caught) {
+        chatState.scope(conversationId).setError(formatError(caught));
+      }
+    },
+    [chatState],
+  );
   const stopGeneration = useCallback(async () => {
     const owner = chatState.getSnapshot().activeId;
-    try { await chatState.cancelActiveGeneration(api.cancelGeneration); }
-    catch (caught) { chatState.scope(owner).setError(formatError(caught)); }
+    try {
+      await chatState.cancelActiveGeneration(api.cancelGeneration);
+    } catch (caught) {
+      chatState.scope(owner).setError(formatError(caught));
+    }
   }, [chatState]);
 
-  const editUserMessage = useCallback((messageId: string, content: string) => {
-    setEditingMessageId(messageId);
-    setPrompt(content);
-    setAttachments([]);
-    setView((current) => (current === "work" ? "work" : "chat"));
-    window.setTimeout(() => {
-      const node = composerRef.current;
-      if (!node) return;
-      node.focus();
-      node.setSelectionRange(node.value.length, node.value.length);
-    }, 0);
-  }, [setAttachments, setPrompt]);
+  const editUserMessage = useCallback(
+    (messageId: string, content: string) => {
+      setEditingMessageId(messageId);
+      setPrompt(content);
+      setAttachments([]);
+      setView((current) => (current === "work" ? "work" : "chat"));
+      window.setTimeout(() => {
+        const node = composerRef.current;
+        if (!node) return;
+        node.focus();
+        node.setSelectionRange(node.value.length, node.value.length);
+      }, 0);
+    },
+    [setAttachments, setPrompt],
+  );
 
   // Studio submissions are actually sent to the local engine, not left as
   // drafts that require a second click. The existing composer failure recovery
@@ -821,66 +1122,106 @@ export function App() {
     setStudioSubmission(null);
     void sendMessage();
   }, [studioSubmission, view, prompt, sendMessage, chatState]);
-  const submitStudioLocally = useCallback((content: string) => {
-    setAttachments([]);
-    setEditingMessageId(null);
-    setPrompt(content);
-    setView("chat");
-    setStudioSubmission(content);
-  }, [setAttachments, setPrompt]);
-  const startToolPrompt = useCallback((content: string) => {
-    setEditingMessageId(null);
-    setPrompt(content);
-    setView("chat");
-    window.setTimeout(() => {
-      const node = composerRef.current;
-      if (!node) return;
-      node.focus();
-      node.setSelectionRange(node.value.length, node.value.length);
-    }, 0);
-  }, [setPrompt]);
+  const submitStudioLocally = useCallback(
+    (content: string) => {
+      setAttachments([]);
+      setEditingMessageId(null);
+      setPrompt(content);
+      setView("chat");
+      setStudioSubmission(content);
+    },
+    [setAttachments, setPrompt],
+  );
+  const startToolPrompt = useCallback(
+    (content: string) => {
+      setEditingMessageId(null);
+      setPrompt(content);
+      setView("chat");
+      window.setTimeout(() => {
+        const node = composerRef.current;
+        if (!node) return;
+        node.focus();
+        node.setSelectionRange(node.value.length, node.value.length);
+      }, 0);
+    },
+    [setPrompt],
+  );
 
-  const regenerate = useCallback(async (assistantMessageId: string) => {
-    if (!activeId) return;
-    const targetIndex = messages.findIndex((message) => message.id === assistantMessageId);
-    const user = targetIndex > 0 ? messages.slice(0, targetIndex).reverse().find((message) => message.role === "user") : null;
-    const mode = user ? persistedChatMode(user.content) : "chat";
-    const lease = chatState.beginRequest(activeId);
-    if (!lease) return;
-    const requestScope = chatState.scope(activeId);
-    try {
-      const cloudCapable = ["chat", "thinking", "search", "research"].includes(mode) && Boolean(cloudModel);
-      if (executionMode === "cloud" && !["chat", "thinking", "search", "research"].includes(mode)) {
-        throw new Error("Cloud Only cannot regenerate this local-only media type. Choose Both or Local.");
+  const regenerate = useCallback(
+    async (assistantMessageId: string) => {
+      if (!activeId) return;
+      const targetIndex = messages.findIndex((message) => message.id === assistantMessageId);
+      const user =
+        targetIndex > 0
+          ? messages
+              .slice(0, targetIndex)
+              .reverse()
+              .find((message) => message.role === "user")
+          : null;
+      const mode = user ? persistedChatMode(user.content) : "chat";
+      const lease = chatState.beginRequest(activeId);
+      if (!lease) return;
+      const requestScope = chatState.scope(activeId);
+      try {
+        const cloudCapable =
+          ["chat", "thinking", "search", "research"].includes(mode) && Boolean(cloudModel);
+        if (
+          executionMode === "cloud" &&
+          !["chat", "thinking", "search", "research"].includes(mode)
+        ) {
+          throw new Error(
+            "Cloud Only cannot regenerate this local-only media type. Choose Both or Local.",
+          );
+        }
+        const route = selectExecutionRoute({
+          preference: executionMode === "cloud" ? "cloud" : cloudCapable ? executionMode : "local",
+          task: mode === "search" ? "search" : mode === "research" ? "research" : "chat",
+          online: internetAvailable,
+          cloudConnected: Boolean(cloudConnection?.connected),
+          cloudModelReady: Boolean(cloudModel),
+          forceLocal: user ? requestsLocalOnly(user.content) : false,
+        });
+        await runWithFallback(
+          route,
+          async () => {
+            if (!user) throw new Error("The original user message is unavailable.");
+            return hostedChat(activeId, user.content, cloudModel, mode, assistantMessageId);
+          },
+          () =>
+            api.regenerateMessage(
+              activeId,
+              assistantMessageId,
+              (!internetAvailable || (user && requestsLocalOnly(user.content))) &&
+                ["search", "research"].includes(mode)
+                ? "chat"
+                : mode,
+            ),
+          (reason) => {
+            setRouteNotice(reason);
+            setCloudConnection((current) => (current ? { ...current, connected: false } : current));
+          },
+        );
+        await refreshMessages(activeId);
+        await refreshApp();
+      } catch (caught) {
+        requestScope.setError(formatError(caught));
+        await refreshMessages(activeId);
+      } finally {
+        chatState.finishRequest(lease);
       }
-      const route = selectExecutionRoute({
-        preference: executionMode === "cloud" ? "cloud" : cloudCapable ? executionMode : "local",
-        task: mode === "search" ? "search" : mode === "research" ? "research" : "chat",
-        online: internetAvailable,
-        cloudConnected: Boolean(cloudConnection?.connected),
-        cloudModelReady: Boolean(cloudModel),
-        forceLocal: user ? requestsLocalOnly(user.content) : false,
-      });
-      await runWithFallback(route,
-        async () => {
-          if (!user) throw new Error("The original user message is unavailable.");
-          return hostedChat(activeId, user.content, cloudModel, mode, assistantMessageId);
-        },
-        () => api.regenerateMessage(activeId, assistantMessageId,
-          (!internetAvailable || (user && requestsLocalOnly(user.content))) &&
-            ["search", "research"].includes(mode) ? "chat" : mode),
-        (reason) => {
-          setRouteNotice(reason);
-          setCloudConnection((current) => current ? { ...current, connected: false } : current);
-        },
-      );
-      await refreshMessages(activeId);
-      await refreshApp();
-    } catch (caught) {
-      requestScope.setError(formatError(caught));
-      await refreshMessages(activeId);
-    } finally { chatState.finishRequest(lease); }
-  }, [activeId, chatState, messages, refreshApp, refreshMessages, executionMode, cloudModel, internetAvailable, cloudConnection?.connected]);
+    },
+    [
+      activeId,
+      chatState,
+      messages,
+      refreshApp,
+      refreshMessages,
+      executionMode,
+      cloudModel,
+      internetAvailable,
+      cloudConnection?.connected,
+    ],
+  );
 
   const selectModel = useCallback(
     async (modelId: string) => {
@@ -952,7 +1293,8 @@ export function App() {
     const selection = Array.from(files);
     const view = chatState.captureView();
     const clearVersion = attachmentClearVersion.current;
-    const isCurrent = () => chatState.isCurrent(view) && attachmentClearVersion.current === clearVersion;
+    const isCurrent = () =>
+      chatState.isCurrent(view) && attachmentClearVersion.current === clearVersion;
     const ingest = async () => {
       const failures = new Set<string>();
       let added = false;
@@ -965,10 +1307,12 @@ export function App() {
         }
         const kind = attachmentKind(file);
         if (kind === "binary") {
-          failures.add("This file type cannot be read by local chat. Attach text/code, PDF, image, audio, or video files.");
+          failures.add(
+            "This file type cannot be read by local chat. Attach text/code, PDF, image, audio, or video files.",
+          );
           continue;
         }
-        if (kind === "image" && items.filter(item => item.kind === "image").length >= 4) {
+        if (kind === "image" && items.filter((item) => item.kind === "image").length >= 4) {
           failures.add("Local vision supports at most 4 images in one request.");
           continue;
         }
@@ -978,23 +1322,31 @@ export function App() {
           setPdfImportProgress({ fileName: file.name, phase: "reading", completed: 0, total: 1 });
         }
         try {
-          const attachment = await readAttachment(file, controller ? {
-            signal: controller.signal,
-            onPdfProgress: (progress) => {
-              if (isCurrent() && !controller.signal.aborted) {
-                setPdfImportProgress({ fileName: file.name, ...progress });
-              }
-            },
-          } : undefined);
+          const attachment = await readAttachment(
+            file,
+            controller
+              ? {
+                  signal: controller.signal,
+                  onPdfProgress: (progress) => {
+                    if (isCurrent() && !controller.signal.aborted) {
+                      setPdfImportProgress({ fileName: file.name, ...progress });
+                    }
+                  },
+                }
+              : undefined,
+          );
           if (!isCurrent() || controller?.signal.aborted) return;
           // Re-check after decoding: files may have been removed/restored meanwhile.
           const current = attachmentItems.current;
           if (current.length >= 8) {
             failures.add("A chat can contain at most 8 attachments at once.");
-          } else if (attachment.kind === "image" && current.filter(item => item.kind === "image").length >= 4) {
+          } else if (
+            attachment.kind === "image" &&
+            current.filter((item) => item.kind === "image").length >= 4
+          ) {
             failures.add("Local vision supports at most 4 images in one request.");
           } else {
-            setAttachments(items => [...items, attachment]);
+            setAttachments((items) => [...items, attachment]);
             added = true;
           }
         } catch (error) {
@@ -1122,7 +1474,10 @@ export function App() {
     } catch (caught) {
       const message = formatError(caught);
       if (!message.toLowerCase().includes("cancel")) setRuntimeInstallError(message);
-      void api.runtimeInstallStatus().then(setRuntimeInstallStatus).catch(() => undefined);
+      void api
+        .runtimeInstallStatus()
+        .then(setRuntimeInstallStatus)
+        .catch(() => undefined);
     } finally {
       runtimeInstallInFlightRef.current = false;
       setRuntimeInstalling(false);
@@ -1140,7 +1495,9 @@ export function App() {
   async function startRuntime(action: RuntimeAction = "restart") {
     if (runtimeAction) return;
     setRuntimeAction(action);
-    setRuntimeStatus((current) => optimisticRuntimeStatus(current, action === "stop" ? "stopping" : "starting"));
+    setRuntimeStatus((current) =>
+      optimisticRuntimeStatus(current, action === "stop" ? "stopping" : "starting"),
+    );
     try {
       setRuntimeStatus(await api.startRuntime());
       setRuntime(await api.runtimeInventory());
@@ -1258,14 +1615,25 @@ export function App() {
       }
       void createArtifact(artifact.messageId, artifact.kind, source.content, artifact.name);
     },
-    [activeId, createArtifact, imageOptions, messages, preferences?.openArtifactsAfterGeneration, setArtifacts, showError],
+    [
+      activeId,
+      createArtifact,
+      imageOptions,
+      messages,
+      preferences?.openArtifactsAfterGeneration,
+      setArtifacts,
+      showError,
+    ],
   );
 
   const cancelImageArtifact = useCallback(
     (artifact: Artifact) => {
-      void api.cancelImageGeneration(artifact.id).then((cancelled) => {
-        if (!cancelled) showError("Image generation has already finished.");
-      }).catch(showError);
+      void api
+        .cancelImageGeneration(artifact.id)
+        .then((cancelled) => {
+          if (!cancelled) showError("Image generation has already finished.");
+        })
+        .catch(showError);
     },
     [showError],
   );
@@ -1311,7 +1679,11 @@ export function App() {
         root={root}
         pending={installationStatus?.pending}
         refresh={refreshApp}
-        onDismiss={() => { completeSetupPreparation(); setWizardActive(false); void refreshApp(); }}
+        onDismiss={() => {
+          completeSetupPreparation();
+          setWizardActive(false);
+          void refreshApp();
+        }}
       />
     );
   }
@@ -1403,12 +1775,12 @@ export function App() {
                       : view === "projects"
                         ? "Projects"
                         : view === "research-studio"
-                        ? "Research Studio"
-                        : view === "3d-studio"
-                          ? "3D Studio"
-                          : view === "web-search"
-                            ? "Web Search"
-                            : "Settings"}
+                          ? "Research Studio"
+                          : view === "3d-studio"
+                            ? "3D Studio"
+                            : view === "web-search"
+                              ? "Web Search"
+                              : "Settings"}
               </h1>
             )}
           </div>
@@ -1429,20 +1801,59 @@ export function App() {
               }}
             />
             <div className="execution-mode-switch" role="group" aria-label="AI execution mode">
-              <button type="button" className={executionMode === "auto" ? "active" : ""} aria-pressed={executionMode === "auto"} onClick={() => changeExecutionMode("auto")} title="Automatically route to Cloud when connected or Local when offline">Auto</button>
-              <button type="button" className={executionMode === "local" ? "active" : ""} aria-pressed={executionMode === "local"} onClick={() => changeExecutionMode("local")} title="Use this computer for local inference">
+              <button
+                type="button"
+                className={executionMode === "auto" ? "active" : ""}
+                aria-pressed={executionMode === "auto"}
+                onClick={() => changeExecutionMode("auto")}
+                title="Automatically route to Cloud when connected or Local when offline"
+              >
+                Auto
+              </button>
+              <button
+                type="button"
+                className={executionMode === "local" ? "active" : ""}
+                aria-pressed={executionMode === "local"}
+                onClick={() => changeExecutionMode("local")}
+                title="Use this computer for local inference"
+              >
                 Local
               </button>
-              <button type="button" className={executionMode === "cloud" ? "active" : ""} aria-pressed={executionMode === "cloud"} onClick={() => changeExecutionMode("cloud")} title={cloudConnection?.connected ? "Connected to OpenMindAI Cloud" : "Sign in from Research Studio to use Cloud"}>
-                <span className={internetAvailable && cloudConnection?.connected ? "studio-dot good" : "studio-dot"} /> Cloud
+              <button
+                type="button"
+                className={executionMode === "cloud" ? "active" : ""}
+                aria-pressed={executionMode === "cloud"}
+                onClick={() => changeExecutionMode("cloud")}
+                title={
+                  cloudConnection?.connected
+                    ? "Connected to OpenMindAI Cloud"
+                    : "Sign in from Research Studio to use Cloud"
+                }
+              >
+                <span
+                  className={
+                    internetAvailable && cloudConnection?.connected
+                      ? "studio-dot good"
+                      : "studio-dot"
+                  }
+                />{" "}
+                Cloud
               </button>
             </div>
             {view === "work" && !workThreadId && showCloudApiModels ? (
-              <select className="cloud-model-select" aria-label="Cloud API model" value={cloudModel} onChange={(event) => setCloudModel(event.target.value)}>
-                {cloudModels.map((model) => <option key={model.id} value={model.id}>{model.name || model.id}</option>)}
+              <select
+                className="cloud-model-select"
+                aria-label="Cloud API model"
+                value={cloudModel}
+                onChange={(event) => setCloudModel(event.target.value)}
+              >
+                {cloudModels.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.name || model.id}
+                  </option>
+                ))}
               </select>
             ) : null}
-            <span className="mode-connection-status" role="status">{internetAvailable ? "Online" : "Offline"}</span>
           </div>
           <div className="topbar-actions">
             {view === "chat" && activeConversation ? (
@@ -1480,14 +1891,20 @@ export function App() {
         {editingMessageId && (view === "chat" || view === "work") ? (
           <div className="chat-edit-notice" role="status">
             <span>
-              Editing opens a new chat with the earlier text history. Original messages,
-              attachments and generated files stay in the original chat. Reattach files needed for this edit.
+              Editing opens a new chat with the earlier text history. Original messages, attachments
+              and generated files stay in the original chat. Reattach files needed for this edit.
             </span>
-            <button type="button" disabled={submitting} onClick={() => {
-              setEditingMessageId(null);
-              setPrompt("");
-              setAttachments([]);
-            }}>Cancel edit</button>
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => {
+                setEditingMessageId(null);
+                setPrompt("");
+                setAttachments([]);
+              }}
+            >
+              Cancel edit
+            </button>
           </div>
         ) : null}
 
@@ -1496,21 +1913,48 @@ export function App() {
             onAcknowledge={async () => {
               setPreferences(await api.acknowledgeChatHistoryNotice());
             }}
-            onOpenPrivacy={() => { setSettingsSection("privacy"); setView("settings"); }}
+            onOpenPrivacy={() => {
+              setSettingsSection("privacy");
+              setView("settings");
+            }}
           />
         ) : null}
 
         {error || activeRun.error ? (
-          <button className="error-banner" onClick={() => { setError(null); chatScope.setError(null); }}>
+          <button
+            className="error-banner"
+            onClick={() => {
+              setError(null);
+              chatScope.setError(null);
+            }}
+          >
             {error ?? activeRun.error}
           </button>
         ) : null}
 
         {backgroundRuns.map((owner) => (
           <div className="background-generation-notice" key={owner ?? "new-chat"} role="status">
-            <span>Generation continues in {conversations.find((item) => item.id === owner)?.title ?? "another chat"}.</span>
-            {owner ? <button type="button" onClick={() => { setWorkThreadId(null); setView("chat"); setActiveId(owner); }}>Open chat</button> : null}
-            {owner && chatState.run(owner).streamingId ? <button type="button" onClick={() => void cancelConversationGeneration(owner)}>Stop this generation</button> : null}
+            <span>
+              Generation continues in{" "}
+              {conversations.find((item) => item.id === owner)?.title ?? "another chat"}.
+            </span>
+            {owner ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkThreadId(null);
+                  setView("chat");
+                  setActiveId(owner);
+                }}
+              >
+                Open chat
+              </button>
+            ) : null}
+            {owner && chatState.run(owner).streamingId ? (
+              <button type="button" onClick={() => void cancelConversationGeneration(owner)}>
+                Stop this generation
+              </button>
+            ) : null}
           </div>
         ))}
 
@@ -1523,15 +1967,27 @@ export function App() {
                   ? `Installing with OpenMindAI Download Manager · ${runtimeInstallStatus?.state ?? "resolving"} ${runtimeInstallStatus?.percentage != null ? `(${Math.round(runtimeInstallStatus.percentage)}%)` : ""}`
                   : "Your chats are accessible. Install llama.cpp to run the local model."}
               </span>
-              {runtimeInstallError ? <span className="runtime-recovery-error">{runtimeInstallError}</span> : null}
+              {runtimeInstallError ? (
+                <span className="runtime-recovery-error">{runtimeInstallError}</span>
+              ) : null}
             </div>
             <div className="runtime-recovery-actions">
               {runtimeInstalling ? (
-                <button type="button" onClick={() => void cancelRuntimeInstall()}>Cancel</button>
+                <button type="button" onClick={() => void cancelRuntimeInstall()}>
+                  Cancel
+                </button>
               ) : (
-                <button type="button" onClick={() => void installRuntime()}>Retry install</button>
+                <button type="button" onClick={() => void installRuntime()}>
+                  Retry install
+                </button>
               )}
-              <button type="button" onClick={() => { setSettingsSection("runtime"); setView("settings"); }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setSettingsSection("runtime");
+                  setView("settings");
+                }}
+              >
                 Runtime settings
               </button>
             </div>
@@ -1541,7 +1997,13 @@ export function App() {
         {routeNotice ? (
           <div className="routing-notice" role="status">
             <span>{routeNotice}</span>
-            <button type="button" onClick={() => setRouteNotice(null)} aria-label="Dismiss routing notice">Dismiss</button>
+            <button
+              type="button"
+              onClick={() => setRouteNotice(null)}
+              aria-label="Dismiss routing notice"
+            >
+              Dismiss
+            </button>
           </div>
         ) : null}
         {view === "chat" ? (
@@ -1581,7 +2043,10 @@ export function App() {
             onSelectModel={selectModel}
             showCloudModels={showCloudApiModels}
             cloudUnavailable={executionMode === "cloud" && !showCloudApiModels}
-            onConnectCloud={() => setView("research-studio")}
+            onConnectCloud={() => {
+              setSettingsSection("cloud");
+              setView("settings");
+            }}
             cloudModels={showCloudApiModels ? cloudModels : []}
             activeCloudModelId={showCloudApiModels ? cloudModel : ""}
             onSelectCloudModel={setCloudModel}
@@ -1594,14 +2059,26 @@ export function App() {
             imageProgressByArtifact={imageProgressByArtifact}
             onPreview={setPreviewTarget}
           />
-        ) : view === "research-studio" || view === "3d-studio" || view === "web-search" ? (
+        ) : view === "3d-studio" ? (
+          <Studio3D
+            mode={executionMode}
+            internetAvailable={internetAvailable}
+            connection={cloudConnection}
+          />
+        ) : view === "research-studio" ? (
+          <ResearchStudio />
+        ) : view === "web-search" ? (
           <StudioHub
             section={view}
             mode={executionMode}
             internetAvailable={internetAvailable}
             connection={cloudConnection}
             onConnected={connectedCloud}
-            onDisconnect={() => { setCloudConnection({ connected: false, user: null, message: null }); setCloudModels([]); setCloudModel(""); }}
+            onDisconnect={() => {
+              setCloudConnection({ connected: false, user: null, message: null });
+              setCloudModels([]);
+              setCloudModel("");
+            }}
             onLocalPrompt={submitStudioLocally}
           />
         ) : view === "tools" ? (
@@ -1659,7 +2136,10 @@ export function App() {
               onSelectModel={selectModel}
               showCloudModels={showCloudApiModels}
               cloudUnavailable={executionMode === "cloud" && !showCloudApiModels}
-              onConnectCloud={() => setView("research-studio")}
+              onConnectCloud={() => {
+                setSettingsSection("cloud");
+                setView("settings");
+              }}
               cloudModels={showCloudApiModels ? cloudModels : []}
               activeCloudModelId={showCloudApiModels ? cloudModel : ""}
               onSelectCloudModel={setCloudModel}
@@ -1827,11 +2307,7 @@ export function App() {
             <h2>Datasets</h2>
             <DatasetsManager />
             <div className="modal-actions">
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={() => setDatasetsOpen(false)}
-              >
+              <button type="button" className="ghost-button" onClick={() => setDatasetsOpen(false)}>
                 Close
               </button>
             </div>
@@ -1850,8 +2326,6 @@ export function App() {
     </main>
   );
 }
-
-
 
 function upsertArtifactInList(items: Artifact[], next: Artifact) {
   const index = items.findIndex((item) => item.id === next.id);

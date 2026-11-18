@@ -137,6 +137,40 @@ pub struct InstallConfig {
     pub setup_state: Option<SetupState>,
 }
 
+impl InstallConfig {
+    /// Whether this install finished provisioning far enough to run without the
+    /// setup wizard. `installation_complete` alone is *not* enough: it is
+    /// committed the moment the root directory is created (see `complete_setup`),
+    /// long before the runtime and model are downloaded. A setup interrupted
+    /// after that point — or whose runtime/model download never finished — leaves
+    /// `installation_complete: true` with a non-`Completed` `setup_state`, and
+    /// trusting the flag alone drops the user into an app that can only answer
+    /// "server failed" on every chat. `setup_state` is the authoritative,
+    /// resumable progress marker, so it decides completion here.
+    ///
+    /// Legacy installs written before `setup_state` existed have `None`; those
+    /// predate the resumable-setup feature and were only ever written on a fully
+    /// finished install, so they count as provisioned to avoid forcing existing
+    /// users back through the wizard.
+    pub fn is_fully_provisioned(&self) -> bool {
+        self.installation_complete
+            && matches!(self.setup_state, None | Some(SetupState::Completed))
+    }
+
+    /// Builds the resume descriptor for a setup that still needs finishing.
+    fn pending_setup(&self) -> PendingSetup {
+        PendingSetup {
+            root: self.root.clone(),
+            profile_name: self
+                .database
+                .strip_suffix(".db")
+                .unwrap_or(&self.database)
+                .to_string(),
+            state: self.setup_state.unwrap_or(SetupState::StorageChosen),
+        }
+    }
+}
+
 /// A partially-completed setup the wizard can resume from — surfaced to the
 /// frontend only while `setup_required` is still true.
 #[derive(Debug, Clone, Serialize)]
@@ -203,12 +237,32 @@ pub fn save_installation(config: &InstallConfig) -> Result<(), AppError> {
 /// signal falls back needing one.
 pub fn installation_status(manager: &PortableRootManager) -> Result<InstallationStatus, AppError> {
     Ok(match manager.mode {
-        RootMode::SavedInstallation => InstallationStatus {
-            setup_required: false,
-            reason: None,
-            root: Some(manager.root.display().to_string()),
-            pending: None,
-        },
+        RootMode::SavedInstallation => {
+            // The pointer is committed, but `complete_setup` writes
+            // `installation_complete: true` the instant the root directory
+            // exists — before the runtime and model are downloaded. A setup
+            // interrupted after that (or whose download never finished) leaves a
+            // half-provisioned install that can only answer "server failed" on
+            // chat. Re-surface the wizard to finish provisioning against the same
+            // (already-opened) root instead of trusting the flag alone.
+            let saved = load_installation()?;
+            match saved {
+                Some(config) if !config.is_fully_provisioned() => InstallationStatus {
+                    setup_required: true,
+                    reason: Some(
+                        "installation incomplete: runtime or model not provisioned".to_string(),
+                    ),
+                    root: Some(manager.root.display().to_string()),
+                    pending: Some(config.pending_setup()),
+                },
+                _ => InstallationStatus {
+                    setup_required: false,
+                    reason: None,
+                    root: Some(manager.root.display().to_string()),
+                    pending: None,
+                },
+            }
+        }
         RootMode::DevelopmentEnv | RootMode::PortableMarker => InstallationStatus {
             setup_required: false,
             reason: Some("development root detected".to_string()),
@@ -220,15 +274,7 @@ pub fn installation_status(manager: &PortableRootManager) -> Result<Installation
             let has_saved_config = saved.as_ref().is_some_and(|c| c.installation_complete);
             let pending = saved
                 .filter(|config| !config.installation_complete)
-                .map(|config| PendingSetup {
-                    root: config.root,
-                    profile_name: config
-                        .database
-                        .strip_suffix(".db")
-                        .unwrap_or(&config.database)
-                        .to_string(),
-                    state: config.setup_state.unwrap_or(SetupState::StorageChosen),
-                });
+                .map(|config| config.pending_setup());
             InstallationStatus {
                 setup_required: !has_saved_config,
                 reason: Some("no installation configured".to_string()),
@@ -577,6 +623,88 @@ pub(crate) mod tests {
         let manager = PortableRootManager::resolve().unwrap();
         assert_eq!(manager.mode(), &RootMode::SavedInstallation);
         assert_eq!(manager.root(), root_dir.as_path());
+    }
+
+    #[test]
+    fn saved_installation_resumes_when_setup_not_completed() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _restore = EnvRestore::capture();
+
+        let root_temp = tempfile::tempdir().unwrap();
+        let root_dir = root_temp.path().join("My AI Root");
+        let config_temp = tempfile::tempdir().unwrap();
+        let config_path = config_temp.path().join("install.json");
+        env::set_var("OPENMINDAI_INSTALL_CONFIG", &config_path);
+
+        // Mirrors the install.json reproduced after a fresh install whose model
+        // download never finished: the pointer is committed and the runtime is
+        // ready, but `setup_state` never reached `Completed`. Trusting
+        // `installation_complete` here would drop the user straight into chat,
+        // where every message fails with "server failed".
+        let config = InstallConfig {
+            product: "OpenMindAI".to_string(),
+            app_version: "4.0.0".to_string(),
+            root: root_dir.display().to_string(),
+            schema_version: CURRENT_SCHEMA_VERSION,
+            installation_complete: true,
+            database: "shagor-ai.db".to_string(),
+            runtime_ready: true,
+            model_ready: false,
+            setup_state: Some(SetupState::RuntimeReady),
+        };
+        fs::create_dir_all(root_dir.join("data/database")).unwrap();
+        fs::write(root_dir.join("data/database/shagor-ai.db"), b"fixture").unwrap();
+        save_installation(&config).unwrap();
+
+        let manager = PortableRootManager::resolve().unwrap();
+        assert_eq!(manager.mode(), &RootMode::SavedInstallation);
+
+        let status = installation_status(&manager).unwrap();
+        assert!(status.setup_required);
+        let pending = status.pending.expect("incomplete install should resume");
+        assert_eq!(pending.root, root_dir.display().to_string());
+        assert_eq!(pending.profile_name, "shagor-ai");
+        assert_eq!(pending.state, SetupState::RuntimeReady);
+        // The chosen root stays active so provisioning resumes in place,
+        // preserving any data already written there.
+        assert_eq!(status.root, Some(root_dir.display().to_string()));
+    }
+
+    #[test]
+    fn legacy_saved_installation_without_setup_state_stays_complete() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _restore = EnvRestore::capture();
+
+        let root_temp = tempfile::tempdir().unwrap();
+        let root_dir = root_temp.path().join("My AI Root");
+        let config_temp = tempfile::tempdir().unwrap();
+        let config_path = config_temp.path().join("install.json");
+        env::set_var("OPENMINDAI_INSTALL_CONFIG", &config_path);
+
+        // A real install written before `setup_state` existed: no recorded
+        // progress, yet genuinely finished. It must not be forced back through
+        // the wizard.
+        let config = InstallConfig {
+            product: "OpenMindAI".to_string(),
+            app_version: "1.0.0".to_string(),
+            root: root_dir.display().to_string(),
+            schema_version: CURRENT_SCHEMA_VERSION,
+            installation_complete: true,
+            database: "openmindai.db".to_string(),
+            runtime_ready: false,
+            model_ready: false,
+            setup_state: None,
+        };
+        fs::create_dir_all(root_dir.join("data/database")).unwrap();
+        fs::write(root_dir.join("data/database/openmindai.db"), b"fixture").unwrap();
+        save_installation(&config).unwrap();
+
+        let manager = PortableRootManager::resolve().unwrap();
+        assert_eq!(manager.mode(), &RootMode::SavedInstallation);
+
+        let status = installation_status(&manager).unwrap();
+        assert!(!status.setup_required);
+        assert!(status.pending.is_none());
     }
 
     #[test]

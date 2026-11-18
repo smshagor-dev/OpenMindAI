@@ -44,7 +44,7 @@ export function Composer(props: {
   removeAttachment: (id: string) => void;
   sendMessage: () => void;
   stopGeneration: () => void;
-  composerRef: RefObject<HTMLTextAreaElement>;
+  composerRef: RefObject<HTMLTextAreaElement | null>;
   models: ModelRecord[];
   activeModelId: string | null;
   runtime: RuntimeInventory | null;
@@ -122,7 +122,14 @@ export function Composer(props: {
       stopMicrophone();
       return;
     }
-    if (startingMicrophone.current || transcribing || props.streaming || props.submitting || props.backgroundBusy) return;
+    if (
+      startingMicrophone.current ||
+      transcribing ||
+      props.streaming ||
+      props.submitting ||
+      props.backgroundBusy
+    )
+      return;
     setMicError(null);
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       setMicError("Microphone recording is not available in this WebView.");
@@ -181,9 +188,12 @@ export function Composer(props: {
             }, 0);
           })
           .catch((error) => {
-            if (alive.current && target.isCurrent()) setMicError(error instanceof Error ? error.message : String(error));
+            if (alive.current && target.isCurrent())
+              setMicError(error instanceof Error ? error.message : String(error));
           })
-          .finally(() => { if (alive.current) setTranscribing(false); });
+          .finally(() => {
+            if (alive.current) setTranscribing(false);
+          });
       };
       recorder.start(500);
       setRecording(true);
@@ -232,7 +242,15 @@ export function Composer(props: {
       className="composer"
       onSubmit={(event) => {
         event.preventDefault();
-        if (!canSend || props.streaming || props.submitting || props.backgroundBusy || recording || transcribing) return;
+        if (
+          !canSend ||
+          props.streaming ||
+          props.submitting ||
+          props.backgroundBusy ||
+          recording ||
+          transcribing
+        )
+          return;
         void props.sendMessage();
       }}
     >
@@ -264,7 +282,7 @@ export function Composer(props: {
             {props.attachments.map((attachment) => {
               const audioPreview =
                 attachment.kind === "audio"
-                  ? audioPreviewUrlsRef.current.get(attachmentPreviewKey(attachment)) ?? null
+                  ? (audioPreviewUrlsRef.current.get(attachmentPreviewKey(attachment)) ?? null)
                   : null;
               return (
                 <span className="attachment-chip attachment-chip-media" key={attachment.id}>
@@ -421,9 +439,15 @@ export function Composer(props: {
             ref={textareaRef}
             value={props.prompt}
             onChange={(event) => props.setPrompt(event.target.value)}
-            onCompositionStart={() => { composingRef.current = true; }}
-            onCompositionEnd={() => { composingRef.current = false; }}
-            onBlur={() => { composingRef.current = false; }}
+            onCompositionStart={() => {
+              composingRef.current = true;
+            }}
+            onCompositionEnd={() => {
+              composingRef.current = false;
+            }}
+            onBlur={() => {
+              composingRef.current = false;
+            }}
             onKeyDown={(event) => {
               if (
                 props.enterToSend &&
@@ -454,11 +478,19 @@ export function Composer(props: {
           />
           <div className="composer-trailing">
             {props.cloudUnavailable ? (
-              <button type="button" className="ghost-button cloud-connect-button"
+              <button
+                type="button"
+                className="ghost-button cloud-connect-button"
                 title="Cloud-only mode needs a signed-in account with available API models"
-                onClick={props.onConnectCloud}>Connect Cloud</button>
+                onClick={props.onConnectCloud}
+              >
+                Connect Cloud
+              </button>
             ) : props.showCloudModels ? (
-              <label className="cloud-composer-model" title="Authenticated OpenMindAI Cloud API model">
+              <label
+                className="cloud-composer-model"
+                title="Authenticated OpenMindAI Cloud API model"
+              >
                 <span className="sr-only">Cloud API model</span>
                 <select
                   className="cloud-model-select"
@@ -468,7 +500,9 @@ export function Composer(props: {
                   onChange={(event) => props.onSelectCloudModel?.(event.currentTarget.value)}
                 >
                   {(props.cloudModels ?? []).map((model) => (
-                    <option key={model.id} value={model.id}>{model.name || model.id}</option>
+                    <option key={model.id} value={model.id}>
+                      {model.name || model.id}
+                    </option>
                   ))}
                 </select>
               </label>
@@ -508,9 +542,17 @@ export function Composer(props: {
             ) : (
               <button
                 type="submit"
-                title={props.backgroundBusy ? "Generation is running in another chat" : props.submitting ? "Preparing request" : "Send"}
+                title={
+                  props.backgroundBusy
+                    ? "Generation is running in another chat"
+                    : props.submitting
+                      ? "Preparing request"
+                      : "Send"
+                }
                 className="composer-send"
-                disabled={!canSend || props.submitting || props.backgroundBusy || recording || transcribing}
+                disabled={
+                  !canSend || props.submitting || props.backgroundBusy || recording || transcribing
+                }
               >
                 <Send size={18} />
               </button>
@@ -538,10 +580,7 @@ function isAudioPreviewFile(file: File) {
   );
 }
 
-function pruneAudioPreviews(
-  previews: Map<string, string>,
-  attachments: AttachmentDraft[],
-) {
+function pruneAudioPreviews(previews: Map<string, string>, attachments: AttachmentDraft[]) {
   const active = new Set(
     attachments
       .filter((attachment) => attachment.kind === "audio")
@@ -748,10 +787,14 @@ function GenerationTool(props: {
         <strong>
           {props.title}
           {!props.enabled ? (
-            <small className="tool-menu-badge tool-menu-badge-required">Model download required</small>
+            <small className="tool-menu-badge tool-menu-badge-required">
+              Model download required
+            </small>
           ) : null}
         </strong>
-        <small>{props.enabled ? props.description : "Download the model from Settings > Models"}</small>
+        <small>
+          {props.enabled ? props.description : "Download the model from Settings > Models"}
+        </small>
       </span>
     </button>
   );
