@@ -176,6 +176,19 @@ fn apply_stop_if_active(
     true
 }
 
+/// Cancel a pending metadata request without waiting for its HTTP timeout.
+/// This is deliberately before filesystem preparation or manifest publication.
+async fn cancel_while_resolving<T>(
+    token: &CancellationToken,
+    resolve: impl std::future::Future<Output = Result<T, AppError>>,
+) -> Result<T, AppError> {
+    tokio::select! {
+        biased;
+        _ = token.cancelled() => Err(AppError::InferenceCancelled("download stopped".to_string())),
+        result = resolve => result,
+    }
+}
+
 impl ModelDownloadManager {
     pub fn new(root: PortableRootManager) -> Self {
         let catalog_entry = crate::model_catalog::required_entry()
@@ -289,14 +302,15 @@ impl ModelDownloadManager {
         let entry = entry_by_id(model_id)?;
         tracing::info!(repo = %entry.repo, model_id = %entry.id, "installing AI model package");
         self.update_status(|status| *status = DownloadStatus::queued(&entry))?;
-        self.set_state(DownloadState::Resolving, None)?;
-
         let token = CancellationToken::new();
         *self
             .cancel_token
             .lock()
             .map_err(|_| AppError::internal("download cancel lock poisoned"))? =
             Some(token.clone());
+        // Publish the cancellation token before entering Resolving. Otherwise
+        // Cancel/Pause can observe an active state without a token to stop.
+        self.set_state(DownloadState::Resolving, None)?;
 
         let result = self.download_entry_inner(entry, token).await;
         *self
@@ -328,7 +342,9 @@ impl ModelDownloadManager {
         entry: ModelCatalogEntry,
         token: CancellationToken,
     ) -> Result<DownloadStatus, AppError> {
-        let metadata = self.resolve_model_metadata(&entry).await?;
+        // Metadata resolution is a network request too: Cancel/Pause must
+        // interrupt it before any destination or partial file is touched.
+        let metadata = cancel_while_resolving(&token, self.resolve_model_metadata(&entry)).await?;
         let download = entry.download.as_ref().ok_or_else(|| {
             AppError::ModelUnsupported(format!(
                 "{} has no downloadable file configured",
@@ -905,6 +921,29 @@ mod tests {
 
         drop(first);
         assert!(other_window.begin_download().is_ok());
+    }
+
+    #[tokio::test]
+    async fn cancelling_pending_metadata_resolution_does_not_wait_for_network() {
+        let token = CancellationToken::new();
+        token.cancel();
+        let result = cancel_while_resolving(&token, std::future::pending::<Result<(), AppError>>()).await;
+        assert!(matches!(result, Err(AppError::InferenceCancelled(_))));
+    }
+
+    #[tokio::test]
+    async fn cancellation_wins_when_metadata_is_already_ready() {
+        let token = CancellationToken::new();
+        token.cancel();
+        let result = cancel_while_resolving(&token, async { Ok::<_, AppError>(42) }).await;
+        assert!(matches!(result, Err(AppError::InferenceCancelled(_))));
+    }
+
+    #[tokio::test]
+    async fn successful_metadata_resolution_is_preserved() {
+        let token = CancellationToken::new();
+        let result = cancel_while_resolving(&token, async { Ok::<_, AppError>(42) }).await;
+        assert_eq!(result.unwrap(), 42);
     }
 
     #[test]
