@@ -139,7 +139,7 @@ export function App() {
   const copyrightYear = new Date().getFullYear();
   const [view, setView] = useState<View>("chat");
   const [executionMode, setExecutionMode] = useState<ExecutionMode>(
-    () => setupExecutionMode() ?? "auto",
+    () => setupExecutionMode() ?? "local",
   );
   const [internetAvailable, setInternetAvailable] = useState(() => window.navigator.onLine);
   const [routeNotice, setRouteNotice] = useState<string | null>(null);

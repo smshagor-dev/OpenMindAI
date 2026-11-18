@@ -215,7 +215,7 @@ export function ResearchStudio({
   // New-project form
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
-  const [outputLanguage, setOutputLanguage] = useState("auto");
+  const [outputLanguage, setOutputLanguage] = useState("English");
 
   // The projects list lives in the app's main left sidebar (portal target).
   const [sidebarSlot, setSidebarSlot] = useState<HTMLElement | null>(null);
@@ -510,7 +510,7 @@ export function ResearchStudio({
                 value={prompt}
                 maxLength={16000}
                 onChange={(event) => setPrompt(event.target.value)}
-                placeholder="বাংলায়, English বা অন্য ভাষায় আপনার গবেষণার বিষয়, লক্ষ্য এবং সীমাবদ্ধতা লিখুন…"
+                placeholder="Describe your research topic, goals, and constraints in English (or another language)…"
               />
             </label>
             <label>
