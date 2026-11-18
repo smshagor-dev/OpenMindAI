@@ -302,13 +302,15 @@ export function ChatView(props: {
           <div className="activity-row">
             <span className="pulse-dot" />
             <span>
-              {props.activity.researching
-                ? "Deep research running"
-                : props.activity.searching
-                  ? "Searching sources"
-                  : props.streaming
-                    ? "Assistant is typing"
-                    : <ThinkingStages />}
+              {props.activity.researching ? (
+                "Deep research running"
+              ) : props.activity.searching ? (
+                "Searching sources"
+              ) : props.streaming ? (
+                "Assistant is typing"
+              ) : (
+                <ThinkingStages />
+              )}
             </span>
             {props.activity.detail ? <small>{props.activity.detail}</small> : null}
           </div>
