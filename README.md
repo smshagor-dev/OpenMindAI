@@ -18,10 +18,10 @@
 
 <p align="center">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white">
-  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white">
-  <img alt="React" src="https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=111111">
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-7-3178C6?logo=typescript&logoColor=white">
+  <img alt="React" src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111111">
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white">
-  <img alt="Vite" src="https://img.shields.io/badge/Vite-6-646CFF?logo=vite&logoColor=white">
+  <img alt="Vite" src="https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white">
   <img alt="SQLite" src="https://img.shields.io/badge/SQLite-local-003B57?logo=sqlite&logoColor=white">
 </p>
 
@@ -35,13 +35,27 @@
 
 v5.0.0 focuses on reliable first-run setup and native build compatibility. It fixes installations that previously reached the chat screen without a usable local llama.cpp runtime and restores compilation after dependency updates. OpenMindAI remains a local-first AI desktop application.
 
-### Download
+### Download OpenMindAI v5.0.0
 
-**[View GitHub releases and available installers](https://github.com/smshagor-dev/OpenMindAI/releases)**
+**[Latest release](https://github.com/smshagor-dev/OpenMindAI/releases/latest)** · **[v5.0.0 release notes & assets](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v5.0.0)**
 
-Use the official [v5.0.0 release page](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v5.0.0) to check publication status, supported platforms, download assets, and checksums. Release packaging and signing must finish before installers are treated as published or verified.
+The following downloads are **verified as uploaded assets of the published v5.0.0 GitHub release** (18 November 2026). Choose the installer for your platform.
 
-Android distribution: [Google Play](https://play.google.com/store/apps/details?id=com.openmindai.mobile) · [RuStore](https://www.rustore.ru/catalog/app/com.openmindai.mobile). Mobile app versioning is independent of the desktop v5.0.0 release.
+| Platform | Format | Direct download |
+| --- | --- | --- |
+| Windows 64-bit | EXE installer (recommended) | [`OpenMindAI_5.0.0_x64-setup.exe`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/OpenMindAI_5.0.0_x64-setup.exe) |
+| Windows 64-bit | MSI installer | [`OpenMindAI_5.0.0_x64_en-US.msi`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/OpenMindAI_5.0.0_x64_en-US.msi) |
+| Windows 32-bit | EXE installer | [`OpenMindAI_5.0.0_x86-setup.exe`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/OpenMindAI_5.0.0_x86-setup.exe) |
+| Windows 32-bit | MSI installer | [`OpenMindAI_5.0.0_x86_en-US.msi`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/OpenMindAI_5.0.0_x86_en-US.msi) |
+| Linux | Bootstrap shell script | [`openmindai-setup.sh`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/openmindai-setup.sh) |
+| macOS | Bootstrap command script | [`OpenMindAI-Setup.command`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/OpenMindAI-Setup.command) |
+| Windows | Bootstrap batch script | [`OpenMindAI-Setup.bat`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/OpenMindAI-Setup.bat) |
+
+**Installer notes:** Windows x64 EXE is the default choice for most 64-bit Windows PCs; MSI is also available. Linux and macOS downloads above are **bootstrap scripts**, not prebuilt AppImage/DEB/DMG installers. Review the script and its prerequisites before executing it. Only use files from the official GitHub release.
+
+**Integrity:** [Download v5.0.0 SHA256SUMS.txt](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/SHA256SUMS.txt) and verify checksums for assets listed there. Availability of an uploaded file does not by itself establish installation testing, code signing, or notarization.
+
+**Android companion app:** [Google Play](https://play.google.com/store/apps/details?id=com.openmindai.mobile) · [RuStore](https://www.rustore.ru/catalog/app/com.openmindai.mobile). Mobile store versions are separate from the desktop v5.0.0 release. No v5.0.0 Android APK or iOS IPA is listed among this release's published assets.
 
 ### What's new in v5.0.0
 
@@ -52,7 +66,7 @@ Android distribution: [Google Play](https://play.google.com/store/apps/details?i
 - **Version consistency:** synchronizes application, native, Tauri, and packaging metadata to `5.0.0`.
 - **Release validation:** preserves CI, native ABI, updater signature, checksum, clean-install, and v4.0.0 → v5.0.0 upgrade requirements.
 
-See [full v5.0.0 release notes](.github/releases/v5.0.0.txt). The release notes distinguish intended release assets and validation gates from verified published installers.
+See [full v5.0.0 release notes](.github/releases/v5.0.0.txt). The release notes describe the release scope and validation gates; the download table above lists currently published assets.
 
 ## Why OpenMindAI
 
@@ -65,6 +79,23 @@ The project is built around five practical goals:
 - **Hardware-aware execution** — the application detects the host system and prepares a suitable local inference path instead of assuming identical hardware everywhere.
 - **Active project work** — AI can work with real local projects and files while keeping explicit filesystem and terminal permission boundaries.
 - **One desktop workflow** — chat, projects, models, connected apps, artifacts, diagnostics, updates, maintenance, and storage management live in one product.
+
+## Features at a glance
+
+| Feature | What you can do |
+| --- | --- |
+| **Local AI chat** | Run compatible local language models with streamed answers, chat history, editing, regeneration, and cancellation. |
+| **Thinking, vision & research** | Use model-specific reasoning and vision paths; Web Search and Deep Research require network access. |
+| **Model & runtime manager** | Discover, download, verify, activate, update, and remove supported local models and manage runtimes. |
+| **Projects & local coding agent** | Attach folders, manage project context, inspect/edit files, and run approved commands with scoped permissions. |
+| **Connected apps** | Connect supported Google Workspace, GitHub, Microsoft 365, Slack, Notion, Dropbox, and MCP integrations when configured. |
+| **Documents & media** | Manage conversation artifacts including code, Markdown, PDF, DOCX, images, audio, and supported video workflows. Availability depends on installed local models and hardware. |
+| **Local storage & portability** | Keep chats, models, workspaces, caches, and generated files in a selected local data root or portable drive. |
+| **Privacy & permission controls** | Local SQLite chat history, explicit project/terminal approvals, constrained agent operations, and credential separation. |
+| **Hardware-aware operation** | Detect hardware, select compatible inference paths, and use CPU fallback where supported. |
+| **Updates & diagnostics** | Native updater, runtime lifecycle management, backups, maintenance, and validation tools. |
+
+Feature availability depends on operating system, installed runtime, model capabilities, hardware, and optional connected services. Some model downloads and online tools require internet access.
 
 ## Core Capabilities
 
@@ -117,7 +148,7 @@ When acceleration is unavailable, compatible CPU execution remains the fallback 
 
 ## Projects and Project Agent
 
-v4.0.0 makes Projects a first-class local development workspace.
+Projects are a first-class local development workspace.
 
 A Project can contain:
 
@@ -230,8 +261,8 @@ OpenMindAI uses a web-based desktop interface with a native Rust backend.
 | --- | --- |
 | Desktop shell | Tauri 2 |
 | Native backend | Rust 2021 |
-| Frontend | React 18 + TypeScript |
-| Build tooling | Vite 6 |
+| Frontend | React 19 + TypeScript 7 |
+| Build tooling | Vite 8 |
 | Local database | SQLite via `rusqlite` |
 | Async/runtime work | Tokio |
 | Networking/downloads | Reqwest |
