@@ -296,6 +296,21 @@ button {
   width: 100%;
 }
 
+/* Host for the active studio's list (scenes / research projects), filled via
+   a portal from Studio3D / ResearchStudio in place of the chat history. */
+.sidebar-studio-slot {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  width: 100%;
+  overflow: auto;
+  padding: 0 4px;
+}
+.sidebar.collapsed .sidebar-studio-slot {
+  display: none;
+}
+
 .conversation-list.collapsed {
   align-items: center;
   gap: 6px;

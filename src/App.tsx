@@ -1847,11 +1847,7 @@ export function App() {
                 value={cloudModel}
                 onChange={(event) => setCloudModel(event.target.value)}
               >
-                {cloudModels.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.name || model.id}
-                  </option>
-                ))}
+                <option value={cloudModel}>OpenMindAI Cloud</option>
               </select>
             ) : null}
           </div>
@@ -2066,7 +2062,13 @@ export function App() {
             connection={cloudConnection}
           />
         ) : view === "research-studio" ? (
-          <ResearchStudio />
+          <ResearchStudio
+            connected={Boolean(internetAvailable && cloudConnection?.connected)}
+            onConnect={() => {
+              setSettingsSection("cloud");
+              setView("settings");
+            }}
+          />
         ) : view === "web-search" ? (
           <StudioHub
             section={view}

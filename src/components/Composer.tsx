@@ -499,11 +499,7 @@ export function Composer(props: {
                   disabled={props.backgroundBusy || props.streaming || props.submitting}
                   onChange={(event) => props.onSelectCloudModel?.(event.currentTarget.value)}
                 >
-                  {(props.cloudModels ?? []).map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.name || model.id}
-                    </option>
-                  ))}
+                  <option value={props.activeCloudModelId ?? ""}>OpenMindAI Cloud</option>
                 </select>
               </label>
             ) : (
