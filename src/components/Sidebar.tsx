@@ -16,12 +16,14 @@ import {
 import type { Conversation, UserProfile } from "../types";
 import { ChatHistoryList } from "./ChatHistoryList";
 import packageJson from "../../package.json";
+import { sidebarText } from "../lib/sidebarLocale";
 
 const MIN_SIDEBAR_WIDTH = 260;
 const MAX_SIDEBAR_WIDTH = 440;
 
 export function Sidebar(props: {
   collapsed: boolean;
+  language?: string;
   onToggleCollapsed: () => void;
   conversations: Conversation[];
   activeId: string | null;
@@ -45,6 +47,7 @@ export function Sidebar(props: {
   onOpenStudio: (section: "research-studio" | "3d-studio" | "web-search") => void;
   onOpenSettings: (section?: string) => void;
 }) {
+  const t = (key: Parameters<typeof sidebarText>[1]) => sidebarText(props.language, key);
   const displayName =
     props.userProfile?.preferredName || props.userProfile?.fullName || "Local User";
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
@@ -96,14 +99,14 @@ export function Sidebar(props: {
           <div className="sidebar-header-actions">
             <button
               className="icon-button"
-              title="Search chats (Ctrl+K)"
+              title={t("search")}
               onClick={props.onOpenSearch}
             >
               <Search size={16} />
             </button>
             <button
               className="icon-button sidebar-collapse-toggle"
-              title="Collapse sidebar"
+              title={t("collapse")}
               onClick={props.onToggleCollapsed}
             >
               <PanelLeftClose size={16} />
@@ -112,7 +115,7 @@ export function Sidebar(props: {
         ) : (
           <button
             className="icon-button sidebar-collapse-toggle"
-            title="Expand sidebar"
+            title={t("expand")}
             onClick={props.onToggleCollapsed}
           >
             <PanelLeftOpen size={16} />
@@ -120,52 +123,52 @@ export function Sidebar(props: {
         )}
       </div>
 
-      <button className="primary-command" onClick={props.onNewChat} title="New chat">
-        <SquarePen size={18} /> {!props.collapsed ? "New Chat" : null}
+      <button className="primary-command" onClick={props.onNewChat} title={t("newChat")}>
+        <SquarePen size={18} /> {!props.collapsed ? t("newChat") : null}
       </button>
 
       <nav className="sidebar-nav">
-        <button className="nav-button" onClick={props.onOpenLibrary} title="Library">
-          <LibraryBig size={18} /> {!props.collapsed ? "Library" : null}
+        <button className="nav-button" onClick={props.onOpenLibrary} title={t("library")}>
+          <LibraryBig size={18} /> {!props.collapsed ? t("library") : null}
         </button>
-        <button className="nav-button" onClick={props.onOpenModels} title="Models">
-          <Database size={18} /> {!props.collapsed ? "Models" : null}
+        <button className="nav-button" onClick={props.onOpenModels} title={t("models")}>
+          <Database size={18} /> {!props.collapsed ? t("models") : null}
         </button>
-        <button className="nav-button" onClick={props.onOpenDatasets} title="Datasets">
-          <TableProperties size={18} /> {!props.collapsed ? "Datasets" : null}
+        <button className="nav-button" onClick={props.onOpenDatasets} title={t("datasets")}>
+          <TableProperties size={18} /> {!props.collapsed ? t("datasets") : null}
         </button>
         <button
           className={props.view === "tools" ? "nav-button active" : "nav-button"}
           onClick={props.onOpenTools}
-          title="Tools"
+          title={t("tools")}
         >
-          <Wrench size={18} /> {!props.collapsed ? "Tools" : null}
+          <Wrench size={18} /> {!props.collapsed ? t("tools") : null}
         </button>
-        <button className={props.view === "research-studio" ? "nav-button active" : "nav-button"} onClick={() => props.onOpenStudio("research-studio")} title="Research Studio">
-          <TableProperties size={18} /> {!props.collapsed ? "Research Studio" : null}
+        <button className={props.view === "research-studio" ? "nav-button active" : "nav-button"} onClick={() => props.onOpenStudio("research-studio")} title={t("research")}>
+          <TableProperties size={18} /> {!props.collapsed ? t("research") : null}
         </button>
-        <button className={props.view === "3d-studio" ? "nav-button active" : "nav-button"} onClick={() => props.onOpenStudio("3d-studio")} title="3D Studio">
-          <Wrench size={18} /> {!props.collapsed ? "3D Studio" : null}
+        <button className={props.view === "3d-studio" ? "nav-button active" : "nav-button"} onClick={() => props.onOpenStudio("3d-studio")} title={t("studio3d")}>
+          <Wrench size={18} /> {!props.collapsed ? t("studio3d") : null}
         </button>
-        <button className={props.view === "web-search" ? "nav-button active" : "nav-button"} onClick={() => props.onOpenStudio("web-search")} title="Web Search">
-          <Globe size={18} /> {!props.collapsed ? "Web Search" : null}
+        <button className={props.view === "web-search" ? "nav-button active" : "nav-button"} onClick={() => props.onOpenStudio("web-search")} title={t("webSearch")}>
+          <Globe size={18} /> {!props.collapsed ? t("webSearch") : null}
         </button>
-        <button className="nav-button" onClick={props.onOpenLibrary} title="Files & Artifacts">
-          <FolderOpen size={18} /> {!props.collapsed ? "Files & Artifacts" : null}
+        <button className="nav-button" onClick={props.onOpenLibrary} title={t("files")}>
+          <FolderOpen size={18} /> {!props.collapsed ? t("files") : null}
         </button>
         <button
           className={props.view === "projects" ? "nav-button active" : "nav-button"}
           onClick={props.onOpenProjects}
-          title="Projects"
+          title={t("projects")}
         >
-          <FolderKanban size={18} /> {!props.collapsed ? "Projects" : null}
+          <FolderKanban size={18} /> {!props.collapsed ? t("projects") : null}
         </button>
         <button
           className={props.view === "settings" ? "nav-button active" : "nav-button"}
           onClick={() => props.onOpenSettings()}
-          title="More"
+          title={t("more")}
         >
-          <MoreHorizontal size={18} /> {!props.collapsed ? "More" : null}
+          <MoreHorizontal size={18} /> {!props.collapsed ? t("more") : null}
         </button>
       </nav>
 
@@ -207,7 +210,7 @@ export function Sidebar(props: {
           {!props.collapsed ? (
             <button
               className="profile-menu-trigger"
-              title="Profile options"
+              title={t("profileOptions")}
               onClick={() => setProfileMenuOpen((value) => !value)}
             >
               <MoreHorizontal size={16} />
@@ -223,7 +226,7 @@ export function Sidebar(props: {
                 setProfileMenuOpen(false);
               }}
             >
-              Settings
+              {t("settings")}
             </button>
             <button
               role="menuitem"
@@ -232,7 +235,7 @@ export function Sidebar(props: {
                 setProfileMenuOpen(false);
               }}
             >
-              Personalization
+              {t("personalization")}
             </button>
             <button
               role="menuitem"
@@ -241,7 +244,7 @@ export function Sidebar(props: {
                 setProfileMenuOpen(false);
               }}
             >
-              Appearance
+              {t("appearance")}
             </button>
             <button
               role="menuitem"
@@ -250,7 +253,7 @@ export function Sidebar(props: {
                 setProfileMenuOpen(false);
               }}
             >
-              About
+              {t("about")}
             </button>
           </div>
         ) : null}
