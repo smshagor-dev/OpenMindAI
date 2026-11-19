@@ -153,12 +153,26 @@ fn clear_directory_contents(path: &Path) -> Result<u64, AppError> {
     let mut freed = 0;
     for entry in fs::read_dir(path)? {
         let entry = entry?;
-        let metadata = entry.metadata()?;
-        if metadata.is_dir() {
-            freed += directory_size(&entry.path())?;
+        // Inspect the directory entry, not its target. Cache entries may be
+        // symlinks to locations outside the portable root: never traverse or
+        // recursively delete their targets when clearing regenerable cache.
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if metadata.file_type().is_symlink() {
+            // A symlink occupies negligible space here; its target is not ours
+            // to count or delete. Windows directory symlinks require remove_dir.
+            #[cfg(windows)]
+            {
+                if fs::remove_file(entry.path()).is_err() {
+                    fs::remove_dir(entry.path())?;
+                }
+            }
+            #[cfg(not(windows))]
+            fs::remove_file(entry.path())?;
+        } else if metadata.is_dir() {
+            freed = freed.saturating_add(directory_size(&entry.path())?);
             fs::remove_dir_all(entry.path())?;
         } else {
-            freed += metadata.len();
+            freed = freed.saturating_add(metadata.len());
             fs::remove_file(entry.path())?;
         }
     }
@@ -211,6 +225,38 @@ mod cache_tests {
         assert_eq!(restored.generated_bytes, 789);
         assert!(snapshot_for_root(&cached, "root-b").is_none());
         assert!(snapshot_for_root(&None, "root-a").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clear_cache_unlinks_directory_and_file_symlinks_without_touching_targets() {
+        use std::os::unix::fs::symlink;
+
+        let sandbox = tempfile::tempdir().unwrap();
+        let external = sandbox.path().join("external");
+        let cache = sandbox.path().join("cache");
+        fs::create_dir_all(&external).unwrap();
+        fs::create_dir_all(&cache).unwrap();
+        let protected = external.join("keep.txt");
+        fs::write(&protected, b"must survive").unwrap();
+        symlink(&external, cache.join("linked-directory")).unwrap();
+        symlink(&protected, cache.join("linked-file")).unwrap();
+        fs::write(cache.join("scratch.txt"), b"scratch").unwrap();
+
+        let freed = clear_directory_contents(&cache).unwrap();
+        assert_eq!(freed, 7);
+        assert!(fs::read_dir(&cache).unwrap().next().is_none());
+        assert_eq!(fs::read(&protected).unwrap(), b"must survive");
+    }
+
+    #[test]
+    fn clear_cache_removes_normal_nested_cache_entries() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let cache = sandbox.path().join("cache");
+        fs::create_dir_all(cache.join("nested")).unwrap();
+        fs::write(cache.join("nested").join("data"), b"abc").unwrap();
+        assert_eq!(clear_directory_contents(&cache).unwrap(), 3);
+        assert!(fs::read_dir(&cache).unwrap().next().is_none());
     }
 
     #[test]
