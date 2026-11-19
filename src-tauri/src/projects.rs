@@ -136,14 +136,32 @@ impl<'a> ProjectRepository<'a> {
             None => (None, None),
         };
         let mut statement = self.database.connection().prepare(
-            "SELECT p.id, p.name, p.updated_at,
-                    (SELECT COUNT(*) FROM project_conversations pc WHERE pc.project_id = p.id),
-                    (SELECT COUNT(*) FROM project_files pf WHERE pf.project_id = p.id)
-             FROM projects p
-             WHERE (?1 IS NULL OR p.updated_at < ?1
-                    OR (p.updated_at = ?1 AND p.id < ?2))
-             ORDER BY p.updated_at DESC, p.id DESC
-             LIMIT ?3",
+            "WITH selected AS MATERIALIZED (
+                 SELECT id, name, updated_at
+                 FROM projects
+                 WHERE (?1 IS NULL OR updated_at < ?1
+                        OR (updated_at = ?1 AND id < ?2))
+                 ORDER BY updated_at DESC, id DESC
+                 LIMIT ?3
+             ),
+             conversation_counts AS (
+                 SELECT pc.project_id, COUNT(*) AS total
+                 FROM project_conversations pc
+                 JOIN selected s ON s.id = pc.project_id
+                 GROUP BY pc.project_id
+             ),
+             file_counts AS (
+                 SELECT pf.project_id, COUNT(*) AS total
+                 FROM project_files pf
+                 JOIN selected s ON s.id = pf.project_id
+                 GROUP BY pf.project_id
+             )
+             SELECT s.id, s.name, s.updated_at,
+                    COALESCE(cc.total, 0), COALESCE(fc.total, 0)
+             FROM selected s
+             LEFT JOIN conversation_counts cc ON cc.project_id = s.id
+             LEFT JOIN file_counts fc ON fc.project_id = s.id
+             ORDER BY s.updated_at DESC, s.id DESC",
         )?;
         let rows = statement.query_map(params![after_time, after_id, limit + 1], |row| {
             Ok(ProjectSummary {
@@ -883,6 +901,64 @@ mod tests {
             .read_binary_file(&project.id, &record.id)
             .unwrap();
         assert_eq!(STANDARD.decode(restored_copy.data_base64).unwrap(), original);
+    }
+
+    #[test]
+    fn catalog_counts_are_scoped_to_selected_page_without_join_multiplication() {
+        let database = Database::in_memory().unwrap();
+        let repo = ProjectRepository::new(&database);
+        let first = repo.create_project("First").unwrap();
+        let second = repo.create_project("Second").unwrap();
+        let chat_ids: Vec<String> = (0..3).map(|_| Uuid::new_v4().to_string()).collect();
+        for id in &chat_ids {
+            insert_conversation(&database, id, "Test");
+            repo.link_conversation(&first.id, id).unwrap();
+        }
+        for i in 0..4 {
+            database.connection().execute(
+                "INSERT INTO project_files
+                 (id, project_id, name, size_bytes, content_text, status, added_at)
+                 VALUES (?1, ?2, 'private.txt', 100000, ?3, 'ready', '2026-01-01')",
+                params![Uuid::new_v4().to_string(), first.id, "PRIVATE_DATA".repeat(10_000 + i)],
+            ).unwrap();
+        }
+        // Equal timestamps stress stable (updated_at, id) cursor ordering.
+        database.connection().execute(
+            "UPDATE projects SET updated_at = '2026-01-01T00:00:00+00:00'",
+            [],
+        ).unwrap();
+        let first_page = repo.list_projects(None, 1).unwrap();
+        assert_eq!(first_page.projects.len(), 1);
+        assert!(first_page.next_cursor.is_some());
+        let second_page = repo.list_projects(first_page.next_cursor.as_deref(), 1).unwrap();
+        assert_eq!(second_page.projects.len(), 1);
+        assert!(second_page.next_cursor.is_none());
+        let mut all = first_page.projects;
+        all.extend(second_page.projects);
+        assert_ne!(all[0].id, all[1].id);
+        let with_files = all.iter().find(|p| p.id == first.id).unwrap();
+        assert_eq!(with_files.file_count, 4);
+        assert_eq!(with_files.conversation_count, 3);
+        let empty = all.iter().find(|p| p.id == second.id).unwrap();
+        assert_eq!(empty.file_count, 0);
+        assert_eq!(empty.conversation_count, 0);
+        let serialized = serde_json::to_string(&all).unwrap();
+        assert!(!serialized.contains("PRIVATE_DATA"));
+    }
+
+    #[test]
+    fn catalog_limit_is_bounded_and_cursor_rejects_invalid_inputs() {
+        let database = Database::in_memory().unwrap();
+        let repo = ProjectRepository::new(&database);
+        for i in 0..105 {
+            repo.create_project(&format!("Project {i}")).unwrap();
+        }
+        let page = repo.list_projects(None, 10_000).unwrap();
+        assert_eq!(page.projects.len(), 100);
+        assert!(page.next_cursor.is_some());
+        assert!(repo.list_projects(Some("not-a-cursor"), 10).is_err());
+        let tail = repo.list_projects(page.next_cursor.as_deref(), 10).unwrap();
+        assert_eq!(tail.projects.len(), 5);
     }
 
     #[test]

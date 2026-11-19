@@ -24,9 +24,15 @@ pub struct PdfMeta {
 
 /// A simplified block-level document model shared by the PDF and DOCX generators.
 ///
-/// Inline formatting (bold/italic/inline-code runs within a paragraph) is intentionally
-/// flattened to plain text; only block structure (headings, paragraphs, lists, code blocks,
-/// tables, rules) is preserved. This keeps both renderers small and predictable.
+/// PDF currently uses plain paragraph text; DOCX retains styled inline runs for paragraphs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InlineRun {
+    text: String,
+    bold: bool,
+    italic: bool,
+    code: bool,
+}
+
 #[derive(Debug, Clone)]
 enum Block {
     Heading {
@@ -35,6 +41,7 @@ enum Block {
     },
     Paragraph {
         text: String,
+        runs: Vec<InlineRun>,
     },
     UnorderedList {
         items: Vec<String>,
@@ -63,6 +70,9 @@ fn parse_markdown_blocks(markdown: &str) -> Vec<Block> {
     let mut text_buffer = String::new();
     let mut heading_level: Option<u8> = None;
     let mut in_paragraph = false;
+    let mut inline_runs: Vec<InlineRun> = Vec::new();
+    let mut strong_depth = 0usize;
+    let mut emphasis_depth = 0usize;
     let mut in_code_block = false;
 
     let mut list_stack: Vec<(bool, u64, Vec<String>)> = Vec::new();
@@ -95,6 +105,7 @@ fn parse_markdown_blocks(markdown: &str) -> Vec<Block> {
             Event::Start(Tag::Paragraph) => {
                 if !in_item && !in_cell {
                     text_buffer.clear();
+                    inline_runs.clear();
                     in_paragraph = true;
                 }
             }
@@ -102,7 +113,7 @@ fn parse_markdown_blocks(markdown: &str) -> Vec<Block> {
                 if in_paragraph {
                     let text = text_buffer.trim().to_string();
                     if !text.is_empty() {
-                        blocks.push(Block::Paragraph { text });
+                        blocks.push(Block::Paragraph { text, runs: std::mem::take(&mut inline_runs) });
                     }
                     text_buffer.clear();
                     in_paragraph = false;
@@ -196,12 +207,34 @@ fn parse_markdown_blocks(markdown: &str) -> Vec<Block> {
                 if !text.is_empty() {
                     blocks.push(Block::Paragraph {
                         text: format!("\u{201c}{text}\u{201d}"),
+                        runs: Vec::new(),
                     });
                 }
                 text_buffer.clear();
             }
+            Event::Start(Tag::Strong) => strong_depth += 1,
+            Event::End(TagEnd::Strong) => strong_depth = strong_depth.saturating_sub(1),
+            Event::Start(Tag::Emphasis) => emphasis_depth += 1,
+            Event::End(TagEnd::Emphasis) => emphasis_depth = emphasis_depth.saturating_sub(1),
             Event::Rule => blocks.push(Block::Rule),
-            Event::Text(text) | Event::Code(text) => {
+            Event::Text(ref text) | Event::Code(ref text) => {
+                if in_paragraph && !in_item && !in_cell && !in_code_block {
+                    let run = InlineRun {
+                        text: text.to_string(),
+                        bold: strong_depth > 0,
+                        italic: emphasis_depth > 0,
+                        code: matches!(&event, Event::Code(_)),
+                    };
+                    if let Some(last) = inline_runs.last_mut() {
+                        if last.bold == run.bold && last.italic == run.italic && last.code == run.code {
+                            last.text.push_str(&run.text);
+                        } else {
+                            inline_runs.push(run);
+                        }
+                    } else {
+                        inline_runs.push(run);
+                    }
+                }
                 if in_code_block {
                     text_buffer.push_str(&text);
                 } else if in_cell {
@@ -221,6 +254,9 @@ fn parse_markdown_blocks(markdown: &str) -> Vec<Block> {
                     item_buffer.push(' ');
                 } else {
                     text_buffer.push(' ');
+                    if in_paragraph {
+                        inline_runs.push(InlineRun { text: " ".into(), bold: strong_depth > 0, italic: emphasis_depth > 0, code: false });
+                    }
                 }
             }
             Event::HardBreak => {
@@ -228,6 +264,9 @@ fn parse_markdown_blocks(markdown: &str) -> Vec<Block> {
                     item_buffer.push(' ');
                 } else {
                     text_buffer.push(' ');
+                    if in_paragraph {
+                        inline_runs.push(InlineRun { text: " ".into(), bold: strong_depth > 0, italic: emphasis_depth > 0, code: false });
+                    }
                 }
             }
             _ => {}
@@ -410,7 +449,7 @@ impl PdfLayout {
                 self.add_gap(1.5);
                 self.push_wrapped(&text, PdfFontKind::Bold, size, 2.0);
             }
-            Block::Paragraph { text } => {
+            Block::Paragraph { text, .. } => {
                 self.push_wrapped(&text, PdfFontKind::Regular, 11.0, 2.4);
             }
             Block::UnorderedList { items } => {
@@ -605,6 +644,20 @@ fn docx_paragraph(xml: &mut String, text: &str, size: u32, bold: bool, mono: boo
     xml.push_str("</w:t></w:r></w:p>");
 }
 
+fn docx_inline_paragraph(xml: &mut String, runs: &[InlineRun]) {
+    xml.push_str("<w:p><w:pPr><w:spacing w:after=\"140\"/></w:pPr>");
+    for run in runs {
+        xml.push_str("<w:r><w:rPr>");
+        if run.bold { xml.push_str("<w:b/>"); }
+        if run.italic { xml.push_str("<w:i/>"); }
+        if run.code { xml.push_str("<w:rFonts w:ascii=\"Consolas\" w:hAnsi=\"Consolas\"/>"); }
+        xml.push_str("<w:sz w:val=\"22\"/></w:rPr><w:t xml:space=\"preserve\">");
+        xml.push_str(&docx_xml_text(&run.text));
+        xml.push_str("</w:t></w:r>");
+    }
+    xml.push_str("</w:p>");
+}
+
 fn docx_table_row(xml: &mut String, cells: &[String], columns: usize, header: bool) {
     // Keep rows intact and repeat header rows across page breaks.
     xml.push_str("<w:tr><w:trPr><w:cantSplit/>");
@@ -643,12 +696,15 @@ fn docx_block(xml: &mut String, block: Block) {
             docx_paragraph(&mut paragraph, &text, size, true, false);
             paragraph = paragraph.replacen(
                 "<w:pPr>",
-                &format!("<w:pPr><w:pStyle w:val=\"{style}\"/>"),
+                &format!("<w:pPr><w:pStyle w:val=\"{style}\"/><w:keepNext/><w:keepLines/><w:widowControl/>"),
                 1,
             );
             xml.push_str(&paragraph);
         }
-        Block::Paragraph { text } => docx_paragraph(xml, &text, 22, false, false),
+        Block::Paragraph { text, runs } => {
+            if runs.is_empty() { docx_paragraph(xml, &text, 22, false, false); }
+            else { docx_inline_paragraph(xml, &runs); }
+        },
         Block::UnorderedList { items } => {
             for item in items {
                 docx_paragraph(xml, &format!("\u{2022}  {item}"), 22, false, false);
@@ -744,6 +800,22 @@ mod tests {
 
 
     #[test]
+    fn docx_headings_stay_with_following_paragraph_and_keep_lines_together() {
+        let xml = word_document_xml(
+            parse_markdown_blocks("# বাংলা Heading & Details\\n\\nBody content\\n\\n## Nested\\n\\nMore text"),
+            "Document",
+        );
+        for level in [1, 2] {
+            let style = format!(
+                "<w:pStyle w:val=\\"Heading{level}\\"/><w:keepNext/><w:keepLines/><w:widowControl/>"
+            );
+            assert!(xml.contains(&style), "missing pagination rules for heading {level}");
+        }
+        assert!(xml.contains("বাংলা Heading &amp; Details"));
+        assert!(xml.contains("Body content"));
+    }
+
+    #[test]
     fn docx_headings_use_word_outline_styles() {
         let xml = word_document_xml(parse_markdown_blocks("# Main\n\n## Details\n\n### Nested"), "Report");
         assert!(xml.contains("<w:pStyle w:val=\"Heading1\"/>"));
@@ -770,6 +842,26 @@ mod tests {
         let xml = word_document_xml(parse_markdown_blocks("# Heading"), "Report");
         assert!(xml.contains("<w:pStyle w:val=\"Heading1\"/>"));
         assert!(!xml.contains(r#"w:val=\"Heading1"#));
+    }
+
+    #[test]
+    fn docx_preserves_nested_inline_styles_and_escapes_xml() {
+        let xml = word_document_xml(
+            parse_markdown_blocks("বাংলা **bold *nested* & \\<safe\\>** and `code<&>`."),
+            "Report",
+        );
+        assert!(xml.contains("<w:b/>"));
+        assert!(xml.contains("<w:i/>"));
+        assert!(xml.contains("<w:rFonts w:ascii=\"Consolas\""));
+        assert!(xml.contains("nested"));
+        assert!(xml.contains("&amp; &lt;safe&gt;"));
+        assert!(xml.contains("code&lt;&amp;&gt;"));
+    }
+
+    #[test]
+    fn docx_plain_paragraph_keeps_text() {
+        let xml = word_document_xml(parse_markdown_blocks("Simple paragraph."), "Report");
+        assert!(xml.contains(">Simple paragraph.</w:t>"));
     }
 
     const SAMPLE_MARKDOWN: &str = "# Report Title\n\nThis is an introductory paragraph with real content.\n\n## Section One\n\n- First point\n- Second point\n\n1. Step one\n2. Step two\n\n```text\nfn main() {}\n```\n\n| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n| Beta | 2 |\n";
