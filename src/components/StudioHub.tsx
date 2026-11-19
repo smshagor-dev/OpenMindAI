@@ -134,11 +134,6 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
   }, [section, online, connection?.connected, mode]);
 
   useEffect(() => {
-    setError(null);
-    setNotice(null);
-    setResults([]);
-  }, [section]);
-  useEffect(() => {
     if ((online && connection?.connected) || (!online && mode !== "cloud" && section === "3d-studio")) {
       void refresh().catch((caught: unknown) => setError(explain(caught)));
     }
