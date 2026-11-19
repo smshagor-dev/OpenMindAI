@@ -18,49 +18,55 @@
 
 <p align="center">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white">
-  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white">
-  <img alt="React" src="https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=111111">
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-7-3178C6?logo=typescript&logoColor=white">
+  <img alt="React" src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111111">
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white">
-  <img alt="Vite" src="https://img.shields.io/badge/Vite-6-646CFF?logo=vite&logoColor=white">
+  <img alt="Vite" src="https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white">
   <img alt="SQLite" src="https://img.shields.io/badge/SQLite-local-003B57?logo=sqlite&logoColor=white">
 </p>
 
 ---
 
-## OpenMindAI v4.0.0
+## OpenMindAI v5.0.0
 
 **Current source version:** `v5.0.0`  
-**Release target:** [v4.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v4.0.0)  
-**Previous stable release:** [v3.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v3.0.0)
+**Release documentation:** [v5.0.0 notes](.github/releases/v5.0.0.txt)  
+**Previous release:** [v4.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v4.0.0)
 
-v4.0.0 is the maintenance release for the current OpenMindAI 3.x desktop line. It keeps the existing local-first architecture while consolidating the latest validated fixes, native runtime work, model routing improvements, and release-pipeline hardening on top of v3.0.0.
+v5.0.0 focuses on reliable first-run setup and native build compatibility. It fixes installations that previously reached the chat screen without a usable local llama.cpp runtime and restores compilation after dependency updates. OpenMindAI remains a local-first AI desktop application.
 
-### Download
+### Download OpenMindAI v5.0.0
 
-| Platform | Package |
-| --- | --- |
-| Android | [Get it on Google Play](https://play.google.com/store/apps/details?id=com.openmindai.mobile) |
-| Android | [Get it on RuStore](https://www.rustore.ru/catalog/app/com.openmindai.mobile) |
-| Linux | [OpenMindAI_4.0.0_amd64.AppImage](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_amd64.AppImage) |
-| Linux | [OpenMindAI_4.0.0_amd64.deb](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_amd64.deb) |
-| macOS | [OpenMindAI-Setup.command](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI-Setup.command) |
-| Windows | [OpenMindAI_4.0.0_x64-setup.exe](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x64-setup.exe) |
-| Windows | [OpenMindAI_4.0.0_x86-setup.exe](https://github.com/smshagor-dev/OpenMindAI/releases/download/v4.0.0/OpenMindAI_4.0.0_x86-setup.exe) |
+**[Latest release](https://github.com/smshagor-dev/OpenMindAI/releases/latest)** · **[v5.0.0 release notes & assets](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v5.0.0)**
 
-The links above point to the published v4.0.0 release assets and the Android app's Google Play and RuStore listings. macOS installation uses the `.command` setup script; iOS packages and direct mobile APK downloads are not listed here.
+The following downloads are **verified as uploaded assets of the published v5.0.0 GitHub release** (18 November 2026). Choose the installer for your platform.
 
-`release-output-SHA256SUMS.txt` and platform-specific checksum files, when available, can be found among the release assets.
+| Platform | Format | Direct download |
+| --- | --- | --- |
+| Windows 64-bit | EXE installer (recommended) | [`OpenMindAI_5.0.0_x64-setup.exe`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/OpenMindAI_5.0.0_x64-setup.exe) |
+| Windows 64-bit | MSI installer | [`OpenMindAI_5.0.0_x64_en-US.msi`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/OpenMindAI_5.0.0_x64_en-US.msi) |
+| Windows 32-bit | EXE installer | [`OpenMindAI_5.0.0_x86-setup.exe`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/OpenMindAI_5.0.0_x86-setup.exe) |
+| Windows 32-bit | MSI installer | [`OpenMindAI_5.0.0_x86_en-US.msi`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/OpenMindAI_5.0.0_x86_en-US.msi) |
+| Linux | Bootstrap shell script | [`openmindai-setup.sh`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/openmindai-setup.sh) |
+| macOS | Bootstrap command script | [`OpenMindAI-Setup.command`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/OpenMindAI-Setup.command) |
+| Windows | Bootstrap batch script | [`OpenMindAI-Setup.bat`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/OpenMindAI-Setup.bat) |
 
-### What changed in v4.0.0
+**Installer notes:** Windows x64 EXE is the default choice for most 64-bit Windows PCs; MSI is also available. Linux and macOS downloads above are **bootstrap scripts**, not prebuilt AppImage/DEB/DMG installers. Review the script and its prerequisites before executing it. Only use files from the official GitHub release.
 
-- Synchronizes the desktop application, Tauri bundle, Rust crate, lockfiles, bootstrap launchers, and portable marker on version `4.0.0`.
-- Preserves the local-first desktop architecture and current native model/runtime behavior from the validated `main` branch.
-- Carries forward the native personalization and runtime integration work merged after v3.0.0.
-- Keeps CI, CodeQL, dependency auditing, multi-platform Rust validation, Windows Tauri build validation, and release-contract checks as release gates.
-- Adds explicit v3.0.0 → v4.0.0 upgrade validation in addition to clean-install validation.
-- Produces release-specific notes and installer naming for `v4.0.0` while retaining v3.0.0 as the upgrade source.
+**Integrity:** [Download v5.0.0 SHA256SUMS.txt](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/SHA256SUMS.txt) and verify checksums for assets listed there. Availability of an uploaded file does not by itself establish installation testing, code signing, or notarization.
 
-For the focused release summary, see [`.github/releases/v4.0.0.txt`](.github/releases/v4.0.0.txt).
+**Android companion app:** [Google Play](https://play.google.com/store/apps/details?id=com.openmindai.mobile) · [RuStore](https://www.rustore.ru/catalog/app/com.openmindai.mobile). Mobile store versions are separate from the desktop v5.0.0 release. No v5.0.0 Android APK or iOS IPA is listed among this release's published assets.
+
+### What's new in v5.0.0
+
+- **First-run setup recovery:** interrupted provisioning is resumed instead of incorrectly treating the installation as complete when only the data root has been created.
+- **Runtime readiness:** the setup is considered complete only when the authoritative `setupState` reaches `Completed`, reducing the risk of starting chat without a usable local llama.cpp runtime.
+- **Legacy installation compatibility:** installations created before `setupState` was introduced continue to load.
+- **Native build fixes:** retains API-compatible `sha2` and `sysinfo` versions, aligns the iOS `llama-cpp-2` pin with desktop/Android, updates SQLite row reads for `rusqlite` 0.42, and improves runtime ZIP-reader compatibility.
+- **Version consistency:** synchronizes application, native, Tauri, and packaging metadata to `5.0.0`.
+- **Release validation:** preserves CI, native ABI, updater signature, checksum, clean-install, and v4.0.0 → v5.0.0 upgrade requirements.
+
+See [full v5.0.0 release notes](.github/releases/v5.0.0.txt). The release notes describe the release scope and validation gates; the download table above lists currently published assets.
 
 ## Why OpenMindAI
 
@@ -73,6 +79,23 @@ The project is built around five practical goals:
 - **Hardware-aware execution** — the application detects the host system and prepares a suitable local inference path instead of assuming identical hardware everywhere.
 - **Active project work** — AI can work with real local projects and files while keeping explicit filesystem and terminal permission boundaries.
 - **One desktop workflow** — chat, projects, models, connected apps, artifacts, diagnostics, updates, maintenance, and storage management live in one product.
+
+## Features at a glance
+
+| Feature | What you can do |
+| --- | --- |
+| **Local AI chat** | Run compatible local language models with streamed answers, chat history, editing, regeneration, and cancellation. |
+| **Thinking, vision & research** | Use model-specific reasoning and vision paths; Web Search and Deep Research require network access. |
+| **Model & runtime manager** | Discover, download, verify, activate, update, and remove supported local models and manage runtimes. |
+| **Projects & local coding agent** | Attach folders, manage project context, inspect/edit files, and run approved commands with scoped permissions. |
+| **Connected apps** | Connect supported Google Workspace, GitHub, Microsoft 365, Slack, Notion, Dropbox, and MCP integrations when configured. |
+| **Documents & media** | Manage conversation artifacts including code, Markdown, PDF, DOCX, images, audio, and supported video workflows. Availability depends on installed local models and hardware. |
+| **Local storage & portability** | Keep chats, models, workspaces, caches, and generated files in a selected local data root or portable drive. |
+| **Privacy & permission controls** | Local SQLite chat history, explicit project/terminal approvals, constrained agent operations, and credential separation. |
+| **Hardware-aware operation** | Detect hardware, select compatible inference paths, and use CPU fallback where supported. |
+| **Updates & diagnostics** | Native updater, runtime lifecycle management, backups, maintenance, and validation tools. |
+
+Feature availability depends on operating system, installed runtime, model capabilities, hardware, and optional connected services. Some model downloads and online tools require internet access.
 
 ## Core Capabilities
 
@@ -125,7 +148,7 @@ When acceleration is unavailable, compatible CPU execution remains the fallback 
 
 ## Projects and Project Agent
 
-v4.0.0 makes Projects a first-class local development workspace.
+Projects are a first-class local development workspace.
 
 A Project can contain:
 
@@ -238,8 +261,8 @@ OpenMindAI uses a web-based desktop interface with a native Rust backend.
 | --- | --- |
 | Desktop shell | Tauri 2 |
 | Native backend | Rust 2021 |
-| Frontend | React 18 + TypeScript |
-| Build tooling | Vite 6 |
+| Frontend | React 19 + TypeScript 7 |
+| Build tooling | Vite 8 |
 | Local database | SQLite via `rusqlite` |
 | Async/runtime work | Tokio |
 | Networking/downloads | Reqwest |
@@ -292,7 +315,7 @@ A configured storage location that is temporarily unavailable should be reported
 
 ## Default Local Model
 
-The v4.0.0 baseline setup targets **Qwen3 4B (`Q4_K_M`)** as the default local language model.
+The existing local model baseline targets **Qwen3 4B (`Q4_K_M`)** as the default local language model.
 
 Model weights are deliberately excluded from this repository. They are downloaded separately and stored under the selected AI data root, keeping multi-gigabyte model binaries out of normal Git history.
 
@@ -436,13 +459,13 @@ Tagged releases use the dedicated release workflow in [`.github/workflows/releas
 
 The release path checks version consistency, application builds, installer output, updater configuration, release metadata, and other release-readiness requirements. Signing and trust requirements are handled by the production release workflow rather than being embedded in source code or committed secrets.
 
-For v4.0.0 release expectations and validation scope, see [`.github/releases/v4.0.0.txt`](.github/releases/v4.0.0.txt).
+For v5.0.0 release expectations and validation scope, see [`.github/releases/v5.0.0.txt`](.github/releases/v5.0.0.txt).
 
 ## Platform Notes
 
 ### Windows
 
-Windows x64 is the primary packaged and tested platform for v4.0.0. The desktop release uses a Tauri NSIS installer. GPU/runtime behavior depends on installed hardware and backend support, while CPU execution remains the compatibility path when acceleration is unavailable.
+Windows x64 is the primary release-validation platform for v5.0.0. The desktop release uses a Tauri NSIS installer. GPU/runtime behavior depends on installed hardware and backend support, while CPU execution remains the compatibility path when acceleration is unavailable.
 
 ### Linux
 

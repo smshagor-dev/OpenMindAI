@@ -149,7 +149,9 @@ impl Default for AppPreferences {
             save_chat_history: true,
             chat_history_notice_required: false,
             local_runtime_autostart: true,
-            ai_execution_mode: "auto".to_string(),
+            // Desktop defaults to Local: fast, on-device, private. Cloud is
+            // opt-in via the mode toggle; it does not run unless the user picks it.
+            ai_execution_mode: "local".to_string(),
             // Existing installs used only local OpenAgent; require an explicit
             // Cloud/Both choice before sending project context remotely.
             coding_agent_execution_mode: "local".to_string(),
