@@ -30,6 +30,7 @@ export function MaintenanceCenter(props: {
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [backupCreating, setBackupCreating] = useState(false);
   const [backupError, setBackupError] = useState<string | null>(null);
+  const [backupListError, setBackupListError] = useState<string | null>(null);
   const [backupSuccess, setBackupSuccess] = useState<string | null>(null);
   const [recentLogs, setRecentLogs] = useState<string | null>(null);
   const [logsLoading, setLogsLoading] = useState(false);
@@ -39,7 +40,16 @@ export function MaintenanceCenter(props: {
   const [cacheClearedBytes, setCacheClearedBytes] = useState<number | null>(null);
 
   useEffect(() => {
-    void api.listBackups().then(setBackups);
+    let mounted = true;
+    void api.listBackups().then((items) => {
+      if (mounted) {
+        setBackups(items);
+        setBackupListError(null);
+      }
+    }).catch((error: unknown) => {
+      if (mounted) setBackupListError(formatError(error));
+    });
+    return () => { mounted = false; };
   }, []);
 
   const modelReady = props.models.some((model) => model.state === "ready" || model.state === "loaded");
@@ -97,8 +107,15 @@ export function MaintenanceCenter(props: {
     setBackupSuccess(null);
     try {
       const snapshot = await api.backupDatabase();
-      setBackups(await api.listBackups());
+      // A successful snapshot must not be reported as failed just because
+      // refreshing the directory listing fails afterwards.
       setBackupSuccess(`Created database-only snapshot: ${snapshot.name}`);
+      try {
+        setBackups(await api.listBackups());
+        setBackupListError(null);
+      } catch (error) {
+        setBackupListError(formatError(error));
+      }
     } catch (caught) {
       setBackupError(formatError(caught));
     } finally {
@@ -195,6 +212,7 @@ export function MaintenanceCenter(props: {
           </button>
         </div>
         {backupError ? <p className="setup-warning">{backupError}</p> : null}
+        {backupListError ? <p role="alert" className="setup-warning">Could not refresh database snapshots: {backupListError}</p> : null}
         {backupSuccess ? <p role="status" className="muted">{backupSuccess}</p> : null}
         {backups.length > 0 ? (
           <ul className="maintenance-check-list">

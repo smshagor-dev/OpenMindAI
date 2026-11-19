@@ -44,9 +44,29 @@ fn create_at(
             .to_str()
             .ok_or_else(|| AppError::internal("Backup staging path is not valid UTF-8"))?],
     )?;
+    // Do not advertise a snapshot that SQLite itself cannot read. The staged
+    // file is private and not yet visible in the user's backup catalog.
+    verify_staged_snapshot(&staged)?;
     let mut source = fs::File::open(&staged)?;
     let size = source.metadata()?.len();
     publish_at(&mut source, directory, timestamp, next_id, size)
+}
+
+/// Verify the complete staged database before exposing it as a recoverable
+/// backup. Open read-only to avoid creating journal sidecars or repairing data.
+fn verify_staged_snapshot(path: &Path) -> Result<(), AppError> {
+    let snapshot = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    let result: String = snapshot.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
+    if result != "ok" {
+        return Err(AppError::internal(format!(
+            "database backup verification failed: {result}"
+        )));
+    }
+    Ok(())
 }
 
 fn publish_at(
@@ -118,6 +138,17 @@ mod tests {
         collections::HashSet,
         sync::{Arc, Barrier},
     };
+
+    #[test]
+    fn corrupted_or_non_sqlite_snapshot_is_rejected_before_publication() {
+        let dir = tempfile::tempdir().unwrap();
+        let invalid = dir.path().join("corrupt.db");
+        fs::write(&invalid, b"not an SQLite database").unwrap();
+        assert!(verify_staged_snapshot(&invalid).is_err());
+        let conn = source(&dir.path().join("valid-source.db"));
+        let (name, _) = create_test_snapshot(&conn, dir.path(), "verified", Uuid::new_v4).unwrap();
+        verify_staged_snapshot(&dir.path().join(name)).unwrap();
+    }
 
     fn create_test_snapshot(
         connection: &Connection,

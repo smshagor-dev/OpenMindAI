@@ -1,5 +1,8 @@
+import { classifyAttachmentKind } from "./attachmentKind";
 import type { Message } from "../types";
+import { shouldReadAttachmentAsText } from "./attachmentRouting";
 import { formatBytes } from "./format";
+import { parseDisplayedAttachmentSection } from "./displayAttachmentSection";
 import { analyzeVideoFile, transcribeAudioFile } from "./media";
 import { extractPdfText, type PdfExtractionOptions, type PdfExtractionProgress } from "./pdf";
 import { isImageGenerationIntent } from "./imageGeneration";
@@ -71,6 +74,9 @@ const CHAT_MODES: ChatMode[] = [
 function visionMimeType(file: File) {
   const declared = file.type.toLowerCase();
   if (SUPPORTED_VISION_IMAGE_TYPES.has(declared)) return declared;
+  // Only trust the filename when the browser could not identify the content type.
+  // An explicit unsupported MIME (e.g. SVG renamed to .png) must not bypass the allowlist.
+  if (declared && declared !== "application/octet-stream") return null;
   if (/\.png$/i.test(file.name)) return "image/png";
   if (/\.jpe?g$/i.test(file.name)) return "image/jpeg";
   if (/\.webp$/i.test(file.name)) return "image/webp";
@@ -165,9 +171,7 @@ export async function readAttachment(
   options: AttachmentReadOptions = {},
 ): Promise<AttachmentDraft> {
   const kind = attachmentKind(file);
-  const isTextLike =
-    file.type.startsWith("text/") ||
-    /\.(md|txt|json|csv|ts|tsx|js|jsx|rs|py|html|css|sql|toml|yaml|yml)$/i.test(file.name);
+  const isTextLike = shouldReadAttachmentAsText(kind);
 
   if (kind === "binary") {
     throw new Error(
@@ -222,7 +226,7 @@ export async function readAttachment(
         ? `${extracted.scannedPages.length} image/scanned page(s) detected`
         : null,
       extracted.visionPages.length
-        ? `${extracted.visionPages.length} representative page(s) sent to Lens`
+        ? `${extracted.visionPages.length} representative page(s) prepared for Lens (shared request limit applies)`
         : null,
       extracted.truncated ? "text or scanned-page coverage limited for local chat context" : null,
     ]
@@ -248,7 +252,7 @@ export async function readAttachment(
     const transcript = analysis.transcript?.text
       ? `\n\n--- Audio transcript ---\n${analysis.transcript.text}`
       : "\n\n[No local audio transcript was available; analyze the supplied representative video frames.]";
-    contentPreview = `[Video processed locally: ${analysis.durationSeconds.toFixed(1)} seconds, ${analysis.frames.length} representative frame(s) sent to OpenMindAI Lens.]${transcript}`;
+    contentPreview = `[Video processed locally: ${analysis.durationSeconds.toFixed(1)} seconds, ${analysis.frames.length} representative frame(s) prepared for OpenMindAI Lens (shared request limit applies).]${transcript}`;
   }
 
   return {
@@ -265,10 +269,32 @@ export async function readAttachment(
   };
 }
 
+/**
+ * Allocate the four-image inference limit across sources, not just the first
+ * attachment. Each source gets one image before any source gets a second.
+ * Preserve frame order within each source and attachment order for ties.
+ */
 export function attachmentMedia(attachments: AttachmentDraft[]): InferenceMediaDraft[] {
-  return attachments
-    .flatMap((attachment) => attachment.mediaItems)
-    .slice(0, MAX_INFERENCE_MEDIA_ITEMS);
+  const selected: InferenceMediaDraft[] = [];
+  const sources = attachments.filter((attachment) => attachment.mediaItems.length > 0);
+  for (let frame = 0; selected.length < MAX_INFERENCE_MEDIA_ITEMS; frame += 1) {
+    let added = false;
+    for (const source of sources) {
+      const item = source.mediaItems[frame];
+      if (!item) continue;
+      selected.push(item);
+      added = true;
+      if (selected.length === MAX_INFERENCE_MEDIA_ITEMS) break;
+    }
+    if (!added) break;
+  }
+  return selected;
+}
+
+export function attachmentMediaCoverage(attachments: AttachmentDraft[]) {
+  const available = attachments.reduce((sum, attachment) => sum + attachment.mediaItems.length, 0);
+  const sent = Math.min(available, MAX_INFERENCE_MEDIA_ITEMS);
+  return { available, sent, omitted: available - sent };
 }
 
 function attachmentContextSources(attachments: AttachmentDraft[]): AttachmentContextSource[] {
@@ -300,7 +326,11 @@ export function buildMessageContent(
     attachmentContextSources(attachments),
     prompt,
   );
-  return [modePrefix, prompt, attachmentText].filter(Boolean).join("\n\n");
+  const coverage = attachmentMediaCoverage(attachments);
+  const visualNotice = coverage.omitted > 0
+    ? `[Visual evidence limit: ${coverage.sent} of ${coverage.available} prepared images/pages/frames supplied to Lens; ${coverage.omitted} omitted. Images are allocated across attachments in order. Do not claim to have inspected omitted pages or frames.]`
+    : "";
+  return [modePrefix, prompt, attachmentText, visualNotice].filter(Boolean).join("\n\n");
 }
 
 /**
@@ -326,17 +356,9 @@ export function userMessageDisplay(content: string): UserMessageDisplay {
     }
   }
 
-  const attachmentStart = visible.startsWith("[Attachment:")
-    ? 0
-    : visible.indexOf("\n\n[Attachment:");
+  const { start: attachmentStart, names: attachmentNames } = parseDisplayedAttachmentSection(visible);
   const attachmentPayload = attachmentStart >= 0 ? visible.slice(attachmentStart).trim() : "";
   const prompt = (attachmentStart >= 0 ? visible.slice(0, attachmentStart) : visible).trim();
-  const attachmentNames = Array.from(
-    attachmentPayload.matchAll(
-      /^\[Attachment:\s*(.+?),\s*(?:text|image|pdf|audio|video|binary),\s*[^,\]]+,\s*[^\]]+\]$/gm,
-    ),
-    (match) => match[1].trim(),
-  );
   const attachmentSummary = attachmentNames.length
     ? `Attached: ${attachmentNames.join(", ")}`
     : attachmentPayload
@@ -453,21 +475,7 @@ export function titleFromPrompt(prompt: string) {
 }
 
 export function attachmentKind(file: File): AttachmentDraft["kind"] {
-  if (file.type.startsWith("image/") || /\.(png|jpe?g|webp)$/i.test(file.name)) return "image";
-  if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) return "pdf";
-  if (file.type.startsWith("audio/") || /\.(wav|mp3|m4a|aac|flac|ogg|opus)$/i.test(file.name)) {
-    return "audio";
-  }
-  if (file.type.startsWith("video/") || /\.(mp4|webm|mov|m4v|mpeg|mpg)$/i.test(file.name)) {
-    return "video";
-  }
-  if (
-    file.type.startsWith("text/") ||
-    /\.(md|txt|json|csv|ts|tsx|js|jsx|rs|py|html|css|sql|toml|yaml|yml)$/i.test(file.name)
-  ) {
-    return "text";
-  }
-  return "binary";
+  return classifyAttachmentKind(file);
 }
 
 export function modeInstruction(mode: ChatMode) {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Boxes,
   CheckCircle2,
@@ -117,6 +117,15 @@ function statusLabel(connected: boolean, configured: boolean, account?: string |
   return "Not connected";
 }
 
+function fetchConnectedAppStatuses() {
+  return Promise.allSettled([
+    api.githubAccount(),
+    api.googleCredentials(),
+    api.googleWorkspaceStatus(),
+    ...providerOrder.map((provider) => api.integrationStatus(provider)),
+  ]);
+}
+
 export function AppsSettings() {
   const [github, setGithub] = useState<GithubAccount | null | undefined>(undefined);
   const [githubToken, setGithubToken] = useState("");
@@ -143,14 +152,10 @@ export function AppsSettings() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = async () => {
-    const [githubResult, credentialsResult, workspaceResult, ...integrationResults] =
-      await Promise.allSettled([
-        api.githubAccount(),
-        api.googleCredentials(),
-        api.googleWorkspaceStatus(),
-        ...providerOrder.map((provider) => api.integrationStatus(provider)),
-      ]);
+  const applyStatuses = useCallback((
+    [githubResult, credentialsResult, workspaceResult, ...integrationResults]:
+      Awaited<ReturnType<typeof fetchConnectedAppStatuses>>,
+  ) => {
     setGithub(githubResult.status === "fulfilled" ? githubResult.value : null);
     const credentials = credentialsResult.status === "fulfilled" ? credentialsResult.value : null;
     setGoogleCredentials(credentials);
@@ -171,11 +176,17 @@ export function AppsSettings() {
         return { ...current, [provider]: next };
       });
     });
-  };
+  }, []);
+
+  const refresh = async () => applyStatuses(await fetchConnectedAppStatuses());
 
   useEffect(() => {
-    void refresh();
-  }, []);
+    let active = true;
+    void fetchConnectedAppStatuses().then((result) => {
+      if (active) applyStatuses(result);
+    });
+    return () => { active = false; };
+  }, [applyStatuses]);
 
   const connectedCount = useMemo(
     () =>
