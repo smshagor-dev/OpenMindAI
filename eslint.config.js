@@ -41,6 +41,12 @@ export default [
       globals: {
         window: "readonly",
         document: "readonly",
+        getComputedStyle: "readonly",
+        ResizeObserver: "readonly",
+        Event: "readonly",
+        PointerEvent: "readonly",
+        requestAnimationFrame: "readonly",
+        cancelAnimationFrame: "readonly",
         console: "readonly",
         HTMLElement: "readonly",
         SVGSVGElement: "readonly",

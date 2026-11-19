@@ -31,11 +31,20 @@ const WAV_HEADER_BYTES: u64 = 44;
 /// Reject scripts it cannot pronounce instead of producing misleading audio.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn validate_narration_language(text: &str) -> Result<(), AppError> {
-    let unsupported = text.chars().any(|ch| matches!(ch as u32,
-        0x0400..=0x052f | 0x0900..=0x097f | 0x0980..=0x09ff |
-        0x0600..=0x06ff | 0x4e00..=0x9fff | 0x3040..=0x30ff |
-        0xac00..=0xd7af | 0x0e00..=0x0e7f
-    ));
+    // A blocklist of a few scripts silently accepted Greek, Hebrew, Tamil,
+    // Georgian and other languages that the installed English voice cannot
+    // synthesize reliably. Permit Latin text (including common loanwords and
+    // accents), digits and punctuation; reject other alphabetic scripts.
+    // Combining marks used with non-Latin letters are covered by the base
+    // character check. This is a script guard, not language identification.
+    let unsupported = text.chars().any(|ch| {
+        ch.is_alphabetic()
+            && !matches!(ch as u32,
+                0x0041..=0x005a | 0x0061..=0x007a |
+                0x00c0..=0x00d6 | 0x00d8..=0x00f6 |
+                0x00f8..=0x024f | 0x1e00..=0x1eff
+            )
+    });
     if unsupported {
         return Err(AppError::ArtifactGenerationFailed(
             "The installed Kokoro af_heart voice supports English narration only; this text contains an unsupported writing system. Select English text or install a compatible multilingual voice when available.".to_string(),
@@ -107,9 +116,9 @@ pub async fn generate_voice(
     ensure_contained(root.root(), output_path).map_err(|error| {
         AppError::ArtifactGenerationFailed(format!("voice output path rejected: {error}"))
     })?;
-    if output_path.exists() {
-        fs::remove_file(output_path)?;
-    }
+    // Keep any previous output intact until synthesis and WAV validation pass.
+    // A unique sibling also prevents concurrent jobs from sharing partial bytes.
+    let staged = StagedVoiceOutput::new(output_path)?;
 
     tracing::info!(
         voice = DEFAULT_VOICE,
@@ -146,8 +155,9 @@ pub async fn generate_voice(
         )));
     }
 
-    write_pcm16_wav(output_path, &audio.samples)?;
-    validate_wav(output_path)?;
+    write_pcm16_wav(&staged.path, &audio.samples)?;
+    validate_wav(&staged.path)?;
+    staged.publish(output_path)?;
     tracing::info!(
         path = %output_path.display(),
         samples = audio.samples.len(),
@@ -483,6 +493,39 @@ fn validate_kokoro_pytorch_archive(path: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Owns a unique staging pathname until a validated WAV is published.
+/// Drop cleans up on synthesis errors, invalid WAVs and failed publication.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+struct StagedVoiceOutput {
+    path: PathBuf,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+impl StagedVoiceOutput {
+    fn new(destination: &Path) -> Result<Self, AppError> {
+        let parent = destination.parent().ok_or_else(|| {
+            AppError::ArtifactGenerationFailed("voice output path has no parent".to_string())
+        })?;
+        Ok(Self {
+            path: parent.join(format!(".voice-{}.wav", uuid::Uuid::new_v4())),
+        })
+    }
+
+    fn publish(&self, destination: &Path) -> Result<(), AppError> {
+        // A same-filesystem hard link publishes a complete validated file
+        // without overwriting another job's output (or following a final symlink).
+        fs::hard_link(&self.path, destination)?;
+        Ok(())
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+impl Drop for StagedVoiceOutput {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn write_pcm16_wav(path: &Path, samples: &[f32]) -> Result<(), AppError> {
     let data_bytes = samples
@@ -496,7 +539,7 @@ fn write_pcm16_wav(path: &Path, samples: &[f32]) -> Result<(), AppError> {
         AppError::ArtifactGenerationFailed("voice output is too large".to_string())
     })?;
 
-    let mut file = fs::File::create(path)?;
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(path)?;
     file.write_all(b"RIFF")?;
     file.write_all(&riff_size.to_le_bytes())?;
     file.write_all(b"WAVE")?;
@@ -551,6 +594,47 @@ fn validate_wav(path: &Path) -> Result<(), AppError> {
 #[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voice_staging_publishes_only_validated_wav_and_cleans_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("narration.wav");
+        let staged = StagedVoiceOutput::new(&destination).unwrap();
+        write_pcm16_wav(&staged.path, &[0.0, 0.25, -0.25]).unwrap();
+        validate_wav(&staged.path).unwrap();
+        staged.publish(&destination).unwrap();
+        let staged_path = staged.path.clone();
+        drop(staged);
+        assert!(!staged_path.exists());
+        validate_wav(&destination).unwrap();
+    }
+
+    #[test]
+    fn voice_staging_never_overwrites_existing_output_on_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("narration.wav");
+        fs::write(&destination, b"existing-user-audio").unwrap();
+        let staged = StagedVoiceOutput::new(&destination).unwrap();
+        write_pcm16_wav(&staged.path, &[0.5]).unwrap();
+        assert!(staged.publish(&destination).is_err());
+        let staged_path = staged.path.clone();
+        drop(staged);
+        assert!(!staged_path.exists());
+        assert_eq!(fs::read(&destination).unwrap(), b"existing-user-audio");
+    }
+
+    #[test]
+    fn invalid_voice_staging_does_not_publish_or_leave_partial_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("narration.wav");
+        let staged = StagedVoiceOutput::new(&destination).unwrap();
+        fs::write(&staged.path, b"partial").unwrap();
+        assert!(validate_wav(&staged.path).is_err());
+        let staged_path = staged.path.clone();
+        drop(staged);
+        assert!(!staged_path.exists());
+        assert!(!destination.exists());
+    }
 
     #[test]
     fn kokoro_voice_zip_preflight_accepts_standard_archive_and_checks_count() {
@@ -851,11 +935,29 @@ mod narration_language_tests {
     #[test]
     fn english_narration_and_punctuation_are_allowed() {
         assert!(validate_narration_language("Hello, world! 2026 — ready.").is_ok());
+        assert!(validate_narration_language("Café résumé naïve").is_ok());
     }
 
     #[test]
     fn unsupported_scripts_fail_before_model_or_output_access() {
-        for text in ["বাংলা", "Привет", "नमस्ते", "مرحبا", "你好", "こんにちは"] {
+        for text in [
+            "বাংলা",
+            "Привет",
+            "नमस्ते",
+            "مرحبا",
+            "你好",
+            "こんにちは",
+            "Γειά",
+            "ᾈ",
+            "שלום",
+            "Բարեւ",
+            "வணக்கம்",
+            "გამარჯობა",
+            "ᲒᲐᲛᲐᲠᲯᲝᲑᲐ",
+            "ሰላም",
+            "안녕하세요",
+            "مَرْحَبًا",
+        ] {
             let error = validate_narration_language(text).unwrap_err();
             assert!(error.to_string().contains("English narration only"));
         }
@@ -863,6 +965,8 @@ mod narration_language_tests {
 
     #[test]
     fn mixed_script_narration_is_rejected() {
-        assert!(validate_narration_language("Hello বাংলা").is_err());
+        for text in ["Hello বাংলা", "English + Ελληνικά", "English שלום"] {
+            assert!(validate_narration_language(text).is_err());
+        }
     }
 }

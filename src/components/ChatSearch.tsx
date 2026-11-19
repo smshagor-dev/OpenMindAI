@@ -19,31 +19,21 @@ export function ChatSearch(props: {
   const [cursors, setCursors] = useState<(string | null)[]>([null]);
   const [pageIndex, setPageIndex] = useState(0);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   // Increment immediately on edits/navigation, not only when an effect
   // reruns: old replies cannot flash on screen during the debounce interval.
   const requestVersion = useRef(0);
 
+  // The dialog is mounted only while open; mounting initializes its search state.
   useEffect(() => {
-    if (!open) {
-      requestVersion.current += 1;
-      return;
-    }
-    setQuery("");
-    setSearch("");
-    setResults([]);
-    setPageIndex(0);
-    setCursors([null]);
-    setNextCursor(null);
-    setError(null);
     const focus = window.setTimeout(() => inputRef.current?.focus(), 0);
     return () => {
       requestVersion.current += 1;
       window.clearTimeout(focus);
     };
-  }, [open]);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -59,8 +49,7 @@ export function ChatSearch(props: {
     if (!open) return;
     let cancelled = false;
     const version = ++requestVersion.current;
-    setLoading(true);
-    setError(null);
+    // Loading begins in the initiating event, never in effect setup.
     void api
       .searchConversations(search, cursors[pageIndex] ?? undefined, PAGE_SIZE)
       .then((page) => {
@@ -156,6 +145,8 @@ export function ChatSearch(props: {
               disabled={loading || pageIndex === 0}
               onClick={() => {
                 requestVersion.current += 1;
+                setLoading(true);
+                setError(null);
                 setPageIndex((page) => Math.max(0, page - 1));
               }}
             >
@@ -168,6 +159,8 @@ export function ChatSearch(props: {
               onClick={() => {
                 if (!nextCursor) return;
                 requestVersion.current += 1;
+                setLoading(true);
+                setError(null);
                 setCursors((items) => [...items.slice(0, pageIndex + 1), nextCursor]);
                 setPageIndex((page) => page + 1);
               }}

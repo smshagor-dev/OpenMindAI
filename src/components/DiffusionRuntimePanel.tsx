@@ -20,8 +20,13 @@ export function DiffusionRuntimePanel() {
   }, []);
 
   useEffect(() => {
-    void check();
-  }, [check]);
+    let active = true;
+    // Fetch responses, rather than effect setup, update React state.
+    void api.diffusionRuntimeStatus()
+      .then((next) => { if (active) setStatus(next); })
+      .catch((caught) => { if (active) setError(formatError(caught)); });
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     if (!installing && !BUSY_STATES.has(status?.state ?? "")) return;

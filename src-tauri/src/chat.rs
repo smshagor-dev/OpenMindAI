@@ -1,6 +1,7 @@
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{app_error::AppError, database::Database};
@@ -82,12 +83,20 @@ impl<'a> ChatRepository<'a> {
             return Err(AppError::internal("chat search query exceeds 256 characters"));
         }
         let limit = requested_limit.clamp(1, 40);
+        // Bind the cursor to the exact search term. A stale cursor from a
+        // previous query must not silently skip valid results in a new query.
+        // Hash rather than serialize potentially private search text into UI state.
+        let query_tag = format!("{:x}", Sha256::digest(query.as_bytes()));
         let cursor = match cursor {
             Some(raw) => {
-                let (updated_at, id) = raw
-                    .split_once('|')
-                    .ok_or_else(|| AppError::internal("invalid chat search cursor"))?;
-                if raw.len() > 128
+                let mut fields = raw.split('|');
+                let (Some(updated_at), Some(id), Some(tag), None) =
+                    (fields.next(), fields.next(), fields.next(), fields.next())
+                else {
+                    return Err(AppError::internal("invalid chat search cursor"));
+                };
+                if raw.len() > 200
+                    || tag != query_tag
                     || chrono::DateTime::parse_from_rfc3339(updated_at).is_err()
                     || Uuid::parse_str(id).is_err()
                 {
@@ -149,7 +158,7 @@ impl<'a> ChatRepository<'a> {
         let next_cursor = if has_more {
             conversations
                 .last()
-                .map(|chat| format!("{}|{}", chat.updated_at, chat.id))
+                .map(|chat| format!("{}|{}|{}", chat.updated_at, chat.id, query_tag))
         } else {
             None
         };
@@ -974,6 +983,16 @@ mod tests {
         assert!(repo
             .search_conversations("", Some("not-a-real-cursor"), 40)
             .is_err());
+        let first = repo.search_conversations("ordinary", None, 2).unwrap();
+        let cursor = first.next_cursor.expect("multi-page query");
+        assert!(repo.search_conversations("Report", Some(&cursor), 2).is_err(),
+            "a cursor from a different query must not skip valid search hits");
+        assert!(repo.search_conversations("ordinary", Some(&cursor), 2).is_ok(),
+            "the same search query must accept its own continuation");
+        let mut forged = cursor.clone();
+        forged.push_str("|unexpected");
+        assert!(repo.search_conversations("ordinary", Some(&forged), 2).is_err(),
+            "extra cursor fields must not be accepted");
     }
 
     #[test]

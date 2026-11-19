@@ -12,11 +12,16 @@ export interface PreviewTarget {
 export function PreviewPanel(props: { target: PreviewTarget | null; onClose: () => void }) {
   const language = normalizeLanguage(props.target?.language ?? null);
   const isHtml = language === "html";
-  const [mode, setMode] = useState<"preview" | "code">(isHtml ? "preview" : "code");
-
-  useEffect(() => {
-    setMode(isHtml ? "preview" : "code");
-  }, [props.target, isHtml]);
+  const [selection, setSelection] = useState<{
+    target: PreviewTarget | null;
+    mode: "preview" | "code";
+  } | null>(null);
+  // A newly selected artifact uses its default view without an effect-driven reset.
+  const mode = selection?.target === props.target
+    ? selection.mode
+    : isHtml ? "preview" : "code";
+  const setMode = (nextMode: "preview" | "code") =>
+    setSelection({ target: props.target, mode: nextMode });
 
   useEffect(() => {
     if (!props.target) return;
