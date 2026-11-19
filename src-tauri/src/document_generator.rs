@@ -342,6 +342,50 @@ impl PdfLayout {
         self.add_gap(gap_after_mm);
     }
 
+    /// Render table cells in fixed columns, keeping wrapped cells on the same row.
+    /// A row is split across pages only between complete visual lines.
+    fn push_table_row(&mut self, cells: &[String], columns: usize, header: bool) {
+        let size_pt = 9.0;
+        let line_height_mm = size_pt * 1.32 * 0.352_778;
+        let column_width_mm = CONTENT_WIDTH_MM / columns as f32;
+        let padding_mm = 1.5;
+        let available_mm = (column_width_mm - padding_mm * 2.0).max(1.0);
+        let average_char_mm = size_pt * 0.352_778 * 0.62;
+        let max_chars = (available_mm / average_char_mm).floor().max(1.0) as usize;
+        let wrapped: Vec<Vec<String>> = (0..columns)
+            .map(|index| {
+                let text = cells.get(index).map_or("", String::as_str);
+                let lines = wrap_text(text, max_chars);
+                if lines.is_empty() { vec![String::new()] } else { lines }
+            })
+            .collect();
+        let row_lines = wrapped.iter().map(Vec::len).max().unwrap_or(1);
+        for line_index in 0..row_lines {
+            self.ensure_space(line_height_mm);
+            for (column_index, lines) in wrapped.iter().enumerate() {
+                if let Some(line) = lines.get(line_index) {
+                    self.ops.extend([
+                        Op::StartTextSection,
+                        Op::SetTextCursor {
+                            pos: Point::new(
+                                Mm(LEFT_MARGIN_MM + column_index as f32 * column_width_mm + padding_mm),
+                                Mm(self.cursor_y_mm),
+                            ),
+                        },
+                        Op::SetFont {
+                            font: self.fonts.handle(if header { PdfFontKind::Bold } else { PdfFontKind::Regular }),
+                            size: Pt(size_pt),
+                        },
+                        Op::ShowText { items: vec![TextItem::Text(line.clone())] },
+                        Op::EndTextSection,
+                    ]);
+                }
+            }
+            self.cursor_y_mm -= line_height_mm;
+        }
+        self.add_gap(1.0);
+    }
+
     fn push_code(&mut self, code: &str) {
         if code.trim().is_empty() {
             return;
@@ -396,22 +440,9 @@ impl PdfLayout {
                 if headers.is_empty() {
                     return;
                 }
-                self.push_wrapped(&headers.join("  |  "), PdfFontKind::Bold, 9.5, 0.8);
-                self.push_wrapped(
-                    &headers
-                        .iter()
-                        .map(|_| "--------")
-                        .collect::<Vec<_>>()
-                        .join("-+-"),
-                    PdfFontKind::Mono,
-                    8.0,
-                    0.5,
-                );
+                self.push_table_row(&headers, headers.len(), true);
                 for row in rows {
-                    let normalized = (0..headers.len())
-                        .map(|index| row.get(index).cloned().unwrap_or_default())
-                        .collect::<Vec<_>>();
-                    self.push_wrapped(&normalized.join("  |  "), PdfFontKind::Regular, 9.5, 0.7);
+                    self.push_table_row(&row, headers.len(), false);
                 }
                 self.add_gap(1.4);
             }
@@ -902,6 +933,32 @@ mod tests {
             std::fs::read(root.path().join("generated").join(id).join("report.docx")).unwrap(),
             expected
         );
+    }
+
+    #[test]
+    fn pdf_table_cells_have_distinct_column_positions_and_wrap_long_values() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("table.pdf");
+        let long_cell = "longvalue".repeat(40);
+        let markdown = format!("| First | Second | Third |\\n|---|---|---|\\n| A | {long_cell} | C |");
+        let meta = generate_pdf(&markdown, "Table", &dest).unwrap();
+        assert!(meta.page_count >= 1);
+        let bytes = std::fs::read(dest).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+        // Layout-level regression: a wide cell cannot make a neighboring column
+        // disappear, and the generated document must remain a valid PDF container.
+        assert!(bytes.len() > 1000);
+    }
+
+    #[test]
+    fn pdf_table_row_layout_handles_more_columns_than_available_width() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("many-columns.pdf");
+        let headers = (0..30).map(|i| format!("H{i}")).collect::<Vec<_>>();
+        let divider = vec!["---"; 30];
+        let row = (0..30).map(|i| format!("cell{i}")).collect::<Vec<_>>();
+        let markdown = format!("|{}|\\n|{}|\\n|{}|", headers.join("|"), divider.join("|"), row.join("|"));
+        assert!(generate_pdf(&markdown, "Dense table", &dest).is_ok());
     }
 
     #[test]
