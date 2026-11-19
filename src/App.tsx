@@ -510,7 +510,16 @@ export function App() {
       setExecutionMode(nextPreferences.aiExecutionMode);
     }
     if (userProfileInfo) setUserProfile(userProfileInfo);
-    if (installationStatusInfo) setInstallationStatus(installationStatusInfo);
+    if (installationStatusInfo) {
+      setInstallationStatus(installationStatusInfo);
+      // Initialize the first-run wizard atomically with the fetched installation status.
+      // A previous dismissal remains authoritative on subsequent refreshes.
+      setWizardActive((current) =>
+        current === null
+          ? installationStatusInfo.setupRequired || setupPreparationPending()
+          : current,
+      );
+    }
     setRefreshedOnce(true);
   }, [showError, chatState, setActiveId]);
 
@@ -548,13 +557,6 @@ export function App() {
     // One automatic attempt per application launch; manual retry remains available.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshedOnce, installationStatus, runtime, preferences?.aiExecutionMode]);
-
-  useEffect(() => {
-    if (!refreshedOnce || installationStatus === null || wizardActive !== null) return;
-    // Only first-time root/profile configuration is modal. Runtime repair
-    // must not hide existing chats or prevent access to Settings.
-    setWizardActive(installationStatus.setupRequired || setupPreparationPending());
-  }, [refreshedOnce, installationStatus, wizardActive]);
 
   useEffect(() => {
     if (!preferences?.localRuntimeAutostart) {
