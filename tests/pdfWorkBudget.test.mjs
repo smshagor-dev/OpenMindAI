@@ -123,6 +123,22 @@ test("large selectable page ends extraction before opening later pages", async (
   fx.assertClean();
 });
 
+test("full selectable budget skips OCR even when earlier scanned pages exist", async () => {
+  const fx = fixture(20, (number) => number === 1 ? "" : "selectable ".repeat(2_500));
+  const events = [];
+  const result = await extractPdfText(file, { onProgress: (event) => events.push(event) });
+  assert.deepEqual(fx.visited, [1, 2], "later pages must not be opened after budget fills");
+  assert.deepEqual(result.scannedPages, [1]);
+  assert.deepEqual(result.unreadPages, [1], "unread scanned page must be disclosed");
+  assert.equal(fx.renders.length, 0, "no expensive image rendering after budget fills");
+  assert.equal(fx.calls.length, 0, "native OCR must not run when output cannot fit");
+  assert.equal(result.visionPages.length, 0);
+  assert(result.truncated);
+  assert.match(result.warnings.join(" "), /OCR work budget reached/);
+  assert(events.some(event => event.phase === "ocr" && event.total === 0));
+  fx.assertClean();
+});
+
 test("explicit cancellation stops further page reads, releases decoder, and rejects import", async () => {
   const fx = fixture(250);
   const abort = new globalThis.AbortController();

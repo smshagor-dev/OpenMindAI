@@ -605,8 +605,9 @@ fn project_file_context(files: &[ProjectFile], prompt: Option<&str>) -> String {
         if capacity == 0 {
             break;
         }
-        let snippet = project_relevant_excerpt(content, &terms, capacity);
-        let truncated = snippet.chars().count() < content.chars().count();
+        // Retrieve the matching passage, not only the beginning of a long file.
+        // Keep character boundaries intact for multilingual project documents.
+        let (snippet, truncated) = project_relevant_excerpt(content, &terms, capacity);
         let suffix = if truncated { "\n[truncated]" } else { "" };
         let section = format!("{header}{snippet}{suffix}");
         used_chars += section.chars().count() + separator_chars;
@@ -654,38 +655,6 @@ fn project_query_terms(prompt: &str) -> Vec<String> {
     terms
 }
 
-/// Prefer a bounded window around a query hit rather than always sending the
-/// beginning of a long file. Never slice UTF-8 at arbitrary byte offsets.
-fn project_relevant_excerpt(content: &str, terms: &[String], limit: usize) -> String {
-    if limit == 0 {
-        return String::new();
-    }
-    let match_char = terms.iter().filter_map(|term| {
-        if term.is_empty() || !term.is_ascii() {
-            return None;
-        }
-        content.char_indices().find_map(|(byte, _)| {
-            content[byte..].get(..term.len())
-                .filter(|candidate| candidate.eq_ignore_ascii_case(term))
-                .map(|_| content[..byte].chars().count())
-        })
-    }).min();
-    let Some(position) = match_char else {
-        return take_chars(content, limit);
-    };
-    let start = position.saturating_sub(limit / 4);
-    if start == 0 {
-        return take_chars(content, limit);
-    }
-    const MARKER: &str = "[earlier file content omitted]\\n";
-    let marker_chars = MARKER.chars().count();
-    if limit <= marker_chars {
-        return take_chars(content, limit);
-    }
-    let excerpt = content.chars().skip(start).take(limit - marker_chars).collect::<String>();
-    format!("{MARKER}{excerpt}")
-}
-
 fn project_file_relevance(name: &str, content: &str, terms: &[String]) -> usize {
     if terms.is_empty() {
         return 0;
@@ -702,6 +671,34 @@ fn project_file_relevance(name: &str, content: &str, terms: &[String]) -> usize 
         }
     }
     score
+}
+
+/// Select a bounded passage around the first matching query term. A file may
+/// rank highly because of its name while the relevant text appears much later.
+fn project_relevant_excerpt(content: &str, terms: &[String], limit: usize) -> (String, bool) {
+    let chars: Vec<char> = content.chars().collect();
+    if chars.len() <= limit {
+        return (content.to_owned(), false);
+    }
+    if limit == 0 {
+        return (String::new(), true);
+    }
+    // Unicode lowercase can expand a character; search at character offsets
+    // instead of using byte offsets from a lowercased copy.
+    let lowered: Vec<char> = content.to_lowercase().chars().collect();
+    let mut first_match = None;
+    for term in terms {
+        let needle: Vec<char> = term.chars().collect();
+        if needle.is_empty() || needle.len() > lowered.len() {
+            continue;
+        }
+        if let Some(index) = lowered.windows(needle.len()).position(|window| window == needle) {
+            first_match = Some(first_match.map_or(index, |previous: usize| previous.min(index)));
+        }
+    }
+    let center = first_match.unwrap_or(0).min(chars.len() - 1);
+    let start = center.saturating_sub(limit / 4).min(chars.len() - limit);
+    (chars[start..start + limit].iter().collect(), true)
 }
 
 fn take_chars(content: &str, limit: usize) -> String {
@@ -730,26 +727,6 @@ fn _conversation_type_check(_: Conversation) {}
 mod tests {
     use super::*;
 
-
-    #[test]
-    fn older_project_file_retrieves_late_query_evidence_without_utf8_panics() {
-        let content = format!("{}\\nCRITICAL_EVIDENCE_TOKEN: retained\\n{}", "বাংলা😀".repeat(1500), "tail".repeat(200));
-        let terms = vec!["critical_evidence_token".to_string()];
-        let excerpt = project_relevant_excerpt(&content, &terms, 600);
-        assert!(excerpt.contains("CRITICAL_EVIDENCE_TOKEN"));
-        assert!(excerpt.starts_with("[earlier file content omitted]"));
-        assert!(excerpt.chars().count() <= 600);
-        assert_eq!(project_relevant_excerpt(&content, &[], 50), take_chars(&content, 50));
-    }
-
-    #[test]
-    fn project_excerpt_is_bounded_for_short_limits_and_unicode_terms() {
-        let content = "αβγ 😀 Hello world";
-        assert_eq!(project_relevant_excerpt(content, &["hello".into()], 0), "");
-        assert!(project_relevant_excerpt(content, &["hello".into()], 5).chars().count() <= 5);
-        assert_eq!(project_relevant_excerpt(content, &["αβγ".into()], 8), take_chars(content, 8));
-    }
-
     fn insert_conversation(database: &Database, id: &str, title: &str) {
         database
             .connection()
@@ -758,6 +735,18 @@ mod tests {
                 params![id, title],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn project_excerpt_finds_late_evidence_and_keeps_unicode_boundaries() {
+        let text = format!("{}{}{}", "😀".repeat(100), "ROLLBACK_SECRET_MARKER", "é".repeat(100));
+        let (excerpt, truncated) = project_relevant_excerpt(&text, &["rollback".into()], 48);
+        assert!(truncated);
+        assert!(excerpt.contains("ROLLBACK_SECRET_MARKER"));
+        assert!(excerpt.chars().count() <= 48);
+        let (generic, _) = project_relevant_excerpt(&text, &[], 48);
+        assert!(!generic.contains("ROLLBACK_SECRET_MARKER"));
+        assert_eq!(project_relevant_excerpt("tiny", &["tiny".into()], 48), ("tiny".into(), false));
     }
 
     #[test]
