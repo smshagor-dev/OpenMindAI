@@ -60,6 +60,11 @@ fn unsafe_portable_filename(name: &str) -> bool {
         || (upper.len() == 4
             && (upper.starts_with("COM") || upper.starts_with("LPT"))
             && matches!(upper.as_bytes()[3], b'1'..=b'9'))
+        // Windows also reserves COM¹/²/³ and LPT¹/²/³, including names
+        // with extensions. These are Unicode characters, not ASCII digits.
+        || (stem.chars().count() == 4
+            && (upper.starts_with("COM") || upper.starts_with("LPT"))
+            && matches!(stem.chars().nth(3), Some('¹' | '²' | '³')))
 }
 
 impl StagedOutput {
@@ -331,7 +336,15 @@ mod tests {
         for name in ["CON", "con.txt", "PRN.pdf", "aux", "NUL.docx", "COM1.txt", "lpt9", "report.", "report ", "bad\\nname"] {
             assert!(StagedOutput::from_reserved(directory.open_dir(".").unwrap(), name).is_err(), "{name:?}");
         }
-        for name in ["company.txt", "com0.txt", "report.v1.pdf"] {
+        for name in [
+            "COM¹", "com².txt", "CoM³.PDF", "LPT¹", "lpt².docx", "LpT³.jpeg",
+        ] {
+            assert!(
+                StagedOutput::from_reserved(directory.open_dir(".").unwrap(), name).is_err(),
+                "Windows superscript device alias was accepted: {name:?}"
+            );
+        }
+        for name in ["company.txt", "com0.txt", "report.v1.pdf", "com⁴.txt", "lpt⁵.txt", "résumé.pdf", "বাংলা.txt"] {
             assert!(StagedOutput::from_reserved(directory.open_dir(".").unwrap(), name).is_ok(), "{name:?}");
         }
     }
