@@ -13,6 +13,6 @@ test('capabilities panel does not offer a nonfunctional thinking toggle', () => 
 });
 
 test('explains model-dependent reasoning without claiming request-level control', () => {
-  assert.match(settings, /Reasoning behavior depends on the selected model and provider/);
-  assert.match(settings, /does not\s+currently apply the saved Thinking mode preference to inference requests/);
+  assert.match(settings, /Model reasoning is controlled by the selected model and runtime/);
+  assert.match(settings, /previous Thinking mode switch only saved a preference and did not\s+change inference behavior/);
 });

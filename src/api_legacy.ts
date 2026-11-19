@@ -190,6 +190,8 @@ export const api = {
   saveSetupProgress: (root: string, profileName: string, state: SetupState) =>
     call<void>("save_setup_progress", { root, profileName, state }),
   markRuntimeReady: () => call<void>("mark_runtime_ready"),
+  webSearchContext: (query: string, mode: string) =>
+    call<string>("web_search_context", { query, mode }),
   markModelReady: () => call<void>("mark_model_ready"),
   checkStorageLocation: (path: string) =>
     call<StorageLocationCheck>("check_storage_location", { path }),
@@ -208,7 +210,8 @@ export const api = {
   activateModel: (conversationId: string, modelId: string) =>
     call<LlamaRuntimeStatus>("activate_model", { conversationId, modelId }),
   archiveConversation: (id: string) => call<void>("archive_conversation", { id }),
-  listArchivedConversations: (limit = 100) => call<Conversation[]>("list_archived_conversations", { limit }),
+  listArchivedConversations: (limit = 100) =>
+    call<Conversation[]>("list_archived_conversations", { limit }),
   restoreConversation: (id: string) => call<void>("restore_conversation", { id }),
   deleteConversation: async (id: string) => {
     await flushPendingMessageDeletes();
@@ -265,9 +268,10 @@ export const api = {
     sizeBytes: number,
     mimeType: string | null,
     dataBase64: string,
-  ) => call<ProjectFile>("add_project_binary_file", {
-    input: { projectId, name, sizeBytes, mimeType, dataBase64 },
-  }),
+  ) =>
+    call<ProjectFile>("add_project_binary_file", {
+      input: { projectId, name, sizeBytes, mimeType, dataBase64 },
+    }),
   readProjectBinaryFile: (projectId: string, fileId: string) =>
     call<ProjectBinaryFileDownload>("read_project_binary_file", { projectId, fileId }),
   deleteProjectFile: (projectId: string, fileId: string) =>
@@ -381,17 +385,19 @@ export const api = {
     prompt: string,
     useCpu = false,
     imageOptions?: ImageGenerationOptions,
-  ) => call<Artifact>("create_generation_artifact", {
-    conversationId,
-    messageId,
-    kind,
-    prompt,
-    useCpu,
-    imageOptions: kind === "image" ? imageOptions : undefined,
-  }),
+  ) =>
+    call<Artifact>("create_generation_artifact", {
+      conversationId,
+      messageId,
+      kind,
+      prompt,
+      useCpu,
+      imageOptions: kind === "image" ? imageOptions : undefined,
+    }),
   listArtifacts: (conversationId: string) => call<Artifact[]>("list_artifacts", { conversationId }),
-  listLibraryEntries: (options: { kind?: ArtifactKind; search?: string; cursor?: string; limit?: number } = {}) =>
-    call<LibraryPage>("list_library_entries", options),
+  listLibraryEntries: (
+    options: { kind?: ArtifactKind; search?: string; cursor?: string; limit?: number } = {},
+  ) => call<LibraryPage>("list_library_entries", options),
   openArtifact: (artifactId: string) => call<void>("open_artifact", { artifactId }),
   openExternalUrl: (url: string) => call<void>("open_external_url", { url }),
   revealArtifactInFolder: (artifactId: string) =>
@@ -451,7 +457,11 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
     } as T);
   }
   if (command === "fork_conversation_for_edit") {
-    return Promise.reject(new Error("Editing earlier messages requires the desktop app. Your original chat is unchanged."));
+    return Promise.reject(
+      new Error(
+        "Editing earlier messages requires the desktop app. Your original chat is unchanged.",
+      ),
+    );
   }
   if (command === "list_messages") return Promise.resolve([] as T);
   if (command === "add_user_message" || command === "create_streaming_assistant_message") {
@@ -481,8 +491,7 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
     } as T);
   }
   if (command === "delete_message") return Promise.resolve(undefined as T);
-  if (command === "list_projects")
-    return Promise.resolve({ projects: [], nextCursor: null } as T);
+  if (command === "list_projects") return Promise.resolve({ projects: [], nextCursor: null } as T);
   if (command === "get_project")
     return Promise.reject(new Error("Project details require the desktop app."));
   if (command === "add_project_binary_file" || command === "read_project_binary_file")
@@ -771,15 +780,22 @@ function browserFallback<T>(command: string, args?: Record<string, unknown>): Pr
   if (command === "get_app_preferences" || command === "save_app_preferences") {
     if (
       command === "save_app_preferences" &&
-      (args?.preferences as { autoDownloadModelUpdates?: unknown } | undefined)?.autoDownloadModelUpdates === true
+      (args?.preferences as { autoDownloadModelUpdates?: unknown } | undefined)
+        ?.autoDownloadModelUpdates === true
     ) {
-      return Promise.reject(new Error("Automatic model downloading is not available. Confirm model downloads manually in Settings → Models."));
+      return Promise.reject(
+        new Error(
+          "Automatic model downloading is not available. Confirm model downloads manually in Settings → Models.",
+        ),
+      );
     }
     if (
       command === "save_app_preferences" &&
       (args?.preferences as { saveChatHistory?: unknown } | undefined)?.saveChatHistory === false
     ) {
-      return Promise.reject(new Error("This version saves chat history locally. Temporary chats are not supported."));
+      return Promise.reject(
+        new Error("This version saves chat history locally. Temporary chats are not supported."),
+      );
     }
     return Promise.resolve({
       theme: "light",

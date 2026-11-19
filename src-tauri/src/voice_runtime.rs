@@ -31,11 +31,20 @@ const WAV_HEADER_BYTES: u64 = 44;
 /// Reject scripts it cannot pronounce instead of producing misleading audio.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn validate_narration_language(text: &str) -> Result<(), AppError> {
-    let unsupported = text.chars().any(|ch| matches!(ch as u32,
-        0x0400..=0x052f | 0x0900..=0x097f | 0x0980..=0x09ff |
-        0x0600..=0x06ff | 0x4e00..=0x9fff | 0x3040..=0x30ff |
-        0xac00..=0xd7af | 0x0e00..=0x0e7f
-    ));
+    // A blocklist of a few scripts silently accepted Greek, Hebrew, Tamil,
+    // Georgian and other languages that the installed English voice cannot
+    // synthesize reliably. Permit Latin text (including common loanwords and
+    // accents), digits and punctuation; reject other alphabetic scripts.
+    // Combining marks used with non-Latin letters are covered by the base
+    // character check. This is a script guard, not language identification.
+    let unsupported = text.chars().any(|ch| {
+        ch.is_alphabetic()
+            && !matches!(ch as u32,
+                0x0041..=0x005a | 0x0061..=0x007a |
+                0x00c0..=0x00d6 | 0x00d8..=0x00f6 |
+                0x00f8..=0x024f | 0x1e00..=0x1eff
+            )
+    });
     if unsupported {
         return Err(AppError::ArtifactGenerationFailed(
             "The installed Kokoro af_heart voice supports English narration only; this text contains an unsupported writing system. Select English text or install a compatible multilingual voice when available.".to_string(),
@@ -851,11 +860,12 @@ mod narration_language_tests {
     #[test]
     fn english_narration_and_punctuation_are_allowed() {
         assert!(validate_narration_language("Hello, world! 2026 — ready.").is_ok());
+        assert!(validate_narration_language("Café résumé naïve").is_ok());
     }
 
     #[test]
     fn unsupported_scripts_fail_before_model_or_output_access() {
-        for text in ["বাংলা", "Привет", "नमस्ते", "مرحبا", "你好", "こんにちは"] {
+        for text in ["বাংলা", "Привет", "नमस्ते", "مرحبا", "你好", "こんにちは", "Γειά", "שלום", "வணக்கம்", "გამარჯობა", "ሰላም", "안녕하세요"] {
             let error = validate_narration_language(text).unwrap_err();
             assert!(error.to_string().contains("English narration only"));
         }

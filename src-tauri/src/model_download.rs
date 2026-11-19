@@ -138,6 +138,14 @@ struct HuggingFaceGguf {
     total_file_size: Option<u64>,
 }
 
+fn ensure_download_not_cancelled(token: &CancellationToken) -> Result<(), AppError> {
+    if token.is_cancelled() {
+        Err(AppError::InferenceCancelled("download stopped".to_string()))
+    } else {
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub struct ModelDownloadManager {
     root: PortableRootManager,
@@ -288,15 +296,19 @@ impl ModelDownloadManager {
         let _root_lock = self.begin_root_install()?;
         let entry = entry_by_id(model_id)?;
         tracing::info!(repo = %entry.repo, model_id = %entry.id, "installing AI model package");
-        self.update_status(|status| *status = DownloadStatus::queued(&entry))?;
-        self.set_state(DownloadState::Resolving, None)?;
-
+        // Publish the cancellation token and Resolving status together under
+        // the same lock order as stop_download. Otherwise Cancel can arrive
+        // after Resolving becomes visible but before a token exists.
         let token = CancellationToken::new();
-        *self
-            .cancel_token
-            .lock()
-            .map_err(|_| AppError::internal("download cancel lock poisoned"))? =
-            Some(token.clone());
+        {
+            let mut status = self.status.lock()
+                .map_err(|_| AppError::internal("download status lock poisoned"))?;
+            let mut active_token = self.cancel_token.lock()
+                .map_err(|_| AppError::internal("download cancel lock poisoned"))?;
+            *status = DownloadStatus::queued(&entry);
+            status.state = DownloadState::Resolving;
+            *active_token = Some(token.clone());
+        }
 
         let result = self.download_entry_inner(entry, token).await;
         *self
@@ -328,7 +340,12 @@ impl ModelDownloadManager {
         entry: ModelCatalogEntry,
         token: CancellationToken,
     ) -> Result<DownloadStatus, AppError> {
+        // Metadata lookup is an async network request. A user may cancel while
+        // it is pending; never proceed to create or mutate package files after
+        // the lookup completes if that request was stopped.
+        ensure_download_not_cancelled(&token)?;
         let metadata = self.resolve_model_metadata(&entry).await?;
+        ensure_download_not_cancelled(&token)?;
         let download = entry.download.as_ref().ok_or_else(|| {
             AppError::ModelUnsupported(format!(
                 "{} has no downloadable file configured",
@@ -908,6 +925,17 @@ mod tests {
     }
 
     #[test]
+    fn resolving_download_is_immediately_cancellable_with_published_token() {
+        let entry = crate::model_catalog::required_entry().unwrap();
+        let token = CancellationToken::new();
+        let mut status = DownloadStatus::queued(&entry);
+        status.state = DownloadState::Resolving;
+        assert!(apply_stop_if_active(&mut status, Some(&token), DownloadState::Cancelled));
+        assert!(token.is_cancelled());
+        assert!(matches!(status.state, DownloadState::Cancelled));
+    }
+
+    #[test]
     fn stop_preserves_terminal_download_states_even_with_stale_token() {
         let entry = crate::model_catalog::required_entry().unwrap();
         for terminal in [
@@ -1174,6 +1202,26 @@ mod tests {
         ] {
             assert!(pinned_repo_revision(Some(invalid)).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn cancelled_metadata_resolution_must_not_start_disk_writes() {
+        let token = CancellationToken::new();
+        assert!(ensure_download_not_cancelled(&token).is_ok());
+        token.cancel();
+        assert!(matches!(
+            ensure_download_not_cancelled(&token),
+            Err(AppError::InferenceCancelled(_))
+        ));
+    }
+
+    #[test]
+    fn independent_download_tokens_do_not_cross_cancel() {
+        let first = CancellationToken::new();
+        let second = CancellationToken::new();
+        first.cancel();
+        assert!(ensure_download_not_cancelled(&first).is_err());
+        assert!(ensure_download_not_cancelled(&second).is_ok());
     }
 
     #[test]
