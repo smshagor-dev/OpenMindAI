@@ -108,6 +108,26 @@ impl DatasetDownloadManager {
         }
     }
 
+    /// Read-only inventory for visible dataset IDs. This validates on-disk
+    /// manifests and file metadata; a completed in-memory status is not proof
+    /// of installation after a portable-root move or file deletion.
+    pub fn installed_dataset_ids(&self, ids: &[String]) -> Result<Vec<String>, AppError> {
+        if ids.len() > 200 {
+            return Err(AppError::ModelDownloadFailed(
+                "dataset inventory request exceeds 200 IDs".to_string(),
+            ));
+        }
+        let base = self.root.resolve_relative("datasets/openmindai")?;
+        let mut installed = Vec::new();
+        for id in ids {
+            validate_dataset_id(id)?;
+            if dataset_installed(&base, id) {
+                installed.push(id.clone());
+            }
+        }
+        Ok(installed)
+    }
+
     pub fn status(&self) -> Result<DatasetDownloadStatus, AppError> {
         self.status
             .lock()
@@ -417,6 +437,46 @@ impl DatasetDownloadManager {
     }
 }
 
+/// Return false for missing, partial, tampered or linked dataset installs.
+/// This is a bounded metadata check, not a full cryptographic rehash.
+fn dataset_installed(base: &Path, id: &str) -> bool {
+    let dir = base.join(dataset_location::key(id)).join("snapshot/main");
+    let manifest_path = dir.join("openmindai-dataset.json");
+    let Ok(root) = fs::canonicalize(base) else { return false };
+    let Ok(canonical_dir) = fs::canonicalize(&dir) else { return false };
+    if !canonical_dir.starts_with(&root) { return false; }
+    let Ok(info) = fs::symlink_metadata(&dir) else { return false };
+    if !info.is_dir() || info.file_type().is_symlink() { return false; }
+    let Ok(meta) = fs::symlink_metadata(&manifest_path) else { return false };
+    if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > 1024 * 1024 {
+        return false;
+    }
+    let Ok(bytes) = fs::read(&manifest_path) else { return false };
+    let Ok(doc) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return false };
+    if doc["datasetId"] != id || doc["source"] != "openmindai" || doc["revision"] != "main" {
+        return false;
+    }
+    let Some(files) = doc["files"].as_array() else { return false };
+    if files.is_empty() || files.len() > 100_000 { return false; }
+    for entry in files {
+        let (Some(rel), Some(size)) = (entry["path"].as_str(), entry["size"].as_u64()) else {
+            return false;
+        };
+        if rel.is_empty() || !safe_dataset_path(rel) || rel == "openmindai-dataset.json" {
+            return false;
+        }
+        let target = dir.join(rel);
+        // A component or final symlink can escape the portable root.
+        let Ok(real) = fs::canonicalize(&target) else { return false };
+        if !real.starts_with(&canonical_dir) { return false; }
+        let Ok(meta) = fs::symlink_metadata(&target) else { return false };
+        if !meta.is_file() || meta.file_type().is_symlink() || meta.len() != size {
+            return false;
+        }
+    }
+    true
+}
+
 fn validate_dataset_id(dataset_id: &str) -> Result<(), AppError> {
     let trimmed = dataset_id.trim();
     if trimmed.is_empty()
@@ -523,6 +583,51 @@ mod tests {
         net::TcpListener,
         sync::oneshot,
     };
+
+    #[test]
+    fn inventory_survives_restart_and_detects_missing_or_partial_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = "org/sample".to_string();
+        let base = dir.path().join("datasets/openmindai");
+        let target = base.join(dataset_location::key(&id)).join("snapshot/main");
+        fs::create_dir_all(&target).unwrap();
+        let manifest = serde_json::json!({
+            "datasetId": id, "source": "openmindai", "revision": "main",
+            "files": [{"path": "data.txt", "size": 4}]
+        });
+        fs::write(target.join("openmindai-dataset.json"), manifest.to_string()).unwrap();
+        fs::write(target.join("data.txt"), b"data").unwrap();
+        let manager = DatasetDownloadManager::new(PortableRootManager::from_root(dir.path().to_path_buf()));
+        assert_eq!(manager.installed_dataset_ids(&[id.clone()]).unwrap(), vec![id.clone()]);
+        let reopened = DatasetDownloadManager::new(PortableRootManager::from_root(dir.path().to_path_buf()));
+        assert_eq!(reopened.installed_dataset_ids(&[id.clone()]).unwrap(), vec![id.clone()]);
+        fs::remove_file(target.join("data.txt")).unwrap();
+        assert!(reopened.installed_dataset_ids(&[id.clone()]).unwrap().is_empty());
+        fs::write(target.join("data.txt"), b"x").unwrap();
+        assert!(reopened.installed_dataset_ids(&[id]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn inventory_rejects_wrong_manifest_and_untrusted_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = "org/sample";
+        let base = dir.path().join("datasets/openmindai");
+        let target = base.join(dataset_location::key(id)).join("snapshot/main");
+        fs::create_dir_all(&target).unwrap();
+        let outside = dir.path().join("private.txt");
+        fs::write(&outside, b"secret").unwrap();
+        for file in ["../private.txt", "missing.txt"] {
+            fs::write(target.join("openmindai-dataset.json"),
+                serde_json::json!({"datasetId": id,"source":"openmindai","revision":"main",
+                    "files":[{"path":file,"size":6}]}).to_string()).unwrap();
+            assert!(!dataset_installed(&base, id));
+        }
+        fs::write(target.join("openmindai-dataset.json"),
+            serde_json::json!({"datasetId":"wrong","source":"openmindai","revision":"main",
+                "files":[{"path":"private.txt","size":6}]}).to_string()).unwrap();
+        assert!(!dataset_installed(&base, id));
+        assert_eq!(fs::read(outside).unwrap(), b"secret");
+    }
 
     async fn fixture(
         root: &Path,
