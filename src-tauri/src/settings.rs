@@ -318,13 +318,26 @@ impl<'a> SettingsRepository<'a> {
             saved.chat_history_notice_required |=
                 existing.chat_history_notice_required || !existing.save_chat_history;
         }
-        let previous = self
-            .load_saved_preferences()?
-            .map(serde_json::to_value)
-            .transpose()
-            .map_err(|_| AppError::internal("Invalid preferences"))?;
+        // Read the original JSON rather than round-tripping through AppPreferences:
+        // older clients must not erase settings introduced by newer versions.
+        let previous: Option<String> = self.database.connection().query_row(
+            "SELECT value_json FROM app_settings WHERE key = ?1",
+            params![SETTINGS_KEY],
+            |row| row.get(0),
+        ).optional()?;
+        let previous: Option<serde_json::Value> = previous
+            .map(|raw| serde_json::from_str(&raw).map_err(|e| AppError::internal(e.to_string())))
+            .transpose()?;
         let mut sanitized =
             serde_json::to_value(&saved).map_err(|_| AppError::internal("Invalid preferences"))?;
+        if let (Some(serde_json::Value::Object(previous)), Some(current)) =
+            (previous.as_ref(), sanitized.as_object_mut())
+        {
+            for (key, value) in previous {
+                // Known fields always win, including privacy/security corrections.
+                current.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+        }
         crate::proxy_credentials::protect(
             &mut sanitized,
             previous.as_ref(),
@@ -766,6 +779,52 @@ mod tests {
             .pragma_update(None, "query_only", false)
             .unwrap();
         assert!(!repo.get_preferences().unwrap().auto_download_model_updates);
+    }
+
+    #[test]
+    fn saving_preferences_preserves_unknown_future_fields_and_known_updates() {
+        let database = Database::in_memory().unwrap();
+        let repo = SettingsRepository::new(&database);
+        let mut initial = repo.get_preferences().unwrap();
+        initial.language = "English".into();
+        repo.save_preferences(&initial).unwrap();
+        database.connection().execute(
+            "UPDATE app_settings SET value_json = json_set(value_json, '$.futureFeature', json(?1)) WHERE key = ?2",
+            params![r#"{"nested":{"enabled":true,"tags":["বাংলা","AI"]}}"#, SETTINGS_KEY],
+        ).unwrap();
+
+        for language in ["Bangla", "Russian"] {
+            let mut requested = repo.get_preferences().unwrap();
+            requested.language = language.into();
+            repo.save_preferences(&requested).unwrap();
+            let raw: String = database.connection().query_row(
+                "SELECT value_json FROM app_settings WHERE key = ?1",
+                params![SETTINGS_KEY], |row| row.get(0),
+            ).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(json["language"], language);
+            assert_eq!(json["futureFeature"]["nested"]["enabled"], true);
+            assert_eq!(json["futureFeature"]["nested"]["tags"][0], "বাংলা");
+        }
+    }
+
+    #[test]
+    fn saving_preferences_does_not_resurrect_unsafe_legacy_flags() {
+        let database = Database::in_memory().unwrap();
+        let repo = SettingsRepository::new(&database);
+        let original = repo.get_preferences().unwrap();
+        database.connection().execute(
+            "UPDATE app_settings SET value_json = json_set(value_json, '$.telemetryEnabled', json('true'), '$.futureSetting', 'preserved') WHERE key = ?1",
+            params![SETTINGS_KEY],
+        ).unwrap();
+        repo.save_preferences(&original).unwrap();
+        let raw: String = database.connection().query_row(
+            "SELECT value_json FROM app_settings WHERE key = ?1",
+            params![SETTINGS_KEY], |row| row.get(0),
+        ).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(json["telemetryEnabled"], false);
+        assert_eq!(json["futureSetting"], "preserved");
     }
 
     #[test]
