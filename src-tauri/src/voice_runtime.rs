@@ -31,11 +31,13 @@ const WAV_HEADER_BYTES: u64 = 44;
 /// Reject scripts it cannot pronounce instead of producing misleading audio.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn validate_narration_language(text: &str) -> Result<(), AppError> {
-    let unsupported = text.chars().any(|ch| matches!(ch as u32,
-        0x0400..=0x052f | 0x0900..=0x097f | 0x0980..=0x09ff |
-        0x0600..=0x06ff | 0x4e00..=0x9fff | 0x3040..=0x30ff |
-        0xac00..=0xd7af | 0x0e00..=0x0e7f
-    ));
+    let unsupported = text.chars().any(|ch| {
+        matches!(ch as u32,
+            0x0400..=0x052f | 0x0900..=0x097f | 0x0980..=0x09ff |
+            0x0600..=0x06ff | 0x4e00..=0x9fff | 0x3040..=0x30ff |
+            0xac00..=0xd7af | 0x0e00..=0x0e7f
+        )
+    });
     if unsupported {
         return Err(AppError::ArtifactGenerationFailed(
             "The installed Kokoro af_heart voice supports English narration only; this text contains an unsupported writing system. Select English text or install a compatible multilingual voice when available.".to_string(),
@@ -43,7 +45,6 @@ fn validate_narration_language(text: &str) -> Result<(), AppError> {
     }
     Ok(())
 }
-
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub async fn generate_voice(
@@ -843,7 +844,6 @@ mod tests {
     }
 }
 
-
 #[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
 mod narration_language_tests {
     use super::validate_narration_language;
@@ -855,7 +855,8 @@ mod narration_language_tests {
 
     #[test]
     fn unsupported_scripts_fail_before_model_or_output_access() {
-        for text in ["বাংলা", "Привет", "नमस्ते", "مرحبا", "你好", "こんにちは"] {
+        for text in ["বাংলা", "Привет", "नमस्ते", "مرحبا", "你好", "こんにちは"]
+        {
             let error = validate_narration_language(text).unwrap_err();
             assert!(error.to_string().contains("English narration only"));
         }
