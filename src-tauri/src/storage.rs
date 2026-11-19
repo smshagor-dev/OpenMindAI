@@ -170,7 +170,15 @@ fn clear_directory_contents(path: &Path) -> Result<u64, AppError> {
         let entry = entry?;
         let metadata = fs::symlink_metadata(entry.path())?;
         if metadata.file_type().is_symlink() {
-            // Remove only the link; never follow a redirected cache directory.
+            // Remove only the link, not its target. On Windows a directory
+            // symlink may require remove_dir instead of remove_file.
+            #[cfg(windows)]
+            {
+                if fs::remove_file(entry.path()).is_err() {
+                    fs::remove_dir(entry.path())?;
+                }
+            }
+            #[cfg(not(windows))]
             fs::remove_file(entry.path())?;
         } else if metadata.is_dir() {
             freed += directory_size(&entry.path())?;
@@ -273,6 +281,16 @@ mod cache_tests {
         assert!(scan_epoch_is_current(started, 41));
         assert!(!scan_epoch_is_current(started, 42));
         assert!(!scan_epoch_is_current(started, 43));
+    }
+
+    #[test]
+    fn clear_cache_removes_normal_nested_cache_entries() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let cache = sandbox.path().join("cache");
+        fs::create_dir_all(cache.join("nested")).unwrap();
+        fs::write(cache.join("nested").join("data"), b"abc").unwrap();
+        assert_eq!(clear_directory_contents(&cache).unwrap(), 3);
+        assert!(fs::read_dir(&cache).unwrap().next().is_none());
     }
 
     #[test]

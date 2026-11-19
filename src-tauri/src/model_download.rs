@@ -184,6 +184,33 @@ fn apply_stop_if_active(
     true
 }
 
+/// Publish a new download's cancellation handle before exposing an active state.
+/// Both locks must be held by the caller in status-then-token order.
+fn activate_download(
+    status: &mut DownloadStatus,
+    cancel_slot: &mut Option<CancellationToken>,
+    entry: &ModelCatalogEntry,
+    token: CancellationToken,
+) {
+    *cancel_slot = Some(token);
+    *status = DownloadStatus::queued(entry);
+    status.state = DownloadState::Resolving;
+    status.error = None;
+}
+
+/// Cancel a pending metadata request without waiting for its HTTP timeout.
+/// This is deliberately before filesystem preparation or manifest publication.
+async fn cancel_while_resolving<T>(
+    token: &CancellationToken,
+    resolve: impl std::future::Future<Output = Result<T, AppError>>,
+) -> Result<T, AppError> {
+    tokio::select! {
+        biased;
+        _ = token.cancelled() => Err(AppError::InferenceCancelled("download stopped".to_string())),
+        result = resolve => result,
+    }
+}
+
 impl ModelDownloadManager {
     pub fn new(root: PortableRootManager) -> Self {
         let catalog_entry = crate::model_catalog::required_entry()
@@ -276,7 +303,28 @@ impl ModelDownloadManager {
         // downloader to coordinate against a file outside its root.
         ensure_contained(root, &lock_path)?;
         match file.try_lock() {
-            Ok(()) => Ok(file),
+            Ok(()) => {
+                // The directory entry may have changed after the initial
+                // symlink check. Verify the locked inode, not just its name.
+                // Hard links must not let a different path share our lock.
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    let opened = file.metadata()?;
+                    let named = fs::symlink_metadata(&lock_path)?;
+                    if !named.file_type().is_file()
+                        || opened.dev() != named.dev()
+                        || opened.ino() != named.ino()
+                        || opened.nlink() != 1
+                        || named.nlink() != 1
+                    {
+                        return Err(AppError::ModelDownloadFailed(
+                            "model install lock path was replaced or has multiple links".to_string(),
+                        ));
+                    }
+                }
+                Ok(file)
+            }
             Err(fs::TryLockError::WouldBlock) => Err(AppError::ModelDownloadFailed(
                 "another OpenMindAI process is installing models in this portable root".to_string(),
             )),
@@ -310,9 +358,7 @@ impl ModelDownloadManager {
                 .map_err(|_| AppError::internal("download status lock poisoned"))?;
             let mut active_token = self.cancel_token.lock()
                 .map_err(|_| AppError::internal("download cancel lock poisoned"))?;
-            *status = DownloadStatus::queued(&entry);
-            status.state = DownloadState::Resolving;
-            *active_token = Some(token.clone());
+            activate_download(&mut status, &mut active_token, &entry, token.clone());
         }
 
         let result = self.download_entry_inner(entry, token).await;
@@ -349,7 +395,7 @@ impl ModelDownloadManager {
         // it is pending; never proceed to create or mutate package files after
         // the lookup completes if that request was stopped.
         ensure_download_not_cancelled(&token)?;
-        let metadata = self.resolve_model_metadata(&entry).await?;
+        let metadata = cancel_while_resolving(&token, self.resolve_model_metadata(&entry)).await?;
         ensure_download_not_cancelled(&token)?;
         let download = entry.download.as_ref().ok_or_else(|| {
             AppError::ModelUnsupported(format!(
@@ -940,6 +986,29 @@ mod tests {
         assert!(matches!(status.state, DownloadState::Cancelled));
     }
 
+    #[tokio::test]
+    async fn cancelling_pending_metadata_resolution_does_not_wait_for_network() {
+        let token = CancellationToken::new();
+        token.cancel();
+        let result = cancel_while_resolving(&token, std::future::pending::<Result<(), AppError>>()).await;
+        assert!(matches!(result, Err(AppError::InferenceCancelled(_))));
+    }
+
+    #[tokio::test]
+    async fn cancellation_wins_when_metadata_is_already_ready() {
+        let token = CancellationToken::new();
+        token.cancel();
+        let result = cancel_while_resolving(&token, async { Ok::<_, AppError>(42) }).await;
+        assert!(matches!(result, Err(AppError::InferenceCancelled(_))));
+    }
+
+    #[tokio::test]
+    async fn successful_metadata_resolution_is_preserved() {
+        let token = CancellationToken::new();
+        let result = cancel_while_resolving(&token, async { Ok::<_, AppError>(42) }).await;
+        assert_eq!(result.unwrap(), 42);
+    }
+
     #[test]
     fn stop_preserves_terminal_download_states_even_with_stale_token() {
         let entry = crate::model_catalog::required_entry().unwrap();
@@ -1026,6 +1095,26 @@ mod tests {
         let manager = ModelDownloadManager::new(portable_root);
         assert!(manager.begin_root_install().is_err());
         assert!(path.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn model_install_lock_rejects_hard_linked_inode_without_changing_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("OpenMindAI");
+        fs::create_dir_all(&root).unwrap();
+        let external = temp.path().join("shared-lock");
+        fs::write(&external, b"sentinel").unwrap();
+        let lock_path = root.join(".openmindai-model-install.lock");
+        fs::hard_link(&external, &lock_path).unwrap();
+        let manager = ModelDownloadManager::new(PortableRootManager::from_root(root));
+        let before = manager.status().unwrap();
+        let error = manager.begin_root_install().unwrap_err().to_string();
+        assert!(error.contains("multiple links"), "{error}");
+        assert_eq!(fs::read(&external).unwrap(), b"sentinel");
+        assert_eq!(manager.status().unwrap().state, before.state);
+        fs::remove_file(&lock_path).unwrap();
+        assert!(manager.begin_root_install().is_ok());
     }
 
     #[tokio::test]
@@ -1338,6 +1427,44 @@ mod tests {
         let state = prepare_partial_download(&path, 100, Some("unused")).unwrap();
         assert_eq!(state, PartialDownloadState::Resume(7));
         assert!(path.exists());
+    }
+
+    #[test]
+    fn activating_download_publishes_matching_cancel_handle() {
+        let entry = crate::model_catalog::required_entry().unwrap();
+        let mut status = DownloadStatus::queued(&entry);
+        status.state = DownloadState::Failed;
+        let mut slot = None;
+        let token = CancellationToken::new();
+        activate_download(&mut status, &mut slot, &entry, token.clone());
+        assert_eq!(status.state, DownloadState::Resolving);
+        assert!(slot.is_some());
+        assert!(apply_stop_if_active(
+            &mut status,
+            slot.as_ref(),
+            DownloadState::Cancelled,
+        ));
+        assert!(token.is_cancelled());
+        assert_eq!(status.state, DownloadState::Cancelled);
+    }
+
+    #[test]
+    fn activating_next_download_replaces_cancelled_handle() {
+        let entry = crate::model_catalog::required_entry().unwrap();
+        let mut status = DownloadStatus::queued(&entry);
+        let old = CancellationToken::new();
+        old.cancel();
+        let mut slot = Some(old);
+        let next = CancellationToken::new();
+        activate_download(&mut status, &mut slot, &entry, next.clone());
+        assert_eq!(status.state, DownloadState::Resolving);
+        assert!(!next.is_cancelled());
+        assert!(apply_stop_if_active(
+            &mut status,
+            slot.as_ref(),
+            DownloadState::PausedInterrupted,
+        ));
+        assert!(next.is_cancelled());
     }
 
     #[test]

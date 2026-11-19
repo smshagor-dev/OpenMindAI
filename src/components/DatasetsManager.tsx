@@ -376,7 +376,13 @@ export function DatasetsManager() {
     const refreshStatus = async () => {
       try {
         const status = await api.datasetDownloadStatus();
-        if (!cancelled) setDownloadStatus(status.datasetId ? status : null);
+        if (cancelled) return;
+        setDownloadStatus(status.datasetId ? status : null);
+        if (status.state === "completed" && status.datasetId) {
+          setInstalledDatasets((current) =>
+            recordCompletedDataset(current, status.state, status.datasetId),
+          );
+        }
       } catch {
         if (!cancelled) setDownloadStatus(null);
       }
@@ -389,11 +395,21 @@ export function DatasetsManager() {
     };
   }, []);
 
+  // Revalidate against real files whenever visible Hub results change. A
+  // stale async inventory response must not replace a newer search result.
   useEffect(() => {
-    if (downloadStatus?.state !== "completed" || !downloadStatus.datasetId) return;
-    setInstalledDatasets((current) => recordCompletedDataset(current, downloadStatus.state, downloadStatus.datasetId));
-  }, [downloadStatus?.datasetId, downloadStatus?.state]);
-
+    let cancelled = false;
+    const ids = [...new Set([
+      ...CURATED_DATASETS.map((dataset) => dataset.sourceId),
+      ...datasets.map((dataset) => dataset.id),
+    ])].slice(0, 200);
+    void api.installedDatasetIds(ids).then((installed) => {
+      if (!cancelled) setInstalledDatasets(new Set(installed));
+    }).catch(() => {
+      if (!cancelled) setInstalledDatasets(new Set());
+    });
+    return () => { cancelled = true; };
+  }, [datasets]);
 
   async function openDataset(id: string) {
     await api.openExternalUrl(openMindDatasetPageUrl(id));
@@ -423,7 +439,12 @@ export function DatasetsManager() {
     try {
       const status = await api.downloadOpenMindDataset(id);
       setDownloadStatus(status);
-      // The status-polling effect also records downloads that finish after this call returns.
+      if (status.state === "completed" && status.datasetId) {
+        setInstalledDatasets((current) =>
+          recordCompletedDataset(current, status.state, status.datasetId),
+        );
+      }
+      // Polling also records downloads that finish after this call returns.
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
       try {

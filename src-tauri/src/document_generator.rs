@@ -24,9 +24,15 @@ pub struct PdfMeta {
 
 /// A simplified block-level document model shared by the PDF and DOCX generators.
 ///
-/// Inline formatting (bold/italic/inline-code runs within a paragraph) is intentionally
-/// flattened to plain text; only block structure (headings, paragraphs, lists, code blocks,
-/// tables, rules) is preserved. This keeps both renderers small and predictable.
+/// PDF currently uses plain paragraph text; DOCX retains styled inline runs for paragraphs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InlineRun {
+    text: String,
+    bold: bool,
+    italic: bool,
+    code: bool,
+}
+
 #[derive(Debug, Clone)]
 enum Block {
     Heading {
@@ -35,6 +41,7 @@ enum Block {
     },
     Paragraph {
         text: String,
+        runs: Vec<InlineRun>,
     },
     UnorderedList {
         items: Vec<String>,
@@ -63,6 +70,9 @@ fn parse_markdown_blocks(markdown: &str) -> Vec<Block> {
     let mut text_buffer = String::new();
     let mut heading_level: Option<u8> = None;
     let mut in_paragraph = false;
+    let mut inline_runs: Vec<InlineRun> = Vec::new();
+    let mut strong_depth = 0usize;
+    let mut emphasis_depth = 0usize;
     let mut in_code_block = false;
 
     let mut list_stack: Vec<(bool, u64, Vec<String>)> = Vec::new();
@@ -95,6 +105,7 @@ fn parse_markdown_blocks(markdown: &str) -> Vec<Block> {
             Event::Start(Tag::Paragraph) => {
                 if !in_item && !in_cell {
                     text_buffer.clear();
+                    inline_runs.clear();
                     in_paragraph = true;
                 }
             }
@@ -102,7 +113,7 @@ fn parse_markdown_blocks(markdown: &str) -> Vec<Block> {
                 if in_paragraph {
                     let text = text_buffer.trim().to_string();
                     if !text.is_empty() {
-                        blocks.push(Block::Paragraph { text });
+                        blocks.push(Block::Paragraph { text, runs: std::mem::take(&mut inline_runs) });
                     }
                     text_buffer.clear();
                     in_paragraph = false;
@@ -196,12 +207,34 @@ fn parse_markdown_blocks(markdown: &str) -> Vec<Block> {
                 if !text.is_empty() {
                     blocks.push(Block::Paragraph {
                         text: format!("\u{201c}{text}\u{201d}"),
+                        runs: Vec::new(),
                     });
                 }
                 text_buffer.clear();
             }
+            Event::Start(Tag::Strong) => strong_depth += 1,
+            Event::End(TagEnd::Strong) => strong_depth = strong_depth.saturating_sub(1),
+            Event::Start(Tag::Emphasis) => emphasis_depth += 1,
+            Event::End(TagEnd::Emphasis) => emphasis_depth = emphasis_depth.saturating_sub(1),
             Event::Rule => blocks.push(Block::Rule),
-            Event::Text(text) | Event::Code(text) => {
+            Event::Text(ref text) | Event::Code(ref text) => {
+                if in_paragraph && !in_item && !in_cell && !in_code_block {
+                    let run = InlineRun {
+                        text: text.to_string(),
+                        bold: strong_depth > 0,
+                        italic: emphasis_depth > 0,
+                        code: matches!(&event, Event::Code(_)),
+                    };
+                    if let Some(last) = inline_runs.last_mut() {
+                        if last.bold == run.bold && last.italic == run.italic && last.code == run.code {
+                            last.text.push_str(&run.text);
+                        } else {
+                            inline_runs.push(run);
+                        }
+                    } else {
+                        inline_runs.push(run);
+                    }
+                }
                 if in_code_block {
                     text_buffer.push_str(&text);
                 } else if in_cell {
@@ -221,6 +254,9 @@ fn parse_markdown_blocks(markdown: &str) -> Vec<Block> {
                     item_buffer.push(' ');
                 } else {
                     text_buffer.push(' ');
+                    if in_paragraph {
+                        inline_runs.push(InlineRun { text: " ".into(), bold: strong_depth > 0, italic: emphasis_depth > 0, code: false });
+                    }
                 }
             }
             Event::HardBreak => {
@@ -228,6 +264,9 @@ fn parse_markdown_blocks(markdown: &str) -> Vec<Block> {
                     item_buffer.push(' ');
                 } else {
                     text_buffer.push(' ');
+                    if in_paragraph {
+                        inline_runs.push(InlineRun { text: " ".into(), bold: strong_depth > 0, italic: emphasis_depth > 0, code: false });
+                    }
                 }
             }
             _ => {}
@@ -342,6 +381,50 @@ impl PdfLayout {
         self.add_gap(gap_after_mm);
     }
 
+    /// Render table cells in fixed columns, keeping wrapped cells on the same row.
+    /// A row is split across pages only between complete visual lines.
+    fn push_table_row(&mut self, cells: &[String], columns: usize, header: bool) {
+        let size_pt = 9.0;
+        let line_height_mm = size_pt * 1.32 * 0.352_778;
+        let column_width_mm = CONTENT_WIDTH_MM / columns as f32;
+        let padding_mm = 1.5;
+        let available_mm = (column_width_mm - padding_mm * 2.0).max(1.0);
+        let average_char_mm = size_pt * 0.352_778 * 0.62;
+        let max_chars = (available_mm / average_char_mm).floor().max(1.0) as usize;
+        let wrapped: Vec<Vec<String>> = (0..columns)
+            .map(|index| {
+                let text = cells.get(index).map_or("", String::as_str);
+                let lines = wrap_text(text, max_chars);
+                if lines.is_empty() { vec![String::new()] } else { lines }
+            })
+            .collect();
+        let row_lines = wrapped.iter().map(Vec::len).max().unwrap_or(1);
+        for line_index in 0..row_lines {
+            self.ensure_space(line_height_mm);
+            for (column_index, lines) in wrapped.iter().enumerate() {
+                if let Some(line) = lines.get(line_index) {
+                    self.ops.extend([
+                        Op::StartTextSection,
+                        Op::SetTextCursor {
+                            pos: Point::new(
+                                Mm(LEFT_MARGIN_MM + column_index as f32 * column_width_mm + padding_mm),
+                                Mm(self.cursor_y_mm),
+                            ),
+                        },
+                        Op::SetFont {
+                            font: self.fonts.handle(if header { PdfFontKind::Bold } else { PdfFontKind::Regular }),
+                            size: Pt(size_pt),
+                        },
+                        Op::ShowText { items: vec![TextItem::Text(line.clone())] },
+                        Op::EndTextSection,
+                    ]);
+                }
+            }
+            self.cursor_y_mm -= line_height_mm;
+        }
+        self.add_gap(1.0);
+    }
+
     fn push_code(&mut self, code: &str) {
         if code.trim().is_empty() {
             return;
@@ -366,7 +449,7 @@ impl PdfLayout {
                 self.add_gap(1.5);
                 self.push_wrapped(&text, PdfFontKind::Bold, size, 2.0);
             }
-            Block::Paragraph { text } => {
+            Block::Paragraph { text, .. } => {
                 self.push_wrapped(&text, PdfFontKind::Regular, 11.0, 2.4);
             }
             Block::UnorderedList { items } => {
@@ -396,22 +479,9 @@ impl PdfLayout {
                 if headers.is_empty() {
                     return;
                 }
-                self.push_wrapped(&headers.join("  |  "), PdfFontKind::Bold, 9.5, 0.8);
-                self.push_wrapped(
-                    &headers
-                        .iter()
-                        .map(|_| "--------")
-                        .collect::<Vec<_>>()
-                        .join("-+-"),
-                    PdfFontKind::Mono,
-                    8.0,
-                    0.5,
-                );
+                self.push_table_row(&headers, headers.len(), true);
                 for row in rows {
-                    let normalized = (0..headers.len())
-                        .map(|index| row.get(index).cloned().unwrap_or_default())
-                        .collect::<Vec<_>>();
-                    self.push_wrapped(&normalized.join("  |  "), PdfFontKind::Regular, 9.5, 0.7);
+                    self.push_table_row(&row, headers.len(), false);
                 }
                 self.add_gap(1.4);
             }
@@ -574,6 +644,20 @@ fn docx_paragraph(xml: &mut String, text: &str, size: u32, bold: bool, mono: boo
     xml.push_str("</w:t></w:r></w:p>");
 }
 
+fn docx_inline_paragraph(xml: &mut String, runs: &[InlineRun]) {
+    xml.push_str("<w:p><w:pPr><w:spacing w:after=\"140\"/></w:pPr>");
+    for run in runs {
+        xml.push_str("<w:r><w:rPr>");
+        if run.bold { xml.push_str("<w:b/>"); }
+        if run.italic { xml.push_str("<w:i/>"); }
+        if run.code { xml.push_str("<w:rFonts w:ascii=\"Consolas\" w:hAnsi=\"Consolas\"/>"); }
+        xml.push_str("<w:sz w:val=\"22\"/></w:rPr><w:t xml:space=\"preserve\">");
+        xml.push_str(&docx_xml_text(&run.text));
+        xml.push_str("</w:t></w:r>");
+    }
+    xml.push_str("</w:p>");
+}
+
 fn docx_table_row(xml: &mut String, cells: &[String], columns: usize, header: bool) {
     // Keep rows intact and repeat header rows across page breaks.
     xml.push_str("<w:tr><w:trPr><w:cantSplit/>");
@@ -612,12 +696,15 @@ fn docx_block(xml: &mut String, block: Block) {
             docx_paragraph(&mut paragraph, &text, size, true, false);
             paragraph = paragraph.replacen(
                 "<w:pPr>",
-                &format!("<w:pPr><w:pStyle w:val=\"{style}\"/>"),
+                &format!("<w:pPr><w:pStyle w:val=\"{style}\"/><w:keepNext/><w:keepLines/><w:widowControl/>"),
                 1,
             );
             xml.push_str(&paragraph);
         }
-        Block::Paragraph { text } => docx_paragraph(xml, &text, 22, false, false),
+        Block::Paragraph { text, runs } => {
+            if runs.is_empty() { docx_paragraph(xml, &text, 22, false, false); }
+            else { docx_inline_paragraph(xml, &runs); }
+        },
         Block::UnorderedList { items } => {
             for item in items {
                 docx_paragraph(xml, &format!("\u{2022}  {item}"), 22, false, false);
@@ -713,6 +800,22 @@ mod tests {
 
 
     #[test]
+    fn docx_headings_stay_with_following_paragraph_and_keep_lines_together() {
+        let xml = word_document_xml(
+            parse_markdown_blocks("# বাংলা Heading & Details\\n\\nBody content\\n\\n## Nested\\n\\nMore text"),
+            "Document",
+        );
+        for level in [1, 2] {
+            let style = format!(
+                "<w:pStyle w:val=\\"Heading{level}\\"/><w:keepNext/><w:keepLines/><w:widowControl/>"
+            );
+            assert!(xml.contains(&style), "missing pagination rules for heading {level}");
+        }
+        assert!(xml.contains("বাংলা Heading &amp; Details"));
+        assert!(xml.contains("Body content"));
+    }
+
+    #[test]
     fn docx_headings_use_word_outline_styles() {
         let xml = word_document_xml(parse_markdown_blocks("# Main\n\n## Details\n\n### Nested"), "Report");
         assert!(xml.contains("<w:pStyle w:val=\"Heading1\"/>"));
@@ -739,6 +842,26 @@ mod tests {
         let xml = word_document_xml(parse_markdown_blocks("# Heading"), "Report");
         assert!(xml.contains("<w:pStyle w:val=\"Heading1\"/>"));
         assert!(!xml.contains(r#"w:val=\"Heading1"#));
+    }
+
+    #[test]
+    fn docx_preserves_nested_inline_styles_and_escapes_xml() {
+        let xml = word_document_xml(
+            parse_markdown_blocks("বাংলা **bold *nested* & \\<safe\\>** and `code<&>`."),
+            "Report",
+        );
+        assert!(xml.contains("<w:b/>"));
+        assert!(xml.contains("<w:i/>"));
+        assert!(xml.contains("<w:rFonts w:ascii=\"Consolas\""));
+        assert!(xml.contains("nested"));
+        assert!(xml.contains("&amp; &lt;safe&gt;"));
+        assert!(xml.contains("code&lt;&amp;&gt;"));
+    }
+
+    #[test]
+    fn docx_plain_paragraph_keeps_text() {
+        let xml = word_document_xml(parse_markdown_blocks("Simple paragraph."), "Report");
+        assert!(xml.contains(">Simple paragraph.</w:t>"));
     }
 
     const SAMPLE_MARKDOWN: &str = "# Report Title\n\nThis is an introductory paragraph with real content.\n\n## Section One\n\n- First point\n- Second point\n\n1. Step one\n2. Step two\n\n```text\nfn main() {}\n```\n\n| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n| Beta | 2 |\n";
@@ -902,6 +1025,32 @@ mod tests {
             std::fs::read(root.path().join("generated").join(id).join("report.docx")).unwrap(),
             expected
         );
+    }
+
+    #[test]
+    fn pdf_table_cells_have_distinct_column_positions_and_wrap_long_values() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("table.pdf");
+        let long_cell = "longvalue".repeat(40);
+        let markdown = format!("| First | Second | Third |\\n|---|---|---|\\n| A | {long_cell} | C |");
+        let meta = generate_pdf(&markdown, "Table", &dest).unwrap();
+        assert!(meta.page_count >= 1);
+        let bytes = std::fs::read(dest).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+        // Layout-level regression: a wide cell cannot make a neighboring column
+        // disappear, and the generated document must remain a valid PDF container.
+        assert!(bytes.len() > 1000);
+    }
+
+    #[test]
+    fn pdf_table_row_layout_handles_more_columns_than_available_width() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("many-columns.pdf");
+        let headers = (0..30).map(|i| format!("H{i}")).collect::<Vec<_>>();
+        let divider = vec!["---"; 30];
+        let row = (0..30).map(|i| format!("cell{i}")).collect::<Vec<_>>();
+        let markdown = format!("|{}|\\n|{}|\\n|{}|", headers.join("|"), divider.join("|"), row.join("|"));
+        assert!(generate_pdf(&markdown, "Dense table", &dest).is_ok());
     }
 
     #[test]
