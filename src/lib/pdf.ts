@@ -187,15 +187,14 @@ export async function extractPdfText(
           const allowed = new Set(rendered.map(page => page.pageNumber));
           for (const result of ocr) {
             if (!allowed.delete(result.pageNumber) || typeof result.text !== "string") continue;
-            const visual = result.text.trim();
-            if (!visual) continue;
-            const existing = pageTexts[result.pageNumber - 1].trim();
-            // Never retain unbounded native OCR output when the chat budget is
-            // already exhausted. A small remainder is enough to mark the page
-            // as partially extracted without holding the full OCR result.
+            // Bound native OCR output before trimming or Unicode expansion.
+            // The native response can be arbitrarily large even when the
+            // remaining prompt budget is tiny.
             const remaining = Math.max(0, MAX_EXTRACTED_CHARS - extractedChars);
             if (!remaining) continue;
-            const bounded = Array.from(visual).slice(0, remaining).join("");
+            const bounded = boundedOcrText(result.text, remaining);
+            if (!bounded) continue;
+            const existing = pageTexts[result.pageNumber - 1].trim();
             pageTexts[result.pageNumber - 1] = [existing, bounded].filter(Boolean).join("\n");
             extractedChars += bounded.length;
             unreadPages.delete(result.pageNumber);
@@ -278,6 +277,29 @@ export async function extractPdfText(
   } finally {
     await task.destroy().catch(() => undefined);
   }
+}
+
+// Keep memory proportional to the prompt budget, not the native OCR payload.
+// Iteration over string code points avoids splitting surrogate pairs. Leading
+// whitespace is skipped without materializing a trimmed copy of the full text.
+function boundedOcrText(text: string, maxUnits: number): string {
+  if (maxUnits <= 0) return "";
+  let start = 0;
+  let end = 0;
+  let used = 0;
+  let started = false;
+  for (const character of text) {
+    if (!started && !character.trim()) {
+      start += character.length;
+      end = start;
+      continue;
+    }
+    started = true;
+    if (used + character.length > maxUnits) break;
+    used += character.length;
+    end += character.length;
+  }
+  return text.slice(start, end).trimEnd();
 }
 
 async function selectablePageText(page: PDFPageProxy) {
