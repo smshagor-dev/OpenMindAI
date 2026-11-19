@@ -3,19 +3,16 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const source = readFileSync(new URL("../src/components/ProjectLocalWorkspace.tsx", import.meta.url), "utf8");
-const deleteHandler = source.split("const deleteItem = async () => {")[1]?.split("const goToLocation = async () => {")[0];
+const deleteHandler = source.split("const deleteItem = async () => {")[1]?.split('run("delete-path"')[0];
 
-test("deleting an edited file or ancestor requires dirty-editor confirmation", () => {
+test("deleting an edited file or ancestor confirms before removing it", () => {
   assert.ok(deleteHandler, "delete handler exists");
-  assert.match(deleteHandler, /editorPath === deleteTarget\.relativePath/);
-  assert.match(deleteHandler, /deleteTarget\.kind === "directory"/);
-  assert.match(deleteHandler, /editorPath\.startsWith/);
-  assert.match(deleteHandler, /editedFileIsTarget && !confirmWorkspaceDiscard\(editorDirty/);
-  assert.ok(deleteHandler.indexOf("confirmWorkspaceDiscard(editorDirty") < deleteHandler.indexOf('run("delete-path"'),
-    "confirmation must precede filesystem mutation");
+  assert.match(deleteHandler, /editorDirty && editorPath && workspacePathContains\(deleteTarget\.relativePath, editorPath\)/);
+  assert.match(deleteHandler, /!confirmWorkspaceDiscard\(true,/);
+  assert.ok(deleteHandler.indexOf("confirmWorkspaceDiscard(") >= 0, "confirmation occurs before delete");
 });
 
-test("unrelated deletion is not blocked by an unsaved editor buffer", () => {
-  assert.match(deleteHandler, /if \(editedFileIsTarget && !confirmWorkspaceDiscard/);
+test("unrelated deletion does not require discarding unsaved editor buffer", () => {
+  assert.match(deleteHandler, /editorDirty && editorPath && workspacePathContains\(/);
   assert.doesNotMatch(deleteHandler, /if \(editorDirty && !confirmWorkspaceDiscard/);
 });

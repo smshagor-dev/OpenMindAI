@@ -316,16 +316,10 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
 
   const deleteItem = async () => {
     if (!activeRoot || !deleteTarget || !isCurrentListing() || !visibleEntries.includes(deleteTarget)) return;
-    // A directory removal can also delete the currently edited file. Do not
-    // discard its unsaved buffer without explicit consent.
-    const editedFileIsTarget = editorPath !== null && (
-      editorPath === deleteTarget.relativePath ||
-      (deleteTarget.kind === "directory" && (
-        editorPath.startsWith(`${deleteTarget.relativePath}/`) ||
-        editorPath.startsWith(`${deleteTarget.relativePath}\\`)
-      ))
-    );
-    if (editedFileIsTarget && !confirmWorkspaceDiscard(editorDirty, "delete the edited file or its parent folder")) return;
+    // Deleting an open file (or its parent directory) also destroys an unsaved draft.
+    // Keep the editor intact if the user declines the destructive operation.
+    if (editorDirty && editorPath && workspacePathContains(deleteTarget.relativePath, editorPath) &&
+        !confirmWorkspaceDiscard(true, "delete the file containing unsaved editor changes")) return;
     const removed = await run("delete-path", async () => {
       await localWorkspaceApi.deletePath(
         props.projectId,
@@ -670,4 +664,11 @@ function parentWorkspacePath(path: string) {
 function sameDisplayPath(left: string, right: string) {
   const normalize = (value: string) => value.replace(/[\\/]+$/, "").toLowerCase();
   return normalize(left) === normalize(right);
+}
+
+function workspacePathContains(parent: string, child: string): boolean {
+  const normalize = (path: string) => path.replace(/\\\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const normalizedParent = normalize(parent);
+  const normalizedChild = normalize(child);
+  return normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}/`);
 }
