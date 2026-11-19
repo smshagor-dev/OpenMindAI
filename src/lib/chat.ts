@@ -1,5 +1,6 @@
 import type { Message } from "../types";
 import { formatBytes } from "./format";
+import { parseDisplayedAttachmentSection } from "./displayAttachmentSection";
 import { analyzeVideoFile, transcribeAudioFile } from "./media";
 import { extractPdfText, type PdfExtractionOptions, type PdfExtractionProgress } from "./pdf";
 import { isImageGenerationIntent } from "./imageGeneration";
@@ -326,17 +327,9 @@ export function userMessageDisplay(content: string): UserMessageDisplay {
     }
   }
 
-  const attachmentStart = visible.startsWith("[Attachment:")
-    ? 0
-    : visible.indexOf("\n\n[Attachment:");
+  const { start: attachmentStart, names: attachmentNames } = parseDisplayedAttachmentSection(visible);
   const attachmentPayload = attachmentStart >= 0 ? visible.slice(attachmentStart).trim() : "";
   const prompt = (attachmentStart >= 0 ? visible.slice(0, attachmentStart) : visible).trim();
-  const attachmentNames = Array.from(
-    attachmentPayload.matchAll(
-      /^\[Attachment:\s*(.+?),\s*(?:text|image|pdf|audio|video|binary),\s*[^,\]]+,\s*[^\]]+\]$/gm,
-    ),
-    (match) => match[1].trim(),
-  );
   const attachmentSummary = attachmentNames.length
     ? `Attached: ${attachmentNames.join(", ")}`
     : attachmentPayload
