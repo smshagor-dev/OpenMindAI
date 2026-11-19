@@ -67,3 +67,20 @@ test("no truncation warning on fully included short content", () => {
   assert(!text.includes("omitted text was not analyzed"));
   assert.equal(planAttachmentContext(sources).items.length, 2);
 });
+
+test("oversized prompts use bounded relevance terms without losing normal queries", () => {
+  const content = "start " + "x".repeat(9000) + " boundedneedle answer " + "y".repeat(9000);
+  const ordinary = selectAttachmentExcerpt(content, 4000, "find boundedneedle");
+  assert(ordinary.includes("boundedneedle answer"));
+  const oversized = selectAttachmentExcerpt(content, 4000, "unrelated ".repeat(500) + "boundedneedle");
+  assert(!oversized.includes("boundedneedle answer"));
+  assert(oversized.length <= 4000);
+});
+
+test("prompt prefix ending in a high surrogate is handled safely", () => {
+  const content = "start " + "x".repeat(9000) + " unicodeprobe answer " + "y".repeat(9000);
+  const prompt = "unicodeprobe " + " ".repeat(4082) + "\uD83D" + "\uDE00".repeat(10000);
+  const excerpt = selectAttachmentExcerpt(content, 4000, prompt);
+  assert(excerpt.includes("unicodeprobe answer"));
+  assert(excerpt.length <= 4000);
+});
