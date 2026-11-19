@@ -278,3 +278,31 @@ test("whitespace-only native OCR output is not counted as successfully analyzed"
   await assert.rejects(extractPdfText(file), /No readable PDF text is available/);
   fx.assertClean();
 });
+
+
+test("huge PDF coordinate space never creates an oversized canvas", async () => {
+  const fx = fixture(1);
+  const pdf = await globalThis.__pdf.task.promise;
+  pdf.getPage = async () => ({
+    getTextContent: async () => ({ items: [] }),
+    getViewport: ({ scale }) => ({ width: 1_000_000 * scale, height: 500_000 * scale }),
+    render: ({ canvas }) => {
+      assert(canvas.width <= 1440 && canvas.height <= 1440);
+      return { promise: Promise.resolve() };
+    },
+  });
+  await extractPdfText(file);
+  fx.assertClean();
+});
+
+test("invalid PDF viewport is rejected before canvas allocation", async () => {
+  const fx = fixture(1);
+  const pdf = await globalThis.__pdf.task.promise;
+  pdf.getPage = async () => ({
+    getTextContent: async () => ({ items: [] }),
+    getViewport: () => ({ width: Number.POSITIVE_INFINITY, height: 100 }),
+    render: () => { throw new Error("render must not be called"); },
+  });
+  await assert.rejects(extractPdfText(file), /No readable PDF text/);
+  fx.assertClean();
+});

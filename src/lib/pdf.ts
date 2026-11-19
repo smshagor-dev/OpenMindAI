@@ -349,6 +349,11 @@ async function renderPdfPage(page: PDFPageProxy, signal?: PdfExtractionOptions["
   }
   const scale = Math.min(2, MAX_RENDER_DIMENSION / Math.max(base.width, base.height));
   const viewport = page.getViewport({ scale });
+  if (!Number.isFinite(viewport.width) || !Number.isFinite(viewport.height)
+      || viewport.width <= 0 || viewport.height <= 0
+      || viewport.width > MAX_RENDER_DIMENSION || viewport.height > MAX_RENDER_DIMENSION) {
+    throw new Error("Invalid PDF render dimensions.");
+  }
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(viewport.width));
   canvas.height = Math.max(1, Math.round(viewport.height));
