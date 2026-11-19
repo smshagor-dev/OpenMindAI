@@ -375,7 +375,34 @@ impl<'a> SettingsRepository<'a> {
     }
 
     pub fn save_user_profile(&self, profile: &UserProfile) -> Result<UserProfile, AppError> {
-        self.save_json(USER_PROFILE_KEY, profile)?;
+        // A downgraded client must not erase fields written by a newer release.
+        // Only unknown top-level keys are carried forward; known fields always
+        // come from the validated caller-provided profile.
+        let existing: Option<String> = self
+            .database
+            .connection()
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = ?1",
+                params![USER_PROFILE_KEY],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let mut updated = serde_json::to_value(profile)
+            .map_err(|error| AppError::internal(error.to_string()))?;
+        if let Some(existing) = existing {
+            let previous: serde_json::Value = serde_json::from_str(&existing)
+                .map_err(|error| AppError::internal(error.to_string()))?;
+            if let (Some(previous), Some(updated)) =
+                (previous.as_object(), updated.as_object_mut())
+            {
+                for (key, value) in previous {
+                    if !updated.contains_key(key) {
+                        updated.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        self.save_json(USER_PROFILE_KEY, &updated)?;
         Ok(profile.clone())
     }
 
@@ -403,6 +430,59 @@ fn push_context_line(lines: &mut Vec<String>, label: &str, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_saves_preserve_unknown_future_fields_and_update_known_values() {
+        let database = Database::in_memory().unwrap();
+        let repo = SettingsRepository::new(&database);
+        let mut profile = repo.get_user_profile().unwrap();
+        profile.full_name = "Original".into();
+        repo.save_user_profile(&profile).unwrap();
+
+        database.connection().execute(
+            "UPDATE app_settings SET value_json = json_set(value_json, '$.futureProfile', json(?1)) WHERE key = ?2",
+            params![r#"{"nested":["keep",{"enabled":true}]}"#, USER_PROFILE_KEY],
+        ).unwrap();
+
+        profile.full_name = "Updated".into();
+        profile.about = "Bangla বাংলা".into();
+        repo.save_user_profile(&profile).unwrap();
+        profile.full_name = "Updated again".into();
+        repo.save_user_profile(&profile).unwrap();
+
+        let stored: String = database.connection().query_row(
+            "SELECT value_json FROM app_settings WHERE key = ?1",
+            params![USER_PROFILE_KEY],
+            |row| row.get(0),
+        ).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(json["fullName"], "Updated again");
+        assert_eq!(json["about"], "Bangla বাংলা");
+        assert_eq!(json["futureProfile"]["nested"][0], "keep");
+        assert_eq!(json["futureProfile"]["nested"][1]["enabled"], true);
+        assert_eq!(repo.get_user_profile().unwrap().full_name, "Updated again");
+    }
+
+    #[test]
+    fn profile_save_replaces_known_fields_even_if_stored_values_differ() {
+        let database = Database::in_memory().unwrap();
+        let repo = SettingsRepository::new(&database);
+        let mut profile = repo.get_user_profile().unwrap();
+        profile.email = "new@example.org".into();
+        database.connection().execute(
+            "UPDATE app_settings SET value_json = json_set(value_json, '$.email', 'old@example.org', '$.futureFlag', 42) WHERE key = ?1",
+            params![USER_PROFILE_KEY],
+        ).unwrap();
+        repo.save_user_profile(&profile).unwrap();
+        let stored: String = database.connection().query_row(
+            "SELECT value_json FROM app_settings WHERE key = ?1",
+            params![USER_PROFILE_KEY],
+            |row| row.get(0),
+        ).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(json["email"], "new@example.org");
+        assert_eq!(json["futureFlag"], 42);
+    }
 
     #[test]
     fn preferences_round_trip() {
