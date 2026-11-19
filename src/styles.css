@@ -296,6 +296,21 @@ button {
   width: 100%;
 }
 
+/* Host for the active studio's list (scenes / research projects), filled via
+   a portal from Studio3D / ResearchStudio in place of the chat history. */
+.sidebar-studio-slot {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  width: 100%;
+  overflow: auto;
+  padding: 0 4px;
+}
+.sidebar.collapsed .sidebar-studio-slot {
+  display: none;
+}
+
 .conversation-list.collapsed {
   align-items: center;
   gap: 6px;
@@ -1827,6 +1842,38 @@ button {
 
 .composer .cloud-connect-button:hover {
   background: var(--bubble);
+}
+
+.composer-model-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.composer-cloud-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 999px;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.composer-auto-hint {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .composer button.composer-send {
