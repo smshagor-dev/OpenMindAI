@@ -58,7 +58,11 @@ pub fn preview_writable(path: &Path) -> bool {
         // Never truncate or delete a pre-existing file (or follow a planted
         // symlink) merely to check whether a storage location is writable.
         let probe = path.join(format!(".openmindai-write-test-{}", uuid::Uuid::new_v4()));
-        return match fs::OpenOptions::new().write(true).create_new(true).open(&probe) {
+        return match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+        {
             Ok(file) => {
                 drop(file);
                 fs::remove_file(&probe).is_ok()
@@ -153,8 +157,7 @@ impl InstallConfig {
     /// finished install, so they count as provisioned to avoid forcing existing
     /// users back through the wizard.
     pub fn is_fully_provisioned(&self) -> bool {
-        self.installation_complete
-            && matches!(self.setup_state, None | Some(SetupState::Completed))
+        self.installation_complete && matches!(self.setup_state, None | Some(SetupState::Completed))
     }
 
     /// Builds the resume descriptor for a setup that still needs finishing.
@@ -397,15 +400,16 @@ impl PortableRootManager {
         fs::create_dir_all(&self.root)?;
         // A fixed .write-test name could be a symlink to unrelated user data.
         // Use an unpredictable exclusive file so validation cannot overwrite it.
-        let probe = self.root.join(format!(".write-test-{}", uuid::Uuid::new_v4()));
+        let probe = self
+            .root
+            .join(format!(".write-test-{}", uuid::Uuid::new_v4()));
         let file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&probe)
             .map_err(|error| AppError::RootNotWritable(error.to_string()))?;
         drop(file);
-        fs::remove_file(&probe)
-            .map_err(|error| AppError::RootNotWritable(error.to_string()))?;
+        fs::remove_file(&probe).map_err(|error| AppError::RootNotWritable(error.to_string()))?;
         Ok(())
     }
 
