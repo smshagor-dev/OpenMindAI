@@ -25,9 +25,9 @@ test("production settings/profile saves retain drafts, show failures and allow r
       builder.onResolve({ filter: /^react(?:\/jsx-runtime)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
       builder.onResolve({ filter: /^lucide-react$/ }, () => ({ path: "icons", namespace: "fixture" }));
       builder.onResolve({ filter: /^@tauri-apps\/api\/core$/ }, () => ({ path: "native", namespace: "fixture" }));
-      builder.onResolve({ filter: /^\.\/(ModelsManager|AppsSettings|MaintenanceCenter|UpdatesPanel|AgentSettings|DiffusionRuntimePanel)$/ }, args => ({ path: args.path.slice(2), namespace: "fixture" }));
+      builder.onResolve({ filter: /^\.\/(ModelsManager|AppsSettings|CloudAccountSection|MaintenanceCenter|UpdatesPanel|AgentSettings|DiffusionRuntimePanel)$/ }, args => ({ path: args.path.slice(2), namespace: "fixture" }));
       builder.onLoad({ filter: /.*/, namespace: "fixture" }, ({ path }) => ({ contents: path === "icons"
-        ? "export const Brain=()=>null,Cpu=()=>null,Database=()=>null,Download=()=>null,FolderOpen=()=>null,Globe=()=>null,HardDrive=()=>null,Info=()=>null,Keyboard=()=>null,LoaderCircle=()=>null,MessageSquarePlus=()=>null,Palette=()=>null,Play=()=>null,Plug=()=>null,RefreshCw=()=>null,Server=()=>null,Settings=()=>null,Shield=()=>null,SlidersHorizontal=()=>null,StopCircle=()=>null,Trash2=()=>null,User=()=>null,Wrench=()=>null,Bot=()=>null;"
+        ? "export const Brain=()=>null,Cpu=()=>null,Database=()=>null,Download=()=>null,FolderOpen=()=>null,Globe=()=>null,HardDrive=()=>null,Info=()=>null,Keyboard=()=>null,LoaderCircle=()=>null,MessageSquarePlus=()=>null,Palette=()=>null,Play=()=>null,Plug=()=>null,RefreshCw=()=>null,Server=()=>null,Settings=()=>null,Shield=()=>null,SlidersHorizontal=()=>null,StopCircle=()=>null,Trash2=()=>null,User=()=>null,Wrench=()=>null,Bot=()=>null,Cloud=()=>null;"
         : path === "native" ? "export const invoke=async()=>{throw Error('unexpected native action');};" : `export const ${path}=()=>null;` }));
     } }] });
     const { SettingsDialog } = await import(pathToFileURL(outfile));
