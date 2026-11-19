@@ -139,7 +139,7 @@ export function App() {
   const copyrightYear = new Date().getFullYear();
   const [view, setView] = useState<View>("chat");
   const [executionMode, setExecutionMode] = useState<ExecutionMode>(
-    () => setupExecutionMode() ?? "auto",
+    () => setupExecutionMode() ?? "local",
   );
   const [internetAvailable, setInternetAvailable] = useState(() => window.navigator.onLine);
   const [routeNotice, setRouteNotice] = useState<string | null>(null);
@@ -1840,20 +1840,6 @@ export function App() {
                 Cloud
               </button>
             </div>
-            {view === "work" && !workThreadId && showCloudApiModels ? (
-              <select
-                className="cloud-model-select"
-                aria-label="Cloud API model"
-                value={cloudModel}
-                onChange={(event) => setCloudModel(event.target.value)}
-              >
-                {cloudModels.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.name || model.id}
-                  </option>
-                ))}
-              </select>
-            ) : null}
           </div>
           <div className="topbar-actions">
             {view === "chat" && activeConversation ? (
@@ -2041,6 +2027,7 @@ export function App() {
             modelSwitching={modelSwitching}
             modelSwitchError={modelSwitchError}
             onSelectModel={selectModel}
+            executionMode={executionMode}
             showCloudModels={showCloudApiModels}
             cloudUnavailable={executionMode === "cloud" && !showCloudApiModels}
             onConnectCloud={() => {
@@ -2066,7 +2053,13 @@ export function App() {
             connection={cloudConnection}
           />
         ) : view === "research-studio" ? (
-          <ResearchStudio />
+          <ResearchStudio
+            connected={Boolean(internetAvailable && cloudConnection?.connected)}
+            onConnect={() => {
+              setSettingsSection("cloud");
+              setView("settings");
+            }}
+          />
         ) : view === "web-search" ? (
           <StudioHub
             section={view}
@@ -2134,6 +2127,7 @@ export function App() {
               modelSwitching={modelSwitching}
               modelSwitchError={modelSwitchError}
               onSelectModel={selectModel}
+              executionMode={executionMode}
               showCloudModels={showCloudApiModels}
               cloudUnavailable={executionMode === "cloud" && !showCloudApiModels}
               onConnectCloud={() => {
