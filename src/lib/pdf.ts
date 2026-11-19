@@ -290,11 +290,24 @@ async function selectablePageText(page: PDFPageProxy) {
 
 async function renderPdfPage(page: PDFPageProxy, signal?: PdfExtractionOptions["signal"]) {
   const base = page.getViewport({ scale: 1 });
+  if (!Number.isFinite(base.width) || !Number.isFinite(base.height)
+    || base.width <= 0 || base.height <= 0) {
+    throw new Error("Invalid PDF page dimensions.");
+  }
+  // Never impose a minimum scale: extremely large PDF coordinates must not
+  // bypass the pixel budget and allocate an enormous canvas.
   const scale = Math.min(2, MAX_RENDER_DIMENSION / Math.max(base.width, base.height));
-  const viewport = page.getViewport({ scale: Math.max(0.5, scale) });
+  const viewport = page.getViewport({ scale });
+  if (!Number.isFinite(viewport.width) || !Number.isFinite(viewport.height)
+    || viewport.width <= 0 || viewport.height <= 0
+    || viewport.width > MAX_RENDER_DIMENSION || viewport.height > MAX_RENDER_DIMENSION) {
+    throw new Error("Invalid PDF render dimensions.");
+  }
+  const width = Math.max(1, Math.round(viewport.width));
+  const height = Math.max(1, Math.round(viewport.height));
   const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(viewport.width));
-  canvas.height = Math.max(1, Math.round(viewport.height));
+  canvas.width = width;
+  canvas.height = height;
   const context = canvas.getContext("2d", { alpha: false });
   if (!context) throw new Error("Could not render a scanned PDF page for local vision.");
   context.fillStyle = "#ffffff";
