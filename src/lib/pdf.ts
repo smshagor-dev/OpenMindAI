@@ -275,16 +275,16 @@ export async function extractPdfText(
 function boundedOcrText(text: string, maxUnits: number): string {
   if (maxUnits <= 0) return "";
   let start = 0;
+  let end = 0;
+  let used = 0;
+  let started = false;
   for (const character of text) {
-    if (!character.trim()) {
+    if (!started && !character.trim()) {
       start += character.length;
+      end = start;
       continue;
     }
-    break;
-  }
-  let used = 0;
-  let end = start;
-  for (const character of text.slice(start)) {
+    started = true;
     if (used + character.length > maxUnits) break;
     used += character.length;
     end += character.length;
