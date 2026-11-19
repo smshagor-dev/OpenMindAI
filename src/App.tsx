@@ -681,8 +681,15 @@ export function App() {
   useEffect(() => {
     const unlisteners = [
       listen<StreamStartedEvent>("inference:started", (event) => {
+        // Reject inconsistent stream ownership before touching conversation state.
+        // Otherwise a malformed/stale event can create a phantom running stream
+        // that no matching completion event can safely finish.
+        if (
+          !event.payload.conversationId ||
+          event.payload.assistant.conversationId !== event.payload.conversationId ||
+          event.payload.user.conversationId !== event.payload.conversationId
+        ) return;
         if (!chatState.startStream(event.payload)) return;
-        if (event.payload.assistant.conversationId !== event.payload.conversationId) return;
         setConversations((items) =>
           items.map((item) =>
             item.id === event.payload.conversationId
