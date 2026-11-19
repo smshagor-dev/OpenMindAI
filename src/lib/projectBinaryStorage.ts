@@ -30,6 +30,16 @@ export async function attachProjectBinaryFile(projectId: string, file: File) {
 /** A requested, verified, project-scoped copy. Never use stored names as paths. */
 export async function saveProjectBinaryCopy(projectId: string, fileId: string) {
   const file = await api.readProjectBinaryFile(projectId, fileId);
+  // Bound untrusted encoded data before allocating decoded bytes in the WebView.
+  if (!Number.isSafeInteger(file.sizeBytes) || file.sizeBytes < 0 ||
+      file.sizeBytes > MAX_PROJECT_BINARY_FILE_BYTES) {
+    throw new Error("Saved attachment failed size validation.");
+  }
+  const expectedEncodedLength = 4 * Math.ceil(file.sizeBytes / 3);
+  if (file.dataBase64.length !== expectedEncodedLength ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(file.dataBase64)) {
+    throw new Error("Saved attachment has invalid base64 encoding.");
+  }
   const binary = globalThis.atob(file.dataBase64);
   if (binary.length !== file.sizeBytes || binary.length > MAX_PROJECT_BINARY_FILE_BYTES) {
     throw new Error("Saved attachment failed size validation.");
