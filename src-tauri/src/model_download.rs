@@ -198,6 +198,19 @@ fn activate_download(
     status.error = None;
 }
 
+/// Cancel a pending metadata request without waiting for its HTTP timeout.
+/// This is deliberately before filesystem preparation or manifest publication.
+async fn cancel_while_resolving<T>(
+    token: &CancellationToken,
+    resolve: impl std::future::Future<Output = Result<T, AppError>>,
+) -> Result<T, AppError> {
+    tokio::select! {
+        biased;
+        _ = token.cancelled() => Err(AppError::InferenceCancelled("download stopped".to_string())),
+        result = resolve => result,
+    }
+}
+
 impl ModelDownloadManager {
     pub fn new(root: PortableRootManager) -> Self {
         let catalog_entry = crate::model_catalog::required_entry()
@@ -361,7 +374,7 @@ impl ModelDownloadManager {
         // it is pending; never proceed to create or mutate package files after
         // the lookup completes if that request was stopped.
         ensure_download_not_cancelled(&token)?;
-        let metadata = self.resolve_model_metadata(&entry).await?;
+        let metadata = cancel_while_resolving(&token, self.resolve_model_metadata(&entry)).await?;
         ensure_download_not_cancelled(&token)?;
         let download = entry.download.as_ref().ok_or_else(|| {
             AppError::ModelUnsupported(format!(
@@ -950,6 +963,29 @@ mod tests {
         assert!(apply_stop_if_active(&mut status, Some(&token), DownloadState::Cancelled));
         assert!(token.is_cancelled());
         assert!(matches!(status.state, DownloadState::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn cancelling_pending_metadata_resolution_does_not_wait_for_network() {
+        let token = CancellationToken::new();
+        token.cancel();
+        let result = cancel_while_resolving(&token, std::future::pending::<Result<(), AppError>>()).await;
+        assert!(matches!(result, Err(AppError::InferenceCancelled(_))));
+    }
+
+    #[tokio::test]
+    async fn cancellation_wins_when_metadata_is_already_ready() {
+        let token = CancellationToken::new();
+        token.cancel();
+        let result = cancel_while_resolving(&token, async { Ok::<_, AppError>(42) }).await;
+        assert!(matches!(result, Err(AppError::InferenceCancelled(_))));
+    }
+
+    #[tokio::test]
+    async fn successful_metadata_resolution_is_preserved() {
+        let token = CancellationToken::new();
+        let result = cancel_while_resolving(&token, async { Ok::<_, AppError>(42) }).await;
+        assert_eq!(result.unwrap(), 42);
     }
 
     #[test]
