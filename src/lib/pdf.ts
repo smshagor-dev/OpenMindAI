@@ -284,18 +284,31 @@ async function selectablePageText(page: PDFPageProxy) {
   const textContent = await page.getTextContent();
   const lines: string[] = [];
   let line = "";
+  let collected = 0;
   for (const item of textContent.items) {
     if (!("str" in item)) continue;
-    const value = item.str.replace(/\s+/g, " ").trim();
+    // A single dense/malformed PDF page must not construct arbitrarily large
+    // strings before the caller applies the chat text budget. Slice first so
+    // even whitespace normalization cannot allocate the full input string.
+    const remaining = MAX_EXTRACTED_CHARS - collected - line.length;
+    if (remaining <= 0) break;
+    const value = item.str.slice(0, remaining).replace(/\s+/g, " ").trim();
     if (!value) continue;
-    line += `${line ? " " : ""}${value}`;
+    const separator = line ? " " : "";
+    line += separator + value.slice(0, Math.max(0, remaining - separator.length));
     if (item.hasEOL) {
-      lines.push(line.trim());
+      const finished = line.trim();
+      if (finished) {
+        lines.push(finished);
+        collected += finished.length + 1;
+      }
       line = "";
     }
   }
-  if (line.trim()) lines.push(line.trim());
-  return lines.filter(Boolean).join("\n").trim();
+  if (line.trim() && collected < MAX_EXTRACTED_CHARS) {
+    lines.push(line.trim().slice(0, MAX_EXTRACTED_CHARS - collected));
+  }
+  return lines.filter(Boolean).join("\n").slice(0, MAX_EXTRACTED_CHARS).trim();
 }
 
 async function renderPdfPage(page: PDFPageProxy, signal?: PdfExtractionOptions["signal"]) {
