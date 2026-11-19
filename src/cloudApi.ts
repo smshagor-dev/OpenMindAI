@@ -27,7 +27,35 @@ export type StudioJob = {
   asset_id?: number | null;
   events?: unknown[];
 };
-export type ResearchProject = { id: number; title: string; status?: string; prompt?: string };
+export type ResearchProject = {
+  id: number;
+  title: string;
+  status?: string;
+  prompt?: string;
+  created_at?: string;
+  output_language?: string;
+  progress?: number;
+};
+// The hosted research pipeline's detail/event payloads are rendered defensively
+// (field names vary by run stage), so these keep an open shape.
+export type ResearchEvent = {
+  id?: number;
+  sequence?: number;
+  type?: string;
+  status?: string;
+  message?: string;
+  task?: string;
+  agent?: string;
+  created_at?: string;
+  [key: string]: unknown;
+};
+export type ResearchDetail = Record<string, unknown> & {
+  id?: number;
+  title?: string;
+  status?: string;
+  prompt?: string;
+  progress?: number;
+};
 export type QueuedScene = {
   id: string;
   kind: "scene3d";
@@ -79,15 +107,23 @@ export const cloud = {
     const page = await cloud.request<{ data: ResearchProject[] }>("research/projects");
     return Array.isArray(page.data) ? page.data : [];
   },
-  createResearch: (title: string, prompt: string) =>
+  createResearch: (title: string, prompt: string, outputLanguage = "auto") =>
     cloud.request<ResearchProject>("research/projects", "POST", {
       title: title.slice(0, 200),
       prompt: prompt.slice(0, 16000),
-      output_language: "auto",
+      output_language: outputLanguage,
     }),
   startResearch: (id: number) =>
     cloud.request<unknown>("research/projects/" + id + "/runs", "POST", {}),
-  researchDetail: (id: number) => cloud.request<Record<string, unknown>>("research/projects/" + id),
+  researchDetail: (id: number) => cloud.request<ResearchDetail>("research/projects/" + id),
+  researchEvents: async (id: number): Promise<ResearchEvent[]> => {
+    const page = await cloud.request<{ data?: ResearchEvent[]; events?: ResearchEvent[] }>(
+      "research/projects/" + id + "/events",
+    );
+    if (Array.isArray(page.data)) return page.data;
+    if (Array.isArray(page.events)) return page.events;
+    return [];
+  },
   researchControl: (id: number, action: "pause" | "resume" | "cancel") =>
     cloud.request<unknown>("research/projects/" + id + "/control", "POST", { action }),
   studioEngines: () => cloud.request<Record<string, unknown>>("3d-studio/engines"),
