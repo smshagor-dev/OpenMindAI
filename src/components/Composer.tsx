@@ -26,6 +26,7 @@ import { transcribeAudioBlob } from "../lib/media";
 import { api } from "../api";
 import { ModelSelector } from "./ModelSelector";
 import type { CloudModel } from "../cloudApi";
+import type { ExecutionMode } from "../lib/executionRouting";
 
 export function Composer({ composerRef: textareaRef, ...props }: {
   prompt: string;
@@ -51,6 +52,7 @@ export function Composer({ composerRef: textareaRef, ...props }: {
   modelSwitching: boolean;
   modelSwitchError: string | null;
   onSelectModel: (modelId: string) => void;
+  executionMode?: ExecutionMode;
   showCloudModels?: boolean;
   cloudUnavailable?: boolean;
   onConnectCloud?: () => void;
@@ -69,8 +71,8 @@ export function Composer({ composerRef: textareaRef, ...props }: {
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const audioPreviewUrlsRef = useRef(new Map<string, string>());
+  const [audioPreviewUrls, setAudioPreviewUrls] = useState<Map<string, string>>(() => new Map());
   const attachmentsRef = useRef<AttachmentDraft[]>([]);
-  // Synchronize the latest attachments after commit, never mutate refs during render.
   useEffect(() => {
     attachmentsRef.current = props.attachments;
   }, [props.attachments]);
@@ -220,6 +222,7 @@ export function Composer({ composerRef: textareaRef, ...props }: {
         audioPreviewUrlsRef.current.set(key, URL.createObjectURL(file));
       }
     }
+    setAudioPreviewUrls(new Map(audioPreviewUrlsRef.current));
     try {
       await props.addFiles(files);
     } finally {
@@ -235,6 +238,7 @@ export function Composer({ composerRef: textareaRef, ...props }: {
     if (previewUrl) {
       URL.revokeObjectURL(previewUrl);
       audioPreviewUrlsRef.current.delete(key);
+      setAudioPreviewUrls(new Map(audioPreviewUrlsRef.current));
     }
     props.removeAttachment(attachment.id);
   };
@@ -284,7 +288,7 @@ export function Composer({ composerRef: textareaRef, ...props }: {
             {props.attachments.map((attachment) => {
               const audioPreview =
                 attachment.kind === "audio"
-                  ? (audioPreviewUrlsRef.current.get(attachmentPreviewKey(attachment)) ?? null)
+                  ? (audioPreviewUrls.get(attachmentPreviewKey(attachment)) ?? null)
                   : null;
               return (
                 <span className="attachment-chip attachment-chip-media" key={attachment.id}>
@@ -488,36 +492,30 @@ export function Composer({ composerRef: textareaRef, ...props }: {
               >
                 Connect Cloud
               </button>
-            ) : props.showCloudModels ? (
-              <label
-                className="cloud-composer-model"
-                title="Authenticated OpenMindAI Cloud API model"
-              >
-                <span className="sr-only">Cloud API model</span>
-                <select
-                  className="cloud-model-select"
-                  aria-label="Cloud API model"
-                  value={props.activeCloudModelId ?? ""}
-                  disabled={props.backgroundBusy || props.streaming || props.submitting}
-                  onChange={(event) => props.onSelectCloudModel?.(event.currentTarget.value)}
-                >
-                  {(props.cloudModels ?? []).map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.name || model.id}
-                    </option>
-                  ))}
-                </select>
-              </label>
+            ) : props.executionMode === "cloud" ? (
+              <span className="composer-cloud-pill" title="Running on OpenMindAI Cloud">
+                Cloud
+              </span>
             ) : (
-              <ModelSelector
-                models={props.models}
-                activeModelId={props.activeModelId}
-                runtime={props.runtime}
-                switching={props.modelSwitching}
-                disabled={props.backgroundBusy || props.streaming || props.submitting}
-                switchError={props.modelSwitchError}
-                onSelect={props.onSelectModel}
-              />
+              <span className="composer-model-group">
+                <ModelSelector
+                  models={props.models}
+                  activeModelId={props.activeModelId}
+                  runtime={props.runtime}
+                  switching={props.modelSwitching}
+                  disabled={props.backgroundBusy || props.streaming || props.submitting}
+                  switchError={props.modelSwitchError}
+                  onSelect={props.onSelectModel}
+                />
+                {props.executionMode === "auto" ? (
+                  <span
+                    className="composer-auto-hint"
+                    title="Auto: runs on this computer first, falls back to OpenMindAI Cloud"
+                  >
+                    → Cloud
+                  </span>
+                ) : null}
+              </span>
             )}
             <button
               type="button"
