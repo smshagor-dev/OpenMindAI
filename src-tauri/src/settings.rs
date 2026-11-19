@@ -375,6 +375,10 @@ impl<'a> SettingsRepository<'a> {
     }
 
     pub fn save_user_profile(&self, profile: &UserProfile) -> Result<UserProfile, AppError> {
+        // Avatars are stored inline in SQLite. Reject unexpected payloads before
+        // writing so a malformed client cannot fill the database with an
+        // unbounded string or persist active-content data URLs.
+        validate_avatar_data_url(&profile.avatar_data_url)?;
         self.save_json(USER_PROFILE_KEY, profile)?;
         Ok(profile.clone())
     }
@@ -393,6 +397,33 @@ impl<'a> SettingsRepository<'a> {
     }
 }
 
+const MAX_PROFILE_AVATAR_DATA_URL_BYTES: usize = 4 * 1024 * 1024;
+
+fn validate_avatar_data_url(avatar: &str) -> Result<(), AppError> {
+    if avatar.is_empty() {
+        return Ok(());
+    }
+    if avatar.len() > MAX_PROFILE_AVATAR_DATA_URL_BYTES {
+        return Err(AppError::internal("Profile avatar exceeds the 4 MiB encoded size limit"));
+    }
+    let encoded = ["data:image/png;base64,", "data:image/jpeg;base64,",
+        "data:image/webp;base64,", "data:image/gif;base64,"]
+        .iter()
+        .find_map(|prefix| avatar.strip_prefix(prefix))
+        .ok_or_else(|| AppError::internal("Profile avatar must be a supported raster image data URL"))?;
+    if encoded.is_empty() || encoded.len() % 4 != 0 {
+        return Err(AppError::internal("Profile avatar has invalid Base64 encoding"));
+    }
+    let payload = encoded.trim_end_matches('=');
+    if encoded.len() - payload.len() > 2
+        || !payload.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/')
+        || !encoded[payload.len()..].bytes().all(|byte| byte == b'=')
+    {
+        return Err(AppError::internal("Profile avatar has invalid Base64 encoding"));
+    }
+    Ok(())
+}
+
 fn push_context_line(lines: &mut Vec<String>, label: &str, value: &str) {
     let value = value.trim();
     if !value.is_empty() {
@@ -403,6 +434,44 @@ fn push_context_line(lines: &mut Vec<String>, label: &str, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_avatar_rejects_oversized_and_active_content_without_writing() {
+        let database = Database::in_memory().unwrap();
+        let repo = SettingsRepository::new(&database);
+        let mut profile = UserProfile::default();
+        profile.full_name = "Existing".into();
+        profile.avatar_data_url = "data:image/png;base64,iVBORw0KGgo=".into();
+        repo.save_user_profile(&profile).unwrap();
+
+        for invalid in [
+            "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=" .to_string(),
+            "data:text/html;base64,PHNjcmlwdD4=".to_string(),
+            "data:image/png;base64,not-base64!".to_string(),
+            "data:image/png;base64,".to_string(),
+            format!("data:image/png;base64,{}", "A".repeat(MAX_PROFILE_AVATAR_DATA_URL_BYTES)),
+        ] {
+            profile.full_name = "Should not persist".into();
+            profile.avatar_data_url = invalid;
+            assert!(repo.save_user_profile(&profile).is_err());
+            let saved = repo.get_user_profile().unwrap();
+            assert_eq!(saved.full_name, "Existing");
+            assert_eq!(saved.avatar_data_url, "data:image/png;base64,iVBORw0KGgo=");
+        }
+    }
+
+    #[test]
+    fn profile_avatar_accepts_empty_and_supported_raster_data_urls() {
+        let database = Database::in_memory().unwrap();
+        let repo = SettingsRepository::new(&database);
+        let mut profile = UserProfile::default();
+        for avatar in ["", "data:image/png;base64,AAAA", "data:image/jpeg;base64,AAAA",
+            "data:image/webp;base64,AAAA", "data:image/gif;base64,AAAA"] {
+            profile.avatar_data_url = avatar.into();
+            repo.save_user_profile(&profile).unwrap();
+            assert_eq!(repo.get_user_profile().unwrap().avatar_data_url, avatar);
+        }
+    }
 
     #[test]
     fn preferences_round_trip() {
