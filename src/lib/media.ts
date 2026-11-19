@@ -227,7 +227,7 @@ async function decodeAudioWithWebAudio(blob: Blob) {
     return await context.decodeAudioData(bytes.slice(0));
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`Could not decode this audio format locally: ${detail}`);
+    throw new Error(`Could not decode this audio format locally: ${detail}`, { cause: error });
   } finally {
     await context.close().catch(() => undefined);
   }

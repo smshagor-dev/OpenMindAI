@@ -68,7 +68,29 @@ pub(super) fn validate(source: &mut File) -> Result<(), AppError> {
                     return Err("DOCX expansion exceeds budget".into());
                 }
                 let text = String::from_utf8(bytes)?;
-                xml(&text)?;
+                let parsed = xml(&text)?;
+                // Office packages can carry external links in nested .rels parts.
+                // Exported documents must not silently cause Word to fetch
+                // attacker-controlled resources when a recipient opens them.
+                if name.ends_with(".rels") {
+                    if !parsed.root_element().has_tag_name((RELS, "Relationships")) {
+                        return Err("invalid DOCX relationships part".into());
+                    }
+                    for relation in parsed.root_element().children().filter(|node| node.is_element()) {
+                        if !relation.has_tag_name((RELS, "Relationship"))
+                            || !matches!(relation.attribute("TargetMode"), None | Some("Internal"))
+                            || relation.attribute("Target").is_none_or(|target| {
+                                target.is_empty()
+                                    || target.starts_with(['/', '\\'])
+                                    || target.contains("://")
+                                    || target.contains(['\\', '#', '?'])
+                                    || target.split('/').any(|part| part == ".." || part == ".")
+                            })
+                        {
+                            return Err("unsafe or external DOCX relationship".into());
+                        }
+                    }
+                }
                 if REQUIRED.contains(&name.as_str()) {
                     parts.insert(name, text);
                 }
@@ -209,6 +231,47 @@ pub(super) fn fixture_docx() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rejects_external_office_relationships_before_publishing() {
+        for target in [
+            "https://example.invalid/tracker",
+            "file:///private/data",
+            "../outside.xml",
+            "/absolute.xml",
+            "word\\outside.xml",
+        ] {
+            let mut entries = parts();
+            entries[1].1 = format!(
+                r#"<Relationships xmlns="{RELS}"><Relationship Id="rId1" Type="{OFFICE}" Target="word/document.xml"/><Relationship Id="rId2" Type="urn:test" Target="{target}" TargetMode="External"/></Relationships>"#
+            );
+            assert!(check(&package(entries, zip::CompressionMethod::Deflated)).is_err(), "{target}");
+        }
+    }
+
+    #[test]
+    fn rejects_external_relationships_in_nested_word_parts() {
+        let mut entries = parts();
+        entries.push((
+            "word/_rels/document.xml.rels".into(),
+            format!(
+                r#"<Relationships xmlns="{RELS}"><Relationship Id="rId9" Type="urn:external" Target="https://example.invalid/pixel" TargetMode="External"/></Relationships>"#
+            ),
+        ));
+        assert!(check(&package(entries, zip::CompressionMethod::Stored)).is_err());
+    }
+
+    #[test]
+    fn permits_safe_internal_nested_relationships() {
+        let mut entries = parts();
+        entries.push((
+            "word/_rels/document.xml.rels".into(),
+            format!(
+                r#"<Relationships xmlns="{RELS}"><Relationship Id="rId2" Type="urn:styles" Target="styles.xml"/></Relationships>"#
+            ),
+        ));
+        assert!(check(&package(entries, zip::CompressionMethod::Deflated)).is_ok());
+    }
+
     fn check(bytes: &[u8]) -> Result<(), AppError> {
         use std::io::Write;
         let mut file = tempfile::tempfile().unwrap();

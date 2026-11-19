@@ -191,7 +191,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
   };
 
   const detachFolder = async () => {
-    if (!detachTarget) return;
+    if (busy !== null || !detachTarget) return;
     if (editorDirty && !window.confirm("Discard unsaved editor changes before detaching this folder?")) return;
     const next = await run("detach", () =>
       localWorkspaceApi.detachFolder(props.projectId, detachTarget.id),
@@ -227,7 +227,9 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
   };
 
   const openEntry = async (entry: WorkspaceEntry) => {
-    if (!activeRoot || !isCurrentListing() || !visibleEntries.includes(entry)) return;
+    // An in-flight save must finish before navigation can replace the editor.
+    // Otherwise a late save acknowledgement may mark a different file clean.
+    if (busy !== null || !activeRoot || !isCurrentListing() || !visibleEntries.includes(entry)) return;
     if (entry.kind === "directory") {
       if (editorDirty && !window.confirm("Discard unsaved editor changes and open this folder?")) return;
       setEditorPath(null);
@@ -316,6 +318,10 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
 
   const deleteItem = async () => {
     if (!activeRoot || !deleteTarget || !isCurrentListing() || !visibleEntries.includes(deleteTarget)) return;
+    // Deleting an open file (or its parent directory) also destroys an unsaved draft.
+    // Keep the editor intact if the user declines the destructive operation.
+    if (editorDirty && editorPath && workspacePathContains(deleteTarget.relativePath, editorPath) &&
+        !confirmWorkspaceDiscard(true, "delete the file containing unsaved editor changes")) return;
     const removed = await run("delete-path", async () => {
       await localWorkspaceApi.deletePath(
         props.projectId,
@@ -337,7 +343,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
   };
 
   const goToLocation = async () => {
-    if (!activeRoot || !isCurrentListing()) return;
+    if (busy !== null || !activeRoot || !isCurrentListing()) return;
     const raw = locationInput.trim();
     if (!raw) return;
     if (!confirmWorkspaceDiscard(editorDirty, "navigate to another folder")) return;
@@ -349,7 +355,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
   };
 
   const goUp = async () => {
-    if (!activeRoot || !isCurrentListing()) return;
+    if (busy !== null || !activeRoot || !isCurrentListing()) return;
     if (!currentPath) return;
     if (!confirmWorkspaceDiscard(editorDirty, "navigate to the parent folder")) return;
     setEditorPath(null);
@@ -417,7 +423,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
                 className={root.id === activeRoot?.id ? "local-root-tab active" : "local-root-tab"}
                 key={root.id}
                 onClick={() => {
-                  if (root.id === activeRoot?.id) return;
+                  if (root.id === activeRoot?.id || busy !== null) return;
                   if (!confirmWorkspaceDiscard(editorDirty, "switch attached folders")) return;
                   directoryGate.current.select(props.projectId, root.id);
                   setEntries([]);
@@ -660,4 +666,11 @@ function parentWorkspacePath(path: string) {
 function sameDisplayPath(left: string, right: string) {
   const normalize = (value: string) => value.replace(/[\\/]+$/, "").toLowerCase();
   return normalize(left) === normalize(right);
+}
+
+function workspacePathContains(parent: string, child: string): boolean {
+  const normalize = (path: string) => path.replace(/\\\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const normalizedParent = normalize(parent);
+  const normalizedChild = normalize(child);
+  return normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}/`);
 }

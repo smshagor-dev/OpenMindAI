@@ -196,7 +196,10 @@ mod tests {
         assert!(!index(&temp, C));
         assert!(index(&temp, A));
         assert!(index(&temp, B));
-        assert!(temp.path().join("data/media-index/not-a-uuid.json").exists());
+        assert!(temp
+            .path()
+            .join("data/media-index/not-a-uuid.json")
+            .exists());
         assert_eq!(
             fs::read(temp.path().join("data/media/shared.png")).unwrap(),
             b"shared bytes"
@@ -276,8 +279,7 @@ mod tests {
         assert_eq!(queue_legacy_orphans(&db, &root).unwrap(), 1);
         drain(&db, &root).unwrap();
         assert!(
-            fs::symlink_metadata(temp.path().join(format!("data/media-index/{C}.json")))
-                .is_err()
+            fs::symlink_metadata(temp.path().join(format!("data/media-index/{C}.json"))).is_err()
         );
         assert_eq!(fs::read(target).unwrap(), b"must survive");
     }
