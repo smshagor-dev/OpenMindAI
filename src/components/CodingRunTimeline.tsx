@@ -25,20 +25,21 @@ import "../coding-workspace.css";
 export function CodingRunTimeline(props: { conversationIds: string[] }) {
   const [runs, setRuns] = useState<OpenAgentRun[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [snapshot, setSnapshot] = useState<CodingRunSnapshot | null>(null);
+  const [snapshotState, setSnapshotState] = useState<{ runId: string; value: CodingRunSnapshot | null } | null>(null);
+  // Ignore obsolete detail responses immediately when the selected run changes.
+  const snapshot = snapshotState?.runId === selectedId ? snapshotState.value : null;
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    if (!props.conversationIds.length) {
-      setRuns([]);
-      setSelectedId(null);
-      setSnapshot(null);
-      return;
-    }
     const groups = await Promise.all(
       props.conversationIds.slice(-20).map((id) => api.listOpenAgentRuns(id, 8)),
     );
+    if (!props.conversationIds.length) {
+      setRuns([]);
+      setSelectedId(null);
+      return;
+    }
     const byId = new Map<string, OpenAgentRun>();
     for (const group of groups) {
       for (const run of group) byId.set(run.id, run);
@@ -57,15 +58,12 @@ export function CodingRunTimeline(props: { conversationIds: string[] }) {
   }, [refresh]);
 
   useEffect(() => {
-    if (!selectedId) {
-      setSnapshot(null);
-      return;
-    }
+    if (!selectedId) return;
     let alive = true;
     void codingTimelineApi
       .codingRunSnapshot(selectedId)
       .then((value: CodingRunSnapshot | null) => {
-        if (alive) setSnapshot(value);
+        if (alive) setSnapshotState({ runId: selectedId, value });
       })
       .catch((caught: unknown) => {
         if (alive) setError(formatError(caught));
@@ -87,7 +85,10 @@ export function CodingRunTimeline(props: { conversationIds: string[] }) {
     try {
       await action();
       await refresh();
-      if (selectedId) setSnapshot(await codingTimelineApi.codingRunSnapshot(selectedId));
+      if (selectedId) {
+        const value = await codingTimelineApi.codingRunSnapshot(selectedId);
+        setSnapshotState({ runId: selectedId, value });
+      }
     } catch (caught) {
       setError(formatError(caught));
     } finally {
