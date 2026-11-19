@@ -51,7 +51,7 @@ function classify(packages, manifest) {
     packages.filter((p) => p.name === name && p.version === version).length === 1;
   if (!hasExact("quinn-proto", "0.11.19")) die("Patched quinn-proto version missing");
   if (!hasExact("rustls", "0.23.46")) die("Patched rustls version missing");
-  if (!/^zip\s*=\s*"9\.0\.4"\s*$/m.test(manifest))
+  if (!/^zip\s*=\s*"=9\.0\.4"\s*$/m.test(manifest))
     die("Direct ZIP requirement must stay exactly 9.0.4");
   if (!/^tauri-plugin-updater\s*=\s*\{[^\n]*default-features\s*=\s*false/m.test(manifest))
     die("Updater must keep default features disabled to prevent legacy ZIP");
@@ -123,7 +123,7 @@ function inspectMigratedMetadata(metadataText) {
 function selfTest() {
   const manifest =
     '[package]\nname="fixture"\n' +
-    'zip = "9.0.4"\n' +
+    'zip = "=9.0.4"\n' +
     'tauri-plugin-updater = { version = "2.10.1", default-features = false }\n';
   const registry = (name, version, zip = "7.2.0") =>
     '[[package]]\nname = "' + name + '"\nversion = "' + version + '"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n' +
@@ -146,7 +146,8 @@ function selfTest() {
     [upgraded, manifest + patch.replace("any-tts-0.1.3", "outside")],
     [upgraded.concat([{ name: "zip", version: "8.6.0" }]), manifest + patch],
     [upgraded.concat([{ name: "zip", version: "7.2.0" }]), manifest + patch],
-    [upgraded, manifest.replace('zip = "9.0.4"', 'zip = "8.6.0"') + patch],
+    [upgraded, manifest.replace('zip = "=9.0.4"', 'zip = "9.0.4"') + patch],
+    [upgraded, manifest.replace('zip = "=9.0.4"', 'zip = "=8.6.0"') + patch],
     [upgraded, manifest.replace("default-features = false", "default-features = true") + patch],
     [upgraded.filter((p) => p.name !== "rustls"), manifest + patch],
   ]) assert.throws(() => classify(pkgs, toml));
