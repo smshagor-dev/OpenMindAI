@@ -42,6 +42,7 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import { ChatHistoryNotice } from "./components/ChatHistoryNotice";
 import { SetupWizard } from "./components/SetupWizard";
 import { ChatSearch } from "./components/ChatSearch";
+import { ArchivedChats } from "./components/ArchivedChats";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ChatModeSwitcher } from "./components/ChatModeSwitcher";
 import { Library } from "./components/Library";
@@ -416,6 +417,7 @@ export function App() {
     return stored >= 260 && stored <= 440 ? stored : 320;
   });
   const [searchOpen, setSearchOpen] = useState(false);
+  const [archivesOpen, setArchivesOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [modelsOpen, setModelsOpen] = useState(false);
   const [datasetsOpen, setDatasetsOpen] = useState(false);
@@ -1729,6 +1731,7 @@ export function App() {
         }}
         onNewChat={newConversation}
         onOpenSearch={() => setSearchOpen(true)}
+        onOpenArchived={() => setArchivesOpen(true)}
         onOpenConversation={(id) => {
           setView("chat");
           setActiveId(id);
@@ -2278,6 +2281,19 @@ export function App() {
           setEditingMessageId(null);
         }}
         onClose={() => setSearchOpen(false)}
+      />
+      <ArchivedChats
+        open={archivesOpen}
+        onClose={() => setArchivesOpen(false)}
+        onRestore={async (conversation) => {
+          await api.restoreConversation(conversation.id);
+          setConversations((items) => [
+            conversation,
+            ...items.filter((item) => item.id !== conversation.id),
+          ].map((item) =>
+            item.id === conversation.id ? { ...item, archivedAt: null } : item
+          ));
+        }}
       />
       <Library
         open={libraryOpen}
