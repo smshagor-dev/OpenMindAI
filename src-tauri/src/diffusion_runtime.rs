@@ -41,6 +41,18 @@ const MAX_RUNTIME_EXPANDED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_RUNTIME_ENTRY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_PROMPT_CHARS: usize = 4_000;
 
+// Reject embedded NUL before constructing a child process: Rust's command
+// launcher cannot encode NUL in argv, and its error path must never echo a
+// sensitive prompt in diagnostic output.
+fn validate_renderer_prompt(text: &str, kind: &str) -> Result<(), AppError> {
+    if text.contains('\\0') {
+        return Err(AppError::ArtifactGenerationFailed(format!(
+            "{kind} contains an unsupported NUL character"
+        )));
+    }
+    Ok(())
+}
+
 // Avoid parallel downloads/extraction and manifest races within one app process.
 static RUNTIME_INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static RUNTIME_INSTALL_ACTIVITY: std::sync::Mutex<Option<DiffusionRuntimeStatus>> =
@@ -212,6 +224,9 @@ impl ImageRenderOptions {
                 "negative prompt is too long; maximum is {MAX_PROMPT_CHARS} characters"
             )));
         }
+        if let Some(negative) = self.negative_prompt.as_deref() {
+            validate_renderer_prompt(negative, "negative prompt")?;
+        }
         if self.steps.is_some_and(|steps| !(1..=50).contains(&steps)) {
             return Err(AppError::ArtifactGenerationFailed(
                 "image sampling steps must be between 1 and 50".to_string(),
@@ -226,6 +241,45 @@ impl ImageRenderOptions {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod renderer_argument_validation_tests {
+    use super::{validate_renderer_prompt, ImageRenderOptions};
+
+    #[test]
+    fn rejects_embedded_nul_without_echoing_sensitive_prompt() {
+        for kind in ["image prompt", "video prompt"] {
+            let secret = "private-sentinel\\0rest";
+            let error = validate_renderer_prompt(secret, kind).unwrap_err();
+            let message = error.to_string();
+            assert!(message.contains("NUL"));
+            assert!(!message.contains("private-sentinel"));
+            assert!(!message.contains("rest"));
+        }
+    }
+
+    #[test]
+    fn rejects_nul_in_negative_prompt_before_spawning_renderer() {
+        let options = ImageRenderOptions {
+            negative_prompt: Some("private-negative\\0suffix".into()),
+            ..Default::default()
+        };
+        let message = options.validate().unwrap_err().to_string();
+        assert!(message.contains("NUL"));
+        assert!(!message.contains("private-negative"));
+    }
+
+    #[test]
+    fn permits_normal_unicode_prompt() {
+        validate_renderer_prompt("বাংলা русский 🛰️", "image prompt").unwrap();
+        ImageRenderOptions {
+            negative_prompt: Some("blur, low quality".into()),
+            ..Default::default()
+        }
+        .validate()
+        .unwrap();
     }
 }
 
@@ -282,6 +336,7 @@ pub async fn generate_image(
 ) -> Result<(), AppError> {
     options.validate()?;
     let prompt = prompt.trim();
+    validate_renderer_prompt(prompt, "image prompt")?;
     if prompt.is_empty() {
         return Err(AppError::ArtifactGenerationFailed(
             "image prompt cannot be empty".to_string(),
@@ -433,6 +488,7 @@ pub async fn generate_video(
         output_path,
     } = request;
     let prompt = prompt.trim();
+    validate_renderer_prompt(prompt, "video prompt")?;
     if prompt.is_empty() {
         return Err(AppError::ArtifactGenerationFailed(
             "video prompt cannot be empty".to_string(),
