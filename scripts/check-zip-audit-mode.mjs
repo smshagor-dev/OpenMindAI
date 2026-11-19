@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const EXPECTED = new Map([["any-tts", "0.1.3"], ["candle-core", "0.10.2"]]);
-const PATCHED_ZIP = "9.0.4";
+const PATCHED_ZIP = "9.0.5";
 const LOCK_PATH = join(ROOT, "src-tauri", "Cargo.lock");
 const MANIFEST_PATH = join(ROOT, "src-tauri", "Cargo.toml");
 
@@ -51,8 +51,8 @@ function classify(packages, manifest) {
     packages.filter((p) => p.name === name && p.version === version).length === 1;
   if (!hasExact("quinn-proto", "0.11.19")) die("Patched quinn-proto version missing");
   if (!hasExact("rustls", "0.23.46")) die("Patched rustls version missing");
-  if (!/^zip\s*=\s*"=9\.0\.4"\s*$/m.test(manifest))
-    die("Direct ZIP requirement must stay exactly 9.0.4");
+  if (!/^zip\s*=\s*"=9\.0\.5"\s*$/m.test(manifest))
+    die("Direct ZIP requirement must stay exactly 9.0.5");
   if (!/^tauri-plugin-updater\s*=\s*\{[^\n]*default-features\s*=\s*false/m.test(manifest))
     die("Updater must keep default features disabled to prevent legacy ZIP");
   if (packages.some((p) => p.name === "docx-rs"))
@@ -123,7 +123,7 @@ function inspectMigratedMetadata(metadataText) {
 function selfTest() {
   const manifest =
     '[package]\nname="fixture"\n' +
-    'zip = "=9.0.4"\n' +
+    'zip = "=9.0.5"\n' +
     'tauri-plugin-updater = { version = "2.10.1", default-features = false }\n';
   const registry = (name, version, zip = "7.2.0") =>
     '[[package]]\nname = "' + name + '"\nversion = "' + version + '"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\n' +
@@ -131,13 +131,13 @@ function selfTest() {
   const patchedCore = registry("quinn-proto", "0.11.19") +
     registry("rustls", "0.23.46");
   const legacy = readPackages(patchedCore + registry("zip", "7.2.0") +
-    registry("zip", "9.0.4") +
+    registry("zip", "9.0.5") +
     registry("any-tts", "0.1.3") + registry("candle-core", "0.10.2"));
   assert.throws(() => classify(legacy, manifest));
   const patch = '\n[patch.crates-io]\n' +
     'any-tts = { path = "../vendor/any-tts-0.1.3" }\n' +
     'candle-core = { path = "../vendor/candle-core-0.10.2" }\n';
-  const upgraded = readPackages(patchedCore + registry("zip", "9.0.4") +
+  const upgraded = readPackages(patchedCore + registry("zip", "9.0.5") +
     '[[package]]\nname = "any-tts"\nversion = "0.1.3"\n' +
     '[[package]]\nname = "candle-core"\nversion = "0.10.2"\n');
   assert.equal(classify(upgraded, manifest + patch), "remediated");
@@ -146,8 +146,9 @@ function selfTest() {
     [upgraded, manifest + patch.replace("any-tts-0.1.3", "outside")],
     [upgraded.concat([{ name: "zip", version: "8.6.0" }]), manifest + patch],
     [upgraded.concat([{ name: "zip", version: "7.2.0" }]), manifest + patch],
-    [upgraded, manifest.replace('zip = "=9.0.4"', 'zip = "9.0.4"') + patch],
-    [upgraded, manifest.replace('zip = "=9.0.4"', 'zip = "=8.6.0"') + patch],
+    [upgraded, manifest.replace('zip = "=9.0.5"', 'zip = "9.0.5"') + patch],
+    [upgraded, manifest.replace('zip = "=9.0.5"', 'zip = "=9.0.4"') + patch],
+    [upgraded, manifest.replace('zip = "=9.0.5"', 'zip = "=8.6.0"') + patch],
     [upgraded, manifest.replace("default-features = false", "default-features = true") + patch],
     [upgraded.filter((p) => p.name !== "rustls"), manifest + patch],
   ]) assert.throws(() => classify(pkgs, toml));
