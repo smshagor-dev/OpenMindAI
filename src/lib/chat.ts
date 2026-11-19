@@ -1,5 +1,6 @@
 import type { Message } from "../types";
 import { formatBytes } from "./format";
+import { visionMimeType } from "./visionMimeType";
 import { analyzeVideoFile, transcribeAudioFile } from "./media";
 import { extractPdfText, type PdfExtractionOptions, type PdfExtractionProgress } from "./pdf";
 import { isImageGenerationIntent } from "./imageGeneration";
@@ -54,7 +55,7 @@ const MAX_VISION_IMAGE_INPUT_BYTES = 16 * 1024 * 1024;
 const MAX_VISION_IMAGE_DATA_URL_CHARS = 6_000_000;
 const MAX_VISION_IMAGE_DIMENSION = 2048;
 const MAX_INFERENCE_MEDIA_ITEMS = 4;
-const SUPPORTED_VISION_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
 const CHAT_MODES: ChatMode[] = [
   "search",
   "research",
@@ -68,14 +69,7 @@ const CHAT_MODES: ChatMode[] = [
   "vision",
 ];
 
-function visionMimeType(file: File) {
-  const declared = file.type.toLowerCase();
-  if (SUPPORTED_VISION_IMAGE_TYPES.has(declared)) return declared;
-  if (/\.png$/i.test(file.name)) return "image/png";
-  if (/\.jpe?g$/i.test(file.name)) return "image/jpeg";
-  if (/\.webp$/i.test(file.name)) return "image/webp";
-  return null;
-}
+
 
 async function encodeVisionImage(file: File) {
   const mimeType = visionMimeType(file);
