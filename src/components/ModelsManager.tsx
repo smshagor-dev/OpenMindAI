@@ -54,7 +54,9 @@ export function ModelsManager(props: {
       }
     };
     void refreshStatus();
-    void refreshCatalog();
+    void api.checkModelUpdates()
+      .then((catalog) => { if (!cancelled) { setCatalog(catalog); setCatalogError(null); } })
+      .catch((error) => { if (!cancelled) setCatalogError(error instanceof Error ? error.message : String(error)); });
     const interval = window.setInterval(() => void refreshStatus(), 1000);
     return () => {
       cancelled = true;
