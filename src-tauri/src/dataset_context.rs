@@ -354,10 +354,10 @@ fn read_bounded_text_sample(directory: &Dir, path: &Path) -> io::Result<String> 
     }
     let mut file = directory.open_with(path, &options)?;
     let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.len() > MAX_TEXT_FILE_BYTES {
+    if !metadata.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "dataset file exceeds read limit or is not a regular file",
+            "dataset source is not a regular file",
         ));
     }
     // Sample both ends without reading the middle of a large dataset. The
@@ -997,6 +997,26 @@ mod safety_tests {
             .unwrap().unwrap();
         assert!(output.contains("HEALTHY_MARKER"));
         assert!(!output.contains("forged"));
+    }
+
+    #[test]
+    fn large_dataset_uses_bounded_head_and_tail_without_reading_entire_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("large.txt");
+        use std::io::{Seek, Write};
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(b"alpha EVIDENCE_AT_START\n").unwrap();
+        let length = MAX_TEXT_FILE_BYTES + 1024;
+        file.set_len(length).unwrap();
+        file.seek(std::io::SeekFrom::Start(length - 20)).unwrap();
+        file.write_all(b"TAIL_END_OBSERVATION").unwrap();
+        drop(file);
+        let directory = Dir::open_ambient_dir(temp.path(), ambient_authority()).unwrap();
+        let sample = read_bounded_text_sample(&directory, Path::new("large.txt")).unwrap();
+        assert!(sample.starts_with("alpha EVIDENCE_AT_START"));
+        assert!(sample.contains("[dataset middle omitted]"));
+        assert!(sample.contains("TAIL_END_OBSERVATION"));
+        assert!(sample.len() <= MAX_TEXT_SAMPLE_BYTES as usize + 64);
     }
 
     #[test]
