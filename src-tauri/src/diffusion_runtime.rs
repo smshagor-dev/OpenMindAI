@@ -45,7 +45,7 @@ const MAX_PROMPT_CHARS: usize = 4_000;
 // launcher cannot encode NUL in argv, and its error path must never echo a
 // sensitive prompt in diagnostic output.
 fn validate_renderer_prompt(text: &str, kind: &str) -> Result<(), AppError> {
-    if text.contains('\\0') {
+    if text.contains('\0') {
         return Err(AppError::ArtifactGenerationFailed(format!(
             "{kind} contains an unsupported NUL character"
         )));

@@ -802,12 +802,12 @@ mod tests {
     #[test]
     fn docx_headings_stay_with_following_paragraph_and_keep_lines_together() {
         let xml = word_document_xml(
-            parse_markdown_blocks("# বাংলা Heading & Details\\n\\nBody content\\n\\n## Nested\\n\\nMore text"),
+            parse_markdown_blocks("# বাংলা Heading & Details\n\nBody content\n\n## Nested\n\nMore text"),
             "Document",
         );
         for level in [1, 2] {
             let style = format!(
-                "<w:pStyle w:val=\\"Heading{level}\\"/><w:keepNext/><w:keepLines/><w:widowControl/>"
+                "<w:pStyle w:val=\"Heading{level}\"/><w:keepNext/><w:keepLines/><w:widowControl/>"
             );
             assert!(xml.contains(&style), "missing pagination rules for heading {level}");
         }
