@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -54,7 +54,5 @@ try {
     assert.equal(result.contentPreview, "hello বাংলা");
   });
 } finally {
-  // Tests are registered above and execute after module evaluation.
-  // Keep the bundle until process exit.
-  process.on("exit", () => { void rm(directory, { recursive: true, force: true }); });
+  after(async () => { await rm(directory, { recursive: true, force: true }); });
 }
