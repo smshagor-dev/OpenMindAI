@@ -171,18 +171,12 @@ impl StagedOutput {
             }
             output.sync_all()?;
             drop(output);
-            match self.directory.symlink_metadata(&self.final_name) {
-                Ok(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        "Artifact destination already exists",
-                    ))
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
+            // A metadata check followed by rename is not atomic: another writer
+            // can create the final entry between those operations. Hard-linking
+            // the fully synced pending inode uses create-if-absent semantics on
+            // both Unix and Windows, so an existing artifact is never replaced.
             self.directory
-                .rename(&temporary, &self.directory, &self.final_name)?;
+                .hard_link(&temporary, &self.directory, &self.final_name)?;
             self.published.store(true, Ordering::Release);
             #[cfg(unix)]
             self.directory.open(".")?.sync_all()?;
@@ -243,6 +237,27 @@ mod tests {
                 panic!("directory replacement failed: {error}");
             }
         }
+    }
+
+    #[test]
+    fn publication_never_overwrites_existing_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let (directory, id) = reserve_directory(root.path(), Path::new("generated")).unwrap();
+        let output = StagedOutput::from_reserved(directory, "report.txt").unwrap();
+        let destination = root.path().join("generated").join(id).join("report.txt");
+        fs::write(&output.path, b"new artifact").unwrap();
+        fs::write(&destination, b"existing artifact").unwrap();
+
+        let error = output.commit(false).unwrap_err();
+        assert!(error.to_string().contains("exist"), "{error}");
+        assert_eq!(fs::read(&destination).unwrap(), b"existing artifact");
+        assert!(!output.published.load(Ordering::Acquire));
+        output.discard_publication().unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"existing artifact");
+
+        fs::remove_file(&destination).unwrap();
+        output.commit(false).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"new artifact");
     }
 
     #[test]
