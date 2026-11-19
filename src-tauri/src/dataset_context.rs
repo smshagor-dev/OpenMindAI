@@ -968,7 +968,10 @@ mod safety_tests {
             assert!(!safe_dataset_id(invalid), "{invalid:?}");
         }
         assert!(safe_dataset_id("বাংলা-данные"));
+        assert!(safe_dataset_id("Русская-наука"));
+        assert!(safe_dataset_id("বাংলা কৃষি"));
         assert!(safe_dataset_id(&"x".repeat(160)));
+        assert!(!safe_dataset_id(&"x".repeat(161)));
     }
 
     #[test]
