@@ -492,7 +492,15 @@ pub fn generate_pdf(markdown: &str, title: &str, dest: &Path) -> Result<PdfMeta,
         mono: doc.add_font(&mono),
     };
     let mut layout = PdfLayout::new(fonts);
-    layout.push_wrapped(title, PdfFontKind::Bold, 20.0, 5.0);
+    // An empty title and whitespace-only Markdown would otherwise produce no
+    // text operations and fail export. Publish a valid, readable one-page PDF
+    // rather than leaving the artifact in a failed state for an empty note.
+    let display_title = if title.trim().is_empty() && blocks.is_empty() {
+        "Untitled document"
+    } else {
+        title
+    };
+    layout.push_wrapped(display_title, PdfFontKind::Bold, 20.0, 5.0);
     for block in blocks {
         layout.push_block(block);
     }
@@ -567,7 +575,12 @@ fn docx_paragraph(xml: &mut String, text: &str, size: u32, bold: bool, mono: boo
 }
 
 fn docx_table_row(xml: &mut String, cells: &[String], columns: usize, header: bool) {
-    xml.push_str("<w:tr>");
+    // Keep rows intact and repeat header rows across page breaks.
+    xml.push_str("<w:tr><w:trPr><w:cantSplit/>");
+    if header {
+        xml.push_str("<w:tblHeader w:val=\"true\"/>");
+    }
+    xml.push_str("</w:trPr>");
     for index in 0..columns {
         xml.push_str("<w:tc><w:tcPr><w:tcW w:w=\"0\" w:type=\"auto\"/></w:tcPr>");
         docx_paragraph(
@@ -708,6 +721,26 @@ mod tests {
         assert!(xml.contains("<w:t xml:space=\"preserve\">Nested</w:t>"));
     }
 
+    #[test]
+    fn docx_table_headers_repeat_without_splitting_rows() {
+        let xml = word_document_xml(
+            parse_markdown_blocks("| Label | Value |\n| --- | --- |\n| বাংলা | Русский |\n| Long | Row |"),
+            "Report",
+        );
+        assert!(xml.contains("<w:tr><w:trPr><w:cantSplit/><w:tblHeader w:val=\"true\"/></w:trPr>"));
+        assert_eq!(xml.matches("<w:cantSplit/>").count(), 3);
+        assert_eq!(xml.matches("<w:tblHeader").count(), 1);
+        assert!(xml.contains("বাংলা"));
+        assert!(xml.contains("Русский"));
+    }
+
+    #[test]
+    fn docx_heading_styles_use_valid_xml_attributes() {
+        let xml = word_document_xml(parse_markdown_blocks("# Heading"), "Report");
+        assert!(xml.contains("<w:pStyle w:val=\"Heading1\"/>"));
+        assert!(!xml.contains(r#"w:val=\"Heading1"#));
+    }
+
     const SAMPLE_MARKDOWN: &str = "# Report Title\n\nThis is an introductory paragraph with real content.\n\n## Section One\n\n- First point\n- Second point\n\n1. Step one\n2. Step two\n\n```text\nfn main() {}\n```\n\n| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n| Beta | 2 |\n";
 
     #[test]
@@ -736,6 +769,26 @@ mod tests {
         let lines = wrap_text(input, 16);
         assert!(lines.len() > 1);
         assert_eq!(lines.join(" "), input);
+    }
+
+    #[test]
+    fn empty_note_still_generates_valid_single_page_pdf() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("empty-note.pdf");
+        let meta = generate_pdf("  \n\t", "  ", &dest).unwrap();
+        assert_eq!(meta.page_count, 1);
+        let bytes = std::fs::read(&dest).unwrap();
+        assert!(bytes.starts_with(b"%PDF-"));
+        assert!(bytes.len() > 100);
+    }
+
+    #[test]
+    fn whitespace_title_with_content_does_not_insert_fallback_heading() {
+        let blocks = parse_markdown_blocks("## Actual heading");
+        assert_eq!(blocks.len(), 1);
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("content.pdf");
+        assert!(generate_pdf("## Actual heading", " ", &dest).unwrap().page_count >= 1);
     }
 
     #[test]

@@ -138,6 +138,14 @@ struct HuggingFaceGguf {
     total_file_size: Option<u64>,
 }
 
+fn ensure_download_not_cancelled(token: &CancellationToken) -> Result<(), AppError> {
+    if token.is_cancelled() {
+        Err(AppError::InferenceCancelled("download stopped".to_string()))
+    } else {
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub struct ModelDownloadManager {
     root: PortableRootManager,
@@ -231,7 +239,12 @@ impl ModelDownloadManager {
             .cancel_token
             .lock()
             .map_err(|_| AppError::internal("download cancel lock poisoned"))?;
-        apply_stop_if_active(&mut status, token.as_ref(), state);
+        // A queued status and a leftover token are not proof that a transfer
+        // owns the manager. The semaphore permit is held for the entire job;
+        // without it Cancel/Pause must not mutate idle or terminal state.
+        if self.active_download.available_permits() == 0 {
+            apply_stop_if_active(&mut status, token.as_ref(), state);
+        }
         Ok(status.clone())
     }
 
@@ -302,19 +315,16 @@ impl ModelDownloadManager {
         let _root_lock = self.begin_root_install()?;
         let entry = entry_by_id(model_id)?;
         tracing::info!(repo = %entry.repo, model_id = %entry.id, "installing AI model package");
+        // Publish the cancellation token and Resolving status together under
+        // the same lock order as stop_download. Otherwise Cancel can arrive
+        // after Resolving becomes visible but before a token exists.
         let token = CancellationToken::new();
-        // A concurrent Cancel/Pause must never observe Resolving without its
-        // matching token. Use the same lock ordering as stop_download.
         {
-            let mut status = self
-                .status
-                .lock()
+            let mut status = self.status.lock()
                 .map_err(|_| AppError::internal("download status lock poisoned"))?;
-            let mut cancel_slot = self
-                .cancel_token
-                .lock()
+            let mut active_token = self.cancel_token.lock()
                 .map_err(|_| AppError::internal("download cancel lock poisoned"))?;
-            activate_download(&mut status, &mut cancel_slot, &entry, token.clone());
+            activate_download(&mut status, &mut active_token, &entry, token.clone());
         }
 
         let result = self.download_entry_inner(entry, token).await;
@@ -347,7 +357,12 @@ impl ModelDownloadManager {
         entry: ModelCatalogEntry,
         token: CancellationToken,
     ) -> Result<DownloadStatus, AppError> {
+        // Metadata lookup is an async network request. A user may cancel while
+        // it is pending; never proceed to create or mutate package files after
+        // the lookup completes if that request was stopped.
+        ensure_download_not_cancelled(&token)?;
         let metadata = self.resolve_model_metadata(&entry).await?;
+        ensure_download_not_cancelled(&token)?;
         let download = entry.download.as_ref().ok_or_else(|| {
             AppError::ModelUnsupported(format!(
                 "{} has no downloadable file configured",
@@ -927,6 +942,17 @@ mod tests {
     }
 
     #[test]
+    fn resolving_download_is_immediately_cancellable_with_published_token() {
+        let entry = crate::model_catalog::required_entry().unwrap();
+        let token = CancellationToken::new();
+        let mut status = DownloadStatus::queued(&entry);
+        status.state = DownloadState::Resolving;
+        assert!(apply_stop_if_active(&mut status, Some(&token), DownloadState::Cancelled));
+        assert!(token.is_cancelled());
+        assert!(matches!(status.state, DownloadState::Cancelled));
+    }
+
+    #[test]
     fn stop_preserves_terminal_download_states_even_with_stale_token() {
         let entry = crate::model_catalog::required_entry().unwrap();
         for terminal in [
@@ -1196,6 +1222,26 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_metadata_resolution_must_not_start_disk_writes() {
+        let token = CancellationToken::new();
+        assert!(ensure_download_not_cancelled(&token).is_ok());
+        token.cancel();
+        assert!(matches!(
+            ensure_download_not_cancelled(&token),
+            Err(AppError::InferenceCancelled(_))
+        ));
+    }
+
+    #[test]
+    fn independent_download_tokens_do_not_cross_cancel() {
+        let first = CancellationToken::new();
+        let second = CancellationToken::new();
+        first.cancel();
+        assert!(ensure_download_not_cancelled(&first).is_err());
+        assert!(ensure_download_not_cancelled(&second).is_ok());
+    }
+
+    #[test]
     fn primary_download_partials_are_namespaced_and_portable() {
         let temp_a = tempfile::tempdir().unwrap();
         let temp_b = tempfile::tempdir().unwrap();
@@ -1229,6 +1275,29 @@ mod tests {
             )
         );
         assert_ne!(first, key(&root_a, &dir_a, source, "nested_model.gguf"));
+    }
+
+    #[test]
+    fn cancel_does_not_rewrite_queued_status_without_active_permit() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ModelDownloadManager::new(PortableRootManager::from_root(temp.path().to_path_buf()));
+        let token = CancellationToken::new();
+        *manager.cancel_token.lock().unwrap() = Some(token.clone());
+        assert_eq!(manager.cancel().unwrap().state, DownloadState::Queued);
+        assert!(!token.is_cancelled());
+    }
+
+    #[test]
+    fn pause_only_applies_while_a_transfer_owns_the_permit() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ModelDownloadManager::new(PortableRootManager::from_root(temp.path().to_path_buf()));
+        let permit = manager.active_download.clone().try_acquire_owned().unwrap();
+        let token = CancellationToken::new();
+        *manager.cancel_token.lock().unwrap() = Some(token.clone());
+        assert_eq!(manager.pause().unwrap().state, DownloadState::PausedInterrupted);
+        assert!(token.is_cancelled());
+        drop(permit);
+        assert_eq!(manager.cancel().unwrap().state, DownloadState::PausedInterrupted);
     }
 
     #[test]

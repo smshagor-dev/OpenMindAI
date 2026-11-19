@@ -1,5 +1,5 @@
 import type { VoiceDraftTarget } from "../lib/voiceDraft";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import {
   Code2,
@@ -29,18 +29,39 @@ import type {
 import type { AttachmentDraft } from "../lib/chat";
 import type { PdfExtractionProgress } from "../lib/pdf";
 import type { CloudModel } from "../cloudApi";
+import type { ExecutionMode } from "../lib/executionRouting";
 import { MessageItem } from "./MessageItem";
 import { ResearchProgress } from "./ResearchProgress";
 import { Composer } from "./Composer";
 import type { PreviewTarget } from "./PreviewPanel";
 
 const SUGGESTIONS = [
-  { id: "code", label: "Write or debug code", icon: Code2, prompt: "Help me write or debug code: " },
+  {
+    id: "code",
+    label: "Write or debug code",
+    icon: Code2,
+    prompt: "Help me write or debug code: ",
+  },
   { id: "image", label: "Generate an image", icon: Image, prompt: "Generate an image of: " },
   { id: "video", label: "Generate a video", icon: Video, prompt: "Generate a video of: " },
-  { id: "voice", label: "Generate voice", icon: Volume2, prompt: "Generate a voice narration for: " },
-  { id: "sound", label: "Generate music or SFX", icon: Music2, prompt: "Generate music or sound effects: " },
-  { id: "document", label: "Create a document or PDF", icon: FileText, prompt: "Create a document about: " },
+  {
+    id: "voice",
+    label: "Generate voice",
+    icon: Volume2,
+    prompt: "Generate a voice narration for: ",
+  },
+  {
+    id: "sound",
+    label: "Generate music or SFX",
+    icon: Music2,
+    prompt: "Generate music or sound effects: ",
+  },
+  {
+    id: "document",
+    label: "Create a document or PDF",
+    icon: FileText,
+    prompt: "Create a document about: ",
+  },
   { id: "file", label: "Analyze a local file", icon: FileSearch, prompt: "Analyze this file: " },
 ];
 
@@ -83,6 +104,7 @@ export function ChatView(props: {
   modelSwitching: boolean;
   modelSwitchError: string | null;
   onSelectModel: (modelId: string) => void;
+  executionMode?: ExecutionMode;
   showCloudModels?: boolean;
   cloudUnavailable?: boolean;
   onConnectCloud?: () => void;
@@ -90,7 +112,12 @@ export function ChatView(props: {
   activeCloudModelId?: string;
   onSelectCloudModel?: (modelId: string) => void;
   artifactsByMessage: Map<string, Artifact[]>;
-  onCreateArtifact: (messageId: string, kind: ArtifactKind, content: string, filenameHint?: string) => void;
+  onCreateArtifact: (
+    messageId: string,
+    kind: ArtifactKind,
+    content: string,
+    filenameHint?: string,
+  ) => void;
   onOpenArtifact: (artifact: Artifact) => void;
   onRevealArtifact: (artifact: Artifact) => void;
   onRetryArtifact: (artifact: Artifact, useCpu?: boolean) => void;
@@ -102,10 +129,11 @@ export function ChatView(props: {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(true);
   const isEmpty = props.messages.length === 0;
-  const liveResearch = props.webProgress?.conversationId === props.conversation?.id
-    && (props.submitting || props.streaming || props.activity.typing)
-    ? props.webProgress
-    : null;
+  const liveResearch =
+    props.webProgress?.conversationId === props.conversation?.id &&
+    (props.submitting || props.streaming || props.activity.typing)
+      ? props.webProgress
+      : null;
 
   useEffect(() => {
     if (stickToBottom.current) {
@@ -150,6 +178,7 @@ export function ChatView(props: {
       modelSwitching={props.modelSwitching}
       modelSwitchError={props.modelSwitchError}
       onSelectModel={props.onSelectModel}
+      executionMode={props.executionMode}
       showCloudModels={props.showCloudModels}
       cloudUnavailable={props.cloudUnavailable}
       onConnectCloud={props.onConnectCloud}
@@ -157,11 +186,17 @@ export function ChatView(props: {
       activeCloudModelId={props.activeCloudModelId}
       onSelectCloudModel={props.onSelectCloudModel}
       placeholder={isEmpty ? "Ask anything..." : "Message OpenMindAI..."}
-      note={isEmpty ? undefined : props.cloudUnavailable
-        ? "Cloud Only is waiting for a verified account and an available API model. No local inference will start."
-        : props.showCloudModels
-        ? "Cloud API model selected. Your request can route to Local if Cloud becomes unavailable."
-        : "Responses use installed local models when Cloud is unavailable or Local is selected."}
+      note={
+        isEmpty
+          ? undefined
+          : props.cloudUnavailable
+            ? "Cloud Only is waiting for a verified account and an available API model. No local inference will start."
+            : props.executionMode === "cloud"
+              ? "Running on OpenMindAI Cloud."
+              : props.executionMode === "auto"
+                ? "Auto: runs on this computer first, falls back to OpenMindAI Cloud."
+                : "Running on installed local models on this computer."
+      }
     />
   );
 
@@ -222,7 +257,8 @@ export function ChatView(props: {
                 })}
               </div>
               <p className="chat-empty-footer">
-                <HardDrive size={13} /> Local-first workspace - chats, models and artifacts remain under the portable root
+                <HardDrive size={13} /> Local-first workspace - chats, models and artifacts remain
+                under the portable root
               </p>
             </div>
           </div>
@@ -237,31 +273,44 @@ export function ChatView(props: {
               onRegenerate={() => props.regenerate(message.id)}
               onRetry={() => props.retry(message.id)}
               artifacts={props.artifactsByMessage.get(message.id) ?? []}
-              onCreateArtifact={(kind, content, filenameHint) => props.onCreateArtifact(message.id, kind, content, filenameHint)}
+              onCreateArtifact={(kind, content, filenameHint) =>
+                props.onCreateArtifact(message.id, kind, content, filenameHint)
+              }
               onOpenArtifact={props.onOpenArtifact}
               onRevealArtifact={props.onRevealArtifact}
               onRetryArtifact={props.onRetryArtifact}
               onCancelImageArtifact={props.onCancelImageArtifact}
               imageProgressByArtifact={props.imageProgressByArtifact}
               onPreview={props.onPreview}
-              onEditUser={message.role === "user" ? (content) => props.editUserMessage(message.id, content) : undefined}
+              onEditUser={
+                message.role === "user"
+                  ? (content) => props.editUserMessage(message.id, content)
+                  : undefined
+              }
             />
           ))
         )}
         {liveResearch ? <ResearchProgress progress={liveResearch} /> : null}
-        {!isEmpty && !liveResearch &&
-        (props.submitting || props.streaming || props.activity.typing || props.activity.searching || props.activity.researching) &&
+        {!isEmpty &&
+        !liveResearch &&
+        (props.submitting ||
+          props.streaming ||
+          props.activity.typing ||
+          props.activity.searching ||
+          props.activity.researching) &&
         props.preferences?.typingIndicatorEnabled ? (
           <div className="activity-row">
             <span className="pulse-dot" />
             <span>
-              {props.activity.researching
-                ? "Deep research running"
-                : props.activity.searching
-                  ? "Searching sources"
-                  : props.streaming || props.activity.typing
-                    ? "Assistant is typing"
-                    : "Preparing request"}
+              {props.activity.researching ? (
+                "Deep research running"
+              ) : props.activity.searching ? (
+                "Searching sources"
+              ) : props.streaming ? (
+                "Assistant is typing"
+              ) : (
+                <ThinkingStages />
+              )}
             </span>
             {props.activity.detail ? <small>{props.activity.detail}</small> : null}
           </div>
@@ -270,5 +319,34 @@ export function ChatView(props: {
       </div>
       {isEmpty ? null : composer}
     </>
+  );
+}
+
+const THINKING_STAGES = ["Thinking", "Understanding", "Planning", "Writing the reply"];
+
+/**
+ * Staged "thinking" indicator shown while a reply is being produced — notably a
+ * Cloud request, which returns in one shot with no token streaming. It only
+ * fills the real wait: it advances through the stages on a timer and holds on
+ * the last one until the response arrives, so it never adds artificial delay.
+ */
+function ThinkingStages() {
+  const [stage, setStage] = useState(0);
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => setStage((prev) => (prev < THINKING_STAGES.length - 1 ? prev + 1 : prev)),
+      1100,
+    );
+    return () => window.clearInterval(timer);
+  }, []);
+  return (
+    <span className="thinking-stages">
+      <span className="thinking-stage-label">{THINKING_STAGES[stage]}</span>
+      <span className="thinking-ellipsis" aria-hidden="true">
+        <i />
+        <i />
+        <i />
+      </span>
+    </span>
   );
 }

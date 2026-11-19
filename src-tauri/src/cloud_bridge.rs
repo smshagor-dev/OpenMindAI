@@ -64,6 +64,14 @@ fn spawn_python_worker(script: &Path) -> Result<Child, AppError> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    // Windows: start the worker silently, without flashing a console window
+    // when 3D Studio spins up the local GPU worker.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     cmd.spawn().map_err(|_| {
         failure(
             "Python 3 was not found. Install Python 3 plus numpy and pyopencl for local GPU meshes",
@@ -147,6 +155,9 @@ fn allowed_cloud_path(method: &Method, path: &str) -> bool {
     let parts: Vec<&str> = path.split('/').collect();
     match (method.as_str(), parts.as_slice()) {
         ("GET", ["me"]) | ("GET", ["mobile", "models"]) => true,
+        // OpenMindAI developer model gateway (API-key auth).
+        ("GET", ["openmindai", "models"]) => true,
+        ("POST", ["openmindai", "chat", "completions"]) => true,
         ("POST", ["web-search"]) | ("POST", ["mobile", "chat", "completions"]) => true,
         ("GET", ["research", "status" | "projects"]) => true,
         ("POST", ["research", "projects"]) => true,
@@ -216,15 +227,40 @@ pub(crate) struct CloudConnection {
     message: Option<String>,
 }
 
-async fn validate_token(token: &str) -> Result<Value, AppError> {
-    let response = client()?
+/// Validates a stored credential and resolves an optional account profile.
+///
+/// A full-account user-session token reads its profile from `/me`. A
+/// model-gateway-scoped API key (issued at api.openmindai.org) is not allowed
+/// to call `/me` and would be rejected there with HTTP 403; such a key is
+/// instead confirmed against the model gateway (`mobile/models`) and accepted
+/// with no account profile. This keeps hosted chat working with a gateway key
+/// without requiring full-account access.
+async fn validate_credential(token: &str) -> Result<Option<Value>, AppError> {
+    let me = client()?
         .get(format!("{CLOUD_BASE}me"))
         .bearer_auth(token)
         .header("Accept", "application/json")
         .send()
         .await
         .map_err(|_| failure("Cloud API is unreachable"))?;
-    decode(response).await
+    if me.status().is_success() {
+        return Ok(Some(decode(me).await?));
+    }
+
+    let models = client()?
+        .get(format!("{CLOUD_BASE}openmindai/models"))
+        .bearer_auth(token)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|_| failure("Cloud API is unreachable"))?;
+    if models.status().is_success() {
+        return Ok(None);
+    }
+
+    Err(failure(
+        "This key is not valid for OpenMindAI Cloud. Use an API key from api.openmindai.org.",
+    ))
 }
 
 #[tauri::command]
@@ -248,11 +284,11 @@ pub(crate) async fn cloud_connect(token: String) -> Result<CloudConnection, AppE
     if token.is_empty() || token.len() > 4000 || token.contains('\r') || token.contains('\n') {
         return Err(failure("Invalid user-session token"));
     }
-    let profile = validate_token(token).await?;
+    let profile = validate_credential(token).await?;
     secret_store::set_secret(CREDENTIAL_SLOT, token)?;
     Ok(CloudConnection {
         connected: true,
-        user: Some(profile),
+        user: profile,
         message: None,
     })
 }
@@ -287,11 +323,11 @@ pub(crate) async fn cloud_login(
         .get("token")
         .and_then(Value::as_str)
         .ok_or_else(|| failure("Cloud did not return a user-session token"))?;
-    let profile = validate_token(token).await?;
+    let profile = validate_credential(token).await?;
     secret_store::set_secret(CREDENTIAL_SLOT, token)?;
     Ok(CloudConnection {
         connected: true,
-        user: Some(profile),
+        user: profile,
         message: None,
     })
 }
@@ -305,10 +341,10 @@ pub(crate) async fn cloud_status() -> Result<CloudConnection, AppError> {
             message: None,
         });
     };
-    match validate_token(&token).await {
+    match validate_credential(&token).await {
         Ok(profile) => Ok(CloudConnection {
             connected: true,
-            user: Some(profile),
+            user: profile,
             message: None,
         }),
         Err(_) => Ok(CloudConnection {
