@@ -328,11 +328,28 @@ mod tests {
     fn reserved_windows_device_names_and_normalized_aliases_are_rejected() {
         let root = tempfile::tempdir().unwrap();
         let (directory, _) = reserve_directory(root.path(), Path::new("generated")).unwrap();
-        for name in ["CON", "con.txt", "PRN.pdf", "aux", "NUL.docx", "COM1.txt", "lpt9", "report.", "report ", "bad\\nname"] {
-            assert!(StagedOutput::from_reserved(directory.open_dir(".").unwrap(), name).is_err(), "{name:?}");
+        for name in [
+            "CON",
+            "con.txt",
+            "PRN.pdf",
+            "aux",
+            "NUL.docx",
+            "COM1.txt",
+            "lpt9",
+            "report.",
+            "report ",
+            "bad\\nname",
+        ] {
+            assert!(
+                StagedOutput::from_reserved(directory.open_dir(".").unwrap(), name).is_err(),
+                "{name:?}"
+            );
         }
         for name in ["company.txt", "com0.txt", "report.v1.pdf"] {
-            assert!(StagedOutput::from_reserved(directory.open_dir(".").unwrap(), name).is_ok(), "{name:?}");
+            assert!(
+                StagedOutput::from_reserved(directory.open_dir(".").unwrap(), name).is_ok(),
+                "{name:?}"
+            );
         }
     }
 
