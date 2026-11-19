@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Brain,
@@ -50,6 +50,23 @@ import { UpdatesPanel } from "./UpdatesPanel";
 import { AgentSettings } from "./AgentSettings";
 import { DiffusionRuntimePanel } from "./DiffusionRuntimePanel";
 
+// A parent-supplied value takes precedence on change, while local edits survive
+// re-renders until a new saved value arrives. No effect-driven draft reset.
+function useSyncedDraft<T>(source: T) {
+  const [entry, setEntry] = useState<{ source: T; draft: T }>({ source, draft: source });
+  const draft = Object.is(entry.source, source) ? entry.draft : source;
+  const update = (next: SetStateAction<T>) => {
+    setEntry((current) => {
+      const previous = Object.is(current.source, source) ? current.draft : source;
+      return {
+        source,
+        draft: typeof next === "function" ? (next as (value: T) => T)(previous) : next,
+      };
+    });
+  };
+  return [draft, update] as const;
+}
+
 export function SettingsDialog(props: {
   root: PortableRootInfo | null;
   hardware: HardwareProfile | null;
@@ -74,8 +91,8 @@ export function SettingsDialog(props: {
   initialSection?: string;
 }) {
   const [activeSection, setActiveSection] = useState(props.initialSection ?? "general");
-  const [preferenceDraft, setPreferenceDraft] = useState<AppPreferences | null>(props.preferences);
-  const [profileDraft, setProfileDraft] = useState<UserProfile | null>(props.userProfile);
+  const [preferenceDraft, setPreferenceDraft] = useSyncedDraft<AppPreferences | null>(props.preferences);
+  const [profileDraft, setProfileDraft] = useSyncedDraft<UserProfile | null>(props.userProfile);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
   const [saveError, setSaveError] = useState<string | null>(null);
   const saving = useRef(false);
@@ -149,14 +166,6 @@ export function SettingsDialog(props: {
   }, [activeSection]);
 
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    setPreferenceDraft(props.preferences);
-  }, [props.preferences]);
-
-  useEffect(() => {
-    setProfileDraft(props.userProfile);
-  }, [props.userProfile]);
 
   const setPreference = <K extends keyof AppPreferences>(key: K, value: AppPreferences[K]) => {
     setPreferenceDraft((current) => (current ? { ...current, [key]: value } : current));
