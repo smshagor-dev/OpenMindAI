@@ -29,7 +29,8 @@
   "bundle": {
     "active": true,
     "targets": [
-      "nsis"
+      "nsis",
+      "msi"
     ],
     "createUpdaterArtifacts": true,
     "licenseFile": "../LICENSE",

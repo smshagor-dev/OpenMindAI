@@ -26,6 +26,7 @@ import { transcribeAudioBlob } from "../lib/media";
 import { api } from "../api";
 import { ModelSelector } from "./ModelSelector";
 import type { CloudModel } from "../cloudApi";
+import type { ExecutionMode } from "../lib/executionRouting";
 
 export function Composer(props: {
   prompt: string;
@@ -51,6 +52,7 @@ export function Composer(props: {
   modelSwitching: boolean;
   modelSwitchError: string | null;
   onSelectModel: (modelId: string) => void;
+  executionMode?: ExecutionMode;
   showCloudModels?: boolean;
   cloudUnavailable?: boolean;
   onConnectCloud?: () => void;
@@ -486,36 +488,30 @@ export function Composer(props: {
               >
                 Connect Cloud
               </button>
-            ) : props.showCloudModels ? (
-              <label
-                className="cloud-composer-model"
-                title="Authenticated OpenMindAI Cloud API model"
-              >
-                <span className="sr-only">Cloud API model</span>
-                <select
-                  className="cloud-model-select"
-                  aria-label="Cloud API model"
-                  value={props.activeCloudModelId ?? ""}
-                  disabled={props.backgroundBusy || props.streaming || props.submitting}
-                  onChange={(event) => props.onSelectCloudModel?.(event.currentTarget.value)}
-                >
-                  {(props.cloudModels ?? []).map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.name || model.id}
-                    </option>
-                  ))}
-                </select>
-              </label>
+            ) : props.executionMode === "cloud" ? (
+              <span className="composer-cloud-pill" title="Running on OpenMindAI Cloud">
+                Cloud
+              </span>
             ) : (
-              <ModelSelector
-                models={props.models}
-                activeModelId={props.activeModelId}
-                runtime={props.runtime}
-                switching={props.modelSwitching}
-                disabled={props.backgroundBusy || props.streaming || props.submitting}
-                switchError={props.modelSwitchError}
-                onSelect={props.onSelectModel}
-              />
+              <span className="composer-model-group">
+                <ModelSelector
+                  models={props.models}
+                  activeModelId={props.activeModelId}
+                  runtime={props.runtime}
+                  switching={props.modelSwitching}
+                  disabled={props.backgroundBusy || props.streaming || props.submitting}
+                  switchError={props.modelSwitchError}
+                  onSelect={props.onSelectModel}
+                />
+                {props.executionMode === "auto" ? (
+                  <span
+                    className="composer-auto-hint"
+                    title="Auto: runs on this computer first, falls back to OpenMindAI Cloud"
+                  >
+                    → Cloud
+                  </span>
+                ) : null}
+              </span>
             )}
             <button
               type="button"
