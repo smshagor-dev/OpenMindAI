@@ -2069,6 +2069,7 @@ export function App() {
           <ResearchStudio />
         ) : view === "web-search" ? (
           <StudioHub
+            key={view}
             section={view}
             mode={executionMode}
             internetAvailable={internetAvailable}
