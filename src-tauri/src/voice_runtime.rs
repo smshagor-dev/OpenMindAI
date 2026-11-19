@@ -865,7 +865,24 @@ mod narration_language_tests {
 
     #[test]
     fn unsupported_scripts_fail_before_model_or_output_access() {
-        for text in ["বাংলা", "Привет", "नमस्ते", "مرحبا", "你好", "こんにちは", "Γειά", "שלום", "வணக்கம்", "გამარჯობა", "ሰላም", "안녕하세요"] {
+        for text in [
+            "বাংলা",
+            "Привет",
+            "नमस्ते",
+            "مرحبا",
+            "你好",
+            "こんにちは",
+            "Γειά",
+            "ᾈ",
+            "שלום",
+            "Բարեւ",
+            "வணக்கம்",
+            "გამარჯობა",
+            "ᲒᲐᲛᲐᲠᲯᲝᲑᲐ",
+            "ሰላም",
+            "안녕하세요",
+            "مَرْحَبًا",
+        ] {
             let error = validate_narration_language(text).unwrap_err();
             assert!(error.to_string().contains("English narration only"));
         }
@@ -873,6 +890,8 @@ mod narration_language_tests {
 
     #[test]
     fn mixed_script_narration_is_rejected() {
-        assert!(validate_narration_language("Hello বাংলা").is_err());
+        for text in ["Hello বাংলা", "English + Ελληνικά", "English שלום"] {
+            assert!(validate_narration_language(text).is_err());
+        }
     }
 }
