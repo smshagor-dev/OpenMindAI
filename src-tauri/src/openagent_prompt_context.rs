@@ -46,7 +46,12 @@ pub(crate) fn build_prompt_context(input: PromptContextInput<'_>) -> PromptConte
     // Never round a smaller real slot up: the caller already resolved the
     // runtime's /props n_ctx or divided configured context across workers.
     let context_window_tokens = input.context_window_tokens.min(MAX_MODEL_CONTEXT_TOKENS);
-    let max_output_tokens = (context_window_tokens / 6).clamp(MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS);
+    // A tiny or misreported slot must not reserve generation tokens beyond
+    // its actual capacity after the fixed prompt margin.
+    let available_for_output = context_window_tokens.saturating_sub(PROMPT_MARGIN_TOKENS);
+    let max_output_tokens = (context_window_tokens / 6)
+        .clamp(MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS)
+        .min(available_for_output);
     let input_tokens = context_window_tokens
         .saturating_sub(max_output_tokens)
         .saturating_sub(PROMPT_MARGIN_TOKENS);
@@ -316,6 +321,39 @@ mod tests {
         assert!(pack.transcript.contains("LATEST_COMPILER_FAILURE"));
         assert!(pack.selected_chars <= pack.budget_chars);
         assert!(pack.compressed);
+    }
+
+    #[test]
+    fn tiny_or_missing_slot_never_reserves_more_tokens_than_available() {
+        let transcript = VecDeque::new();
+        for window in [0, 1, 255, 256, 257, 512, 640, 1_024] {
+            let pack = build_prompt_context(input("task", "repository", &transcript, window));
+            assert!(
+                pack.max_output_tokens + PROMPT_MARGIN_TOKENS <= window
+                    || window < PROMPT_MARGIN_TOKENS,
+                "invalid output reservation for {window}-token slot"
+            );
+            assert!(pack.selected_chars <= pack.budget_chars);
+        }
+    }
+
+
+    #[test]
+    fn tiny_slots_respect_output_margin_and_boundaries() {
+        let transcript = VecDeque::new();
+        for window in [0, 1, 255, 256, 257, 512, 640, 1_024, 2_048] {
+            let pack = build_prompt_context(input("task", "repository", &transcript, window));
+            assert_eq!(
+                pack.max_output_tokens,
+                (window / 6).clamp(MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS)
+                    .min(window.saturating_sub(PROMPT_MARGIN_TOKENS)),
+                "incorrect output budget at {window} tokens"
+            );
+            assert!(
+                pack.max_output_tokens <= window.saturating_sub(PROMPT_MARGIN_TOKENS),
+                "output reservation cannot exceed remaining slot capacity"
+            );
+        }
     }
 
     #[test]
