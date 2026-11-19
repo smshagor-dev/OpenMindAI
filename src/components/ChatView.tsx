@@ -29,6 +29,7 @@ import type {
 import type { AttachmentDraft } from "../lib/chat";
 import type { PdfExtractionProgress } from "../lib/pdf";
 import type { CloudModel } from "../cloudApi";
+import type { ExecutionMode } from "../lib/executionRouting";
 import { MessageItem } from "./MessageItem";
 import { ResearchProgress } from "./ResearchProgress";
 import { Composer } from "./Composer";
@@ -103,6 +104,7 @@ export function ChatView(props: {
   modelSwitching: boolean;
   modelSwitchError: string | null;
   onSelectModel: (modelId: string) => void;
+  executionMode?: ExecutionMode;
   showCloudModels?: boolean;
   cloudUnavailable?: boolean;
   onConnectCloud?: () => void;
@@ -176,6 +178,7 @@ export function ChatView(props: {
       modelSwitching={props.modelSwitching}
       modelSwitchError={props.modelSwitchError}
       onSelectModel={props.onSelectModel}
+      executionMode={props.executionMode}
       showCloudModels={props.showCloudModels}
       cloudUnavailable={props.cloudUnavailable}
       onConnectCloud={props.onConnectCloud}
@@ -188,9 +191,11 @@ export function ChatView(props: {
           ? undefined
           : props.cloudUnavailable
             ? "Cloud Only is waiting for a verified account and an available API model. No local inference will start."
-            : props.showCloudModels
-              ? "Cloud API model selected. Your request can route to Local if Cloud becomes unavailable."
-              : "Responses use installed local models when Cloud is unavailable or Local is selected."
+            : props.executionMode === "cloud"
+              ? "Running on OpenMindAI Cloud."
+              : props.executionMode === "auto"
+                ? "Auto: runs on this computer first, falls back to OpenMindAI Cloud."
+                : "Running on installed local models on this computer."
       }
     />
   );
@@ -297,13 +302,15 @@ export function ChatView(props: {
           <div className="activity-row">
             <span className="pulse-dot" />
             <span>
-              {props.activity.researching
-                ? "Deep research running"
-                : props.activity.searching
-                  ? "Searching sources"
-                  : props.streaming
-                    ? "Assistant is typing"
-                    : <ThinkingStages />}
+              {props.activity.researching ? (
+                "Deep research running"
+              ) : props.activity.searching ? (
+                "Searching sources"
+              ) : props.streaming ? (
+                "Assistant is typing"
+              ) : (
+                <ThinkingStages />
+              )}
             </span>
             {props.activity.detail ? <small>{props.activity.detail}</small> : null}
           </div>

@@ -45,6 +45,15 @@
   text-transform: uppercase;
   color: var(--muted);
 }
+/* Scenes list hosted in the app's main sidebar (rendered there via portal). */
+.studio-side {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
 .studio3d-history { display: flex; flex-direction: column; gap: 2px; }
 .studio3d-empty { color: var(--muted); font-size: 13px; line-height: 1.6; }
 .studio3d-history-item {

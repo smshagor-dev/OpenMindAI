@@ -119,7 +119,11 @@ export async function extractPdfText(
       }
     }
     const pagesRead = pageTexts.length;
-    const ocrPages = selectOcrPages(scannedPages, MAX_OCR_PAGES);
+    // Selectable text already fills the entire prompt budget: OCR cannot add
+    // useful content and would waste rendering/native OCR time on scanned pages.
+    const ocrPages = selectableChars >= MAX_EXTRACTED_CHARS
+      ? []
+      : selectOcrPages(scannedPages, MAX_OCR_PAGES);
     const ocrPageSet = new Set(ocrPages);
     const deferred = scannedPages.filter(pageNumber => !ocrPageSet.has(pageNumber));
     const selectedVisionPages = new Set(selectRepresentativePages(ocrPages, MAX_VISION_PAGES));
@@ -136,6 +140,12 @@ export async function extractPdfText(
 
     for (let offset = 0; offset < ocrPages.length; offset += OCR_BATCH_SIZE) {
       assertNotCancelled(options.signal);
+      // Selectable text can fill the prompt before OCR begins. Never render
+      // scanned pages or invoke native OCR when none of its output can fit.
+      if (extractedChars >= MAX_EXTRACTED_CHARS) {
+        stoppedForTextBudget = true;
+        break;
+      }
       if (Date.now() - startedOcrAt >= MAX_OCR_ELAPSED_MS) {
         stoppedForTime = true;
         break;
