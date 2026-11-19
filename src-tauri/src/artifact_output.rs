@@ -59,7 +59,38 @@ fn unsafe_portable_filename(name: &str) -> bool {
     matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
         || (upper.len() == 4
             && (upper.starts_with("COM") || upper.starts_with("LPT"))
-            && matches!(upper.as_bytes()[3], b'1'..=b'9'))
+            && (matches!(upper.as_bytes()[3], b'1'..=b'9')
+                // Windows treats superscript ¹²³ as COM/LPT device digits.
+                || matches!(stem.chars().nth(3), Some('¹' | '²' | '³'))))
+}
+
+#[cfg(test)]
+mod portable_device_alias_regression {
+    use super::unsafe_portable_filename;
+
+    #[test]
+    fn windows_superscript_device_aliases_are_rejected_on_every_platform() {
+        for prefix in ["COM", "com", "CoM", "LPT", "lpt", "LpT"] {
+            for digit in ['¹', '²', '³'] {
+                for suffix in ["", ".txt", ".PDF", ".backup.docx"] {
+                    assert!(
+                        unsafe_portable_filename(&format!("{prefix}{digit}{suffix}")),
+                        "{prefix}{digit}{suffix} must not be published"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_unicode_and_non_device_names_remain_allowed() {
+        for name in ["Résumé¹.txt", "বাংলা².pdf", "COM⁴.txt", "COM0.txt", "LPT10.txt", "report¹.docx"] {
+            assert!(!unsafe_portable_filename(name), "{name} is not a Windows device");
+        }
+        for name in ["COM1.txt", "lpt9.PDF", "NUL.txt"] {
+            assert!(unsafe_portable_filename(name), "{name} is a reserved device");
+        }
+    }
 }
 
 impl StagedOutput {
