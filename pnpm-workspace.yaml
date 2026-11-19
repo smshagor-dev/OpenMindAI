@@ -1,0 +1,6 @@
+autoInstallPeers: true
+nodeLinker: hoisted
+strictPeerDependencies: false
+allowBuilds:
+  esbuild: true
+  '@tauri-apps/cli': true

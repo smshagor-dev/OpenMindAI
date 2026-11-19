@@ -2346,6 +2346,14 @@ async fn check_web_connectivity(state: State<'_, AppState>) -> Result<inference:
     ).await)
 }
 
+/// Runs the app's own web search (keyless providers plus any configured keys)
+/// and returns grounding context. Used by Cloud chat so live web results work
+/// even with a model-gateway-only API key (whose web-search endpoint 403s).
+#[tauri::command]
+async fn web_search_context(query: String, mode: String) -> Result<String, app_error::AppError> {
+    inference::fetch_web_context(&query, &mode).await
+}
+
 #[tauri::command]
 fn get_user_profile(state: State<AppState>) -> Result<UserProfile, app_error::AppError> {
     let db = state
@@ -2616,6 +2624,7 @@ pub fn run() {
             get_portable_root,
             network_proxy_for_url,
             check_web_connectivity,
+            web_search_context,
             web_provider_credential_status,
             save_web_provider_credential,
             installation_status,
