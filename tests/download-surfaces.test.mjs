@@ -38,7 +38,9 @@ test("dataset downloads show theme-aware status and only mark completed inventor
   assert.match(datasets, /className="dataset-download-status" role="status" aria-live="polite"/);
   assert.match(datasets, /role="progressbar"/);
   assert.match(datasets, /downloadStatus\.error \? <p className="download-feedback-error"/);
-  assert.match(datasets, /downloadStatus\?\.state !== "completed"/);
+  // Completion is recorded from the verified backend response, not an effect.
+  assert.match(datasets, /if \(status\.state === "completed" && status\.datasetId\)/);
+  assert.match(datasets, /recordCompletedDataset\(current, status\.state, status\.datasetId\)/);
   assert.match(datasets, /recordCompletedDataset\(/);
   assert.doesNotMatch(datasets, /window\.localStorage\.setItem\(/);
   assert.match(datasets, /anotherDownloadActive/);
