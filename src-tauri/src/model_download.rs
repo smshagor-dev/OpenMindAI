@@ -155,15 +155,16 @@ fn apply_stop_if_active(
     token: Option<&CancellationToken>,
     requested: DownloadState,
 ) -> bool {
-    if !matches!(requested, DownloadState::Cancelled | DownloadState::PausedInterrupted)
-        || !matches!(
-            status.state,
-            DownloadState::Queued
-                | DownloadState::Resolving
-                | DownloadState::Downloading
-                | DownloadState::Verifying
-        )
-    {
+    if !matches!(
+        requested,
+        DownloadState::Cancelled | DownloadState::PausedInterrupted
+    ) || !matches!(
+        status.state,
+        DownloadState::Queued
+            | DownloadState::Resolving
+            | DownloadState::Downloading
+            | DownloadState::Verifying
+    ) {
         return false;
     }
     let Some(token) = token else {
@@ -940,7 +941,11 @@ mod tests {
         ] {
             let mut status = DownloadStatus::queued(&entry);
             status.state = active.clone();
-            assert!(!apply_stop_if_active(&mut status, None, DownloadState::Cancelled));
+            assert!(!apply_stop_if_active(
+                &mut status,
+                None,
+                DownloadState::Cancelled
+            ));
             assert_eq!(status.state, active);
             let token = CancellationToken::new();
             assert!(apply_stop_if_active(
