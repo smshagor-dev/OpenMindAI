@@ -219,16 +219,31 @@ impl RuntimeInstaller {
     }
 
     pub fn cancel(&self) -> Result<RuntimeInstallStatus, AppError> {
-        if let Some(token) = self
+        // Hold the operation token lock through the status transition. A
+        // completion racing with Cancel must not turn a successful install
+        // into a misleading Cancelled state after its manifest is published.
+        let guard = self
             .cancel_token
             .lock()
-            .map_err(|_| AppError::internal("runtime install cancel lock poisoned"))?
-            .as_ref()
-        {
-            token.cancel();
-            self.set_state(RuntimeInstallState::Cancelled, None)?;
+            .map_err(|_| AppError::internal("runtime install cancel lock poisoned"))?;
+        let mut status = self
+            .status
+            .lock()
+            .map_err(|_| AppError::internal("runtime install status lock poisoned"))?;
+        if let Some(token) = guard.as_ref() {
+            if !matches!(
+                status.state,
+                RuntimeInstallState::Completed
+                    | RuntimeInstallState::Failed
+                    | RuntimeInstallState::Cancelled
+                    | RuntimeInstallState::Idle
+            ) {
+                token.cancel();
+                status.state = RuntimeInstallState::Cancelled;
+                status.error = None;
+            }
         }
-        self.status()
+        Ok(status.clone())
     }
 
     /// Tries each hardware-preferred backend in order (see
@@ -314,6 +329,26 @@ impl RuntimeInstaller {
             });
         self.set_state(RuntimeInstallState::Failed, Some(message.clone()))?;
         Err(AppError::RuntimeInstallFailed(message))
+    }
+
+    /// Publish terminal success and retire the token as one critical section,
+    /// so a late Cancel cannot overwrite the Completed state.
+    fn finish_completed(&self, token: &CancellationToken) -> Result<RuntimeInstallStatus, AppError> {
+        let mut guard = self
+            .cancel_token
+            .lock()
+            .map_err(|_| AppError::internal("runtime install cancel lock poisoned"))?;
+        let mut status = self
+            .status
+            .lock()
+            .map_err(|_| AppError::internal("runtime install status lock poisoned"))?;
+        check_cancel(token)?;
+        status.state = RuntimeInstallState::Completed;
+        status.percentage = Some(100.0);
+        status.speed_bytes_per_sec = None;
+        status.error = None;
+        *guard = None;
+        Ok(status.clone())
     }
 
     async fn install_backend(
@@ -472,14 +507,7 @@ impl RuntimeInstaller {
                 .map_err(|error| AppError::internal(error.to_string()))?,
         )?;
 
-        check_cancel(token)?;
-        self.update_status(|status| {
-            status.state = RuntimeInstallState::Completed;
-            status.percentage = Some(100.0);
-            status.speed_bytes_per_sec = None;
-            status.error = None;
-        })?;
-        self.status()
+        self.finish_completed(token)
     }
 
     fn set_state(&self, state: RuntimeInstallState, error: Option<String>) -> Result<(), AppError> {
@@ -789,6 +817,32 @@ fn ensure_executable(_path: &Path) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn late_cancel_does_not_change_completed_runtime_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let installer = RuntimeInstaller::new(PortableRootManager::from_root(dir.path().to_path_buf()));
+        let token = CancellationToken::new();
+        *installer.cancel_token.lock().unwrap() = Some(token.clone());
+        installer.set_state(RuntimeInstallState::Extracting, None).unwrap();
+        let completed = installer.finish_completed(&token).unwrap();
+        assert_eq!(completed.state, RuntimeInstallState::Completed);
+        assert_eq!(installer.cancel().unwrap().state, RuntimeInstallState::Completed);
+        assert!(!token.is_cancelled());
+    }
+
+    #[test]
+    fn cancellation_before_completion_prevents_terminal_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let installer = RuntimeInstaller::new(PortableRootManager::from_root(dir.path().to_path_buf()));
+        let token = CancellationToken::new();
+        *installer.cancel_token.lock().unwrap() = Some(token.clone());
+        installer.set_state(RuntimeInstallState::Extracting, None).unwrap();
+        assert_eq!(installer.cancel().unwrap().state, RuntimeInstallState::Cancelled);
+        assert!(token.is_cancelled());
+        assert!(installer.finish_completed(&token).is_err());
+        assert_eq!(installer.status().unwrap().state, RuntimeInstallState::Cancelled);
+    }
 
     #[tokio::test]
     async fn cancel_interrupts_pending_release_lookup() {

@@ -57,9 +57,12 @@ fn unsafe_portable_filename(name: &str) -> bool {
     let stem = name.split('.').next().unwrap_or("").trim_end_matches(' ');
     let upper = stem.to_ascii_uppercase();
     matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || (upper.len() == 4
-            && (upper.starts_with("COM") || upper.starts_with("LPT"))
-            && matches!(upper.as_bytes()[3], b'1'..=b'9'))
+        || ((upper.starts_with("COM") || upper.starts_with("LPT"))
+            && upper.chars().count() == 4
+            && upper
+                .chars()
+                .nth(3)
+                .is_some_and(|digit| matches!(digit, '1'..='9' | '¹' | '²' | '³')))
 }
 
 impl StagedOutput {
@@ -171,18 +174,12 @@ impl StagedOutput {
             }
             output.sync_all()?;
             drop(output);
-            match self.directory.symlink_metadata(&self.final_name) {
-                Ok(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        "Artifact destination already exists",
-                    ))
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
+            // A metadata check followed by rename is not atomic: another writer
+            // can create the final entry between those operations. Hard-linking
+            // the fully synced pending inode uses create-if-absent semantics on
+            // both Unix and Windows, so an existing artifact is never replaced.
             self.directory
-                .rename(&temporary, &self.directory, &self.final_name)?;
+                .hard_link(&temporary, &self.directory, &self.final_name)?;
             self.published.store(true, Ordering::Release);
             #[cfg(unix)]
             self.directory.open(".")?.sync_all()?;
@@ -197,6 +194,27 @@ impl StagedOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn windows_superscript_device_aliases_are_rejected_portably() {
+        for prefix in ["COM", "LPT", "com", "lpt"] {
+            for suffix in ['¹', '²', '³'] {
+                let alias = format!("{prefix}{suffix}");
+                assert!(unsafe_portable_filename(&alias), "{alias}");
+                assert!(unsafe_portable_filename(&format!("{alias}.pdf")), "{alias}.pdf");
+            }
+        }
+        for name in ["COM1.pdf", "LPT9.docx", "CON.txt", "NUL"] {
+            assert!(unsafe_portable_filename(name), "{name}");
+        }
+        for name in ["COM0.pdf", "LPT10.pdf", "COM⁴.pdf", "summary¹.pdf", "café.pdf"] {
+            assert!(!unsafe_portable_filename(name), "{name}");
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let (directory, _) = reserve_directory(root.path(), Path::new("generated")).unwrap();
+        assert!(StagedOutput::from_reserved(directory, "COM¹.pdf").is_err());
+    }
+
     fn reserve_fixture_directory(parent: &Path) -> Result<(PathBuf, String), AppError> {
         let (_, id) = reserve_directory(parent, Path::new("."))?;
         Ok((parent.join(&id), id))
@@ -243,6 +261,27 @@ mod tests {
                 panic!("directory replacement failed: {error}");
             }
         }
+    }
+
+    #[test]
+    fn publication_never_overwrites_existing_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let (directory, id) = reserve_directory(root.path(), Path::new("generated")).unwrap();
+        let output = StagedOutput::from_reserved(directory, "report.txt").unwrap();
+        let destination = root.path().join("generated").join(id).join("report.txt");
+        fs::write(&output.path, b"new artifact").unwrap();
+        fs::write(&destination, b"existing artifact").unwrap();
+
+        let error = output.commit(false).unwrap_err();
+        assert!(error.to_string().contains("exist"), "{error}");
+        assert_eq!(fs::read(&destination).unwrap(), b"existing artifact");
+        assert!(!output.published.load(Ordering::Acquire));
+        output.discard_publication().unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"existing artifact");
+
+        fs::remove_file(&destination).unwrap();
+        output.commit(false).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"new artifact");
     }
 
     #[test]
@@ -328,11 +367,28 @@ mod tests {
     fn reserved_windows_device_names_and_normalized_aliases_are_rejected() {
         let root = tempfile::tempdir().unwrap();
         let (directory, _) = reserve_directory(root.path(), Path::new("generated")).unwrap();
-        for name in ["CON", "con.txt", "PRN.pdf", "aux", "NUL.docx", "COM1.txt", "lpt9", "report.", "report ", "bad\\nname"] {
-            assert!(StagedOutput::from_reserved(directory.open_dir(".").unwrap(), name).is_err(), "{name:?}");
+        for name in [
+            "CON",
+            "con.txt",
+            "PRN.pdf",
+            "aux",
+            "NUL.docx",
+            "COM1.txt",
+            "lpt9",
+            "report.",
+            "report ",
+            "bad\\nname",
+        ] {
+            assert!(
+                StagedOutput::from_reserved(directory.open_dir(".").unwrap(), name).is_err(),
+                "{name:?}"
+            );
         }
         for name in ["company.txt", "com0.txt", "report.v1.pdf"] {
-            assert!(StagedOutput::from_reserved(directory.open_dir(".").unwrap(), name).is_ok(), "{name:?}");
+            assert!(
+                StagedOutput::from_reserved(directory.open_dir(".").unwrap(), name).is_ok(),
+                "{name:?}"
+            );
         }
     }
 

@@ -28,7 +28,7 @@ import { ModelSelector } from "./ModelSelector";
 import type { CloudModel } from "../cloudApi";
 import type { ExecutionMode } from "../lib/executionRouting";
 
-export function Composer(props: {
+export function Composer({ composerRef: textareaRef, ...props }: {
   prompt: string;
   setPrompt: (value: string) => void;
   createVoiceDraftTarget: () => VoiceDraftTarget;
@@ -62,7 +62,6 @@ export function Composer(props: {
   placeholder?: string;
   note?: string;
 }) {
-  const textareaRef = props.composerRef;
   const contextPlan = useMemo(() => attachmentContextStats(props.attachments), [props.attachments]);
   const alive = useRef(false);
   const startingMicrophone = useRef(false);
@@ -72,8 +71,11 @@ export function Composer(props: {
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const audioPreviewUrlsRef = useRef(new Map<string, string>());
-  const attachmentsRef = useRef(props.attachments);
-  attachmentsRef.current = props.attachments;
+  const [audioPreviewUrls, setAudioPreviewUrls] = useState<Map<string, string>>(() => new Map());
+  const attachmentsRef = useRef<AttachmentDraft[]>([]);
+  useEffect(() => {
+    attachmentsRef.current = props.attachments;
+  }, [props.attachments]);
   const [imageSettingsOpen, setImageSettingsOpen] = useState(false);
   const isImageRequest = inferChatMode(props.prompt, props.attachments) === "image";
   const [recording, setRecording] = useState(false);
@@ -220,6 +222,7 @@ export function Composer(props: {
         audioPreviewUrlsRef.current.set(key, URL.createObjectURL(file));
       }
     }
+    setAudioPreviewUrls(new Map(audioPreviewUrlsRef.current));
     try {
       await props.addFiles(files);
     } finally {
@@ -235,6 +238,7 @@ export function Composer(props: {
     if (previewUrl) {
       URL.revokeObjectURL(previewUrl);
       audioPreviewUrlsRef.current.delete(key);
+      setAudioPreviewUrls(new Map(audioPreviewUrlsRef.current));
     }
     props.removeAttachment(attachment.id);
   };
@@ -284,7 +288,7 @@ export function Composer(props: {
             {props.attachments.map((attachment) => {
               const audioPreview =
                 attachment.kind === "audio"
-                  ? (audioPreviewUrlsRef.current.get(attachmentPreviewKey(attachment)) ?? null)
+                  ? (audioPreviewUrls.get(attachmentPreviewKey(attachment)) ?? null)
                   : null;
               return (
                 <span className="attachment-chip attachment-chip-media" key={attachment.id}>

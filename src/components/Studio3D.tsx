@@ -179,18 +179,20 @@ export function Studio3D({ mode }: Props) {
   // column). Render it there through a portal so this view fills the container.
   const [sidebarSlot, setSidebarSlot] = useState<HTMLElement | null>(null);
   useEffect(() => {
-    setSidebarSlot(document.getElementById("studio-sidebar-slot"));
+    // Wait until the sidebar portal target exists after React commits the view.
+    const frame = window.requestAnimationFrame(() => {
+      setSidebarSlot(document.getElementById("studio-sidebar-slot"));
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, []);
 
-  // Auto-grow the composer up to a cap, like the chat composer.
-  const grow = useCallback((element: HTMLTextAreaElement | null) => {
+  // Resize the native textarea after prompt changes without synchronous state updates.
+  useEffect(() => {
+    const element = promptRef.current;
     if (!element) return;
     element.style.height = "auto";
     element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
-  }, []);
-  useEffect(() => {
-    grow(promptRef.current);
-  }, [prompt, grow]);
+  }, [prompt]);
 
   // Keep the local worker warm so the first generation is not a cold start.
   useEffect(() => {

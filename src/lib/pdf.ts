@@ -91,6 +91,11 @@ export async function extractPdfText(
   try {
     const pdf = await task.promise;
     assertNotCancelled(options.signal);
+    // A malformed decoder page count must not turn an unreadable PDF into an
+    // apparently successful empty import or invalid progress metadata.
+    if (!Number.isSafeInteger(pdf.numPages) || pdf.numPages < 1) {
+      throw new Error("Invalid PDF page count returned by the decoder.");
+    }
     const maxPagesRead = Math.min(pdf.numPages, MAX_PDF_PAGES);
     const pageTexts: string[] = [];
     const scannedPages: number[] = [];
@@ -119,7 +124,11 @@ export async function extractPdfText(
       }
     }
     const pagesRead = pageTexts.length;
-    const ocrPages = selectOcrPages(scannedPages, MAX_OCR_PAGES);
+    // Selectable text already fills the entire prompt budget: OCR cannot add
+    // useful content and would waste rendering/native OCR time on scanned pages.
+    const ocrPages = selectableChars >= MAX_EXTRACTED_CHARS
+      ? []
+      : selectOcrPages(scannedPages, MAX_OCR_PAGES);
     const ocrPageSet = new Set(ocrPages);
     const deferred = scannedPages.filter(pageNumber => !ocrPageSet.has(pageNumber));
     const selectedVisionPages = new Set(selectRepresentativePages(ocrPages, MAX_VISION_PAGES));
@@ -136,6 +145,12 @@ export async function extractPdfText(
 
     for (let offset = 0; offset < ocrPages.length; offset += OCR_BATCH_SIZE) {
       assertNotCancelled(options.signal);
+      // Selectable text can fill the prompt before OCR begins. Never render
+      // scanned pages or invoke native OCR when none of its output can fit.
+      if (extractedChars >= MAX_EXTRACTED_CHARS) {
+        stoppedForTextBudget = true;
+        break;
+      }
       if (Date.now() - startedOcrAt >= MAX_OCR_ELAPSED_MS) {
         stoppedForTime = true;
         break;
@@ -177,15 +192,14 @@ export async function extractPdfText(
           const allowed = new Set(rendered.map(page => page.pageNumber));
           for (const result of ocr) {
             if (!allowed.delete(result.pageNumber) || typeof result.text !== "string") continue;
-            const visual = result.text.trim();
-            if (!visual) continue;
-            const existing = pageTexts[result.pageNumber - 1].trim();
-            // Never retain unbounded native OCR output when the chat budget is
-            // already exhausted. A small remainder is enough to mark the page
-            // as partially extracted without holding the full OCR result.
+            // Bound native OCR output before trimming or Unicode expansion.
+            // The native response can be arbitrarily large even when the
+            // remaining prompt budget is tiny.
             const remaining = Math.max(0, MAX_EXTRACTED_CHARS - extractedChars);
             if (!remaining) continue;
-            const bounded = Array.from(visual).slice(0, remaining).join("");
+            const bounded = boundedOcrText(result.text, remaining);
+            if (!bounded) continue;
+            const existing = pageTexts[result.pageNumber - 1].trim();
             pageTexts[result.pageNumber - 1] = [existing, bounded].filter(Boolean).join("\n");
             extractedChars += bounded.length;
             unreadPages.delete(result.pageNumber);
@@ -270,28 +284,71 @@ export async function extractPdfText(
   }
 }
 
+// Keep memory proportional to the prompt budget, not the native OCR payload.
+// Iteration over string code points avoids splitting surrogate pairs. Leading
+// whitespace is skipped without materializing a trimmed copy of the full text.
+function boundedOcrText(text: string, maxUnits: number): string {
+  if (maxUnits <= 0) return "";
+  let start = 0;
+  let end = 0;
+  let used = 0;
+  let started = false;
+  for (const character of text) {
+    if (!started && !character.trim()) {
+      start += character.length;
+      end = start;
+      continue;
+    }
+    started = true;
+    if (used + character.length > maxUnits) break;
+    used += character.length;
+    end += character.length;
+  }
+  return text.slice(start, end).trimEnd();
+}
+
 async function selectablePageText(page: PDFPageProxy) {
   const textContent = await page.getTextContent();
   const lines: string[] = [];
   let line = "";
+  let collected = 0;
   for (const item of textContent.items) {
     if (!("str" in item)) continue;
-    const value = item.str.replace(/\s+/g, " ").trim();
+    // A single dense/malformed PDF page must not construct arbitrarily large
+    // strings before the caller applies the chat text budget. Slice first so
+    // even whitespace normalization cannot allocate the full input string.
+    const remaining = MAX_EXTRACTED_CHARS - collected - line.length;
+    if (remaining <= 0) break;
+    const value = item.str.slice(0, remaining).replace(/\s+/g, " ").trim();
     if (!value) continue;
-    line += `${line ? " " : ""}${value}`;
+    const separator = line ? " " : "";
+    line += separator + value.slice(0, Math.max(0, remaining - separator.length));
     if (item.hasEOL) {
-      lines.push(line.trim());
+      const finished = line.trim();
+      if (finished) {
+        lines.push(finished);
+        collected += finished.length + 1;
+      }
       line = "";
     }
   }
-  if (line.trim()) lines.push(line.trim());
-  return lines.filter(Boolean).join("\n").trim();
+  if (line.trim() && collected < MAX_EXTRACTED_CHARS) {
+    lines.push(line.trim().slice(0, MAX_EXTRACTED_CHARS - collected));
+  }
+  return lines.filter(Boolean).join("\n").slice(0, MAX_EXTRACTED_CHARS).trim();
 }
 
 async function renderPdfPage(page: PDFPageProxy, signal?: PdfExtractionOptions["signal"]) {
   const base = page.getViewport({ scale: 1 });
+  // Very large PDF media boxes must not force a minimum scale: a 20,000pt
+  // page at scale 0.5 would allocate a 10,000px bitmap despite the cap.
+  // Reject invalid dimensions rather than attempting an unbounded canvas.
+  if (!Number.isFinite(base.width) || !Number.isFinite(base.height)
+      || base.width <= 0 || base.height <= 0) {
+    throw new Error("PDF page has invalid dimensions.");
+  }
   const scale = Math.min(2, MAX_RENDER_DIMENSION / Math.max(base.width, base.height));
-  const viewport = page.getViewport({ scale: Math.max(0.5, scale) });
+  const viewport = page.getViewport({ scale });
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(viewport.width));
   canvas.height = Math.max(1, Math.round(viewport.height));

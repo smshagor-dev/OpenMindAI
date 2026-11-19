@@ -1,3 +1,4 @@
+import { requestedDocumentArtifact } from "./lib/documentIntent";
 import { Archive, Check, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -41,6 +42,7 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import { ChatHistoryNotice } from "./components/ChatHistoryNotice";
 import { SetupWizard } from "./components/SetupWizard";
 import { ChatSearch } from "./components/ChatSearch";
+import { ArchivedChats } from "./components/ArchivedChats";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ChatModeSwitcher } from "./components/ChatModeSwitcher";
 import { Library } from "./components/Library";
@@ -415,6 +417,7 @@ export function App() {
     return stored >= 260 && stored <= 440 ? stored : 320;
   });
   const [searchOpen, setSearchOpen] = useState(false);
+  const [archivesOpen, setArchivesOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [modelsOpen, setModelsOpen] = useState(false);
   const [datasetsOpen, setDatasetsOpen] = useState(false);
@@ -510,7 +513,15 @@ export function App() {
       setExecutionMode(nextPreferences.aiExecutionMode);
     }
     if (userProfileInfo) setUserProfile(userProfileInfo);
-    if (installationStatusInfo) setInstallationStatus(installationStatusInfo);
+    if (installationStatusInfo) {
+      setInstallationStatus(installationStatusInfo);
+      // Initialize the setup dialog when fresh installation state arrives.
+      setWizardActive((current) =>
+        current === null
+          ? installationStatusInfo.setupRequired || setupPreparationPending()
+          : current,
+      );
+    }
     setRefreshedOnce(true);
   }, [showError, chatState, setActiveId]);
 
@@ -548,13 +559,6 @@ export function App() {
     // One automatic attempt per application launch; manual retry remains available.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshedOnce, installationStatus, runtime, preferences?.aiExecutionMode]);
-
-  useEffect(() => {
-    if (!refreshedOnce || installationStatus === null || wizardActive !== null) return;
-    // Only first-time root/profile configuration is modal. Runtime repair
-    // must not hide existing chats or prevent access to Settings.
-    setWizardActive(installationStatus.setupRequired || setupPreparationPending());
-  }, [refreshedOnce, installationStatus, wizardActive]);
 
   useEffect(() => {
     if (!preferences?.localRuntimeAutostart) {
@@ -680,8 +684,15 @@ export function App() {
   useEffect(() => {
     const unlisteners = [
       listen<StreamStartedEvent>("inference:started", (event) => {
+        // Reject inconsistent stream ownership before touching conversation state.
+        // Otherwise a malformed/stale event can create a phantom running stream
+        // that no matching completion event can safely finish.
+        if (
+          !event.payload.conversationId ||
+          event.payload.assistant.conversationId !== event.payload.conversationId ||
+          event.payload.user.conversationId !== event.payload.conversationId
+        ) return;
         if (!chatState.startStream(event.payload)) return;
-        if (event.payload.assistant.conversationId !== event.payload.conversationId) return;
         setConversations((items) =>
           items.map((item) =>
             item.id === event.payload.conversationId
@@ -930,6 +941,22 @@ export function App() {
           generationPrompt,
           false,
           generationKind === "image" ? imageOptions : undefined,
+        );
+        requestScope.setArtifacts((items) => upsertArtifactInList(items, artifact));
+        if (preferences?.openArtifactsAfterGeneration && artifact.status === "ready")
+          void api.openArtifact(artifact.id).catch(showError);
+      }
+      // Export only explicit file-creation requests after the assistant has produced content.
+      // The artifact remains linked to the actual assistant message; no speculative empty file.
+      const documentKind = requestedDocumentArtifact(content);
+      if (documentKind && !generationKind && assistant.content.trim()) {
+        const artifact = await api.createDocumentArtifact(
+          conversationId,
+          assistant.id,
+          documentKind,
+          null,
+          assistant.content,
+          titleFromPrompt(content) || "Document",
         );
         requestScope.setArtifacts((items) => upsertArtifactInList(items, artifact));
         if (preferences?.openArtifactsAfterGeneration && artifact.status === "ready")
@@ -1692,6 +1719,7 @@ export function App() {
   return (
     <main className="app-shell">
       <Sidebar
+        language={preferences?.language}
         collapsed={sidebarCollapsed}
         onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
         conversations={conversations}
@@ -1705,6 +1733,7 @@ export function App() {
         }}
         onNewChat={newConversation}
         onOpenSearch={() => setSearchOpen(true)}
+        onOpenArchived={() => setArchivesOpen(true)}
         onOpenConversation={(id) => {
           setView("chat");
           setActiveId(id);
@@ -2062,6 +2091,7 @@ export function App() {
           />
         ) : view === "web-search" ? (
           <StudioHub
+            key={view}
             section={view}
             mode={executionMode}
             internetAvailable={internetAvailable}
@@ -2245,8 +2275,8 @@ export function App() {
 
       <PreviewPanel target={previewTarget} onClose={() => setPreviewTarget(null)} />
 
-      <ChatSearch
-        open={searchOpen}
+      {searchOpen ? <ChatSearch
+        open={true}
         conversations={conversations}
         onSelect={(id) => {
           setView("chat");
@@ -2254,6 +2284,19 @@ export function App() {
           setEditingMessageId(null);
         }}
         onClose={() => setSearchOpen(false)}
+      /> : null}
+      <ArchivedChats
+        open={archivesOpen}
+        onClose={() => setArchivesOpen(false)}
+        onRestore={async (conversation) => {
+          await api.restoreConversation(conversation.id);
+          setConversations((items) => [
+            conversation,
+            ...items.filter((item) => item.id !== conversation.id),
+          ].map((item) =>
+            item.id === conversation.id ? { ...item, archivedAt: null } : item
+          ));
+        }}
       />
       <Library
         open={libraryOpen}

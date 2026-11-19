@@ -25,15 +25,15 @@ test("production settings/profile saves retain drafts, show failures and allow r
       builder.onResolve({ filter: /^react(?:\/jsx-runtime)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
       builder.onResolve({ filter: /^lucide-react$/ }, () => ({ path: "icons", namespace: "fixture" }));
       builder.onResolve({ filter: /^@tauri-apps\/api\/core$/ }, () => ({ path: "native", namespace: "fixture" }));
-      builder.onResolve({ filter: /^\.\/(ModelsManager|AppsSettings|MaintenanceCenter|UpdatesPanel|AgentSettings|DiffusionRuntimePanel)$/ }, args => ({ path: args.path.slice(2), namespace: "fixture" }));
+      builder.onResolve({ filter: /^\.\/(ModelsManager|AppsSettings|CloudAccountSection|MaintenanceCenter|UpdatesPanel|AgentSettings|DiffusionRuntimePanel)$/ }, args => ({ path: args.path.slice(2), namespace: "fixture" }));
       builder.onLoad({ filter: /.*/, namespace: "fixture" }, ({ path }) => ({ contents: path === "icons"
-        ? "export const Brain=()=>null,Cpu=()=>null,Database=()=>null,Download=()=>null,FolderOpen=()=>null,Globe=()=>null,HardDrive=()=>null,Info=()=>null,Keyboard=()=>null,LoaderCircle=()=>null,MessageSquarePlus=()=>null,Palette=()=>null,Play=()=>null,Plug=()=>null,RefreshCw=()=>null,Server=()=>null,Settings=()=>null,Shield=()=>null,SlidersHorizontal=()=>null,StopCircle=()=>null,Trash2=()=>null,User=()=>null,Wrench=()=>null,Bot=()=>null;"
+        ? "export const Brain=()=>null,Cpu=()=>null,Database=()=>null,Download=()=>null,FolderOpen=()=>null,Globe=()=>null,HardDrive=()=>null,Info=()=>null,Keyboard=()=>null,LoaderCircle=()=>null,MessageSquarePlus=()=>null,Palette=()=>null,Play=()=>null,Plug=()=>null,RefreshCw=()=>null,Server=()=>null,Settings=()=>null,Shield=()=>null,SlidersHorizontal=()=>null,StopCircle=()=>null,Trash2=()=>null,User=()=>null,Wrench=()=>null,Bot=()=>null,Cloud=()=>null;"
         : path === "native" ? "export const invoke=async()=>{throw Error('unexpected native action');};" : `export const ${path}=()=>null;` }));
     } }] });
     const { SettingsDialog } = await import(pathToFileURL(outfile));
     const { createRoot } = await import("react-dom/client");
     const defer = () => { let resolve, reject; const promise = new Promise((yes,no) => { resolve=yes; reject=no; }); return { promise, resolve, reject }; };
-    for (const section of ["general", "personalization", "network", "privacy"]) {
+    for (const section of ["general", "personalization", "network", "privacy", "capabilities"]) {
       root = createRoot(dom.window.document.getElementById("root"));
       let pending = defer(); const requests = [];
       const save = value => { requests.push(value); return pending.promise; };
@@ -61,6 +61,16 @@ test("production settings/profile saves retain drafts, show failures and allow r
             .some((label) => /telemetry/i.test(label.textContent) && label.querySelector('input[type="checkbox"]')),
           false,
           "privacy must not present an interactive telemetry switch",
+        );
+      }
+      if (section === "capabilities") {
+        assert.match(dom.window.document.body.textContent, /Thinking mode/);
+        assert.match(dom.window.document.body.textContent, /previous Thinking mode switch only saved a preference/);
+        assert.equal(
+          [...dom.window.document.querySelectorAll("label")]
+            .some(label => /Thinking mode/i.test(label.textContent) && label.querySelector('input[type="checkbox"]')),
+          false,
+          "unsupported thinking control must not pretend to affect inference",
         );
       }
       const saveButton = () => dom.window.document.querySelector(".save-bar button");

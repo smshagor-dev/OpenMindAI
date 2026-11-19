@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
 import type { Project, ProjectSummary } from "../types";
 import { formatError } from "./format";
@@ -21,7 +21,10 @@ export function useProjectCatalog() {
   const catalogVersion = useRef(0);
   const detailVersion = useRef(0);
   const selectedIdRef = useRef(activeId);
-  selectedIdRef.current = activeId;
+  // Commit the selected ID to the mutable guard before paint; never write refs in render.
+  useLayoutEffect(() => {
+    selectedIdRef.current = activeId;
+  }, [activeId]);
   const loadMoreInFlight = useRef(false);
 
   const refreshProjects = useCallback(async (preferredId?: string | null) => {
