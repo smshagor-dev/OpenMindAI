@@ -3,6 +3,12 @@ export const MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS = 8_000;
 export const MAX_TOTAL_ATTACHMENT_CONTEXT_CHARS = 16_000;
 const TRUNCATION_NOTE = "\n[Attachment excerpt truncated; omitted text is NOT available to the model]";
 const GAP = "\n[... intervening text omitted ...]\n";
+const MAX_SERIALIZED_SOURCES = 64;
+const MAX_HEADER_CHARS = 128;
+const OMITTED_SOURCES_NOTE = "[Additional attachments omitted from context; attach fewer files to analyze them.]";
+const boundedHeader = (header: string) => header.length > MAX_HEADER_CHARS
+  ? header.slice(0, MAX_HEADER_CHARS - 1) + "…"
+  : header;
 const OVERALL_NOTE = "[Attachment context limit: only excerpts were sent; omitted text was not analyzed. Ask for a specific passage or attach fewer files.]";
 
 export interface AttachmentContextSource {
@@ -25,11 +31,15 @@ export interface AttachmentContextPlan {
 
 /** Distribute prompt context fairly. Reserve one header and warning capacity per file. */
 export function planAttachmentContext(sources: AttachmentContextSource[]): AttachmentContextPlan {
-  const joinedHeaders = sources.reduce((used, source) => used + source.header.length + (source.content ? 1 : 0), 0)
-    + Math.max(0, sources.length - 1) * 2;
+  const included = sources.slice(0, MAX_SERIALIZED_SOURCES);
+  const joinedHeaders = included.reduce((used, source) => used + boundedHeader(source.header).length + (source.content ? 1 : 0), 0)
+    + Math.max(0, included.length - 1) * 2;
+  const omittedNoteReserve = sources.length > included.length ? OMITTED_SOURCES_NOTE.length + 2 : 0;
   // Keep space for the final disclosure, even if every file needs its maximum share.
-  let left = Math.max(0, MAX_TOTAL_ATTACHMENT_CONTEXT_CHARS - joinedHeaders - OVERALL_NOTE.length - 2);
-  const wanted = sources.map(source => Math.min(MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS, source.content?.length ?? 0));
+  let left = Math.max(0, MAX_TOTAL_ATTACHMENT_CONTEXT_CHARS - joinedHeaders - OVERALL_NOTE.length - 2 - omittedNoteReserve);
+  const wanted = sources.map((source, index) => index < MAX_SERIALIZED_SOURCES
+    ? Math.min(MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS, source.content?.length ?? 0)
+    : 0);
   const budgets = sources.map(() => 0);
   let live = wanted.map((count, index) => count > 0 ? index : -1).filter(index => index >= 0);
   while (left > 0 && live.length > 0) {
@@ -89,11 +99,13 @@ export function selectAttachmentExcerpt(content: string, limit: number, prompt: 
 
 export function serializeAttachmentContext(sources: AttachmentContextSource[], prompt: string) {
   const plan = planAttachmentContext(sources);
-  const parts = sources.map((source, index) => {
+  const parts = sources.slice(0, MAX_SERIALIZED_SOURCES).map((source, index) => {
     const excerpt = selectAttachmentExcerpt(source.content ?? "", plan.budgets[index], prompt);
-    return excerpt ? source.header + "\n" + excerpt : source.header;
+    const header = boundedHeader(source.header);
+    return excerpt ? header + "\n" + excerpt : header;
   });
   if (plan.truncatedCount || plan.omittedCount) parts.push(OVERALL_NOTE);
+  if (sources.length > MAX_SERIALIZED_SOURCES) parts.push(OMITTED_SOURCES_NOTE);
   const text = parts.join("\n\n");
   return { text, plan };
 }

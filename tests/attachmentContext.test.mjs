@@ -67,3 +67,32 @@ test("no truncation warning on fully included short content", () => {
   assert(!text.includes("omitted text was not analyzed"));
   assert.equal(planAttachmentContext(sources).items.length, 2);
 });
+
+
+test("very long attachment headers cannot overflow the total prompt budget", () => {
+  const sources = Array.from({ length: 8 }, (_, index) => ({
+    name: "long-" + index,
+    header: "[Attachment " + "x".repeat(100_000) + "]",
+    content: "START" + "a".repeat(30_000) + "END",
+  }));
+  const { text, plan } = serializeAttachmentContext(sources, "query");
+  assert(text.length <= 16_000);
+  assert.equal(plan.items.length, 8);
+  assert.equal(plan.truncatedCount, 8);
+  assert(text.includes("omitted text was not analyzed"));
+});
+
+test("more than 64 attachments are disclosed rather than silently overflowing context", () => {
+  const sources = Array.from({ length: 200 }, (_, index) => ({
+    name: "file" + index,
+    header: "[Attachment " + index + "]",
+    content: "content-" + index,
+  }));
+  const { text, plan } = serializeAttachmentContext(sources, "");
+  assert(text.length <= 16_000);
+  assert.equal(plan.items.length, 200);
+  assert.equal(plan.omittedCount, 136);
+  assert(text.includes("[Attachment 63]"));
+  assert(!text.includes("[Attachment 64]"));
+  assert(text.includes("Additional attachments omitted from context"));
+});
