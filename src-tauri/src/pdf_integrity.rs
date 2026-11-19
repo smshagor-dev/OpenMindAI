@@ -213,20 +213,30 @@ mod tests {
     fn invalid_page_geometry_is_rejected_before_publication() {
         let (mut missing, _, _) = fixture_document();
         let page_id = *missing.get_pages().values().next().unwrap();
-        missing.objects.get_mut(&page_id).unwrap().as_dict_mut().unwrap().remove(b"MediaBox");
+        missing
+            .objects
+            .get_mut(&page_id)
+            .unwrap()
+            .as_dict_mut()
+            .unwrap()
+            .remove(b"MediaBox");
         assert!(check(&serialized(missing)).is_err());
 
-        for coordinates in [
-            [0_i64, 0, 0, 100],
-            [0, 0, 100, -1],
-            [0, 0, 30_000, 100],
-        ] {
+        for coordinates in [[0_i64, 0, 0, 100], [0, 0, 100, -1], [0, 0, 30_000, 100]] {
             let (mut doc, _, _) = fixture_document();
             let page_id = *doc.get_pages().values().next().unwrap();
-            doc.objects.get_mut(&page_id).unwrap().as_dict_mut().unwrap().set(
-                "MediaBox",
-                coordinates.into_iter().map(Object::Integer).collect::<Vec<_>>(),
-            );
+            doc.objects
+                .get_mut(&page_id)
+                .unwrap()
+                .as_dict_mut()
+                .unwrap()
+                .set(
+                    "MediaBox",
+                    coordinates
+                        .into_iter()
+                        .map(Object::Integer)
+                        .collect::<Vec<_>>(),
+                );
             assert!(check(&serialized(doc)).is_err(), "accepted {coordinates:?}");
         }
         assert!(check(&fixture_pdf()).is_ok());

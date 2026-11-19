@@ -46,7 +46,12 @@ pub(crate) fn build_prompt_context(input: PromptContextInput<'_>) -> PromptConte
     // Never round a smaller real slot up: the caller already resolved the
     // runtime's /props n_ctx or divided configured context across workers.
     let context_window_tokens = input.context_window_tokens.min(MAX_MODEL_CONTEXT_TOKENS);
-    let max_output_tokens = (context_window_tokens / 6).clamp(MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS);
+    // A tiny or misreported slot must not reserve generation tokens beyond
+    // its actual capacity after the fixed prompt margin.
+    let available_for_output = context_window_tokens.saturating_sub(PROMPT_MARGIN_TOKENS);
+    let max_output_tokens = (context_window_tokens / 6)
+        .clamp(MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS)
+        .min(available_for_output);
     let input_tokens = context_window_tokens
         .saturating_sub(max_output_tokens)
         .saturating_sub(PROMPT_MARGIN_TOKENS);
@@ -56,15 +61,18 @@ pub(crate) fn build_prompt_context(input: PromptContextInput<'_>) -> PromptConte
         .saturating_sub(input.additional_user_chars)
         .saturating_sub(FIXED_USER_OVERHEAD_CHARS);
 
-    let transcript_raw = input
+    // Count transcript evidence without cloning and joining the entire history.
+    // Long agent sessions can contain megabytes of tool output, while only the
+    // bounded newest entries will be included in the actual prompt.
+    let transcript_chars = input
         .transcript
         .iter()
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("\n\n");
+        .map(|entry| entry.chars().count())
+        .sum::<usize>()
+        .saturating_add(input.transcript.len().saturating_sub(1).saturating_mul(2));
     let raw = [
         input.goal,
-        transcript_raw.as_str(),
+        "",
         input.repository_context,
         input.project_instructions,
         input.conversation_context,
@@ -80,8 +88,15 @@ pub(crate) fn build_prompt_context(input: PromptContextInput<'_>) -> PromptConte
     let weights = [30usize, 25, 22, 10, 8, 5];
     let lengths = raw
         .iter()
+        .enumerate()
         .zip(caps)
-        .map(|(value, cap)| value.chars().count().min(cap))
+        .map(|((index, value), cap)| {
+            if index == 1 {
+                transcript_chars.min(cap)
+            } else {
+                value.chars().count().min(cap)
+            }
+        })
         .collect::<Vec<_>>();
     let budgets = allocate_budgets(&lengths, &weights, budget_chars);
 
@@ -102,7 +117,7 @@ pub(crate) fn build_prompt_context(input: PromptContextInput<'_>) -> PromptConte
     .iter()
     .map(|value| value.chars().count())
     .sum::<usize>();
-    let raw_chars = raw.iter().map(|value| value.chars().count()).sum::<usize>();
+    let raw_chars = raw.iter().map(|value| value.chars().count()).sum::<usize>() + transcript_chars;
 
     PromptContextPack {
         project_instructions,
@@ -292,6 +307,52 @@ mod tests {
             context_window_tokens: window,
             system_chars: 7_000,
             additional_user_chars: 0,
+        }
+    }
+
+    #[test]
+    fn long_transcript_is_bounded_without_materializing_all_history() {
+        let mut transcript = VecDeque::new();
+        for index in 0..256 {
+            transcript.push_back(format!("old-{index}: {}", "x".repeat(12_000)));
+        }
+        transcript.push_back("LATEST_COMPILER_FAILURE".to_string());
+        let pack = build_prompt_context(input("repair", "", &transcript, 4_096));
+        assert!(pack.transcript.contains("LATEST_COMPILER_FAILURE"));
+        assert!(pack.selected_chars <= pack.budget_chars);
+        assert!(pack.compressed);
+    }
+
+    #[test]
+    fn tiny_or_missing_slot_never_reserves_more_tokens_than_available() {
+        let transcript = VecDeque::new();
+        for window in [0, 1, 255, 256, 257, 512, 640, 1_024] {
+            let pack = build_prompt_context(input("task", "repository", &transcript, window));
+            assert!(
+                pack.max_output_tokens + PROMPT_MARGIN_TOKENS <= window
+                    || window < PROMPT_MARGIN_TOKENS,
+                "invalid output reservation for {window}-token slot"
+            );
+            assert!(pack.selected_chars <= pack.budget_chars);
+        }
+    }
+
+
+    #[test]
+    fn tiny_slots_respect_output_margin_and_boundaries() {
+        let transcript = VecDeque::new();
+        for window in [0, 1, 255, 256, 257, 512, 640, 1_024, 2_048] {
+            let pack = build_prompt_context(input("task", "repository", &transcript, window));
+            assert_eq!(
+                pack.max_output_tokens,
+                (window / 6).clamp(MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS)
+                    .min(window.saturating_sub(PROMPT_MARGIN_TOKENS)),
+                "incorrect output budget at {window} tokens"
+            );
+            assert!(
+                pack.max_output_tokens <= window.saturating_sub(PROMPT_MARGIN_TOKENS),
+                "output reservation cannot exceed remaining slot capacity"
+            );
         }
     }
 
