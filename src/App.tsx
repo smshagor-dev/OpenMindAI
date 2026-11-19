@@ -1,3 +1,4 @@
+import { requestedDocumentArtifact } from "./lib/documentIntent";
 import { Archive, Check, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -930,6 +931,22 @@ export function App() {
           generationPrompt,
           false,
           generationKind === "image" ? imageOptions : undefined,
+        );
+        requestScope.setArtifacts((items) => upsertArtifactInList(items, artifact));
+        if (preferences?.openArtifactsAfterGeneration && artifact.status === "ready")
+          void api.openArtifact(artifact.id).catch(showError);
+      }
+      // Export only explicit file-creation requests after the assistant has produced content.
+      // The artifact remains linked to the actual assistant message; no speculative empty file.
+      const documentKind = requestedDocumentArtifact(content);
+      if (documentKind && !generationKind && assistant.content.trim()) {
+        const artifact = await api.createDocumentArtifact(
+          conversationId,
+          assistant.id,
+          documentKind,
+          null,
+          assistant.content,
+          titleFromPrompt(content) || "Document",
         );
         requestScope.setArtifacts((items) => upsertArtifactInList(items, artifact));
         if (preferences?.openArtifactsAfterGeneration && artifact.status === "ready")
