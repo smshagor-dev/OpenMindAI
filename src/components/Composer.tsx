@@ -27,7 +27,7 @@ import { api } from "../api";
 import { ModelSelector } from "./ModelSelector";
 import type { CloudModel } from "../cloudApi";
 
-export function Composer(props: {
+export function Composer({ composerRef: textareaRef, ...props }: {
   prompt: string;
   setPrompt: (value: string) => void;
   createVoiceDraftTarget: () => VoiceDraftTarget;
@@ -60,7 +60,6 @@ export function Composer(props: {
   placeholder?: string;
   note?: string;
 }) {
-  const textareaRef = props.composerRef;
   const contextPlan = useMemo(() => attachmentContextStats(props.attachments), [props.attachments]);
   const alive = useRef(false);
   const startingMicrophone = useRef(false);
