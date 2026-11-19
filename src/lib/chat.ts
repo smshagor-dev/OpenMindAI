@@ -71,6 +71,9 @@ const CHAT_MODES: ChatMode[] = [
 function visionMimeType(file: File) {
   const declared = file.type.toLowerCase();
   if (SUPPORTED_VISION_IMAGE_TYPES.has(declared)) return declared;
+  // Only trust the filename when the browser could not identify the content type.
+  // An explicit unsupported MIME (e.g. SVG renamed to .png) must not bypass the allowlist.
+  if (declared && declared !== "application/octet-stream") return null;
   if (/\.png$/i.test(file.name)) return "image/png";
   if (/\.jpe?g$/i.test(file.name)) return "image/jpeg";
   if (/\.webp$/i.test(file.name)) return "image/webp";
