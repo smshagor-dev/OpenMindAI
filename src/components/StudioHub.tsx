@@ -131,7 +131,7 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
         if (!status.gpu_active) setError("OpenCL GPU not ready. Install local worker dependencies and GPU drivers.");
       }
     }
-  }, [section, online, connection?.connected]);
+  }, [section, online, connection?.connected, mode]);
 
   useEffect(() => {
     setError(null);
@@ -142,7 +142,7 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
     if ((online && connection?.connected) || (!online && mode !== "cloud" && section === "3d-studio")) {
       void refresh().catch((caught: unknown) => setError(explain(caught)));
     }
-  }, [refresh, online, section, connection?.connected]);
+  }, [refresh, online, section, connection?.connected, mode]);
 
   // Poll only an actual saved job. Stop when the server reports a terminal status.
   useEffect(() => {
