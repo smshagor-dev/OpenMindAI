@@ -175,15 +175,13 @@ export function Studio3D({ mode }: Props) {
   const pending = useRef(false);
   const cancelRef = useRef(false);
 
-  // Auto-grow the composer up to a cap, like the chat composer.
-  const grow = useCallback((element: HTMLTextAreaElement | null) => {
+  // Synchronize the native textarea directly; no React state update is needed.
+  useEffect(() => {
+    const element = promptRef.current;
     if (!element) return;
     element.style.height = "auto";
     element.style.height = `${Math.min(element.scrollHeight, 200)}px`;
-  }, []);
-  useEffect(() => {
-    grow(promptRef.current);
-  }, [prompt, grow]);
+  }, [prompt]);
 
   // Keep the local worker warm so the first generation is not a cold start.
   useEffect(() => {
