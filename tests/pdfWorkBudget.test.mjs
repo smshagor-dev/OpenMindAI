@@ -218,3 +218,21 @@ test.after(async () => {
   delete globalThis.__pdf;
   await rm(directory, { recursive: true, force: true });
 });
+
+test("huge native OCR output is bounded before normalization and preserves Unicode boundaries", async () => {
+  const huge = " ".repeat(250_000) + "😀 বাংলা evidence " + "Z".repeat(2_000_000);
+  const fx = fixture(1, () => "", async () => [{ pageNumber: 1, text: huge }]);
+  const result = await extractPdfText(file);
+  assert.equal(result.pagesRead, 1);
+  assert(result.text.includes("😀 বাংলা evidence"));
+  assert(result.text.length <= 20_000);
+  assert(!result.text.includes("\uFFFD"), "must not split a surrogate pair");
+  assert.equal(result.unreadPages.length, 0);
+  fx.assertClean();
+});
+
+test("whitespace-only native OCR output is not counted as successfully analyzed", async () => {
+  const fx = fixture(1, () => "", async () => [{ pageNumber: 1, text: " ".repeat(500_000) }]);
+  await assert.rejects(extractPdfText(file), /No readable PDF text is available/);
+  fx.assertClean();
+});
