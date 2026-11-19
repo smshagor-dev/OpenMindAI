@@ -553,6 +553,7 @@ mod tests {
         assert!(repo.get_user_profile().unwrap().email.is_empty());
     }
 
+
     #[test]
     fn oversized_profile_context_is_bounded_without_changing_saved_unicode() {
         let database = Database::in_memory().unwrap();
