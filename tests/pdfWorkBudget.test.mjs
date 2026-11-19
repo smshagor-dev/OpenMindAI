@@ -218,3 +218,38 @@ test.after(async () => {
   delete globalThis.__pdf;
   await rm(directory, { recursive: true, force: true });
 });
+
+test("huge PDF coordinate space never creates a canvas above the pixel budget", async () => {
+  const fx = fixture(1);
+  const pdf = await globalThis.__pdf.task.promise;
+  pdf.getPage = async () => ({
+    getTextContent: async () => ({ items: [] }),
+    getViewport: ({ scale }) => ({ width: 1_000_000 * scale, height: 500_000 * scale }),
+    render: ({ canvas }) => {
+      assert(canvas.width <= 1440 && canvas.height <= 1440, "canvas exceeds pixel budget");
+      assert(canvas.width > 0 && canvas.height > 0);
+      return { promise: Promise.resolve() };
+    },
+  });
+  const before = canvasDimensions.length;
+  const result = await extractPdfText(file);
+  assert.equal(result.scannedPages.length, 1);
+  const canvas = canvasDimensions[before];
+  assert(canvas, "scanned page must render");
+  assert.equal(canvas.width, 0, "render cleanup releases canvas");
+  fx.assertClean();
+});
+
+test("invalid PDF viewport is rejected before canvas allocation and decoder is cleaned up", async () => {
+  const fx = fixture(1);
+  const pdf = await globalThis.__pdf.task.promise;
+  pdf.getPage = async () => ({
+    getTextContent: async () => ({ items: [] }),
+    getViewport: () => ({ width: Number.POSITIVE_INFINITY, height: 100 }),
+    render: () => { throw new Error("render must not be called"); },
+  });
+  const before = canvasDimensions.length;
+  await assert.rejects(extractPdfText(file), /No readable PDF text/);
+  assert.equal(canvasDimensions.length, before, "invalid dimensions must not allocate canvas");
+  fx.assertClean();
+});
