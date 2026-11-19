@@ -325,6 +325,25 @@ impl<'a> SettingsRepository<'a> {
             .map_err(|_| AppError::internal("Invalid preferences"))?;
         let mut sanitized =
             serde_json::to_value(&saved).map_err(|_| AppError::internal("Invalid preferences"))?;
+        // Retain fields introduced by newer versions when an older client saves
+        // known settings. Known keys always come from the validated, sanitized
+        // AppPreferences model, never from the previous JSON document.
+        let raw_previous: Option<String> = self.database.connection().query_row(
+            "SELECT value_json FROM app_settings WHERE key = ?1",
+            params![SETTINGS_KEY],
+            |row| row.get(0),
+        ).optional()?;
+        if let Some(raw) = raw_previous {
+            let stored: serde_json::Value = serde_json::from_str(&raw)
+                .map_err(|_| AppError::internal("Invalid stored preferences"))?;
+            let old_fields = stored.as_object()
+                .ok_or_else(|| AppError::internal("Stored preferences must be an object"))?;
+            let new_fields = sanitized.as_object_mut()
+                .ok_or_else(|| AppError::internal("Invalid preferences"))?;
+            for (key, value) in old_fields {
+                new_fields.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+        }
         crate::proxy_credentials::protect(
             &mut sanitized,
             previous.as_ref(),
@@ -507,6 +526,43 @@ mod tests {
         let loaded = repo.get_preferences().unwrap();
         assert_eq!(loaded.theme, ThemeMode::Light);
         assert!(!loaded.enter_to_send);
+    }
+
+    #[test]
+    fn saving_known_preferences_preserves_future_fields_without_restoring_unsafe_known_values() {
+        let database = Database::in_memory().unwrap();
+        let repo = SettingsRepository::new(&database);
+        let mut preferences = repo.get_preferences().unwrap();
+        database.connection().execute(
+            "UPDATE app_settings SET value_json = json_set(value_json, '$.futureFeature', json(?1), '$.telemetryEnabled', json('true')) WHERE key = ?2",
+            params![r#"{"nested":[1,{"enabled":true}]}"#, SETTINGS_KEY],
+        ).unwrap();
+
+        preferences.language = "Bangla".to_string();
+        preferences.telemetry_enabled = true;
+        let saved = repo.save_preferences(&preferences).unwrap();
+        assert_eq!(saved.language, "Bangla");
+        assert!(!saved.telemetry_enabled);
+
+        let raw: String = database.connection().query_row(
+            "SELECT value_json FROM app_settings WHERE key = ?1",
+            params![SETTINGS_KEY],
+            |row| row.get(0),
+        ).unwrap();
+        let document: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(document["futureFeature"], serde_json::json!({"nested":[1,{"enabled":true}]}));
+        assert_eq!(document["language"], "Bangla");
+        assert_eq!(document["telemetryEnabled"], false);
+
+        preferences.language = "English".to_string();
+        repo.save_preferences(&preferences).unwrap();
+        let raw: String = database.connection().query_row(
+            "SELECT value_json FROM app_settings WHERE key = ?1",
+            params![SETTINGS_KEY],
+            |row| row.get(0),
+        ).unwrap();
+        let document: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(document["futureFeature"], serde_json::json!({"nested":[1,{"enabled":true}]}));
     }
 
     #[test]
