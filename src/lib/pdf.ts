@@ -91,6 +91,11 @@ export async function extractPdfText(
   try {
     const pdf = await task.promise;
     assertNotCancelled(options.signal);
+    // A malformed decoder page count must not turn an unreadable PDF into an
+    // apparently successful empty import or invalid progress metadata.
+    if (!Number.isSafeInteger(pdf.numPages) || pdf.numPages < 1) {
+      throw new Error("Invalid PDF page count returned by the decoder.");
+    }
     const maxPagesRead = Math.min(pdf.numPages, MAX_PDF_PAGES);
     const pageTexts: string[] = [];
     const scannedPages: number[] = [];
