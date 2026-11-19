@@ -70,8 +70,11 @@ export function Composer(props: {
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const audioPreviewUrlsRef = useRef(new Map<string, string>());
-  const attachmentsRef = useRef(props.attachments);
-  attachmentsRef.current = props.attachments;
+  const attachmentsRef = useRef<AttachmentDraft[]>([]);
+  // Synchronize the latest attachments after commit, never mutate refs during render.
+  useEffect(() => {
+    attachmentsRef.current = props.attachments;
+  }, [props.attachments]);
   const [imageSettingsOpen, setImageSettingsOpen] = useState(false);
   const isImageRequest = inferChatMode(props.prompt, props.attachments) === "image";
   const [recording, setRecording] = useState(false);
