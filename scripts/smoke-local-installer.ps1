@@ -7,6 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+
 $installer = (Resolve-Path -LiteralPath $InstallerPath).Path
 $tempBase = [System.IO.Path]::GetFullPath($env:TEMP)
 $targetRoot = [System.IO.Path]::GetFullPath($InstallRoot)
