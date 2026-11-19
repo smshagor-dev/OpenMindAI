@@ -58,11 +58,7 @@ pub fn preview_writable(path: &Path) -> bool {
         // Never truncate or delete a pre-existing file (or follow a planted
         // symlink) merely to check whether a storage location is writable.
         let probe = path.join(format!(".openmindai-write-test-{}", uuid::Uuid::new_v4()));
-        return match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&probe)
-        {
+        return match fs::OpenOptions::new().write(true).create_new(true).open(&probe) {
             Ok(file) => {
                 drop(file);
                 fs::remove_file(&probe).is_ok()
@@ -157,7 +153,8 @@ impl InstallConfig {
     /// finished install, so they count as provisioned to avoid forcing existing
     /// users back through the wizard.
     pub fn is_fully_provisioned(&self) -> bool {
-        self.installation_complete && matches!(self.setup_state, None | Some(SetupState::Completed))
+        self.installation_complete
+            && matches!(self.setup_state, None | Some(SetupState::Completed))
     }
 
     /// Builds the resume descriptor for a setup that still needs finishing.
@@ -355,8 +352,16 @@ impl PortableRootManager {
     }
 
     pub fn ensure_directories(&self) -> Result<(), AppError> {
+        // Resolve the root once, then create every directory through a
+        // capability-relative handle. A concurrent symlink replacement of an
+        // intermediate directory must not redirect initialization outside it.
+        fs::create_dir_all(&self.root)?;
+        let root = cap_std::fs::Dir::open_ambient_dir(
+            &self.root,
+            cap_std::ambient_authority(),
+        )?;
         for relative in REQUIRED_DIRECTORIES {
-            fs::create_dir_all(self.resolve_relative(relative)?)?;
+            root.create_dir_all(relative)?;
         }
         self.validate_root()?;
         Ok(())
@@ -400,16 +405,15 @@ impl PortableRootManager {
         fs::create_dir_all(&self.root)?;
         // A fixed .write-test name could be a symlink to unrelated user data.
         // Use an unpredictable exclusive file so validation cannot overwrite it.
-        let probe = self
-            .root
-            .join(format!(".write-test-{}", uuid::Uuid::new_v4()));
+        let probe = self.root.join(format!(".write-test-{}", uuid::Uuid::new_v4()));
         let file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&probe)
             .map_err(|error| AppError::RootNotWritable(error.to_string()))?;
         drop(file);
-        fs::remove_file(&probe).map_err(|error| AppError::RootNotWritable(error.to_string()))?;
+        fs::remove_file(&probe)
+            .map_err(|error| AppError::RootNotWritable(error.to_string()))?;
         Ok(())
     }
 
@@ -523,6 +527,35 @@ pub(crate) mod tests {
         manager.ensure_directories().unwrap();
         assert!(manager.database_path().parent().unwrap().is_dir());
         assert!(manager.models_dir().join("llm").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_directories_rejects_external_symlink_without_writing_outside() {
+        use std::os::unix::fs::symlink;
+        let base = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = base.path().join("root");
+        fs::create_dir_all(&root).unwrap();
+        symlink(outside.path(), root.join("generated")).unwrap();
+        let manager = PortableRootManager::from_root(root);
+        assert!(manager.ensure_directories().is_err());
+        assert!(!outside.path().join("images").exists());
+        assert!(!outside.path().join("files").exists());
+        assert!(!outside.path().join("exports").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_directories_accepts_contained_symlink() {
+        use std::os::unix::fs::symlink;
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("root");
+        fs::create_dir_all(root.join("real-generated")).unwrap();
+        symlink("real-generated", root.join("generated")).unwrap();
+        let manager = PortableRootManager::from_root(root.clone());
+        manager.ensure_directories().unwrap();
+        assert!(root.join("real-generated/images").is_dir());
     }
 
     #[test]

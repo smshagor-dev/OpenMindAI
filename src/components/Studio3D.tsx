@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Cpu,
   Database,
@@ -174,8 +175,18 @@ export function Studio3D({ mode }: Props) {
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const pending = useRef(false);
   const cancelRef = useRef(false);
+  // The scenes list lives in the app's main left sidebar (not a second inner
+  // column). Render it there through a portal so this view fills the container.
+  const [sidebarSlot, setSidebarSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    // Wait until the sidebar portal target exists after React commits the view.
+    const frame = window.requestAnimationFrame(() => {
+      setSidebarSlot(document.getElementById("studio-sidebar-slot"));
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
 
-  // Synchronize the native textarea directly; no React state update is needed.
+  // Resize the native textarea after prompt changes without synchronous state updates.
   useEffect(() => {
     const element = promptRef.current;
     if (!element) return;
@@ -328,41 +339,45 @@ export function Studio3D({ mode }: Props) {
 
   return (
     <div className="studio3d-root">
-      <aside className="studio3d-sidebar">
-        <button className="studio3d-new" type="button" disabled={busy} onClick={newScene}>
-          <Pencil size={17} /> New scene
-        </button>
-        <span className="studio3d-section-label">Your scenes</span>
-        <div className="studio3d-history">
-          {history.length === 0 ? (
-            <p className="studio3d-empty">Generated scenes will appear here.</p>
-          ) : (
-            history.map((item) => (
-              <div
-                key={item.id}
-                className={`studio3d-history-item ${activeId === item.id ? "active" : ""}`}
-              >
-                <button
-                  className="studio3d-history-title"
-                  title={item.title}
-                  disabled={busy}
-                  onClick={() => void openScene(item)}
-                >
-                  {item.title}
-                </button>
-                <button
-                  className="studio3d-history-delete"
-                  aria-label={`Delete ${item.title}`}
-                  disabled={busy}
-                  onClick={() => removeScene(item)}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            ))
-          )}
-        </div>
-      </aside>
+      {sidebarSlot &&
+        createPortal(
+          <div className="studio-side">
+            <button className="studio3d-new" type="button" disabled={busy} onClick={newScene}>
+              <Pencil size={17} /> New scene
+            </button>
+            <span className="studio3d-section-label">Your scenes</span>
+            <div className="studio3d-history">
+              {history.length === 0 ? (
+                <p className="studio3d-empty">Generated scenes will appear here.</p>
+              ) : (
+                history.map((item) => (
+                  <div
+                    key={item.id}
+                    className={`studio3d-history-item ${activeId === item.id ? "active" : ""}`}
+                  >
+                    <button
+                      className="studio3d-history-title"
+                      title={item.title}
+                      disabled={busy}
+                      onClick={() => void openScene(item)}
+                    >
+                      {item.title}
+                    </button>
+                    <button
+                      className="studio3d-history-delete"
+                      aria-label={`Delete ${item.title}`}
+                      disabled={busy}
+                      onClick={() => removeScene(item)}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>,
+          sidebarSlot,
+        )}
 
       <div className={`studio-shell ${showingResult ? "" : "is-empty"}`}>
         {error && (

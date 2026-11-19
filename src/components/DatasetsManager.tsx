@@ -395,6 +395,22 @@ export function DatasetsManager() {
     };
   }, []);
 
+  // Revalidate against real files whenever visible Hub results change. A
+  // stale async inventory response must not replace a newer search result.
+  useEffect(() => {
+    let cancelled = false;
+    const ids = [...new Set([
+      ...CURATED_DATASETS.map((dataset) => dataset.sourceId),
+      ...datasets.map((dataset) => dataset.id),
+    ])].slice(0, 200);
+    void api.installedDatasetIds(ids).then((installed) => {
+      if (!cancelled) setInstalledDatasets(new Set(installed));
+    }).catch(() => {
+      if (!cancelled) setInstalledDatasets(new Set());
+    });
+    return () => { cancelled = true; };
+  }, [datasets]);
+
   async function openDataset(id: string) {
     await api.openExternalUrl(openMindDatasetPageUrl(id));
   }
@@ -428,7 +444,7 @@ export function DatasetsManager() {
           recordCompletedDataset(current, status.state, status.datasetId),
         );
       }
-      // Polling records downloads that finish after this call returns.
+      // Polling also records downloads that finish after this call returns.
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
       try {

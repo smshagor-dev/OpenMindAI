@@ -9,8 +9,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::app_error::AppError;
 
+struct MediaJob {
+    token: CancellationToken,
+    conversation_id: Option<String>,
+}
+
 pub struct ActiveImageJobs {
-    jobs: Mutex<HashMap<String, CancellationToken>>,
+    jobs: Mutex<HashMap<String, MediaJob>>,
     render_slot: Semaphore,
 }
 
@@ -44,6 +49,16 @@ impl ActiveImageJobs {
     }
 
     pub fn start(&self, artifact_id: &str) -> Result<ImageJobGuard<'_>, AppError> {
+        self.start_scoped(artifact_id, None)
+    }
+
+    /// Register media rendering against a conversation while retaining the
+    /// per-artifact Stop action. An unrelated conversation cannot cancel it.
+    pub fn start_scoped(
+        &self,
+        artifact_id: &str,
+        conversation_id: Option<&str>,
+    ) -> Result<ImageJobGuard<'_>, AppError> {
         let mut jobs = self
             .jobs
             .lock()
@@ -52,7 +67,13 @@ impl ActiveImageJobs {
             return Err(AppError::internal("image generation is already running"));
         }
         let cancellation = CancellationToken::new();
-        jobs.insert(artifact_id.to_string(), cancellation.clone());
+        jobs.insert(
+            artifact_id.to_string(),
+            MediaJob {
+                token: cancellation.clone(),
+                conversation_id: conversation_id.map(ToString::to_string),
+            },
+        );
         Ok(ImageJobGuard {
             registry: self,
             artifact_id: artifact_id.to_string(),
@@ -69,8 +90,25 @@ impl ActiveImageJobs {
         let Some(token) = jobs.get(artifact_id) else {
             return Ok(false);
         };
-        token.cancel();
+        token.token.cancel();
         Ok(true)
+    }
+
+    /// Stop only jobs actually registered to this conversation. No global
+    /// token is shared between independent chat/video tasks.
+    pub fn cancel_conversation(&self, conversation_id: &str) -> Result<usize, AppError> {
+        let jobs = self
+            .jobs
+            .lock()
+            .map_err(|_| AppError::internal("media job registry lock poisoned"))?;
+        let mut cancelled = 0;
+        for job in jobs.values() {
+            if job.conversation_id.as_deref() == Some(conversation_id) {
+                job.token.cancel();
+                cancelled += 1;
+            }
+        }
+        Ok(cancelled)
     }
 
     fn finish(&self, artifact_id: &str) {
@@ -95,6 +133,35 @@ impl Drop for ImageJobGuard<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stop_conversation_cancels_its_video_but_not_other_conversations() {
+        let jobs = ActiveImageJobs::default();
+        let image_a = jobs.start_scoped("image-a", Some("chat-a")).unwrap();
+        let video_a = jobs.start_scoped("video-a", Some("chat-a")).unwrap();
+        let video_b = jobs.start_scoped("video-b", Some("chat-b")).unwrap();
+        let unscoped = jobs.start("legacy-image").unwrap();
+        assert_eq!(jobs.cancel_conversation("chat-a").unwrap(), 2);
+        assert!(image_a.cancellation().is_cancelled());
+        assert!(video_a.cancellation().is_cancelled());
+        assert!(!video_b.cancellation().is_cancelled());
+        assert!(!unscoped.cancellation().is_cancelled());
+        assert_eq!(jobs.cancel_conversation("missing").unwrap(), 0);
+    }
+
+    #[test]
+    fn cancelled_video_registration_cannot_cancel_later_jobs_after_drop() {
+        let jobs = ActiveImageJobs::default();
+        let first = jobs.start_scoped("video-1", Some("chat-a")).unwrap();
+        assert_eq!(jobs.cancel_conversation("chat-a").unwrap(), 1);
+        assert!(first.cancellation().is_cancelled());
+        drop(first);
+        let second = jobs.start_scoped("video-1", Some("chat-b")).unwrap();
+        assert!(!second.cancellation().is_cancelled());
+        assert_eq!(jobs.cancel_conversation("chat-a").unwrap(), 0);
+        assert_eq!(jobs.cancel_conversation("chat-b").unwrap(), 1);
+        assert!(second.cancellation().is_cancelled());
+    }
 
     #[test]
     fn cancelling_one_image_does_not_cancel_another() {

@@ -1,3 +1,4 @@
+import { requestedDocumentArtifact } from "./lib/documentIntent";
 import { Archive, Check, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -139,7 +140,7 @@ export function App() {
   const copyrightYear = new Date().getFullYear();
   const [view, setView] = useState<View>("chat");
   const [executionMode, setExecutionMode] = useState<ExecutionMode>(
-    () => setupExecutionMode() ?? "auto",
+    () => setupExecutionMode() ?? "local",
   );
   const [internetAvailable, setInternetAvailable] = useState(() => window.navigator.onLine);
   const [routeNotice, setRouteNotice] = useState<string | null>(null);
@@ -512,8 +513,7 @@ export function App() {
     if (userProfileInfo) setUserProfile(userProfileInfo);
     if (installationStatusInfo) {
       setInstallationStatus(installationStatusInfo);
-      // Initialize the first-run wizard atomically with the fetched installation status.
-      // A previous dismissal remains authoritative on subsequent refreshes.
+      // Initialize the setup dialog when fresh installation state arrives.
       setWizardActive((current) =>
         current === null
           ? installationStatusInfo.setupRequired || setupPreparationPending()
@@ -682,8 +682,15 @@ export function App() {
   useEffect(() => {
     const unlisteners = [
       listen<StreamStartedEvent>("inference:started", (event) => {
+        // Reject inconsistent stream ownership before touching conversation state.
+        // Otherwise a malformed/stale event can create a phantom running stream
+        // that no matching completion event can safely finish.
+        if (
+          !event.payload.conversationId ||
+          event.payload.assistant.conversationId !== event.payload.conversationId ||
+          event.payload.user.conversationId !== event.payload.conversationId
+        ) return;
         if (!chatState.startStream(event.payload)) return;
-        if (event.payload.assistant.conversationId !== event.payload.conversationId) return;
         setConversations((items) =>
           items.map((item) =>
             item.id === event.payload.conversationId
@@ -932,6 +939,22 @@ export function App() {
           generationPrompt,
           false,
           generationKind === "image" ? imageOptions : undefined,
+        );
+        requestScope.setArtifacts((items) => upsertArtifactInList(items, artifact));
+        if (preferences?.openArtifactsAfterGeneration && artifact.status === "ready")
+          void api.openArtifact(artifact.id).catch(showError);
+      }
+      // Export only explicit file-creation requests after the assistant has produced content.
+      // The artifact remains linked to the actual assistant message; no speculative empty file.
+      const documentKind = requestedDocumentArtifact(content);
+      if (documentKind && !generationKind && assistant.content.trim()) {
+        const artifact = await api.createDocumentArtifact(
+          conversationId,
+          assistant.id,
+          documentKind,
+          null,
+          assistant.content,
+          titleFromPrompt(content) || "Document",
         );
         requestScope.setArtifacts((items) => upsertArtifactInList(items, artifact));
         if (preferences?.openArtifactsAfterGeneration && artifact.status === "ready")
@@ -1842,20 +1865,6 @@ export function App() {
                 Cloud
               </button>
             </div>
-            {view === "work" && !workThreadId && showCloudApiModels ? (
-              <select
-                className="cloud-model-select"
-                aria-label="Cloud API model"
-                value={cloudModel}
-                onChange={(event) => setCloudModel(event.target.value)}
-              >
-                {cloudModels.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.name || model.id}
-                  </option>
-                ))}
-              </select>
-            ) : null}
           </div>
           <div className="topbar-actions">
             {view === "chat" && activeConversation ? (
@@ -2043,6 +2052,7 @@ export function App() {
             modelSwitching={modelSwitching}
             modelSwitchError={modelSwitchError}
             onSelectModel={selectModel}
+            executionMode={executionMode}
             showCloudModels={showCloudApiModels}
             cloudUnavailable={executionMode === "cloud" && !showCloudApiModels}
             onConnectCloud={() => {
@@ -2068,7 +2078,13 @@ export function App() {
             connection={cloudConnection}
           />
         ) : view === "research-studio" ? (
-          <ResearchStudio />
+          <ResearchStudio
+            connected={Boolean(internetAvailable && cloudConnection?.connected)}
+            onConnect={() => {
+              setSettingsSection("cloud");
+              setView("settings");
+            }}
+          />
         ) : view === "web-search" ? (
           <StudioHub
             key={view}
@@ -2137,6 +2153,7 @@ export function App() {
               modelSwitching={modelSwitching}
               modelSwitchError={modelSwitchError}
               onSelectModel={selectModel}
+              executionMode={executionMode}
               showCloudModels={showCloudApiModels}
               cloudUnavailable={executionMode === "cloud" && !showCloudApiModels}
               onConnectCloud={() => {
