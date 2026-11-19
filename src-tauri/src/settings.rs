@@ -330,6 +330,16 @@ impl<'a> SettingsRepository<'a> {
             previous.as_ref(),
             crate::github::secret_store::set_secret,
         )?;
+        // Retain settings introduced by a newer version when an older client
+        // edits a known preference. Known keys always take the validated,
+        // sanitized value from this request; unknown keys cannot override them.
+        if let (Some(serde_json::Value::Object(previous_fields)), serde_json::Value::Object(current_fields)) =
+            (previous.as_ref(), &mut sanitized)
+        {
+            for (key, value) in previous_fields {
+                current_fields.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+        }
         self.database
             .connection()
             .execute_batch("PRAGMA secure_delete = ON;")?;
@@ -472,6 +482,38 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&persisted).unwrap()["telemetryEnabled"],
             false
         );
+    }
+
+    #[test]
+    fn saving_known_preferences_preserves_future_fields_across_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("future-preferences.db");
+        {
+            let database = Database::open(path.clone()).unwrap();
+            let repo = SettingsRepository::new(&database);
+            repo.get_preferences().unwrap();
+            database.connection().execute(
+                "UPDATE app_settings SET value_json = json_set(value_json, '$.futureNested', json('{\"enabled\":true,\"limit\":7}')) WHERE key = ?1",
+                params![SETTINGS_KEY],
+            ).unwrap();
+            let mut preferences = repo.get_preferences().unwrap();
+            preferences.language = "Russian".into();
+            preferences.telemetry_enabled = true;
+            let saved = repo.save_preferences(&preferences).unwrap();
+            assert_eq!(saved.language, "Russian");
+            assert!(!saved.telemetry_enabled);
+        }
+        let reopened = Database::open(path).unwrap();
+        let raw: String = reopened.connection().query_row(
+            "SELECT value_json FROM app_settings WHERE key = ?1",
+            params![SETTINGS_KEY],
+            |row| row.get(0),
+        ).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(value["futureNested"]["enabled"], true);
+        assert_eq!(value["futureNested"]["limit"], 7);
+        assert_eq!(value["language"], "Russian");
+        assert_eq!(value["telemetryEnabled"], false);
     }
 
     #[test]
