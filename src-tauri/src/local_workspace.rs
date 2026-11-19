@@ -23,7 +23,7 @@ use crate::{
 
 const SETTINGS_PREFIX: &str = "project.local_workspace.";
 const MAX_ROOTS: usize = 12;
-const MAX_DIRECTORY_ENTRIES: usize = 500;
+// Do not silently truncate workspace listings before sorting.
 const MAX_TEXT_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_WRITE_CHARS: usize = 2_000_000;
 const MAX_TERMINAL_COMMAND_CHARS: usize = 12_000;
@@ -247,6 +247,14 @@ pub fn set_project_full_local_access(
     Ok(status_from_config(&project_id, &config))
 }
 
+/// Enumerate all entries before applying the UI's directory-first ordering.
+/// Filesystem iteration order is unspecified; truncation hides arbitrary files.
+fn read_all_workspace_entries(directory: &Path) -> Result<Vec<fs::DirEntry>, AppError> {
+    fs::read_dir(directory)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(AppError::from)
+}
+
 #[tauri::command]
 pub fn list_project_workspace_directory(
     project_id: String,
@@ -265,8 +273,7 @@ pub fn list_project_workspace_directory(
 
     let base = selected_root_path(&config, root_id.as_deref()).ok();
     let mut entries = Vec::new();
-    for item in fs::read_dir(&directory)?.take(MAX_DIRECTORY_ENTRIES) {
-        let item = item?;
+    for item in read_all_workspace_entries(&directory)? {
         let item_path = item.path();
         if item.file_name() == std::ffi::OsStr::new(".openmindai-patch-transactions") {
             // Internal recovery journals must not be offered as user files.
@@ -1126,6 +1133,23 @@ mod tests {
         let token = workspace_revision(b"protected content");
         assert!(transactional_workspace_save(&target, b"new content", Some(&token)).is_err());
         assert_eq!(fs::read_to_string(&target).unwrap(), "protected content");
+    }
+
+    #[test]
+    fn workspace_directory_listing_does_not_hide_entries_after_500() {
+        let temp = tempfile::tempdir().unwrap();
+        for index in 0..620 {
+            fs::write(temp.path().join(format!("item-{index:04}.txt")), b"test").unwrap();
+        }
+        fs::create_dir(temp.path().join("z-important-folder")).unwrap();
+        fs::write(temp.path().join("বাংলা-😀.txt"), b"unicode").unwrap();
+
+        let entries = read_all_workspace_entries(temp.path()).unwrap();
+        let names: std::collections::HashSet<_> =
+            entries.iter().map(|entry| entry.file_name()).collect();
+        assert_eq!(names.len(), 622);
+        assert!(names.contains(&std::ffi::OsString::from("z-important-folder")));
+        assert!(names.contains(&std::ffi::OsString::from("বাংলা-😀.txt")));
     }
 
     #[test]
