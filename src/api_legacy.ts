@@ -282,6 +282,8 @@ export const api = {
   qwenDownloadStatus: () => call<DownloadStatus>("get_qwen_download_status"),
   modelDownloadStatus: () => call<DownloadStatus>("get_model_download_status"),
   datasetDownloadStatus: () => call<DatasetDownloadStatus>("get_dataset_download_status"),
+  installedDatasetIds: (datasetIds: string[]) =>
+    call<string[]>("list_installed_datasets", { datasetIds }),
   downloadQwenModel: () => call<DownloadStatus>("download_qwen_model"),
   downloadCatalogModel: (modelId: string) =>
     call<DownloadStatus>("download_catalog_model", { modelId }),

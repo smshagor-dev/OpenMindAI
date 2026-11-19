@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  Archive,
   Database,
   Globe,
   FolderKanban,
@@ -41,6 +42,7 @@ export function Sidebar(props: {
   onWidthChange: (width: number) => void;
   onNewChat: () => void;
   onOpenSearch: () => void;
+  onOpenArchived: () => void;
   onOpenConversation: (id: string) => void;
   onRename: (conversation: Conversation) => void;
   onTogglePin: (conversation: Conversation) => void;
@@ -136,6 +138,9 @@ export function Sidebar(props: {
       </button>
 
       <nav className="sidebar-nav">
+        <button className="nav-button" onClick={props.onOpenArchived} title="Archived chats">
+          <Archive size={18} /> {!props.collapsed ? "Archived chats" : null}
+        </button>
         <button className="nav-button" onClick={props.onOpenLibrary} title={t("library")}>
           <LibraryBig size={18} /> {!props.collapsed ? t("library") : null}
         </button>
