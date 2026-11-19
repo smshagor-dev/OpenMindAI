@@ -17,7 +17,7 @@ import {
 import type { Conversation, UserProfile } from "../types";
 import { ChatHistoryList } from "./ChatHistoryList";
 import packageJson from "../../package.json";
-import { sidebarText } from "../lib/sidebarLocale";
+import { navigationText } from "../i18n/navigation";
 
 const MIN_SIDEBAR_WIDTH = 260;
 const MAX_SIDEBAR_WIDTH = 440;
@@ -57,7 +57,7 @@ export function Sidebar(props: {
   onOpenStudio: (section: "research-studio" | "3d-studio" | "web-search") => void;
   onOpenSettings: (section?: string) => void;
 }) {
-  const t = (key: Parameters<typeof sidebarText>[1]) => sidebarText(props.language, key);
+  const t = (key: Parameters<typeof navigationText>[1]) => navigationText(props.language, key);
   const displayName =
     props.userProfile?.preferredName || props.userProfile?.fullName || "Local User";
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
@@ -101,7 +101,7 @@ export function Sidebar(props: {
           {!props.collapsed ? (
             <div>
               <strong>OpenMindAI</strong>
-              <small>Your AI. Your Models. Your Way.</small>
+              <small>{t("tagline")}</small>
             </div>
           ) : null}
         </div>
@@ -174,9 +174,9 @@ export function Sidebar(props: {
         <button
           className={props.view === "web-search" ? "nav-button active" : "nav-button"}
           onClick={() => props.onOpenStudio("web-search")}
-          title={t("webSearch")}
+          title={t("web")}
         >
-          <Globe size={18} /> {!props.collapsed ? t("webSearch") : null}
+          <Globe size={18} /> {!props.collapsed ? t("web") : null}
         </button>
         <button className="nav-button" onClick={props.onOpenLibrary} title={t("files")}>
           <FolderOpen size={18} /> {!props.collapsed ? t("files") : null}
@@ -242,7 +242,7 @@ export function Sidebar(props: {
           {!props.collapsed ? (
             <button
               className="profile-menu-trigger"
-              title={t("profileOptions")}
+              title={t("profile")}
               onClick={() => setProfileMenuOpen((value) => !value)}
             >
               <MoreHorizontal size={16} />
@@ -257,36 +257,28 @@ export function Sidebar(props: {
                 props.onOpenSettings("general");
                 setProfileMenuOpen(false);
               }}
-            >
-              {t("settings")}
-            </button>
+            >{t("settings")}</button>
             <button
               role="menuitem"
               onClick={() => {
                 props.onOpenSettings("personalization");
                 setProfileMenuOpen(false);
               }}
-            >
-              {t("personalization")}
-            </button>
+            >{t("personalization")}</button>
             <button
               role="menuitem"
               onClick={() => {
                 props.onOpenSettings("appearance");
                 setProfileMenuOpen(false);
               }}
-            >
-              {t("appearance")}
-            </button>
+            >{t("appearance")}</button>
             <button
               role="menuitem"
               onClick={() => {
                 props.onOpenSettings("about");
                 setProfileMenuOpen(false);
               }}
-            >
-              {t("about")}
-            </button>
+            >{t("about")}</button>
           </div>
         ) : null}
       </div>

@@ -1,5 +1,8 @@
+import { classifyAttachmentKind } from "./attachmentKind";
 import type { Message } from "../types";
+import { shouldReadAttachmentAsText } from "./attachmentRouting";
 import { formatBytes } from "./format";
+import { parseDisplayedAttachmentSection } from "./displayAttachmentSection";
 import { analyzeVideoFile, transcribeAudioFile } from "./media";
 import { extractPdfText, type PdfExtractionOptions, type PdfExtractionProgress } from "./pdf";
 import { isImageGenerationIntent } from "./imageGeneration";
@@ -71,6 +74,9 @@ const CHAT_MODES: ChatMode[] = [
 function visionMimeType(file: File) {
   const declared = file.type.toLowerCase();
   if (SUPPORTED_VISION_IMAGE_TYPES.has(declared)) return declared;
+  // Only trust the filename when the browser could not identify the content type.
+  // An explicit unsupported MIME (e.g. SVG renamed to .png) must not bypass the allowlist.
+  if (declared && declared !== "application/octet-stream") return null;
   if (/\.png$/i.test(file.name)) return "image/png";
   if (/\.jpe?g$/i.test(file.name)) return "image/jpeg";
   if (/\.webp$/i.test(file.name)) return "image/webp";
@@ -165,9 +171,7 @@ export async function readAttachment(
   options: AttachmentReadOptions = {},
 ): Promise<AttachmentDraft> {
   const kind = attachmentKind(file);
-  const isTextLike =
-    file.type.startsWith("text/") ||
-    /\.(md|txt|json|csv|ts|tsx|js|jsx|rs|py|html|css|sql|toml|yaml|yml)$/i.test(file.name);
+  const isTextLike = shouldReadAttachmentAsText(kind);
 
   if (kind === "binary") {
     throw new Error(
@@ -352,17 +356,9 @@ export function userMessageDisplay(content: string): UserMessageDisplay {
     }
   }
 
-  const attachmentStart = visible.startsWith("[Attachment:")
-    ? 0
-    : visible.indexOf("\n\n[Attachment:");
+  const { start: attachmentStart, names: attachmentNames } = parseDisplayedAttachmentSection(visible);
   const attachmentPayload = attachmentStart >= 0 ? visible.slice(attachmentStart).trim() : "";
   const prompt = (attachmentStart >= 0 ? visible.slice(0, attachmentStart) : visible).trim();
-  const attachmentNames = Array.from(
-    attachmentPayload.matchAll(
-      /^\[Attachment:\s*(.+?),\s*(?:text|image|pdf|audio|video|binary),\s*[^,\]]+,\s*[^\]]+\]$/gm,
-    ),
-    (match) => match[1].trim(),
-  );
   const attachmentSummary = attachmentNames.length
     ? `Attached: ${attachmentNames.join(", ")}`
     : attachmentPayload
@@ -479,21 +475,7 @@ export function titleFromPrompt(prompt: string) {
 }
 
 export function attachmentKind(file: File): AttachmentDraft["kind"] {
-  if (file.type.startsWith("image/") || /\.(png|jpe?g|webp)$/i.test(file.name)) return "image";
-  if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) return "pdf";
-  if (file.type.startsWith("audio/") || /\.(wav|mp3|m4a|aac|flac|ogg|opus)$/i.test(file.name)) {
-    return "audio";
-  }
-  if (file.type.startsWith("video/") || /\.(mp4|webm|mov|m4v|mpeg|mpg)$/i.test(file.name)) {
-    return "video";
-  }
-  if (
-    file.type.startsWith("text/") ||
-    /\.(md|txt|json|csv|ts|tsx|js|jsx|rs|py|html|css|sql|toml|yaml|yml)$/i.test(file.name)
-  ) {
-    return "text";
-  }
-  return "binary";
+  return classifyAttachmentKind(file);
 }
 
 export function modeInstruction(mode: ChatMode) {
