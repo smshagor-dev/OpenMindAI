@@ -605,7 +605,7 @@ fn project_file_context(files: &[ProjectFile], prompt: Option<&str>) -> String {
         if capacity == 0 {
             break;
         }
-        let snippet = take_chars(content, capacity);
+        let snippet = project_relevant_excerpt(content, &terms, capacity);
         let truncated = snippet.chars().count() < content.chars().count();
         let suffix = if truncated { "\n[truncated]" } else { "" };
         let section = format!("{header}{snippet}{suffix}");
@@ -654,6 +654,38 @@ fn project_query_terms(prompt: &str) -> Vec<String> {
     terms
 }
 
+/// Prefer a bounded window around a query hit rather than always sending the
+/// beginning of a long file. Never slice UTF-8 at arbitrary byte offsets.
+fn project_relevant_excerpt(content: &str, terms: &[String], limit: usize) -> String {
+    if limit == 0 {
+        return String::new();
+    }
+    let match_char = terms.iter().filter_map(|term| {
+        if term.is_empty() || !term.is_ascii() {
+            return None;
+        }
+        content.char_indices().find_map(|(byte, _)| {
+            content[byte..].get(..term.len())
+                .filter(|candidate| candidate.eq_ignore_ascii_case(term))
+                .map(|_| content[..byte].chars().count())
+        })
+    }).min();
+    let Some(position) = match_char else {
+        return take_chars(content, limit);
+    };
+    let start = position.saturating_sub(limit / 4);
+    if start == 0 {
+        return take_chars(content, limit);
+    }
+    const MARKER: &str = "[earlier file content omitted]\\n";
+    let marker_chars = MARKER.chars().count();
+    if limit <= marker_chars {
+        return take_chars(content, limit);
+    }
+    let excerpt = content.chars().skip(start).take(limit - marker_chars).collect::<String>();
+    format!("{MARKER}{excerpt}")
+}
+
 fn project_file_relevance(name: &str, content: &str, terms: &[String]) -> usize {
     if terms.is_empty() {
         return 0;
@@ -697,6 +729,26 @@ fn _conversation_type_check(_: Conversation) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn older_project_file_retrieves_late_query_evidence_without_utf8_panics() {
+        let content = format!("{}\\nCRITICAL_EVIDENCE_TOKEN: retained\\n{}", "বাংলা😀".repeat(1500), "tail".repeat(200));
+        let terms = vec!["critical_evidence_token".to_string()];
+        let excerpt = project_relevant_excerpt(&content, &terms, 600);
+        assert!(excerpt.contains("CRITICAL_EVIDENCE_TOKEN"));
+        assert!(excerpt.starts_with("[earlier file content omitted]"));
+        assert!(excerpt.chars().count() <= 600);
+        assert_eq!(project_relevant_excerpt(&content, &[], 50), take_chars(&content, 50));
+    }
+
+    #[test]
+    fn project_excerpt_is_bounded_for_short_limits_and_unicode_terms() {
+        let content = "αβγ 😀 Hello world";
+        assert_eq!(project_relevant_excerpt(content, &["hello".into()], 0), "");
+        assert!(project_relevant_excerpt(content, &["hello".into()], 5).chars().count() <= 5);
+        assert_eq!(project_relevant_excerpt(content, &["αβγ".into()], 8), take_chars(content, 8));
+    }
 
     fn insert_conversation(database: &Database, id: &str, title: &str) {
         database
