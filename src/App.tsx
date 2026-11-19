@@ -2252,8 +2252,8 @@ export function App() {
 
       <PreviewPanel target={previewTarget} onClose={() => setPreviewTarget(null)} />
 
-      <ChatSearch
-        open={searchOpen}
+      {searchOpen ? <ChatSearch
+        open={true}
         conversations={conversations}
         onSelect={(id) => {
           setView("chat");
@@ -2261,7 +2261,7 @@ export function App() {
           setEditingMessageId(null);
         }}
         onClose={() => setSearchOpen(false)}
-      />
+      /> : null}
       <Library
         open={libraryOpen}
         onClose={() => setLibraryOpen(false)}
