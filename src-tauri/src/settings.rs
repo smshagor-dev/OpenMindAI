@@ -375,6 +375,25 @@ impl<'a> SettingsRepository<'a> {
     }
 
     pub fn save_user_profile(&self, profile: &UserProfile) -> Result<UserProfile, AppError> {
+        // Bound persisted text independently of the prompt-context budget. An
+        // untrusted renderer must not inflate the SQLite settings row with
+        // arbitrarily large profile strings. Avatar bytes have their own policy.
+        const MAX_PROFILE_TEXT_BYTES: usize = 256 * 1024;
+        let text_bytes = [
+            &profile.full_name,
+            &profile.email,
+            &profile.about,
+            &profile.occupation,
+            &profile.preferred_name,
+            &profile.response_style,
+            &profile.custom_instructions,
+        ]
+        .iter()
+        .try_fold(0usize, |total, field| total.checked_add(field.len()))
+        .ok_or_else(|| AppError::internal("User profile text exceeds storage limit"))?;
+        if text_bytes > MAX_PROFILE_TEXT_BYTES {
+            return Err(AppError::internal("User profile text exceeds storage limit"));
+        }
         self.save_json(USER_PROFILE_KEY, profile)?;
         Ok(profile.clone())
     }
@@ -403,6 +422,39 @@ fn push_context_line(lines: &mut Vec<String>, label: &str, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_profile_text_is_rejected_without_overwriting_saved_profile() {
+        let database = Database::in_memory().unwrap();
+        let repo = SettingsRepository::new(&database);
+        let mut original = UserProfile::default();
+        original.preferred_name = "Saved name".into();
+        original.about = "বাংলা text".into();
+        repo.save_user_profile(&original).unwrap();
+
+        let mut oversized = original.clone();
+        oversized.custom_instructions = "x".repeat(256 * 1024);
+        assert!(repo.save_user_profile(&oversized).is_err());
+        let persisted = repo.get_user_profile().unwrap();
+        assert_eq!(persisted.preferred_name, "Saved name");
+        assert_eq!(persisted.about, "বাংলা text");
+        assert!(persisted.custom_instructions.is_empty());
+    }
+
+    #[test]
+    fn profile_text_budget_counts_utf8_bytes_across_fields() {
+        let database = Database::in_memory().unwrap();
+        let repo = SettingsRepository::new(&database);
+        let mut profile = UserProfile::default();
+        profile.about = "🙂".repeat(32 * 1024);
+        profile.custom_instructions = "a".repeat(128 * 1024);
+        repo.save_user_profile(&profile).unwrap();
+        assert_eq!(repo.get_user_profile().unwrap().about, profile.about);
+
+        profile.email = "é".to_string();
+        assert!(repo.save_user_profile(&profile).is_err());
+        assert!(repo.get_user_profile().unwrap().email.is_empty());
+    }
 
     #[test]
     fn preferences_round_trip() {
