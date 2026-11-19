@@ -175,6 +175,25 @@ pub(crate) fn recover(connection: &Connection, root: &Path) -> Result<usize, App
                 Err(e) if e.kind() == io::ErrorKind::NotFound => None,
                 Err(e) => return Err(e.into()),
             };
+            // A committed ready row must never silently lose its recovery
+            // evidence when its published file is absent or replaced. Leave
+            // the intent intact so startup can report the integrity failure.
+            if row.is_some() {
+                let parent = parent.as_ref().ok_or_else(|| {
+                    AppError::internal("registered text artifact directory is missing")
+                })?;
+                let published = path.file_name().unwrap().to_str().unwrap();
+                let metadata = parent.symlink_metadata(published).map_err(|error| {
+                    AppError::internal(format!(
+                        "registered text artifact output is inaccessible: {error}"
+                    ))
+                })?;
+                if !metadata.is_file() || metadata.file_type().is_symlink() {
+                    return Err(AppError::internal(
+                        "registered text artifact output is not a regular file",
+                    ));
+                }
+            }
             if let Some(parent) = parent {
                 remove_if_present(&parent, &format!(".pending-{id}"))?;
                 if row.is_none() {
@@ -262,10 +281,14 @@ fn save_with(
         return Err(AppError::internal("unsupported text artifact kind"));
     }
     let relative = Path::new(input.relative);
+    // Match the four-component layout required by recovery. In particular,
+    // never allow a caller-controlled export to enter the private intent journal.
     if !relative.starts_with("generated/files")
+        || relative.components().count() != 4
         || relative
             .components()
             .any(|part| !matches!(part, Component::Normal(_)))
+        || relative.components().nth(2).is_some_and(|part| part.as_os_str() == ".text-export-journal")
     {
         return Err(AppError::internal("invalid text artifact destination"));
     }
@@ -553,6 +576,52 @@ mod tests {
     }
 
     #[test]
+    fn recovery_preserves_intent_when_committed_output_is_missing() {
+        let (root, db) = fixture();
+        let journal_path = root.path().join(JOURNAL);
+        fs::create_dir_all(&journal_path).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT INTO artifacts(id,conversation_id,name,path,mime_type,kind,status,created_at,updated_at) VALUES(?1,'owner','report.txt',?2,'text/plain','text','ready','now','now')",
+            params![id, input().relative],
+        ).unwrap();
+        let intent = journal_path.join(format!("{id}.json"));
+        fs::write(&intent, serde_json::to_vec(&Intent {
+            id: id.clone(), relative: input().relative.into(),
+        }).unwrap()).unwrap();
+        assert!(recover(&db, root.path()).is_err());
+        assert!(intent.exists(), "do not erase evidence of missing committed data");
+        assert_eq!(db.query_row("SELECT count(*) FROM artifacts WHERE id=?1", [&id], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        fs::write(root.path().join(input().relative), input().content).unwrap();
+        assert_eq!(recover(&db, root.path()).unwrap(), 1);
+        assert!(!intent.exists());
+        assert_eq!(fs::read(root.path().join(input().relative)).unwrap(), input().content);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_rejects_symlinked_committed_output_without_deleting_target() {
+        let (root, db) = fixture();
+        let journal_path = root.path().join(JOURNAL);
+        fs::create_dir_all(&journal_path).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        db.execute(
+            "INSERT INTO artifacts(id,conversation_id,name,path,mime_type,kind,status,created_at,updated_at) VALUES(?1,'owner','report.txt',?2,'text/plain','text','ready','now','now')",
+            params![id, input().relative],
+        ).unwrap();
+        let intent = journal_path.join(format!("{id}.json"));
+        fs::write(&intent, serde_json::to_vec(&Intent {
+            id: id.clone(), relative: input().relative.into(),
+        }).unwrap()).unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        fs::write(outside.path(), b"protected").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join(input().relative)).unwrap();
+        assert!(recover(&db, root.path()).is_err());
+        assert!(intent.exists());
+        assert_eq!(fs::read(outside.path()).unwrap(), b"protected");
+    }
+
+    #[test]
     fn conflicting_registered_identity_is_preserved_for_review() {
         let (root, db) = fixture();
         let journal_path = root.path().join(JOURNAL);
@@ -617,6 +686,24 @@ mod tests {
             request.message_id = message;
             assert!(save(&db, root.path(), request).is_err());
             assert_empty(root.path(), &db);
+        }
+    }
+    #[test]
+    fn export_rejects_journal_and_noncanonical_paths_without_touching_files() {
+        for relative in [
+            "generated/files/.text-export-journal/intent.json",
+            "generated/files/reserved/nested/report.txt",
+            "generated/files/report.txt",
+        ] {
+            let (root, db) = fixture();
+            let journal = root.path().join(JOURNAL);
+            fs::create_dir_all(&journal).unwrap();
+            fs::write(journal.join("sentinel"), b"keep journal").unwrap();
+            let mut request = input();
+            request.relative = relative;
+            assert!(save(&db, root.path(), request).is_err(), "{relative}");
+            assert_eq!(fs::read(journal.join("sentinel")).unwrap(), b"keep journal");
+            assert_empty(&root, &db);
         }
     }
     #[test]

@@ -365,10 +365,8 @@ pub async fn generate_image(
         profile.steps = steps;
     }
 
-    if output_path.exists() {
-        fs::remove_file(output_path)?;
-    }
-
+    // Preserve an existing published image if rendering fails or is cancelled.
+    let staged_output = StagedImageOutput::new(output_path)?;
     let mut command = Command::new(&cli_path);
     command
         .arg("-m")
@@ -376,7 +374,7 @@ pub async fn generate_image(
         .arg("-p")
         .arg(prompt)
         .arg("-o")
-        .arg(output_path)
+        .arg(staged_output.path())
         .arg("-W")
         .arg(profile.width.to_string())
         .arg("-H")
@@ -461,9 +459,89 @@ pub async fn generate_image(
     }
 
     on_stage("validating");
-    png_output_validation::validate_png(output_path)?;
+    png_output_validation::validate_png(staged_output.path())?;
+    staged_output.publish(output_path)?;
     tracing::info!(path = %output_path.display(), "local diffusion image generated");
     Ok(())
+}
+
+/// Staging prevents a failed or cancelled render from destroying an existing image.
+struct StagedImageOutput {
+    path: PathBuf,
+}
+
+impl StagedImageOutput {
+    fn new(final_path: &Path) -> Result<Self, AppError> {
+        let parent = final_path.parent().ok_or_else(|| {
+            AppError::ArtifactGenerationFailed("image output path has no parent".into())
+        })?;
+        Ok(Self { path: parent.join(format!(".openmindai-render-{}.png", Uuid::new_v4())) })
+    }
+
+    fn path(&self) -> &Path { &self.path }
+
+    fn publish(self, final_path: &Path) -> Result<(), AppError> {
+        // Atomic no-clobber publication on the same filesystem.
+        fs::hard_link(&self.path, final_path).map_err(|error| {
+            AppError::ArtifactGenerationFailed(format!(
+                "could not publish image without overwriting existing output: {error}"
+            ))
+        })?;
+        Ok(())
+    }
+}
+
+impl Drop for StagedImageOutput {
+    fn drop(&mut self) {
+        match fs::remove_file(&self.path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => tracing::warn!(error = %error, "staged image cleanup failed"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod staged_image_output_tests {
+    use super::*;
+
+    #[test]
+    fn valid_image_is_published_and_stage_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("image.png");
+        let stage = StagedImageOutput::new(&target).unwrap();
+        let staging = stage.path().to_path_buf();
+        fs::write(&staging, b"validated").unwrap();
+        stage.publish(&target).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"validated");
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn existing_image_survives_failed_publication() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("image.png");
+        fs::write(&target, b"original").unwrap();
+        let stage = StagedImageOutput::new(&target).unwrap();
+        let staging = stage.path().to_path_buf();
+        fs::write(&staging, b"replacement").unwrap();
+        assert!(stage.publish(&target).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"original");
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn abandoned_partial_is_cleaned_without_touching_existing_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("image.png");
+        fs::write(&target, b"old").unwrap();
+        let stage = StagedImageOutput::new(&target).unwrap();
+        let staging = stage.path().to_path_buf();
+        fs::write(&staging, b"partial").unwrap();
+        drop(stage);
+        assert!(!staging.exists());
+        assert_eq!(fs::read(&target).unwrap(), b"old");
+    }
 }
 
 pub(crate) struct VideoGenerationRequest<'a> {

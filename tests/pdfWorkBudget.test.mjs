@@ -229,8 +229,80 @@ test("deadline after rendering skips native OCR and preserves readable text", as
   }
 });
 
+test("invalid decoder page counts reject before page access and always release resources", async () => {
+  for (const pageCount of [0, -1, 1.5, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    const fx = fixture(pageCount);
+    const events = [];
+    await assert.rejects(
+      extractPdfText(file, { onProgress: event => events.push(event) }),
+      /Invalid PDF page count/,
+      `invalid page count ${pageCount} must fail`,
+    );
+    assert.deepEqual(fx.visited, [], "no page reads should occur");
+    assert.deepEqual(events, [], "no misleading progress should be emitted");
+    assert.deepEqual(fx.calls, [], "native OCR must not be invoked");
+    fx.assertClean();
+  }
+});
+
+test("valid single-page decoder metadata still imports text", async () => {
+  const fx = fixture(1, () => "A valid PDF page contains readable selectable evidence.");
+  const result = await extractPdfText(file);
+  assert.equal(result.pageCount, 1);
+  assert.equal(result.pagesRead, 1);
+  assert.match(result.text, /readable selectable evidence/);
+  assert.deepEqual(fx.visited, [1]);
+  fx.assertClean();
+});
+
 test.after(async () => {
   globalThis.document = originalDocument;
   delete globalThis.__pdf;
   await rm(directory, { recursive: true, force: true });
+});
+
+test("huge native OCR output is bounded before normalization and preserves Unicode boundaries", async () => {
+  const huge = " ".repeat(250_000) + "😀 বাংলা evidence " + "Z".repeat(2_000_000);
+  const fx = fixture(1, () => "", async () => [{ pageNumber: 1, text: huge }]);
+  const result = await extractPdfText(file);
+  assert.equal(result.pagesRead, 1);
+  assert(result.text.includes("😀 বাংলা evidence"));
+  assert(result.text.length <= 20_000);
+  assert(!result.text.includes("\uFFFD"), "must not split a surrogate pair");
+  assert.equal(result.unreadPages.length, 0);
+  fx.assertClean();
+});
+
+test("whitespace-only native OCR output is not counted as successfully analyzed", async () => {
+  const fx = fixture(1, () => "", async () => [{ pageNumber: 1, text: " ".repeat(500_000) }]);
+  await assert.rejects(extractPdfText(file), /No readable PDF text is available/);
+  fx.assertClean();
+});
+
+
+test("huge PDF coordinate space never creates an oversized canvas", async () => {
+  const fx = fixture(1);
+  const pdf = await globalThis.__pdf.task.promise;
+  pdf.getPage = async () => ({
+    getTextContent: async () => ({ items: [] }),
+    getViewport: ({ scale }) => ({ width: 1_000_000 * scale, height: 500_000 * scale }),
+    render: ({ canvas }) => {
+      assert(canvas.width <= 1440 && canvas.height <= 1440);
+      return { promise: Promise.resolve() };
+    },
+  });
+  await extractPdfText(file);
+  fx.assertClean();
+});
+
+test("invalid PDF viewport is rejected before canvas allocation", async () => {
+  const fx = fixture(1);
+  const pdf = await globalThis.__pdf.task.promise;
+  pdf.getPage = async () => ({
+    getTextContent: async () => ({ items: [] }),
+    getViewport: () => ({ width: Number.POSITIVE_INFINITY, height: 100 }),
+    render: () => { throw new Error("render must not be called"); },
+  });
+  await assert.rejects(extractPdfText(file), /No readable PDF text/);
+  fx.assertClean();
 });

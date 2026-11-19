@@ -419,3 +419,19 @@ test("an edit fork transfers request and Stop ownership while another chat remai
   state.finishRequest(lease);
   assert.equal(state.isBusy("edited"), false);
 });
+
+test("navigation never restores foreign or system rows from a background run", () => {
+  const state = selected("B");
+  state.updateRun("A", (run) => ({
+    ...run,
+    live: [
+      message("A", "owned"),
+      message("B", "foreign"),
+      message("A", "hidden", "", "system"),
+    ],
+  }));
+  state.selectConversation("A");
+  assert.deepEqual(state.getSnapshot().messages.map((row) => row.id), ["owned"]);
+  state.selectConversation("B");
+  assert.deepEqual(state.getSnapshot().messages, []);
+});
