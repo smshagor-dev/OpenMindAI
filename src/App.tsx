@@ -1719,6 +1719,7 @@ export function App() {
   return (
     <main className="app-shell">
       <Sidebar
+        language={preferences?.language}
         collapsed={sidebarCollapsed}
         onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
         conversations={conversations}
