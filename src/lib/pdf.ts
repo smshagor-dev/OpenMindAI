@@ -282,7 +282,7 @@ async function selectablePageText(page: PDFPageProxy) {
     // even whitespace normalization cannot allocate the full input string.
     const remaining = MAX_EXTRACTED_CHARS - collected - line.length;
     if (remaining <= 0) break;
-    const value = item.str.slice(0, remaining).replace(/\\s+/g, " ").trim();
+    const value = item.str.slice(0, remaining).replace(/\s+/g, " ").trim();
     if (!value) continue;
     const separator = line ? " " : "";
     line += separator + value.slice(0, Math.max(0, remaining - separator.length));
@@ -298,7 +298,7 @@ async function selectablePageText(page: PDFPageProxy) {
   if (line.trim() && collected < MAX_EXTRACTED_CHARS) {
     lines.push(line.trim().slice(0, MAX_EXTRACTED_CHARS - collected));
   }
-  return lines.filter(Boolean).join("\\n").slice(0, MAX_EXTRACTED_CHARS).trim();
+  return lines.filter(Boolean).join("\n").slice(0, MAX_EXTRACTED_CHARS).trim();
 }
 
 async function renderPdfPage(page: PDFPageProxy, signal?: PdfExtractionOptions["signal"]) {
