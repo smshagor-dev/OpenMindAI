@@ -313,7 +313,7 @@ async function selectablePageText(page: PDFPageProxy) {
   let line = "";
   let collected = 0;
   for (const item of textContent.items) {
-    if (!("str" in item)) continue;
+    if (!("str" in item) || typeof item.str !== "string") continue;
     // A single dense/malformed PDF page must not construct arbitrarily large
     // strings before the caller applies the chat text budget. Slice first so
     // even whitespace normalization cannot allocate the full input string.
