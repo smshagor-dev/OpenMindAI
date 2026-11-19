@@ -48,8 +48,21 @@ export function AgentSettings(props: {
   };
 
   useEffect(() => {
-    void refreshCatalog();
-    void cloud.status().then((session) => setCloudConnected(session.connected)).catch(() => setCloudConnected(false));
+    let active = true;
+    // Each response updates state independently, without effect-time state changes.
+    void api.checkModelUpdates()
+      .then((catalog) => { if (active) setCatalog(catalog); })
+      .catch((error) => { if (active) setMessage(error instanceof Error ? error.message : String(error)); });
+    void api.modelDownloadStatus()
+      .then((status) => { if (active) setDownload(status); })
+      .catch((error) => { if (active) setMessage(error instanceof Error ? error.message : String(error)); });
+    void api.openagentSandboxCapability()
+      .then((sandbox) => { if (active) setSandbox(sandbox); })
+      .catch((error) => { if (active) setMessage(error instanceof Error ? error.message : String(error)); });
+    void cloud.status()
+      .then((session) => { if (active) setCloudConnected(session.connected); })
+      .catch(() => { if (active) setCloudConnected(false); });
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {
