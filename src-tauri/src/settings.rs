@@ -126,7 +126,23 @@ impl UserProfile {
                         them, not about you:"
                     .to_string(),
             );
-            lines.extend(profile_lines);
+            // Limit the amount of user-controlled profile data forwarded to models.
+            let mut remaining = MAX_PROFILE_CONTEXT_CHARS;
+            for line in profile_lines {
+                if remaining == 0 {
+                    lines.push("[Additional profile fields omitted: context limit reached]".into());
+                    break;
+                }
+                let length = line.chars().count();
+                if length <= remaining {
+                    lines.push(line);
+                    remaining -= length;
+                } else {
+                    let excerpt: String = line.chars().take(remaining).collect();
+                    lines.push(format!("{excerpt} [Profile context truncated]"));
+                    break;
+                }
+            }
         }
 
         Some(lines.join("\n"))
@@ -453,6 +469,9 @@ fn validate_avatar_data_url(avatar: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+const MAX_PROFILE_FIELD_CHARS: usize = 1_024;
+const MAX_PROFILE_CONTEXT_CHARS: usize = 4_096;
+
 fn push_context_line(lines: &mut Vec<String>, label: &str, value: &str) {
     // Profile fields are user-editable. Keep each value on its assigned line:
     // a newline must not forge another trusted-looking context label.
@@ -468,13 +487,52 @@ fn push_context_line(lines: &mut Vec<String>, label: &str, value: &str) {
         .collect::<String>();
     let normalized = normalized.trim();
     if !normalized.is_empty() {
-        lines.push(format!("{label}: {normalized}"));
+        let mut chars = normalized.chars();
+        let excerpt: String = chars.by_ref().take(MAX_PROFILE_FIELD_CHARS).collect();
+        if chars.next().is_some() {
+            lines.push(format!("{label}: {excerpt} [Profile field truncated]"));
+        } else {
+            lines.push(format!("{label}: {excerpt}"));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_profile_context_is_bounded_without_changing_saved_unicode() {
+        let database = Database::in_memory().unwrap();
+        let repo = SettingsRepository::new(&database);
+        let profile = UserProfile {
+            full_name: "বাংলা🧪".repeat(1_000),
+            about: "a".repeat(20_000),
+            occupation: "developer".into(),
+            custom_instructions: "🦀".repeat(10_000),
+            ..Default::default()
+        };
+        repo.save_user_profile(&profile).unwrap();
+        let context = repo.get_user_profile().unwrap().to_system_context().unwrap();
+        assert!(context.contains("[Profile field truncated]"));
+        assert!(context.contains("বাংলা🧪"));
+        assert!(context.chars().count() < 5_000);
+        assert_eq!(repo.get_user_profile().unwrap().custom_instructions, profile.custom_instructions);
+        assert_eq!(repo.get_user_profile().unwrap().full_name, profile.full_name);
+    }
+
+    #[test]
+    fn normal_profile_context_remains_complete() {
+        let profile = UserProfile {
+            full_name: "বাংলা 🧪".into(),
+            occupation: "Engineer".into(),
+            ..Default::default()
+        };
+        let context = profile.to_system_context().unwrap();
+        assert!(context.contains("User's name: বাংলা 🧪"));
+        assert!(context.contains("User's occupation: Engineer"));
+        assert!(!context.contains("truncated"));
+    }
 
     #[test]
     fn profile_avatar_rejects_oversized_and_active_content_without_writing() {
