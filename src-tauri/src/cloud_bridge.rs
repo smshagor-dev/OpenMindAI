@@ -64,6 +64,14 @@ fn spawn_python_worker(script: &Path) -> Result<Child, AppError> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    // Windows: start the worker silently, without flashing a console window
+    // when 3D Studio spins up the local GPU worker.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     cmd.spawn().map_err(|_| {
         failure(
             "Python 3 was not found. Install Python 3 plus numpy and pyopencl for local GPU meshes",
