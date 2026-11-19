@@ -1,4 +1,5 @@
 import type { Message } from "../types";
+import { shouldReadAttachmentAsText } from "./attachmentRouting";
 import { formatBytes } from "./format";
 import { parseDisplayedAttachmentSection } from "./displayAttachmentSection";
 import { analyzeVideoFile, transcribeAudioFile } from "./media";
@@ -169,9 +170,7 @@ export async function readAttachment(
   options: AttachmentReadOptions = {},
 ): Promise<AttachmentDraft> {
   const kind = attachmentKind(file);
-  const isTextLike =
-    file.type.startsWith("text/") ||
-    /\.(md|txt|json|csv|ts|tsx|js|jsx|rs|py|html|css|sql|toml|yaml|yml)$/i.test(file.name);
+  const isTextLike = shouldReadAttachmentAsText(kind);
 
   if (kind === "binary") {
     throw new Error(
