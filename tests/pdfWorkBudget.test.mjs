@@ -306,3 +306,28 @@ test("invalid PDF viewport is rejected before canvas allocation", async () => {
   await assert.rejects(extractPdfText(file), /No readable PDF text/);
   fx.assertClean();
 });
+
+test("malformed decoder text items do not discard subsequent readable PDF evidence", async () => {
+  const fx = fixture(1);
+  const pdf = await globalThis.__pdf.task.promise;
+  const originalGetPage = pdf.getPage;
+  pdf.getPage = async (pageNumber) => {
+    const page = await originalGetPage(pageNumber);
+    page.getTextContent = async () => ({
+      items: [
+        { str: null, hasEOL: true },
+        { str: 12345, hasEOL: true },
+        { hasEOL: true },
+        { str: "Valid selectable evidence from a PDF decoder.", hasEOL: true },
+      ],
+    });
+    return page;
+  };
+  const result = await extractPdfText(file);
+  assert.equal(result.pagesRead, 1);
+  assert.match(result.text, /Valid selectable evidence from a PDF decoder/);
+  assert.deepEqual(fx.calls, [], "readable text must not trigger OCR");
+  assert.deepEqual(fx.renders, [], "readable text must not render a scanned page");
+  assert.equal(result.truncated, false);
+  fx.assertClean();
+});
