@@ -25,7 +25,15 @@ export function Sidebar(props: {
   onToggleCollapsed: () => void;
   conversations: Conversation[];
   activeId: string | null;
-  view: "chat" | "work" | "settings" | "tools" | "projects" | "research-studio" | "3d-studio" | "web-search";
+  view:
+    | "chat"
+    | "work"
+    | "settings"
+    | "tools"
+    | "projects"
+    | "research-studio"
+    | "3d-studio"
+    | "web-search";
   userProfile: UserProfile | null;
   width: number;
   onWidthChange: (width: number) => void;
@@ -141,13 +149,25 @@ export function Sidebar(props: {
         >
           <Wrench size={18} /> {!props.collapsed ? "Tools" : null}
         </button>
-        <button className={props.view === "research-studio" ? "nav-button active" : "nav-button"} onClick={() => props.onOpenStudio("research-studio")} title="Research Studio">
+        <button
+          className={props.view === "research-studio" ? "nav-button active" : "nav-button"}
+          onClick={() => props.onOpenStudio("research-studio")}
+          title="Research Studio"
+        >
           <TableProperties size={18} /> {!props.collapsed ? "Research Studio" : null}
         </button>
-        <button className={props.view === "3d-studio" ? "nav-button active" : "nav-button"} onClick={() => props.onOpenStudio("3d-studio")} title="3D Studio">
+        <button
+          className={props.view === "3d-studio" ? "nav-button active" : "nav-button"}
+          onClick={() => props.onOpenStudio("3d-studio")}
+          title="3D Studio"
+        >
           <Wrench size={18} /> {!props.collapsed ? "3D Studio" : null}
         </button>
-        <button className={props.view === "web-search" ? "nav-button active" : "nav-button"} onClick={() => props.onOpenStudio("web-search")} title="Web Search">
+        <button
+          className={props.view === "web-search" ? "nav-button active" : "nav-button"}
+          onClick={() => props.onOpenStudio("web-search")}
+          title="Web Search"
+        >
           <Globe size={18} /> {!props.collapsed ? "Web Search" : null}
         </button>
         <button className="nav-button" onClick={props.onOpenLibrary} title="Files & Artifacts">
@@ -169,17 +189,24 @@ export function Sidebar(props: {
         </button>
       </nav>
 
-      <ChatHistoryList
-        conversations={props.conversations}
-        activeId={props.activeId}
-        collapsed={props.collapsed}
-        onOpen={props.onOpenConversation}
-        onRename={props.onRename}
-        onTogglePin={props.onTogglePin}
-        onArchive={props.onArchive}
-        onDelete={props.onDelete}
-        onDuplicate={props.onDuplicate}
-      />
+      {props.view === "3d-studio" || props.view === "research-studio" ? (
+        // Portal target for the active studio's list (scenes / research projects).
+        // Always mounted for studio views so its node identity stays stable
+        // across sidebar collapse/expand; hidden via CSS when collapsed.
+        <div id="studio-sidebar-slot" className="sidebar-studio-slot" />
+      ) : (
+        <ChatHistoryList
+          conversations={props.conversations}
+          activeId={props.activeId}
+          collapsed={props.collapsed}
+          onOpen={props.onOpenConversation}
+          onRename={props.onRename}
+          onTogglePin={props.onTogglePin}
+          onArchive={props.onArchive}
+          onDelete={props.onDelete}
+          onDuplicate={props.onDuplicate}
+        />
+      )}
 
       <div className="sidebar-footer" ref={profileMenuRef}>
         <div className="sidebar-profile">
