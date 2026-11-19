@@ -813,8 +813,11 @@ async fn create_generation_artifact(
         (artifact, output)
     };
 
-    let image_job = if kind == "image" {
-        Some(state.image_jobs.start(&artifact.id)?)
+    // Both image and video renderers use cancellable Tokio child processes.
+    // Do not register voice here: its spawn_blocking TTS worker cannot be
+    // interrupted safely by dropping an awaiting future.
+    let media_job = if matches!(kind.as_str(), "image" | "video") {
+        Some(state.image_jobs.start_scoped(&artifact.id, Some(&conversation_id))?)
     } else {
         None
     };
@@ -840,17 +843,24 @@ async fn create_generation_artifact(
             total_steps: Some(total_steps),
         });
     };
-    let generation_result = if let Some(job) = image_job.as_ref() {
+    let generation_result = if let Some(job) = media_job.as_ref() {
         let render = async {
             // Only one diffusion image runs at a time to avoid competing
             // for the same GPU memory. Waiting jobs retain their own Stop
             // action, and a dropped or cancelled future releases the slot.
-            let _render_slot = match state.image_jobs.try_reserve_renderer() {
-                Some(permit) => permit,
-                None => {
-                    report_stage("queued");
-                    state.image_jobs.reserve_renderer().await?
-                }
+            // Only images share the SDXL one-at-a-time renderer queue.
+            // Video runs retain independent cancellation and do not take this
+            // permit while holding their much longer GPU process lifetime.
+            let _render_slot = if kind == "image" {
+                Some(match state.image_jobs.try_reserve_renderer() {
+                    Some(permit) => permit,
+                    None => {
+                        report_stage("queued");
+                        state.image_jobs.reserve_renderer().await?
+                    }
+                })
+            } else {
+                None
             };
             report_stage("preparing");
             generate_local_media_artifact(
@@ -868,7 +878,7 @@ async fn create_generation_artifact(
                 biased;
                 _ = job.cancellation().cancelled() => {
                     break Err(app_error::AppError::ArtifactGenerationFailed(
-                        "Image generation cancelled by user.".to_string(),
+                        format!("{} generation cancelled by user.", if kind == "video" { "Video" } else { "Image" }),
                     ));
                 }
                 result = &mut render => break result,
@@ -889,10 +899,10 @@ async fn create_generation_artifact(
             &state, &kind, &prompt, &path, use_cpu.unwrap_or(false), &image_options, &report_stage, &report_step
         ).await
     };
-    // A cancellation arriving just as inference finishes must not publish a ready image.
-    let generation_result = if image_job.as_ref().is_some_and(|job| job.cancellation().is_cancelled()) {
+    // A late cancellation must never publish an image or video as ready.
+    let generation_result = if media_job.as_ref().is_some_and(|job| job.cancellation().is_cancelled()) {
         Err(app_error::AppError::ArtifactGenerationFailed(
-            "Image generation cancelled by user.".to_string(),
+            format!("{} generation cancelled by user.", if kind == "video" { "Video" } else { "Image" }),
         ))
     } else {
         generation_result
@@ -923,7 +933,7 @@ async fn create_generation_artifact(
     app.emit("artifact:done", &updated)
         .map_err(|error| app_error::AppError::internal(error.to_string()))?;
 
-    drop(image_job);
+    drop(media_job);
     Ok(updated)
 }
 
@@ -1323,6 +1333,14 @@ fn get_model_download_status(
     state: State<AppState>,
 ) -> Result<DownloadStatus, app_error::AppError> {
     state.downloads.status()
+}
+
+#[tauri::command]
+fn list_installed_datasets(
+    dataset_ids: Vec<String>,
+    state: State<AppState>,
+) -> Result<Vec<String>, app_error::AppError> {
+    state.dataset_downloads.installed_dataset_ids(&dataset_ids)
 }
 
 #[tauri::command]
@@ -2256,7 +2274,12 @@ fn cancel_generation(
     conversation_id: String,
     state: State<AppState>,
 ) -> Result<(), app_error::AppError> {
-    state.active_generations.cancel(&conversation_id)
+    // Cancel chat inference and any owned image/video renderer. The video
+    // command uses kill_on_drop and its process owner aborts on future drop.
+    // Voice remains uninterruptible; do not claim it is cancelled here.
+    state.active_generations.cancel(&conversation_id)?;
+    state.image_jobs.cancel_conversation(&conversation_id)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -2676,6 +2699,7 @@ pub fn run() {
             get_qwen_download_status,
             get_model_download_status,
             get_dataset_download_status,
+            list_installed_datasets,
             download_qwen_model,
             download_catalog_model,
             download_openmindai_dataset,

@@ -51,13 +51,16 @@ export function ArtifactCard(props: {
   imageProgress?: ImageRenderProgress;
 }) {
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [mediaUrl, setMediaUrl] = useState<string | null>(null);
-  const [mediaError, setMediaError] = useState<string | null>(null);
+  const [mediaPreview, setMediaPreview] = useState<{
+    key: string;
+    url: string | null;
+    error: string | null;
+  } | null>(null);
   const artifact = props.artifact;
-  const [now, setNow] = useState(Date.now());
+  // The initial clock derives from stable artifact data, not an impure render call.
+  const [now, setNow] = useState(() => Date.parse(artifact.createdAt));
   useEffect(() => {
     if (artifact.status !== "generating" || artifact.kind !== "image") return;
-    setNow(Date.now());
     const interval = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(interval);
   }, [artifact.status, artifact.kind]);
@@ -69,30 +72,33 @@ export function ArtifactCard(props: {
     ? null
     : `${Math.floor(elapsed / 60)}m ${String(elapsed % 60).padStart(2, "0")}s`;
 
-  useEffect(() => {
-    let cancelled = false;
-    setMediaUrl(null);
-    setMediaError(null);
-    if (
-      artifact.status !== "ready" ||
-      (artifact.kind !== "image" && artifact.kind !== "audio")
-    ) {
-      return () => {
-        cancelled = true;
-      };
-    }
+  const mediaKey =
+    artifact.status === "ready" && (artifact.kind === "image" || artifact.kind === "audio")
+      ? `${artifact.id}:${artifact.kind}`
+      : null;
+  const mediaUrl = mediaPreview?.key === mediaKey ? mediaPreview.url : null;
+  const mediaError = mediaPreview?.key === mediaKey ? mediaPreview.error : null;
 
+  useEffect(() => {
+    if (!mediaKey) return;
+    let cancelled = false;
     void artifactMediaDataUrl(artifact.id)
       .then((url) => {
-        if (!cancelled) setMediaUrl(url);
+        if (!cancelled) setMediaPreview({ key: mediaKey, url, error: null });
       })
       .catch((error) => {
-        if (!cancelled) setMediaError(error instanceof Error ? error.message : String(error));
+        if (!cancelled) {
+          setMediaPreview({
+            key: mediaKey,
+            url: null,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [artifact.id, artifact.kind, artifact.status]);
+  }, [artifact.id, mediaKey]);
 
   return (
     <div className={`artifact-card artifact-${artifact.status}`}>

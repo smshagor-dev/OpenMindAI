@@ -159,10 +159,18 @@ export function WorkWorkspace(props: {
     try {
       for (const file of Array.from(files)) {
         try {
-          if (file.size <= MAX_PROJECT_FILE_BYTES && !isTextFile(file)) {
+          // Do not create a metadata-only project entry when the original
+          // cannot be persisted. Such entries look recoverable after restart.
+          if (file.size > MAX_PROJECT_FILE_BYTES) {
+            throw new Error("File exceeds the 1.5 MB project attachment limit; nothing was saved.");
+          }
+          if (!isTextFile(file)) {
             await attachProjectBinaryFile(activeProject.id, file);
           } else {
             const ingestion = await ingestProjectFile(file);
+            if (ingestion.status !== "ready") {
+              throw new Error(ingestion.error || "File could not be read; nothing was saved.");
+            }
             await api.addProjectFile(
               activeProject.id,
               file.name,

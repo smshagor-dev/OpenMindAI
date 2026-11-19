@@ -111,6 +111,7 @@ jobs:
             -DBUILD_SHARED_LIBS=ON `
             -DLLAMA_BUILD_TESTS=OFF `
             -DLLAMA_BUILD_EXAMPLES=OFF `
+            -DLLAMA_USE_PREBUILT_UI=OFF `
             -DLLAMA_BUILD_TOOLS=ON
           cmake --build vendor/llama.cpp/build-vulkan --config Release --target llama-cli -j 2
 
