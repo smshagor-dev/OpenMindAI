@@ -399,7 +399,6 @@ fn valid_utf8_sample(mut bytes: Vec<u8>, trim_start: bool) -> io::Result<String>
         Err(error) => Err(io::Error::new(io::ErrorKind::InvalidData, error)),
     }
 }
-}
 
 fn read_limited_utf8(reader: impl Read, limit: u64) -> io::Result<String> {
     let mut bytes = Vec::new();
