@@ -213,6 +213,32 @@ test("deadline after rendering skips native OCR and preserves readable text", as
   }
 });
 
+test("invalid decoder page counts reject before page access and always release resources", async () => {
+  for (const pageCount of [0, -1, 1.5, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    const fx = fixture(pageCount);
+    const events = [];
+    await assert.rejects(
+      extractPdfText(file, { onProgress: event => events.push(event) }),
+      /Invalid PDF page count/,
+      `invalid page count ${pageCount} must fail`,
+    );
+    assert.deepEqual(fx.visited, [], "no page reads should occur");
+    assert.deepEqual(events, [], "no misleading progress should be emitted");
+    assert.deepEqual(fx.calls, [], "native OCR must not be invoked");
+    fx.assertClean();
+  }
+});
+
+test("valid single-page decoder metadata still imports text", async () => {
+  const fx = fixture(1, () => "A valid PDF page contains readable selectable evidence.");
+  const result = await extractPdfText(file);
+  assert.equal(result.pageCount, 1);
+  assert.equal(result.pagesRead, 1);
+  assert.match(result.text, /readable selectable evidence/);
+  assert.deepEqual(fx.visited, [1]);
+  fx.assertClean();
+});
+
 test.after(async () => {
   globalThis.document = originalDocument;
   delete globalThis.__pdf;
