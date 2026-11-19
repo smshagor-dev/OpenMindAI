@@ -138,6 +138,14 @@ struct HuggingFaceGguf {
     total_file_size: Option<u64>,
 }
 
+fn ensure_download_not_cancelled(token: &CancellationToken) -> Result<(), AppError> {
+    if token.is_cancelled() {
+        Err(AppError::InferenceCancelled("download stopped".to_string()))
+    } else {
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 pub struct ModelDownloadManager {
     root: PortableRootManager,
@@ -332,7 +340,12 @@ impl ModelDownloadManager {
         entry: ModelCatalogEntry,
         token: CancellationToken,
     ) -> Result<DownloadStatus, AppError> {
+        // Metadata lookup is an async network request. A user may cancel while
+        // it is pending; never proceed to create or mutate package files after
+        // the lookup completes if that request was stopped.
+        ensure_download_not_cancelled(&token)?;
         let metadata = self.resolve_model_metadata(&entry).await?;
+        ensure_download_not_cancelled(&token)?;
         let download = entry.download.as_ref().ok_or_else(|| {
             AppError::ModelUnsupported(format!(
                 "{} has no downloadable file configured",
@@ -1189,6 +1202,26 @@ mod tests {
         ] {
             assert!(pinned_repo_revision(Some(invalid)).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn cancelled_metadata_resolution_must_not_start_disk_writes() {
+        let token = CancellationToken::new();
+        assert!(ensure_download_not_cancelled(&token).is_ok());
+        token.cancel();
+        assert!(matches!(
+            ensure_download_not_cancelled(&token),
+            Err(AppError::InferenceCancelled(_))
+        ));
+    }
+
+    #[test]
+    fn independent_download_tokens_do_not_cross_cancel() {
+        let first = CancellationToken::new();
+        let second = CancellationToken::new();
+        first.cancel();
+        assert!(ensure_download_not_cancelled(&first).is_err());
+        assert!(ensure_download_not_cancelled(&second).is_ok());
     }
 
     #[test]
