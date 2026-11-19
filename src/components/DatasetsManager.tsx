@@ -376,7 +376,13 @@ export function DatasetsManager() {
     const refreshStatus = async () => {
       try {
         const status = await api.datasetDownloadStatus();
-        if (!cancelled) setDownloadStatus(status.datasetId ? status : null);
+        if (cancelled) return;
+        setDownloadStatus(status.datasetId ? status : null);
+        if (status.state === "completed" && status.datasetId) {
+          setInstalledDatasets((current) =>
+            recordCompletedDataset(current, status.state, status.datasetId),
+          );
+        }
       } catch {
         if (!cancelled) setDownloadStatus(null);
       }
@@ -388,12 +394,6 @@ export function DatasetsManager() {
       window.clearInterval(interval);
     };
   }, []);
-
-  useEffect(() => {
-    if (downloadStatus?.state !== "completed" || !downloadStatus.datasetId) return;
-    setInstalledDatasets((current) => recordCompletedDataset(current, downloadStatus.state, downloadStatus.datasetId));
-  }, [downloadStatus?.datasetId, downloadStatus?.state]);
-
 
   async function openDataset(id: string) {
     await api.openExternalUrl(openMindDatasetPageUrl(id));
@@ -423,7 +423,12 @@ export function DatasetsManager() {
     try {
       const status = await api.downloadOpenMindDataset(id);
       setDownloadStatus(status);
-      // The status-polling effect also records downloads that finish after this call returns.
+      if (status.state === "completed" && status.datasetId) {
+        setInstalledDatasets((current) =>
+          recordCompletedDataset(current, status.state, status.datasetId),
+        );
+      }
+      // Polling records downloads that finish after this call returns.
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
       try {
