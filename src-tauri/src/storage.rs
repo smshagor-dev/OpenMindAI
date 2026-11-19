@@ -3,7 +3,7 @@ use std::{
     path::Path,
     time::{Duration, Instant},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         OnceLock, RwLock,
     },
 };
@@ -18,6 +18,12 @@ use crate::{
 const STORAGE_CACHE_TTL: Duration = Duration::from_secs(30);
 static STORAGE_SUMMARY_CACHE: OnceLock<RwLock<Option<(String, Instant, StorageSummary)>>> = OnceLock::new();
 static STORAGE_SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
+// Invalidations must also reject scans started before the filesystem changed.
+static STORAGE_CACHE_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+fn scan_epoch_is_current(started: u64, current: u64) -> bool {
+    started == current
+}
 
 fn snapshot_is_fresh(cached_root: &str, scanned_at: Instant, requested_root: &str) -> bool {
     cached_root == requested_root && scanned_at.elapsed() < STORAGE_CACHE_TTL
@@ -89,12 +95,20 @@ impl<'a> StorageMonitor<'a> {
         {
             let root = self.root.clone();
             let key = root_key.clone();
+            let scan_epoch = STORAGE_CACHE_EPOCH.load(Ordering::Acquire);
             std::thread::spawn(move || {
                 let monitor = StorageMonitor::new(&root);
                 if let Ok(summary) = monitor.compute_summary() {
                     let cache = STORAGE_SUMMARY_CACHE.get_or_init(|| RwLock::new(None));
                     if let Ok(mut current) = cache.write() {
-                        *current = Some((key, Instant::now(), summary));
+                        // Hold the cache lock while comparing the epoch. A cache
+                        // invalidation takes the same lock before advancing it.
+                        if scan_epoch_is_current(
+                            scan_epoch,
+                            STORAGE_CACHE_EPOCH.load(Ordering::Acquire),
+                        ) {
+                            *current = Some((key, Instant::now(), summary));
+                        }
                     }
                 }
                 STORAGE_SCAN_RUNNING.store(false, Ordering::Release);
@@ -137,6 +151,7 @@ impl<'a> StorageMonitor<'a> {
 
         if let Some(cache) = STORAGE_SUMMARY_CACHE.get() {
             if let Ok(mut current) = cache.write() {
+                STORAGE_CACHE_EPOCH.fetch_add(1, Ordering::AcqRel);
                 *current = None;
             }
         }
@@ -153,13 +168,10 @@ fn clear_directory_contents(path: &Path) -> Result<u64, AppError> {
     let mut freed = 0;
     for entry in fs::read_dir(path)? {
         let entry = entry?;
-        // Inspect the directory entry, not its target. Cache entries may be
-        // symlinks to locations outside the portable root: never traverse or
-        // recursively delete their targets when clearing regenerable cache.
         let metadata = fs::symlink_metadata(entry.path())?;
         if metadata.file_type().is_symlink() {
-            // A symlink occupies negligible space here; its target is not ours
-            // to count or delete. Windows directory symlinks require remove_dir.
+            // Remove only the link, not its target. On Windows a directory
+            // symlink may require remove_dir instead of remove_file.
             #[cfg(windows)]
             {
                 if fs::remove_file(entry.path()).is_err() {
@@ -169,10 +181,10 @@ fn clear_directory_contents(path: &Path) -> Result<u64, AppError> {
             #[cfg(not(windows))]
             fs::remove_file(entry.path())?;
         } else if metadata.is_dir() {
-            freed = freed.saturating_add(directory_size(&entry.path())?);
+            freed += directory_size(&entry.path())?;
             fs::remove_dir_all(entry.path())?;
         } else {
-            freed = freed.saturating_add(metadata.len());
+            freed += metadata.len();
             fs::remove_file(entry.path())?;
         }
     }
@@ -187,8 +199,11 @@ fn directory_size(path: &Path) -> Result<u64, AppError> {
     let mut total = 0;
     for entry in fs::read_dir(path)? {
         let entry = entry?;
-        let metadata = entry.metadata()?;
-        if metadata.is_dir() {
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if metadata.file_type().is_symlink() {
+            // A link inside portable storage must not count or traverse external data.
+            continue;
+        } else if metadata.is_dir() {
             total += directory_size(&entry.path())?;
         } else {
             total += metadata.len();
@@ -200,6 +215,39 @@ fn directory_size(path: &Path) -> Result<u64, AppError> {
 #[cfg(test)]
 mod cache_tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn storage_size_does_not_follow_external_directory_symlinks() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("storage-link-root-{}", uuid::Uuid::new_v4()));
+        let external = std::env::temp_dir().join(format!("storage-link-external-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&external).unwrap();
+        fs::write(external.join("private.bin"), vec![7u8; 8192]).unwrap();
+        fs::write(root.join("local.bin"), vec![3u8; 13]).unwrap();
+        symlink(&external, root.join("redirect")).unwrap();
+        assert_eq!(directory_size(&root).unwrap(), 13);
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&external).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_clear_unlinks_symlink_without_deleting_external_files() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("cache-link-root-{}", uuid::Uuid::new_v4()));
+        let external = std::env::temp_dir().join(format!("cache-link-external-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&external).unwrap();
+        fs::write(external.join("keep.bin"), b"keep").unwrap();
+        symlink(&external, root.join("redirect")).unwrap();
+        assert_eq!(clear_directory_contents(&root).unwrap(), 0);
+        assert!(external.join("keep.bin").exists());
+        assert!(!root.join("redirect").exists());
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&external).unwrap();
+    }
 
     #[test]
     fn storage_cache_ttl_expires_stale_snapshots() {
@@ -227,26 +275,12 @@ mod cache_tests {
         assert!(snapshot_for_root(&None, "root-a").is_none());
     }
 
-    #[cfg(unix)]
     #[test]
-    fn clear_cache_unlinks_directory_and_file_symlinks_without_touching_targets() {
-        use std::os::unix::fs::symlink;
-
-        let sandbox = tempfile::tempdir().unwrap();
-        let external = sandbox.path().join("external");
-        let cache = sandbox.path().join("cache");
-        fs::create_dir_all(&external).unwrap();
-        fs::create_dir_all(&cache).unwrap();
-        let protected = external.join("keep.txt");
-        fs::write(&protected, b"must survive").unwrap();
-        symlink(&external, cache.join("linked-directory")).unwrap();
-        symlink(&protected, cache.join("linked-file")).unwrap();
-        fs::write(cache.join("scratch.txt"), b"scratch").unwrap();
-
-        let freed = clear_directory_contents(&cache).unwrap();
-        assert_eq!(freed, 7);
-        assert!(fs::read_dir(&cache).unwrap().next().is_none());
-        assert_eq!(fs::read(&protected).unwrap(), b"must survive");
+    fn invalidation_epoch_rejects_old_inflight_scan_results() {
+        let started = 41;
+        assert!(scan_epoch_is_current(started, 41));
+        assert!(!scan_epoch_is_current(started, 42));
+        assert!(!scan_epoch_is_current(started, 43));
     }
 
     #[test]

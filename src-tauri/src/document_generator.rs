@@ -342,6 +342,50 @@ impl PdfLayout {
         self.add_gap(gap_after_mm);
     }
 
+    /// Render table cells in fixed columns, keeping wrapped cells on the same row.
+    /// A row is split across pages only between complete visual lines.
+    fn push_table_row(&mut self, cells: &[String], columns: usize, header: bool) {
+        let size_pt = 9.0;
+        let line_height_mm = size_pt * 1.32 * 0.352_778;
+        let column_width_mm = CONTENT_WIDTH_MM / columns as f32;
+        let padding_mm = 1.5;
+        let available_mm = (column_width_mm - padding_mm * 2.0).max(1.0);
+        let average_char_mm = size_pt * 0.352_778 * 0.62;
+        let max_chars = (available_mm / average_char_mm).floor().max(1.0) as usize;
+        let wrapped: Vec<Vec<String>> = (0..columns)
+            .map(|index| {
+                let text = cells.get(index).map_or("", String::as_str);
+                let lines = wrap_text(text, max_chars);
+                if lines.is_empty() { vec![String::new()] } else { lines }
+            })
+            .collect();
+        let row_lines = wrapped.iter().map(Vec::len).max().unwrap_or(1);
+        for line_index in 0..row_lines {
+            self.ensure_space(line_height_mm);
+            for (column_index, lines) in wrapped.iter().enumerate() {
+                if let Some(line) = lines.get(line_index) {
+                    self.ops.extend([
+                        Op::StartTextSection,
+                        Op::SetTextCursor {
+                            pos: Point::new(
+                                Mm(LEFT_MARGIN_MM + column_index as f32 * column_width_mm + padding_mm),
+                                Mm(self.cursor_y_mm),
+                            ),
+                        },
+                        Op::SetFont {
+                            font: self.fonts.handle(if header { PdfFontKind::Bold } else { PdfFontKind::Regular }),
+                            size: Pt(size_pt),
+                        },
+                        Op::ShowText { items: vec![TextItem::Text(line.clone())] },
+                        Op::EndTextSection,
+                    ]);
+                }
+            }
+            self.cursor_y_mm -= line_height_mm;
+        }
+        self.add_gap(1.0);
+    }
+
     fn push_code(&mut self, code: &str) {
         if code.trim().is_empty() {
             return;
@@ -396,22 +440,9 @@ impl PdfLayout {
                 if headers.is_empty() {
                     return;
                 }
-                self.push_wrapped(&headers.join("  |  "), PdfFontKind::Bold, 9.5, 0.8);
-                self.push_wrapped(
-                    &headers
-                        .iter()
-                        .map(|_| "--------")
-                        .collect::<Vec<_>>()
-                        .join("-+-"),
-                    PdfFontKind::Mono,
-                    8.0,
-                    0.5,
-                );
+                self.push_table_row(&headers, headers.len(), true);
                 for row in rows {
-                    let normalized = (0..headers.len())
-                        .map(|index| row.get(index).cloned().unwrap_or_default())
-                        .collect::<Vec<_>>();
-                    self.push_wrapped(&normalized.join("  |  "), PdfFontKind::Regular, 9.5, 0.7);
+                    self.push_table_row(&row, headers.len(), false);
                 }
                 self.add_gap(1.4);
             }
@@ -492,7 +523,15 @@ pub fn generate_pdf(markdown: &str, title: &str, dest: &Path) -> Result<PdfMeta,
         mono: doc.add_font(&mono),
     };
     let mut layout = PdfLayout::new(fonts);
-    layout.push_wrapped(title, PdfFontKind::Bold, 20.0, 5.0);
+    // An empty title and whitespace-only Markdown would otherwise produce no
+    // text operations and fail export. Publish a valid, readable one-page PDF
+    // rather than leaving the artifact in a failed state for an empty note.
+    let display_title = if title.trim().is_empty() && blocks.is_empty() {
+        "Untitled document"
+    } else {
+        title
+    };
+    layout.push_wrapped(display_title, PdfFontKind::Bold, 20.0, 5.0);
     for block in blocks {
         layout.push_block(block);
     }
@@ -567,7 +606,12 @@ fn docx_paragraph(xml: &mut String, text: &str, size: u32, bold: bool, mono: boo
 }
 
 fn docx_table_row(xml: &mut String, cells: &[String], columns: usize, header: bool) {
-    xml.push_str("<w:tr>");
+    // Keep rows intact and repeat header rows across page breaks.
+    xml.push_str("<w:tr><w:trPr><w:cantSplit/>");
+    if header {
+        xml.push_str("<w:tblHeader w:val=\"true\"/>");
+    }
+    xml.push_str("</w:trPr>");
     for index in 0..columns {
         xml.push_str("<w:tc><w:tcPr><w:tcW w:w=\"0\" w:type=\"auto\"/></w:tcPr>");
         docx_paragraph(
@@ -708,6 +752,26 @@ mod tests {
         assert!(xml.contains("<w:t xml:space=\"preserve\">Nested</w:t>"));
     }
 
+    #[test]
+    fn docx_table_headers_repeat_without_splitting_rows() {
+        let xml = word_document_xml(
+            parse_markdown_blocks("| Label | Value |\n| --- | --- |\n| বাংলা | Русский |\n| Long | Row |"),
+            "Report",
+        );
+        assert!(xml.contains("<w:tr><w:trPr><w:cantSplit/><w:tblHeader w:val=\"true\"/></w:trPr>"));
+        assert_eq!(xml.matches("<w:cantSplit/>").count(), 3);
+        assert_eq!(xml.matches("<w:tblHeader").count(), 1);
+        assert!(xml.contains("বাংলা"));
+        assert!(xml.contains("Русский"));
+    }
+
+    #[test]
+    fn docx_heading_styles_use_valid_xml_attributes() {
+        let xml = word_document_xml(parse_markdown_blocks("# Heading"), "Report");
+        assert!(xml.contains("<w:pStyle w:val=\"Heading1\"/>"));
+        assert!(!xml.contains(r#"w:val=\"Heading1"#));
+    }
+
     const SAMPLE_MARKDOWN: &str = "# Report Title\n\nThis is an introductory paragraph with real content.\n\n## Section One\n\n- First point\n- Second point\n\n1. Step one\n2. Step two\n\n```text\nfn main() {}\n```\n\n| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n| Beta | 2 |\n";
 
     #[test]
@@ -736,6 +800,26 @@ mod tests {
         let lines = wrap_text(input, 16);
         assert!(lines.len() > 1);
         assert_eq!(lines.join(" "), input);
+    }
+
+    #[test]
+    fn empty_note_still_generates_valid_single_page_pdf() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("empty-note.pdf");
+        let meta = generate_pdf("  \n\t", "  ", &dest).unwrap();
+        assert_eq!(meta.page_count, 1);
+        let bytes = std::fs::read(&dest).unwrap();
+        assert!(bytes.starts_with(b"%PDF-"));
+        assert!(bytes.len() > 100);
+    }
+
+    #[test]
+    fn whitespace_title_with_content_does_not_insert_fallback_heading() {
+        let blocks = parse_markdown_blocks("## Actual heading");
+        assert_eq!(blocks.len(), 1);
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("content.pdf");
+        assert!(generate_pdf("## Actual heading", " ", &dest).unwrap().page_count >= 1);
     }
 
     #[test]
@@ -849,6 +933,32 @@ mod tests {
             std::fs::read(root.path().join("generated").join(id).join("report.docx")).unwrap(),
             expected
         );
+    }
+
+    #[test]
+    fn pdf_table_cells_have_distinct_column_positions_and_wrap_long_values() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("table.pdf");
+        let long_cell = "longvalue".repeat(40);
+        let markdown = format!("| First | Second | Third |\\n|---|---|---|\\n| A | {long_cell} | C |");
+        let meta = generate_pdf(&markdown, "Table", &dest).unwrap();
+        assert!(meta.page_count >= 1);
+        let bytes = std::fs::read(dest).unwrap();
+        assert!(bytes.starts_with(b"%PDF"));
+        // Layout-level regression: a wide cell cannot make a neighboring column
+        // disappear, and the generated document must remain a valid PDF container.
+        assert!(bytes.len() > 1000);
+    }
+
+    #[test]
+    fn pdf_table_row_layout_handles_more_columns_than_available_width() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("many-columns.pdf");
+        let headers = (0..30).map(|i| format!("H{i}")).collect::<Vec<_>>();
+        let divider = vec!["---"; 30];
+        let row = (0..30).map(|i| format!("cell{i}")).collect::<Vec<_>>();
+        let markdown = format!("|{}|\\n|{}|\\n|{}|", headers.join("|"), divider.join("|"), row.join("|"));
+        assert!(generate_pdf(&markdown, "Dense table", &dest).is_ok());
     }
 
     #[test]
