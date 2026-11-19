@@ -119,7 +119,11 @@ export class ConversationState {
       ...this.snapshot,
       activeId,
       epoch: this.snapshot.epoch + 1,
-      messages: this.run(activeId).live,
+      // Background stream snapshots are untrusted event-derived data. A stale
+      // or malformed row must never appear in another conversation on navigation.
+      messages: this.run(activeId).live.filter(
+        (row) => row.conversationId === activeId && row.role !== "system",
+      ),
       artifacts: [],
     });
   };
