@@ -1,3 +1,4 @@
+import { classifyAttachmentKind } from "./attachmentKind";
 import type { Message } from "../types";
 import { formatBytes } from "./format";
 import { analyzeVideoFile, transcribeAudioFile } from "./media";
@@ -453,21 +454,7 @@ export function titleFromPrompt(prompt: string) {
 }
 
 export function attachmentKind(file: File): AttachmentDraft["kind"] {
-  if (file.type.startsWith("image/") || /\.(png|jpe?g|webp)$/i.test(file.name)) return "image";
-  if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) return "pdf";
-  if (file.type.startsWith("audio/") || /\.(wav|mp3|m4a|aac|flac|ogg|opus)$/i.test(file.name)) {
-    return "audio";
-  }
-  if (file.type.startsWith("video/") || /\.(mp4|webm|mov|m4v|mpeg|mpg)$/i.test(file.name)) {
-    return "video";
-  }
-  if (
-    file.type.startsWith("text/") ||
-    /\.(md|txt|json|csv|ts|tsx|js|jsx|rs|py|html|css|sql|toml|yaml|yml)$/i.test(file.name)
-  ) {
-    return "text";
-  }
-  return "binary";
+  return classifyAttachmentKind(file);
 }
 
 export function modeInstruction(mode: ChatMode) {
