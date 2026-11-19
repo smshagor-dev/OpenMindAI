@@ -605,8 +605,9 @@ fn project_file_context(files: &[ProjectFile], prompt: Option<&str>) -> String {
         if capacity == 0 {
             break;
         }
-        let snippet = take_chars(content, capacity);
-        let truncated = snippet.chars().count() < content.chars().count();
+        // Retrieve the matching passage, not only the beginning of a long file.
+        // Keep character boundaries intact for multilingual project documents.
+        let (snippet, truncated) = project_relevant_excerpt(content, &terms, capacity);
         let suffix = if truncated { "\n[truncated]" } else { "" };
         let section = format!("{header}{snippet}{suffix}");
         used_chars += section.chars().count() + separator_chars;
@@ -672,6 +673,34 @@ fn project_file_relevance(name: &str, content: &str, terms: &[String]) -> usize 
     score
 }
 
+/// Select a bounded passage around the first matching query term. A file may
+/// rank highly because of its name while the relevant text appears much later.
+fn project_relevant_excerpt(content: &str, terms: &[String], limit: usize) -> (String, bool) {
+    let chars: Vec<char> = content.chars().collect();
+    if chars.len() <= limit {
+        return (content.to_owned(), false);
+    }
+    if limit == 0 {
+        return (String::new(), true);
+    }
+    // Unicode lowercase can expand a character; search at character offsets
+    // instead of using byte offsets from a lowercased copy.
+    let lowered: Vec<char> = content.to_lowercase().chars().collect();
+    let mut first_match = None;
+    for term in terms {
+        let needle: Vec<char> = term.chars().collect();
+        if needle.is_empty() || needle.len() > lowered.len() {
+            continue;
+        }
+        if let Some(index) = lowered.windows(needle.len()).position(|window| window == needle) {
+            first_match = Some(first_match.map_or(index, |previous: usize| previous.min(index)));
+        }
+    }
+    let center = first_match.unwrap_or(0).min(chars.len() - 1);
+    let start = center.saturating_sub(limit / 4).min(chars.len() - limit);
+    (chars[start..start + limit].iter().collect(), true)
+}
+
 fn take_chars(content: &str, limit: usize) -> String {
     content.chars().take(limit).collect()
 }
@@ -706,6 +735,18 @@ mod tests {
                 params![id, title],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn project_excerpt_finds_late_evidence_and_keeps_unicode_boundaries() {
+        let text = format!("{}{}{}", "😀".repeat(100), "ROLLBACK_SECRET_MARKER", "é".repeat(100));
+        let (excerpt, truncated) = project_relevant_excerpt(&text, &["rollback".into()], 48);
+        assert!(truncated);
+        assert!(excerpt.contains("ROLLBACK_SECRET_MARKER"));
+        assert!(excerpt.chars().count() <= 48);
+        let (generic, _) = project_relevant_excerpt(&text, &[], 48);
+        assert!(!generic.contains("ROLLBACK_SECRET_MARKER"));
+        assert_eq!(project_relevant_excerpt("tiny", &["tiny".into()], 48), ("tiny".into(), false));
     }
 
     #[test]
