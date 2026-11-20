@@ -398,6 +398,19 @@ impl<'a> ChatRepository<'a> {
                 "regeneration target must be an assistant in this conversation",
             ));
         }
+        // Serialize regeneration candidates within the conversation. The check
+        // and insertion share the SQLite write transaction, including across
+        // independent database connections.
+        let active: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id = ?1 AND status IN ('pending', 'streaming'))",
+            params![conversation_id],
+            |row| row.get(0),
+        )?;
+        if active {
+            return Err(AppError::internal(
+                "stop the active generation before regenerating this conversation",
+            ));
+        }
         let candidate =
             self.add_message(conversation_id, "assistant", "", "streaming", model_id)?;
         tx.execute(
@@ -742,6 +755,35 @@ mod tests {
                 .unwrap_err(),
             AppError::Internal(_)
         ));
+    }
+
+    #[test]
+    fn regeneration_rejects_overlapping_candidates_without_writing_and_allows_retry() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let conversation = repo.create_conversation(Some("Regenerate")).unwrap();
+        let target = repo
+            .add_message(&conversation.id, "assistant", "original", "completed", None)
+            .unwrap();
+        let first = repo
+            .begin_regeneration(&conversation.id, &target.id, None)
+            .unwrap();
+        assert_eq!(first.status, "streaming");
+        let before = repo.list_messages(&conversation.id).unwrap().len();
+        assert!(matches!(
+            repo.begin_regeneration(&conversation.id, &target.id, None),
+            Err(AppError::Internal(_))
+        ));
+        assert_eq!(repo.list_messages(&conversation.id).unwrap().len(), before);
+        assert_eq!(repo.find_message(&target.id).unwrap().content, "original");
+
+        repo.set_message_status(&first.id, "cancelled").unwrap();
+        let retry = repo
+            .begin_regeneration(&conversation.id, &target.id, None)
+            .unwrap();
+        assert_ne!(retry.id, first.id);
+        assert_eq!(retry.status, "streaming");
+        assert_eq!(repo.list_messages(&conversation.id).unwrap().len(), before + 1);
     }
 
     #[test]
