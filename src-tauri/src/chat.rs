@@ -329,11 +329,24 @@ impl<'a> ChatRepository<'a> {
 
     pub fn archive_conversation(&self, id: &str) -> Result<(), AppError> {
         let now = Utc::now().to_rfc3339();
-        self.touch_conversation_with(
-            id,
-            "UPDATE conversations SET archived_at = ?1, updated_at = ?1 WHERE id = ?2",
+        let changed = self.database.connection().execute(
+            "UPDATE conversations SET archived_at = ?1, updated_at = ?1
+             WHERE id = ?2 AND archived_at IS NULL",
             params![now, id],
-        )
+        )?;
+        if changed == 0 {
+            let exists: bool = self.database.connection().query_row(
+                "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?1)",
+                params![id],
+                |row| row.get(0),
+            )?;
+            return Err(AppError::internal(if exists {
+                "conversation is already archived".to_string()
+            } else {
+                format!("conversation not found: {id}")
+            }));
+        }
+        Ok(())
     }
 
     pub fn delete_conversation(&self, id: &str) -> Result<(), AppError> {
@@ -1761,6 +1774,43 @@ mod tests {
         assert_eq!(repo.list_archived_conversations(0).unwrap().len(), 1);
         assert_eq!(repo.list_archived_conversations(500).unwrap().len(), 3);
         assert!(repo.restore_conversation("missing-id").is_err());
+    }
+
+    #[test]
+    fn duplicate_archive_preserves_original_archive_timestamp_and_messages() {
+        let db = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&db);
+        let chat = repo.create_conversation(Some("Preserve archive")).unwrap();
+        let message = repo
+            .add_message(&chat.id, "user", "keep this", "completed", None)
+            .unwrap();
+        repo.archive_conversation(&chat.id).unwrap();
+        let original: (String, String) = db.connection().query_row(
+            "SELECT archived_at, updated_at FROM conversations WHERE id = ?1",
+            params![chat.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+
+        // Deliberately set an older timestamp to detect accidental writes even
+        // when repeated archive calls occur in the same clock tick.
+        db.connection().execute(
+            "UPDATE conversations SET archived_at = ?1, updated_at = ?1 WHERE id = ?2",
+            params!["2020-01-01T00:00:00+00:00", chat.id],
+        ).unwrap();
+        assert!(repo.archive_conversation(&chat.id).is_err());
+        let after: (String, String) = db.connection().query_row(
+            "SELECT archived_at, updated_at FROM conversations WHERE id = ?1",
+            params![chat.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(after.0, "2020-01-01T00:00:00+00:00");
+        assert_eq!(after.1, "2020-01-01T00:00:00+00:00");
+        assert!(!original.0.is_empty());
+        assert_eq!(repo.find_message(&message.id).unwrap().content, "keep this");
+        assert_eq!(repo.list_archived_conversations(10).unwrap().len(), 1);
+        assert!(repo.archive_conversation("missing-conversation").is_err());
+        repo.restore_conversation(&chat.id).unwrap();
+        repo.archive_conversation(&chat.id).unwrap();
     }
 
 }
