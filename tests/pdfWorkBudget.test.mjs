@@ -334,7 +334,7 @@ test("malformed decoder text items do not discard subsequent readable PDF eviden
 
 
 test("a damaged page text stream does not discard later readable PDF pages", async () => {
-  const fx = fixture(3, (page) => page === 3 ? "Readable evidence on the final page." : "Other readable evidence.");
+  const fx = fixture(3, (page) => page === 3 ? "Readable evidence on the final page." : "Other substantial readable evidence on page one.");
   const pdf = await globalThis.__pdf.task.promise;
   const originalGetPage = pdf.getPage;
   pdf.getPage = async (pageNumber) => {
