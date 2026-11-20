@@ -344,10 +344,11 @@ impl ModelDownloadManager {
         // permit is shared across clones and held through the final manifest
         // write; a parallel caller cannot clobber an active install.
         let _in_flight = self.begin_download()?;
+        // Unknown IDs must not create the root or contend on the install lock.
+        let entry = entry_by_id(model_id)?;
         // Lock the root before changing status, cancellation, or disk files.
         // Keep both guards alive until the install's final state is recorded.
         let _root_lock = self.begin_root_install()?;
-        let entry = entry_by_id(model_id)?;
         tracing::info!(repo = %entry.repo, model_id = %entry.id, "installing AI model package");
         // Publish the cancellation token and Resolving status together under
         // the same lock order as stop_download. Otherwise Cancel can arrive
@@ -1352,6 +1353,23 @@ mod tests {
             )
         );
         assert_ne!(first, key(&root_a, &dir_a, source, "nested_model.gguf"));
+    }
+
+    #[test]
+    fn unknown_catalog_id_does_not_touch_portable_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("new-root");
+        let manager = ModelDownloadManager::new(PortableRootManager::from_root(path.clone()));
+        let before = manager.status().unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        assert!(runtime.block_on(manager.download_catalog_model("unknown-model-id")).is_err());
+        assert!(!path.exists(), "invalid IDs must not create a portable root");
+        assert_eq!(manager.status().unwrap().state, before.state);
+        assert_eq!(manager.status().unwrap().model_id, before.model_id);
+        assert_eq!(manager.active_download.available_permits(), 1);
+        let lock = manager.begin_root_install().unwrap();
+        assert!(path.join(".openmindai-model-install.lock").is_file());
+        drop(lock);
     }
 
     #[test]
