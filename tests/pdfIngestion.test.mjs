@@ -83,4 +83,26 @@ test("complete OCR retains the existing visual path without incomplete warnings"
   assert.equal(inferChatMode("summarize", [result]), "vision");
   cleanup();
 });
+test("OCR ignores malformed candidates but accepts valid pages within the bounded window", async () => {
+  const cleanup = fixture([readable, ""], async () => [
+    null, { pageNumber: 2, text: 42 }, { pageNumber: 999, text: "wrong page" },
+    { pageNumber: 2, text: "Recovered OCR content" },
+  ]);
+  const result = await readAttachment(file);
+  assert.match(result.contentPreview, /Recovered OCR content/);
+  assert.doesNotMatch(result.contentPreview, /wrong page/);
+  assert.equal(result.warning, undefined);
+  cleanup();
+});
+test("OCR ignores valid results beyond the per-batch inspection cap and reports incomplete coverage", async () => {
+  const cleanup = fixture([readable, ""], async () => [
+    ...Array.from({ length: 8 }, () => ({ pageNumber: 999, text: "invalid" })),
+    { pageNumber: 2, text: "Too late to inspect" },
+  ]);
+  const result = await readAttachment(file);
+  assert.doesNotMatch(result.contentPreview, /Too late to inspect/);
+  assert.match(result.warning, /pages 2/);
+  assert.deepEqual(result.mediaItems, []);
+  cleanup();
+});
 test.after(async () => { globalThis.document = originalDocument; delete globalThis.__pdf; await rm(dir, { recursive: true, force: true }); });

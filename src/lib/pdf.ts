@@ -190,8 +190,14 @@ export async function extractPdfText(
           const ocr = await invoke<PdfOcrPageResult[]>("ocr_pdf_pages", { pages: rendered });
           assertNotCancelled(options.signal);
           const allowed = new Set(rendered.map(page => page.pageNumber));
-          for (const result of ocr) {
-            if (!allowed.delete(result.pageNumber) || typeof result.text !== "string") continue;
+          // A compromised OCR bridge may return an enormous result array.
+          // Inspect at most eight candidates per dispatched page, allowing a
+          // few malformed/duplicate entries without unbounded renderer work.
+          const maxCandidates = rendered.length * 8;
+          for (const result of Array.isArray(ocr) ? ocr.slice(0, maxCandidates) : []) {
+            if (!result || !Number.isSafeInteger(result.pageNumber)
+                || !allowed.has(result.pageNumber) || typeof result.text !== "string") continue;
+            allowed.delete(result.pageNumber);
             // Bound native OCR output before trimming or Unicode expansion.
             // The native response can be arbitrarily large even when the
             // remaining prompt budget is tiny.
