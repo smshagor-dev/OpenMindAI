@@ -83,4 +83,15 @@ test("complete OCR retains the existing visual path without incomplete warnings"
   assert.equal(inferChatMode("summarize", [result]), "vision");
   cleanup();
 });
+test("rejects oversized buffers even when File.size advertises a small PDF", async () => {
+  let decoderCalled = false;
+  globalThis.__pdf = { task: { get promise() { decoderCalled = true; throw Error("decoder must not run"); } } };
+  const inconsistent = { ...file, arrayBuffer: async () => new ArrayBuffer(32 * 1024 * 1024 + 1) };
+  await assert.rejects(readAttachment(inconsistent), /Maximum supported size is 32 MB/);
+  assert.equal(decoderCalled, false);
+});
+test("rejects an empty actual PDF buffer despite nonzero metadata", async () => {
+  const inconsistent = { ...file, arrayBuffer: async () => new ArrayBuffer(0) };
+  await assert.rejects(readAttachment(inconsistent), /PDF is empty/);
+});
 test.after(async () => { globalThis.document = originalDocument; delete globalThis.__pdf; await rm(dir, { recursive: true, force: true }); });
