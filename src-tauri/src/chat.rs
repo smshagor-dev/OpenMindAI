@@ -306,7 +306,7 @@ impl<'a> ChatRepository<'a> {
         }
         self.touch_conversation_with(
             id,
-            "UPDATE conversations SET title = ?1, updated_at = ?2 WHERE id = ?3",
+            "UPDATE conversations SET title = ?1, updated_at = ?2 WHERE id = ?3 AND title != ?1",
             params![title, Utc::now().to_rfc3339(), id],
         )
     }
@@ -770,6 +770,30 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[1].content, "saved");
         assert_eq!(messages[1].status, "failed");
+    }
+
+    #[test]
+    fn duplicate_rename_preserves_timestamp_and_real_rename_updates_title() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let chat = repo.create_conversation(Some("Original")).unwrap();
+        database.connection().execute(
+            "UPDATE conversations SET updated_at = '2020-01-01T00:00:00+00:00' WHERE id = ?1",
+            params![chat.id],
+        ).unwrap();
+
+        repo.rename_conversation(&chat.id, "  Original  ").unwrap();
+        let unchanged = repo.find_conversation(&chat.id).unwrap();
+        assert_eq!(unchanged.title, "Original");
+        assert_eq!(unchanged.updated_at, "2020-01-01T00:00:00+00:00");
+
+        repo.rename_conversation(&chat.id, "Updated").unwrap();
+        let changed = repo.find_conversation(&chat.id).unwrap();
+        assert_eq!(changed.title, "Updated");
+        assert_ne!(changed.updated_at, unchanged.updated_at);
+
+        assert!(repo.rename_conversation(&chat.id, "   ").is_err());
+        assert!(repo.rename_conversation("missing", "Updated").is_err());
     }
 
     #[test]
