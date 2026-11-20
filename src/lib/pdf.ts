@@ -259,8 +259,8 @@ export async function extractPdfText(
         break;
       }
       if (pageChunk.length > remaining) {
-        chunks.push(pageChunk.slice(0, remaining));
-        currentLength += remaining;
+        chunks.push(sliceWithoutSplitSurrogate(pageChunk, remaining));
+        currentLength += chunks[chunks.length - 1].length;
         truncated = true;
         break;
       }
@@ -307,6 +307,18 @@ function boundedOcrText(text: string, maxUnits: number): string {
   return text.slice(start, end).trimEnd();
 }
 
+// Preserve UTF-16 scalar boundaries when a prompt budget ends inside an emoji.
+// This keeps the existing code-unit budget without introducing replacement glyphs.
+function sliceWithoutSplitSurrogate(text: string, maxUnits: number): string {
+  if (maxUnits <= 0) return "";
+  if (text.length <= maxUnits) return text;
+  const last = text.charCodeAt(maxUnits - 1);
+  const next = text.charCodeAt(maxUnits);
+  const cutsPair = last >= 0xd800 && last <= 0xdbff
+    && next >= 0xdc00 && next <= 0xdfff;
+  return text.slice(0, cutsPair ? maxUnits - 1 : maxUnits);
+}
+
 async function selectablePageText(page: PDFPageProxy) {
   const textContent = await page.getTextContent();
   const lines: string[] = [];
@@ -319,10 +331,10 @@ async function selectablePageText(page: PDFPageProxy) {
     // even whitespace normalization cannot allocate the full input string.
     const remaining = MAX_EXTRACTED_CHARS - collected - line.length;
     if (remaining <= 0) break;
-    const value = item.str.slice(0, remaining).replace(/\s+/g, " ").trim();
+    const value = sliceWithoutSplitSurrogate(item.str, remaining).replace(/\s+/g, " ").trim();
     if (!value) continue;
     const separator = line ? " " : "";
-    line += separator + value.slice(0, Math.max(0, remaining - separator.length));
+    line += separator + sliceWithoutSplitSurrogate(value, Math.max(0, remaining - separator.length));
     if (item.hasEOL) {
       const finished = line.trim();
       if (finished) {
@@ -333,9 +345,9 @@ async function selectablePageText(page: PDFPageProxy) {
     }
   }
   if (line.trim() && collected < MAX_EXTRACTED_CHARS) {
-    lines.push(line.trim().slice(0, MAX_EXTRACTED_CHARS - collected));
+    lines.push(sliceWithoutSplitSurrogate(line.trim(), MAX_EXTRACTED_CHARS - collected));
   }
-  return lines.filter(Boolean).join("\n").slice(0, MAX_EXTRACTED_CHARS).trim();
+  return sliceWithoutSplitSurrogate(lines.filter(Boolean).join("\n"), MAX_EXTRACTED_CHARS).trim();
 }
 
 async function renderPdfPage(page: PDFPageProxy, signal?: PdfExtractionOptions["signal"]) {

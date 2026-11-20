@@ -83,4 +83,21 @@ test("complete OCR retains the existing visual path without incomplete warnings"
   assert.equal(inferChatMode("summarize", [result]), "vision");
   cleanup();
 });
+test("PDF selectable text never emits a dangling high surrogate at the page budget", async () => {
+  const cleanup = fixture(["A".repeat(19999) + "😀" + "tail"], async () => []);
+  const result = await readAttachment(file);
+  assert.equal(result.contentPreview.includes("\\uFFFD"), false);
+  assert.equal(/[\\uD800-\\uDBFF]$/.test(result.contentPreview), false);
+  assert.equal(result.contentPreview.includes("😀"), false);
+  cleanup();
+});
+test("PDF final prompt budget preserves an emoji that fits and excludes a split pair", async () => {
+  const prefix = "--- Page 1 ---\\n";
+  const cleanup = fixture(["A".repeat(20000 - prefix.length - 1) + "😀"], async () => []);
+  const result = await readAttachment(file);
+  assert.equal(result.contentPreview.includes("😀"), false);
+  assert.equal(/[\\uD800-\\uDBFF]$/.test(result.contentPreview), false);
+  assert.equal(result.contentPreview.includes("\\uFFFD"), false);
+  cleanup();
+});
 test.after(async () => { globalThis.document = originalDocument; delete globalThis.__pdf; await rm(dir, { recursive: true, force: true }); });
