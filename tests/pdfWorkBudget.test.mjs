@@ -331,3 +331,47 @@ test("malformed decoder text items do not discard subsequent readable PDF eviden
   assert.equal(result.truncated, false);
   fx.assertClean();
 });
+
+
+test("a damaged page text stream does not discard later readable PDF pages", async () => {
+  const fx = fixture(3, (page) => page === 3 ? "Readable evidence on the final page." : "Other substantial readable evidence on page one.");
+  const pdf = await globalThis.__pdf.task.promise;
+  const originalGetPage = pdf.getPage;
+  pdf.getPage = async (pageNumber) => {
+    const page = await originalGetPage(pageNumber);
+    if (pageNumber === 2) page.getTextContent = async () => { throw new Error("broken text stream"); };
+    return page;
+  };
+  const result = await extractPdfText(file);
+  assert.deepEqual(fx.visited, [1, 2, 3]);
+  assert.equal(result.pagesRead, 3);
+  assert.match(result.text, /final page/);
+  assert.deepEqual(result.unreadPages, [2]);
+  assert.match(result.warnings.join(" "), /text decoding failed on pages 2/);
+  assert.equal(result.visionPages.length, 0);
+  assert.equal(result.truncated, true);
+  assert.deepEqual(fx.calls, [], "damaged text stream must not trigger speculative OCR");
+  fx.assertClean();
+});
+
+test("all unreadable PDF text streams fail explicitly rather than claiming empty success", async () => {
+  const fx = fixture(2);
+  const pdf = await globalThis.__pdf.task.promise;
+  pdf.getPage = async (pageNumber) => ({
+    getTextContent: async () => { throw new Error("corrupt page " + pageNumber); },
+  });
+  await assert.rejects(extractPdfText(file), /No readable PDF text is available/);
+  assert.deepEqual(fx.calls, []);
+  fx.assertClean();
+});
+
+test("PDF cancellation during page text extraction remains fatal", async () => {
+  const fx = fixture(2);
+  const abort = new AbortController();
+  const pdf = await globalThis.__pdf.task.promise;
+  pdf.getPage = async () => ({
+    getTextContent: async () => { abort.abort(); throw new Error("decoder stopped"); },
+  });
+  await assert.rejects(extractPdfText(file, { signal: abort.signal }), /PDF import cancelled/);
+  fx.assertClean();
+});
