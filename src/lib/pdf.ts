@@ -99,6 +99,7 @@ export async function extractPdfText(
     const maxPagesRead = Math.min(pdf.numPages, MAX_PDF_PAGES);
     const pageTexts: string[] = [];
     const scannedPages: number[] = [];
+    const failedTextPages: number[] = [];
     let selectableChars = 0;
     let truncated = pdf.numPages > maxPagesRead;
     options.onProgress?.({ phase: "reading", completed: 0, total: maxPagesRead });
@@ -108,13 +109,22 @@ export async function extractPdfText(
     // for a bounded OCR pass because their text precedes later pages.
     for (let pageNumber = 1; pageNumber <= maxPagesRead; pageNumber += 1) {
       assertNotCancelled(options.signal);
-      const page = await pdf.getPage(pageNumber);
-      assertNotCancelled(options.signal);
-      const pageText = await selectablePageText(page);
+      let pageText = "";
+      try {
+        const page = await pdf.getPage(pageNumber);
+        assertNotCancelled(options.signal);
+        pageText = await selectablePageText(page);
+      } catch (error) {
+        assertNotCancelled(options.signal);
+        // A damaged page must not discard readable evidence on later pages.
+        // Keep its position in pageTexts so page numbering remains stable.
+        void error;
+        failedTextPages.push(pageNumber);
+      }
       assertNotCancelled(options.signal);
       pageTexts.push(pageText);
       selectableChars += pageText.length;
-      if (pageText.replace(/\s+/g, "").length < MIN_SELECTABLE_TEXT_CHARS) {
+      if (!failedTextPages.includes(pageNumber) && pageText.replace(/\s+/g, "").length < MIN_SELECTABLE_TEXT_CHARS) {
         scannedPages.push(pageNumber);
       }
       options.onProgress?.({ phase: "reading", completed: pageNumber, total: maxPagesRead });
@@ -223,9 +233,12 @@ export async function extractPdfText(
       }
     }
     assertNotCancelled(options.signal);
-    const missing = [...unreadPages, ...deferred].sort((a, b) => a - b);
+    const missing = [...new Set([...unreadPages, ...deferred, ...failedTextPages])].sort((a, b) => a - b);
     const ocrFailures = [...unreadPages].sort((a, b) => a - b);
     const warnings = [
+      ...(failedTextPages.length ? [
+        `PDF text decoding failed on pages ${failedTextPages.join(", ")}. These pages were skipped; the imported document is incomplete.`,
+      ] : []),
       ...(ocrFailures.length ? [
         `OCR incomplete on pages ${ocrFailures.join(", ")}. Only available text is included; image-only content on these pages was not analyzed. Install or repair OpenMindAI Lens for full coverage.`,
       ] : []),
@@ -267,7 +280,7 @@ export async function extractPdfText(
       chunks.push(pageChunk);
       currentLength += pageChunk.length;
     }
-    if (deferred.length || stoppedForTime || stoppedForTextBudget) truncated = true;
+    if (failedTextPages.length || deferred.length || stoppedForTime || stoppedForTextBudget) truncated = true;
 
     return {
       text: chunks.join("").trim(),
