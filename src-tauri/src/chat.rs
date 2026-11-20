@@ -463,48 +463,46 @@ impl<'a> ChatRepository<'a> {
             Some(_) => PROFILE_CONTEXT_MARKER,
             None => PROJECT_CONTEXT_MARKER,
         };
-        let existing_id: Option<String> = self
-            .database
-            .connection()
-            .query_row(
+        // Reconcile every legacy row for this slot atomically. Updating only
+        // the first match can leave stale private instructions in generation
+        // context after a profile/project refresh or removal.
+        let tx = self.database.connection().unchecked_transaction()?;
+        let ids = {
+            let mut statement = tx.prepare(
                 "SELECT id FROM messages
                  WHERE conversation_id = ?1 AND role = 'system' AND content LIKE ?2
-                 LIMIT 1",
+                 ORDER BY rowid ASC",
+            )?;
+            statement.query_map(
                 params![conversation_id, format!("{marker}%")],
-                |row| row.get(0),
-            )
-            .optional()?;
-
-        match (
-            existing_id,
-            content.filter(|value| !value.trim().is_empty()),
-        ) {
-            (Some(id), Some(content)) => {
-                let stored = if content.trim_start().starts_with(marker) {
-                    content.to_string()
-                } else {
-                    format!("{marker}\n{content}")
-                };
-                self.database.connection().execute(
+                |row| row.get::<_, String>(0),
+            )?.collect::<Result<Vec<_>, _>>()?
+        };
+        let replacement = content.filter(|value| !value.trim().is_empty());
+        if let Some(content) = replacement {
+            let stored = if content.trim_start().starts_with(marker) {
+                content.to_string()
+            } else {
+                format!("{marker}\\n{content}")
+            };
+            if let Some(id) = ids.first() {
+                tx.execute(
                     "UPDATE messages SET content = ?1, status = 'completed', updated_at = ?2 WHERE id = ?3",
                     params![stored, Utc::now().to_rfc3339(), id],
                 )?;
+            } else {
+                let now = Utc::now().to_rfc3339();
+                tx.execute(
+                    "INSERT INTO messages (id, conversation_id, role, content, status, model_id, created_at, updated_at)
+                     VALUES (?1, ?2, 'system', ?3, 'completed', NULL, ?4, ?4)",
+                    params![Uuid::new_v4().to_string(), conversation_id, stored, now],
+                )?;
             }
-            (None, Some(content)) => {
-                let stored = if content.trim_start().starts_with(marker) {
-                    content.to_string()
-                } else {
-                    format!("{marker}\n{content}")
-                };
-                self.add_message(conversation_id, "system", &stored, "completed", None)?;
-            }
-            (Some(id), None) => {
-                self.database
-                    .connection()
-                    .execute("DELETE FROM messages WHERE id = ?1", params![id])?;
-            }
-            (None, None) => {}
         }
+        for id in ids.iter().skip(if replacement.is_some() { 1 } else { 0 }) {
+            tx.execute("DELETE FROM messages WHERE id = ?1", params![id])?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -867,6 +865,43 @@ mod tests {
         );
         assert!(messages.iter().any(|message| message.id == first_user.id));
         assert!(!messages.iter().any(|message| message.id == second_user.id));
+    }
+
+    #[test]
+    fn context_refresh_and_clear_remove_legacy_duplicates_without_touching_profile() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let chat = repo.create_conversation(Some("Context repair")).unwrap();
+        repo.upsert_profile_context(&chat.id, Some("keep private profile")).unwrap();
+        for old in ["old project one", "old project two"] {
+            repo.add_message(
+                &chat.id,
+                "system",
+                &format!("{PROJECT_CONTEXT_MARKER}\\n{old}"),
+                "completed",
+                None,
+            ).unwrap();
+        }
+        repo.upsert_profile_context(
+            &chat.id,
+            Some("[open-mind-ai-project-context]\\nnew project"),
+        ).unwrap();
+        let messages = repo.list_messages(&chat.id).unwrap();
+        assert_eq!(messages.iter().filter(|m| m.content.starts_with(PROJECT_CONTEXT_MARKER)).count(), 1);
+        assert!(messages.iter().any(|m| m.content.contains("new project")));
+        assert!(!messages.iter().any(|m| m.content.contains("old project")));
+        repo.add_message(
+            &chat.id,
+            "system",
+            "[open-mind-ai-project-context]\\nlegacy duplicate",
+            "completed",
+            None,
+        ).unwrap();
+        repo.upsert_profile_context(&chat.id, None).unwrap();
+        let messages = repo.list_messages(&chat.id).unwrap();
+        assert_eq!(messages.iter().filter(|m| m.role == "system").count(), 1);
+        assert!(messages.iter().any(|m| m.content.contains("keep private profile")));
+        assert!(!messages.iter().any(|m| m.content.starts_with(PROJECT_CONTEXT_MARKER)));
     }
 
     #[test]
