@@ -346,8 +346,10 @@ impl ModelDownloadManager {
         let _in_flight = self.begin_download()?;
         // Lock the root before changing status, cancellation, or disk files.
         // Keep both guards alive until the install's final state is recorded.
-        let _root_lock = self.begin_root_install()?;
+        // Validate caller-controlled IDs before creating the portable-root lock
+        // file or contending with a different process's legitimate install.
         let entry = entry_by_id(model_id)?;
+        let _root_lock = self.begin_root_install()?;
         tracing::info!(repo = %entry.repo, model_id = %entry.id, "installing AI model package");
         // Publish the cancellation token and Resolving status together under
         // the same lock order as stop_download. Otherwise Cancel can arrive
@@ -1352,6 +1354,26 @@ mod tests {
             )
         );
         assert_ne!(first, key(&root_a, &dir_a, source, "nested_model.gguf"));
+    }
+
+    #[tokio::test]
+    async fn unknown_model_id_has_no_portable_root_side_effects() {
+        let temp = tempfile::tempdir().unwrap();
+        let root_path = temp.path().join("new-portable-root");
+        let manager = ModelDownloadManager::new(PortableRootManager::from_root(root_path.clone()));
+        let result = manager.download_catalog_model("not-a-real-catalog-model").await;
+        assert!(result.is_err());
+        assert!(!root_path.exists(), "invalid model IDs must not create the root");
+        assert!(manager.active_download.available_permits() == 1);
+        assert!(manager.cancel_token.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn unknown_model_id_does_not_create_install_lock_in_existing_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ModelDownloadManager::new(PortableRootManager::from_root(temp.path().to_path_buf()));
+        assert!(manager.download_catalog_model("unknown-model").await.is_err());
+        assert!(!temp.path().join(".openmindai-model-install.lock").exists());
     }
 
     #[test]
