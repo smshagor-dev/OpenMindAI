@@ -528,7 +528,8 @@ impl<'a> ChatRepository<'a> {
         // transaction. Any write/constraint failure rolls both operations back.
         let tx = self.database.connection().unchecked_transaction()?;
         let changed = tx.execute(
-            "UPDATE messages SET status = ?1, updated_at = ?2 WHERE id = ?3",
+            "UPDATE messages SET status = ?1, updated_at = ?2
+             WHERE id = ?3 AND status IN ('pending', 'streaming')",
             params![status, Utc::now().to_rfc3339(), message_id],
         )?;
         if changed == 0 {
@@ -797,6 +798,35 @@ mod tests {
         repo.set_active_model(&conversation.id, None).unwrap();
         let cleared = repo.find_conversation(&conversation.id).unwrap();
         assert!(cleared.active_model_id.is_none());
+    }
+
+    #[test]
+    fn terminal_message_cannot_be_reopened_by_late_status_callbacks() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let conversation = repo.create_conversation(Some("Terminal status")).unwrap();
+
+        for terminal in ["completed", "cancelled", "failed"] {
+            let message = repo
+                .add_message(&conversation.id, "assistant", "durable", "streaming", None)
+                .unwrap();
+            repo.set_message_status(&message.id, terminal).unwrap();
+            for stale in ["pending", "streaming", "completed", "cancelled", "failed"] {
+                assert!(repo.set_message_status(&message.id, stale).is_err());
+                let stored = repo.find_message(&message.id).unwrap();
+                assert_eq!(stored.status, terminal);
+                assert_eq!(stored.content, "durable");
+            }
+        }
+
+        let pending = repo
+            .add_message(&conversation.id, "assistant", "", "pending", None)
+            .unwrap();
+        repo.set_message_status(&pending.id, "streaming").unwrap();
+        repo.append_message_chunk(&pending.id, "answer").unwrap();
+        repo.set_message_status(&pending.id, "completed").unwrap();
+        assert_eq!(repo.find_message(&pending.id).unwrap().content, "answer");
+        assert_eq!(repo.find_message(&pending.id).unwrap().status, "completed");
     }
 
     #[test]
