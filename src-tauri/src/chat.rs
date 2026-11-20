@@ -511,7 +511,7 @@ impl<'a> ChatRepository<'a> {
     pub fn append_message_chunk(&self, message_id: &str, chunk: &str) -> Result<(), AppError> {
         let now = Utc::now().to_rfc3339();
         let changed = self.database.connection().execute(
-            "UPDATE messages SET content = content || ?1, updated_at = ?2 WHERE id = ?3",
+            "UPDATE messages SET content = content || ?1, updated_at = ?2\n             WHERE id = ?3 AND status IN ('pending', 'streaming')",
             params![chunk, now, message_id],
         )?;
         if changed == 0 {
@@ -797,6 +797,37 @@ mod tests {
         repo.set_active_model(&conversation.id, None).unwrap();
         let cleared = repo.find_conversation(&conversation.id).unwrap();
         assert!(cleared.active_model_id.is_none());
+    }
+
+    #[test]
+    fn streaming_chunks_cannot_change_terminal_messages() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let conversation = repo.create_conversation(Some("Late stream")).unwrap();
+
+        for terminal in ["completed", "cancelled", "failed"] {
+            let message = repo
+                .add_message(&conversation.id, "assistant", "saved", terminal, None)
+                .unwrap();
+            assert!(matches!(
+                repo.append_message_chunk(&message.id, " late").unwrap_err(),
+                AppError::Internal(_)
+            ));
+            let persisted = repo.find_message(&message.id).unwrap();
+            assert_eq!(persisted.content, "saved");
+            assert_eq!(persisted.status, terminal);
+        }
+
+        for active in ["pending", "streaming"] {
+            let message = repo
+                .add_message(&conversation.id, "assistant", "first", active, None)
+                .unwrap();
+            repo.append_message_chunk(&message.id, " second").unwrap();
+            assert_eq!(repo.find_message(&message.id).unwrap().content, "first second");
+            repo.set_message_status(&message.id, "completed").unwrap();
+            assert!(repo.append_message_chunk(&message.id, " late").is_err());
+            assert_eq!(repo.find_message(&message.id).unwrap().content, "first second");
+        }
     }
 
     #[test]
