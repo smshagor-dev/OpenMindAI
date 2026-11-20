@@ -304,11 +304,15 @@ impl<'a> ChatRepository<'a> {
         if title.is_empty() {
             return Err(AppError::internal("conversation title cannot be empty"));
         }
-        self.touch_conversation_with(
-            id,
+        let changed = self.database.connection().execute(
             "UPDATE conversations SET title = ?1, updated_at = ?2 WHERE id = ?3 AND title != ?1",
             params![title, Utc::now().to_rfc3339(), id],
-        )
+        )?;
+        if changed == 0 {
+            // A duplicate rename is successful, but a missing ID remains an error.
+            self.find_conversation(id)?;
+        }
+        Ok(())
     }
 
     pub fn set_pinned(&self, id: &str, pinned: bool) -> Result<(), AppError> {
