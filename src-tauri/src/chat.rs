@@ -79,6 +79,11 @@ impl<'a> ChatRepository<'a> {
         requested_limit: i64,
     ) -> Result<ChatSearchPage, AppError> {
         let query = query.trim();
+        // SQLite text and FTS5 tokenization do not consistently treat embedded NUL
+        // as ordinary searchable text. Reject it before constructing SQL.
+        if query.contains('\0') {
+            return Err(AppError::internal("chat search query contains a NUL character"));
+        }
         if query.chars().count() > 256 {
             return Err(AppError::internal("chat search query exceeds 256 characters"));
         }
@@ -666,6 +671,28 @@ fn map_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_search_rejects_embedded_nul_without_affecting_valid_queries() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let conversation = repo.create_conversation(Some("Alpha report")).unwrap();
+        repo.add_message(&conversation.id, "user", "quoted \"evidence\"", "completed", None)
+            .unwrap();
+
+        for query in ["a\0", "alp\0ha", "\0alpha", "alpha\0"] {
+            assert!(matches!(
+                repo.search_conversations(query, None, 10),
+                Err(AppError::Internal(_))
+            ), "NUL query must be rejected");
+        }
+
+        let result = repo.search_conversations("Alpha", None, 10).unwrap();
+        assert_eq!(result.conversations.len(), 1);
+        assert_eq!(result.conversations[0].id, conversation.id);
+        let quoted = repo.search_conversations("\"evidence\"", None, 10).unwrap();
+        assert_eq!(quoted.conversations.len(), 1);
+    }
 
     #[test]
     fn durable_database_deletes_message_indexes_and_retries_after_reopen() {
