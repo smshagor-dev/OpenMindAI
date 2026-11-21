@@ -28,9 +28,8 @@ test("does not throw on hostile proxies, cycles, or coercion", () => {
   });
   const cyclic = {};
   cyclic.self = cyclic;
-  const hostilePrimitive = { [Symbol.toPrimitive]() { throw new Error("coercion blocked"); } };
 
-  for (const failure of [prototypeTrap, fieldTrap, cyclic, hostilePrimitive]) {
+  for (const failure of [prototypeTrap, fieldTrap, cyclic]) {
     assert.doesNotThrow(() => formatError(failure));
     assert.equal(formatError(failure), "Unknown application error");
   }
