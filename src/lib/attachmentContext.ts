@@ -5,6 +5,11 @@ const TRUNCATION_NOTE = "\n[Attachment excerpt truncated; omitted text is NOT av
 const GAP = "\n[... intervening text omitted ...]\n";
 const OVERALL_NOTE = "[Attachment context limit: only excerpts were sent; omitted text was not analyzed. Ask for a specific passage or attach fewer files.]";
 
+/** Prevent untrusted filenames/metadata from forging additional prompt lines. */
+function safeAttachmentHeader(header: string): string {
+  return header.replace(/[\u0000-\u001f\u007f\u0085\u2028\u2029]/g, " ");
+}
+
 export interface AttachmentContextSource {
   name: string;
   header: string;
@@ -25,7 +30,7 @@ export interface AttachmentContextPlan {
 
 /** Distribute prompt context fairly. Reserve one header and warning capacity per file. */
 export function planAttachmentContext(sources: AttachmentContextSource[]): AttachmentContextPlan {
-  const joinedHeaders = sources.reduce((used, source) => used + source.header.length + (source.content ? 1 : 0), 0)
+  const joinedHeaders = sources.reduce((used, source) => used + safeAttachmentHeader(source.header).length + (source.content ? 1 : 0), 0)
     + Math.max(0, sources.length - 1) * 2;
   // Keep space for the final disclosure, even if every file needs its maximum share.
   let left = Math.max(0, MAX_TOTAL_ATTACHMENT_CONTEXT_CHARS - joinedHeaders - OVERALL_NOTE.length - 2);
@@ -91,7 +96,8 @@ export function serializeAttachmentContext(sources: AttachmentContextSource[], p
   const plan = planAttachmentContext(sources);
   const parts = sources.map((source, index) => {
     const excerpt = selectAttachmentExcerpt(source.content ?? "", plan.budgets[index], prompt);
-    return excerpt ? source.header + "\n" + excerpt : source.header;
+    const header = safeAttachmentHeader(source.header);
+    return excerpt ? header + "\n" + excerpt : header;
   });
   if (plan.truncatedCount || plan.omittedCount) parts.push(OVERALL_NOTE);
   const text = parts.join("\n\n");
