@@ -10,11 +10,19 @@ use std::{
 };
 
 fn relative(path: &Path) -> Result<(), AppError> {
-    if path
-        .components()
-        .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
-    {
-        return Err(AppError::internal("portable path traversal rejected"));
+    // A portable *output* must name a descendant, never the storage root.
+    // Empty paths and dot-only paths previously passed the component filter
+    // and resolved to the root itself.
+    let mut has_name = false;
+    for part in path.components() {
+        match part {
+            Component::Normal(_) => has_name = true,
+            Component::CurDir => {}
+            _ => return Err(AppError::internal("portable path traversal rejected")),
+        }
+    }
+    if !has_name {
+        return Err(AppError::internal("portable output path must name a child"));
     }
     Ok(())
 }
@@ -116,10 +124,10 @@ mod tests {
             resolve(&root, Path::new("generated/new/file.txt")).unwrap(),
             root.join("generated/new/file.txt")
         );
-        for path in ["../outside", "/outside", "generated/../../outside"] {
+        for path in ["", ".", "./.", "../outside", "/outside", "generated/../../outside"] {
             assert!(resolve(&root, Path::new(path)).is_err());
         }
-        fs::create_dir_all(root.join("generated/new")).unwrap();
+        // Reject root aliases before any file or directory is created.\n        for path in ["", ".", "./."] {\n            assert!(write_new(&root, Path::new(path), b"unsafe").is_err());\n        }\n        fs::create_dir_all(root.join("generated/new")).unwrap();
         write_new(&root, Path::new("generated/new/file.txt"), b"first").unwrap();
         assert!(write_new(&root, Path::new("generated/new/file.txt"), b"second").is_err());
         assert_eq!(
