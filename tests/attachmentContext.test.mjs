@@ -67,3 +67,11 @@ test("no truncation warning on fully included short content", () => {
   assert(!text.includes("omitted text was not analyzed"));
   assert.equal(planAttachmentContext(sources).items.length, 2);
 });
+
+
+test("NFKC-expanded prefix does not displace the query-relevant middle excerpt", () => {
+  const content = "ﬃ".repeat(4000) + " targetdiscovery 42 " + "z".repeat(12000);
+  const excerpt = selectAttachmentExcerpt(content, 3000, "Find targetdiscovery");
+  assert(excerpt.includes("targetdiscovery 42"));
+  assert(excerpt.length <= 3000);
+});
