@@ -1,5 +1,8 @@
 export function formatBytes(value?: number | null) {
-  if (!value) return value === 0 ? "0 B" : undefined;
+  if (value == null) return undefined;
+  // Never present corrupted or untrusted byte counts as valid storage usage.
+  if (!Number.isFinite(value) || value < 0) return "Unknown size";
+  if (value === 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
   let size = value;
   let index = 0;
