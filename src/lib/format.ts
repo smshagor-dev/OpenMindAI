@@ -17,17 +17,39 @@ export function formatTime(iso: string): string {
 }
 
 export function formatError(caught: unknown): string {
-  if (caught instanceof Error) return caught.message;
-  if (typeof caught === "string") return caught;
-  if (caught && typeof caught === "object") {
-    const record = caught as Record<string, unknown>;
-    const message = record.message ?? record.error ?? record.reason;
-    if (typeof message === "string") return message;
-    try {
-      return JSON.stringify(caught);
-    } catch {
+  // Error reporting must never replace the original failure with another throw.
+  // Unknown values can contain throwing accessors, Proxies, or toString methods.
+  try {
+    if (caught instanceof Error) {
+      try {
+        const message = caught.message;
+        if (typeof message === "string") return message;
+      } catch {
+        // Fall through to the other safe representations.
+      }
+    }
+    if (typeof caught === "string") return caught;
+    if (caught && typeof caught === "object") {
+      const record = caught as Record<string, unknown>;
+      for (const key of ["message", "error", "reason"]) {
+        try {
+          const message = record[key];
+          if (typeof message === "string") return message;
+        } catch {
+          // A hostile field must not prevent reading another useful field.
+        }
+      }
+      try {
+        const serialized = JSON.stringify(caught);
+        if (typeof serialized === "string") return serialized;
+      } catch {
+        // Cyclic objects and hostile serialization are expected here.
+      }
       return "Unknown application error";
     }
+    return String(caught);
+  } catch {
+    // Includes proxies with throwing prototype traps and hostile coercion.
+    return "Unknown application error";
   }
-  return String(caught);
 }
