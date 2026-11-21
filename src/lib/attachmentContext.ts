@@ -69,13 +69,29 @@ function relevantPosition(source: string, prompt: string, from: number): number 
   return best >= 0 ? best : Math.floor(source.length / 2);
 }
 
+// Keep UTF-16 slice boundaries on whole Unicode code points. Shrinking a
+// segment rather than extending it preserves the strict prompt budget.
+function safeExcerptSlice(text: string, start: number, end: number): string {
+  if (start > 0 && start < text.length) {
+    const current = text.charCodeAt(start);
+    const previous = text.charCodeAt(start - 1);
+    if (current >= 0xdc00 && current <= 0xdfff && previous >= 0xd800 && previous <= 0xdbff) start += 1;
+  }
+  if (end > start && end < text.length) {
+    const previous = text.charCodeAt(end - 1);
+    const next = text.charCodeAt(end);
+    if (previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end -= 1;
+  }
+  return text.slice(start, Math.max(start, end));
+}
+
 /** Includes start, a query-relevant mid-document window, and the ending. */
 export function selectAttachmentExcerpt(content: string, limit: number, prompt: string): string {
   if (limit <= 0) return "";
   if (content.length <= limit) return content;
   if (limit <= TRUNCATION_NOTE.length + GAP.length * 2 + 12) {
     if (limit <= TRUNCATION_NOTE.length) return TRUNCATION_NOTE.slice(0, limit);
-    return content.slice(0, limit - TRUNCATION_NOTE.length) + TRUNCATION_NOTE;
+    return safeExcerptSlice(content, 0, limit - TRUNCATION_NOTE.length) + TRUNCATION_NOTE;
   }
   const usable = limit - TRUNCATION_NOTE.length - GAP.length * 2;
   const head = Math.max(1, Math.floor(usable * 0.35));
@@ -83,7 +99,9 @@ export function selectAttachmentExcerpt(content: string, limit: number, prompt: 
   const middle = usable - head - tail;
   const hit = relevantPosition(content, prompt, head);
   const start = Math.max(head, Math.min(content.length - tail - middle, hit - Math.floor(middle / 2)));
-  const text = content.slice(0, head) + GAP + content.slice(start, start + middle) + GAP + content.slice(-tail) + TRUNCATION_NOTE;
+  const text = safeExcerptSlice(content, 0, head) + GAP
+    + safeExcerptSlice(content, start, start + middle) + GAP
+    + safeExcerptSlice(content, content.length - tail, content.length) + TRUNCATION_NOTE;
   return text.slice(0, limit);
 }
 
