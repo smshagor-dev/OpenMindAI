@@ -61,12 +61,24 @@ function relevantPosition(source: string, prompt: string, from: number): number 
     .filter(term => !["please", "about", "these", "those", "document", "explain", "summarize", "what", "which", "from", "with"].includes(term)))].slice(0, 16);
   if (!terms.length) return Math.floor(source.length / 2);
   const lower = source.toLowerCase().normalize("NFKC");
+  const normalizedFrom = source.slice(0, from).toLowerCase().normalize("NFKC").length;
   let best = -1;
   for (const term of terms) {
-    const at = lower.indexOf(term, from);
+    const at = lower.indexOf(term, normalizedFrom);
     if (at >= 0 && (best < 0 || at < best)) best = at;
   }
-  return best >= 0 ? best : Math.floor(source.length / 2);
+  if (best < 0) return Math.floor(source.length / 2);
+  // NFKC may expand ligatures or compatibility characters. A normalized index
+  // is not a valid offset into the original attachment used by slice().
+  let lo = 0;
+  let hi = source.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi + 1) / 2);
+    const length = source.slice(0, mid).toLowerCase().normalize("NFKC").length;
+    if (length <= best) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
 }
 
 /** Includes start, a query-relevant mid-document window, and the ending. */
