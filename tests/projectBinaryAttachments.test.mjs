@@ -137,6 +137,51 @@ test("Save copy returns exact scoped bytes with sanitized filename, and rejects 
   }
 });
 
+
+test("corrupt native download metadata is rejected before any browser download", async () => {
+  const originalDocument = globalThis.document;
+  const originalURL = globalThis.URL;
+  let created = 0;
+  globalThis.document = {
+    createElement() { throw new Error("download must not start"); },
+  };
+  globalThis.URL = {
+    createObjectURL() { created++; throw new Error("download must not start"); },
+  };
+  const base = {
+    name: "নথি.png",
+    mimeType: "image/png",
+    sizeBytes: 1,
+    dataBase64: "AA==",
+  };
+  const invalid = [
+    { ...base, name: null },
+    { ...base, name: 42 },
+    { ...base, name: "a".repeat(4_097) },
+    { ...base, mimeType: { toString() { throw new Error("unsafe getter"); } } },
+    { ...base, mimeType: "image/png\\nX-Evil: true" },
+    { ...base, mimeType: "x".repeat(256) },
+    { ...base, dataBase64: null },
+    { ...base, dataBase64: 123 },
+  ];
+  try {
+    for (const record of invalid) {
+      globalThis.__projectBinaryApi = {
+        readProjectBinaryFile: async () => record,
+      };
+      await assert.rejects(
+        saveProjectBinaryCopy("project", "file"),
+        /invalid metadata/,
+      );
+    }
+    assert.equal(created, 0);
+  } finally {
+    globalThis.document = originalDocument;
+    globalThis.URL = originalURL;
+    delete globalThis.__projectBinaryApi;
+  }
+});
+
 test.after(async () => {
   await rm(directory, { recursive: true, force: true });
 });
