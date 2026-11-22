@@ -40,6 +40,16 @@ export async function saveProjectBinaryCopy(projectId: string, fileId: string) {
       !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(file.dataBase64)) {
     throw new Error("Saved attachment has invalid base64 encoding.");
   }
+  // RFC 4648 padding bits must be zero. Otherwise distinct encoded records can
+  // silently decode to the same bytes, hiding corruption in legacy metadata.
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const encoded = file.dataBase64;
+  const hasTwoPads = encoded.endsWith("==");
+  const hasOnePad = !hasTwoPads && encoded.endsWith("=");
+  if ((hasTwoPads && (alphabet.indexOf(encoded[encoded.length - 3]) & 15) !== 0) ||
+      (hasOnePad && (alphabet.indexOf(encoded[encoded.length - 2]) & 3) !== 0)) {
+    throw new Error("Saved attachment has noncanonical base64 padding.");
+  }
   const binary = globalThis.atob(file.dataBase64);
   if (binary.length !== file.sizeBytes || binary.length > MAX_PROJECT_BINARY_FILE_BYTES) {
     throw new Error("Saved attachment failed size validation.");
