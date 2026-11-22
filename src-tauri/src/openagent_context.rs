@@ -914,7 +914,7 @@ mod tests {
     fn relevance_sample_rejects_malformed_utf8_inside_sample() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("invalid.rs");
-        fs::write(&path, b"fn refresh_session() {}\\xFF").unwrap();
+        fs::write(&path, [b"fn refresh_session() {}".as_slice(), &[0xff]].concat()).unwrap();
         assert!(read_relevance_text(&path).unwrap().is_none());
     }
 
