@@ -122,11 +122,31 @@ test("Save copy returns exact scoped bytes with sanitized filename, and rejects 
     assert.deepEqual(originals, ["blob:verified-download"]);
     assert.equal(dom.window.document.querySelectorAll("a").length, 0);
 
+    // An oversized legacy name must not become a multi-megabyte DOM attribute.
+    // The code-point boundary must not split a supplementary-plane character.
+    globalThis.__projectBinaryApi.readProjectBinaryFile = async () => ({
+      name: "x".repeat(254) + "🚀" + "y".repeat(200_000),
+      mimeType: "application/octet-stream",
+      dataBase64: "AA==", sizeBytes: 1, sha256: "x",
+    });
+    await saveProjectBinaryCopy("owner-project", "file-23");
+    assert.equal(downloads.length, 2);
+    assert.equal([...downloads[1].name].length, 255);
+    assert.equal(downloads[1].name, "x".repeat(254) + "🚀");
+    assert.deepEqual([...new Uint8Array(await blobRef.arrayBuffer())], [0]);
+    assert.equal(dom.window.document.querySelectorAll("a").length, 0);
+
+    globalThis.__projectBinaryApi.readProjectBinaryFile = async () => ({
+      name: "", mimeType: null, dataBase64: "AA==", sizeBytes: 1, sha256: "x",
+    });
+    await saveProjectBinaryCopy("owner-project", "file-23");
+    assert.equal(downloads[2].name, "project-attachment");
+
     globalThis.__projectBinaryApi.readProjectBinaryFile = async () => ({
       name: "corrupt.bin", mimeType: null, dataBase64: "AA==", sizeBytes: 30, sha256: "x",
     });
     await assert.rejects(saveProjectBinaryCopy("owner-project", "file-23"), /size validation/);
-    assert.equal(downloads.length, 1);
+    assert.equal(downloads.length, 3);
   } finally {
     dom.window.HTMLAnchorElement.prototype.click = originalClick;
     globalThis.document = originalDocument;
