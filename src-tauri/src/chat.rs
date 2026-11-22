@@ -314,7 +314,9 @@ impl<'a> ChatRepository<'a> {
     pub fn set_pinned(&self, id: &str, pinned: bool) -> Result<(), AppError> {
         self.touch_conversation_with(
             id,
-            "UPDATE conversations SET pinned = ?1, updated_at = ?2 WHERE id = ?3",
+            "UPDATE conversations SET pinned = ?1,
+             updated_at = CASE WHEN pinned != ?1 THEN ?2 ELSE updated_at END
+             WHERE id = ?3",
             params![pinned as i64, Utc::now().to_rfc3339(), id],
         )
     }
@@ -666,6 +668,36 @@ fn map_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_pin_state_preserves_conversation_timestamp_and_missing_id_errors() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let chat = repo.create_conversation(Some("Pinned")).unwrap();
+        let sentinel = "2001-01-01T00:00:00Z";
+        database.connection().execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            params![sentinel, chat.id],
+        ).unwrap();
+
+        repo.set_pinned(&chat.id, false).unwrap();
+        assert_eq!(repo.find_conversation(&chat.id).unwrap().updated_at, sentinel);
+        repo.set_pinned(&chat.id, true).unwrap();
+        let pinned = repo.find_conversation(&chat.id).unwrap();
+        assert!(pinned.pinned);
+        assert_ne!(pinned.updated_at, sentinel);
+
+        database.connection().execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            params![sentinel, chat.id],
+        ).unwrap();
+        repo.set_pinned(&chat.id, true).unwrap();
+        assert_eq!(repo.find_conversation(&chat.id).unwrap().updated_at, sentinel);
+        repo.set_pinned(&chat.id, false).unwrap();
+        assert!(!repo.find_conversation(&chat.id).unwrap().pinned);
+        assert_ne!(repo.find_conversation(&chat.id).unwrap().updated_at, sentinel);
+        assert!(repo.set_pinned("missing-conversation", true).is_err());
+    }
 
     #[test]
     fn durable_database_deletes_message_indexes_and_retries_after_reopen() {
