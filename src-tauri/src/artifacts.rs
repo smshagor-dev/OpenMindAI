@@ -377,7 +377,7 @@ impl<'a> ArtifactManager<'a> {
 
         let (directory, reservation) =
             crate::artifact_output::reserve_directory(self.root.root(), Path::new(subdir))?;
-        let filename = format!("{stem}.{extension}");
+        let filename = bounded_artifact_filename(&stem, &extension);
         let path = self
             .root
             .root()
@@ -435,6 +435,35 @@ fn split_stem_extension(hint: &str, kind: &str) -> (String, String) {
         sanitize_filename(trimmed),
         default_extension(kind).to_string(),
     )
+}
+
+// Keep a single filename component within the common 255-byte filesystem limit.
+// Truncate only on UTF-8 scalar boundaries and reserve space for the extension.
+fn bounded_artifact_filename(stem: &str, extension: &str) -> String {
+    const MAX_COMPONENT_BYTES: usize = 255;
+    const MAX_EXTENSION_BYTES: usize = 32;
+    let extension: String = extension
+        .chars()
+        .take_while(|c| c.len_utf8() <= MAX_EXTENSION_BYTES)
+        .scan(0usize, |used, c| {
+            if *used + c.len_utf8() > MAX_EXTENSION_BYTES {
+                None
+            } else {
+                *used += c.len_utf8();
+                Some(c)
+            }
+        })
+        .collect();
+    let available = MAX_COMPONENT_BYTES - extension.len() - 1;
+    let stem = if stem.is_empty() { "artifact" } else { stem };
+    let mut prefix = String::new();
+    for c in stem.chars() {
+        if prefix.len() + c.len_utf8() > available {
+            break;
+        }
+        prefix.push(c);
+    }
+    format!("{prefix}.{extension}")
 }
 
 fn sanitize_filename(name: &str) -> String {
