@@ -56,6 +56,47 @@ test("binary upload sends original bytes, not a text preview or a source-device 
   }
 });
 
+test("binary upload rejects oversized metadata before reading bytes or invoking native storage", async () => {
+  let reads = 0;
+  let writes = 0;
+  globalThis.__projectBinaryApi = {
+    addProjectBinaryFile: async () => { writes++; return { status: "attached" }; },
+  };
+  const fixture = (name, type) => ({
+    name, type, size: 1,
+    arrayBuffer: async () => { reads++; return Uint8Array.of(42).buffer; },
+  });
+  try {
+    await assert.rejects(
+      attachProjectBinaryFile("p", fixture("🚀".repeat(64), "image/png")),
+      /filename.*255 UTF-8 bytes/,
+    );
+    await assert.rejects(
+      attachProjectBinaryFile("p", fixture("valid.bin", "x".repeat(256))),
+      /MIME type/,
+    );
+    await assert.rejects(
+      attachProjectBinaryFile("p", fixture("valid.bin", "image/png\nunsafe")),
+      /MIME type/,
+    );
+    await assert.rejects(
+      attachProjectBinaryFile("p", fixture("  ", "image/png")),
+      /filename/,
+    );
+    assert.equal(reads, 0, "invalid metadata must be rejected before file IO");
+    assert.equal(writes, 0, "invalid metadata must not reach native storage");
+
+    const accepted = await attachProjectBinaryFile(
+      "p", fixture("বাংলা-নথি.bin", "application/octet-stream"),
+    );
+    assert.equal(accepted.status, "attached");
+    assert.equal(reads, 1);
+    assert.equal(writes, 1);
+  } finally {
+    delete globalThis.__projectBinaryApi;
+  }
+});
+
 test("1.5 MB attachment chunk encoding succeeds without spreading a huge argument list", async () => {
   const data = Uint8Array.from({ length: 1_500_000 }, (_, index) => index & 255);
   const calls = [];
