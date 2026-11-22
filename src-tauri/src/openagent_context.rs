@@ -474,7 +474,16 @@ fn read_relevance_text(path: &Path) -> Result<Option<String>, AppError> {
     let mut bytes = Vec::with_capacity(metadata.len().min(MAX_RELEVANCE_SCAN_BYTES) as usize);
     let mut limited = fs::File::open(path)?.take(MAX_RELEVANCE_SCAN_BYTES);
     limited.read_to_end(&mut bytes)?;
-    Ok(String::from_utf8(bytes).ok())
+    // A byte-limited sample can end inside an otherwise valid UTF-8 scalar.
+    // Keep the valid prefix, but never conceal malformed bytes in the middle.
+    match std::str::from_utf8(&bytes) {
+        Ok(text) => Ok(Some(text.to_owned())),
+        Err(error) if error.error_len().is_none() => {
+            Ok(Some(String::from_utf8(bytes[..error.valid_up_to()].to_vec())
+                .expect("validated UTF-8 prefix")))
+        }
+        Err(_) => Ok(None),
+    }
 }
 
 fn read_source_excerpt(path: &Path, terms: &HashSet<String>) -> Result<Option<String>, AppError> {
@@ -878,6 +887,35 @@ mod tests {
         assert!(!context.contains("DOCS_ONLY_RULE"));
         assert!(!context.contains("TOOLS_ONLY_RULE"));
         assert!(!context.contains("DOCS_CLAUDE_RULE"));
+    }
+
+    #[test]
+    fn relevance_sample_keeps_valid_prefix_when_byte_limit_splits_unicode() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("opaque.rs");
+        // The first byte of a three-byte scalar lands at the final sample byte.
+        let mut content = b"fn refresh_session() {}\n".to_vec();
+        content.resize(MAX_RELEVANCE_SCAN_BYTES as usize - 1, b' ');
+        content.extend_from_slice("€".as_bytes());
+        fs::write(&path, content).unwrap();
+        let sample = read_relevance_text(&path).unwrap().unwrap();
+        assert!(sample.contains("refresh_session"));
+        assert_eq!(sample.len(), MAX_RELEVANCE_SCAN_BYTES as usize - 1);
+        assert!(!sample.contains('�'));
+
+        let context = build_repository_context(
+            &[("root".into(), temp.path().display().to_string())],
+            "refresh session",
+        ).unwrap();
+        assert!(context.contains("RELEVANT FILE [opaque.rs]"));
+    }
+
+    #[test]
+    fn relevance_sample_rejects_malformed_utf8_inside_sample() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("invalid.rs");
+        fs::write(&path, b"fn refresh_session() {}\\xFF").unwrap();
+        assert!(read_relevance_text(&path).unwrap().is_none());
     }
 
     #[test]
