@@ -473,8 +473,8 @@ mod tests {
         assert_eq!(sanitize_filename(&long_ascii), "a".repeat(40));
         let long_unicode = "😀".repeat(100_000);
         let (stem, extension) = split_stem_extension(&format!("{long_unicode}.{}", "😀".repeat(100)), "code");
-        assert_eq!(stem, "-");
-        assert_eq!(extension, "-");
+        assert_eq!(stem, "");
+        assert_eq!(extension, "txt");
         // Four-byte letters (rather than emoji punctuation) exercise the
         // maximum possible UTF-8 bytes retained by sanitization.
         let long_letters = "𐐀".repeat(100_000);
