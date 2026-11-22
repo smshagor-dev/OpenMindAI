@@ -77,6 +77,33 @@ test("1.5 MB attachment chunk encoding succeeds without spreading a huge argumen
   }
 });
 
+test("malformed upload sizes fail before reading bytes or writing native storage", async () => {
+  let reads = 0;
+  let writes = 0;
+  globalThis.__projectBinaryApi = {
+    addProjectBinaryFile: async () => { writes += 1; return { status: "attached" }; },
+  };
+  try {
+    for (const size of [-1, -0.5, Number.NaN, Infinity, -Infinity, 0.5, "12", null, undefined, 1_500_001]) {
+      const malformed = {
+        name: "invalid.bin",
+        type: "application/octet-stream",
+        size,
+        arrayBuffer: async () => { reads += 1; return new Uint8Array([1]).buffer; },
+      };
+      await assert.rejects(attachProjectBinaryFile("project-a", malformed), /1\\.5 MB/);
+    }
+    assert.equal(reads, 0, "invalid size metadata must be rejected before file IO");
+    assert.equal(writes, 0, "invalid size metadata must not reach native storage");
+
+    const empty = await attachProjectBinaryFile("project-a", makeFile("empty.bin", []));
+    assert.equal(empty.status, "attached");
+    assert.equal(writes, 1, "zero-byte attachments remain supported");
+  } finally {
+    delete globalThis.__projectBinaryApi;
+  }
+});
+
 test("Save copy returns exact scoped bytes with sanitized filename, and rejects damaged lengths", async () => {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", {
     url: "http://localhost/",
