@@ -5,7 +5,8 @@ const BASE64_CHUNK = 16_384;
 
 /** Original bytes, not a filename/path pointer or decoded-text preview. */
 export async function attachProjectBinaryFile(projectId: string, file: File) {
-  if (file.size > MAX_PROJECT_BINARY_FILE_BYTES) {
+  if (!Number.isSafeInteger(file.size) || file.size < 0 ||
+      file.size > MAX_PROJECT_BINARY_FILE_BYTES) {
     throw new Error("Binary project attachments must be 1.5 MB or smaller.");
   }
   const bytes = new Uint8Array(await file.arrayBuffer());
