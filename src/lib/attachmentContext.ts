@@ -74,7 +74,9 @@ export function selectAttachmentExcerpt(content: string, limit: number, prompt: 
   if (limit <= 0) return "";
   if (content.length <= limit) return content;
   if (limit <= TRUNCATION_NOTE.length + GAP.length * 2 + 12) {
-    if (limit <= TRUNCATION_NOTE.length) return TRUNCATION_NOTE.slice(0, limit);
+    // The overall context already reports truncation. Never spend a tiny
+    // nonzero evidence budget entirely on a partial warning.
+    if (limit <= TRUNCATION_NOTE.length) return content.slice(0, limit);
     return content.slice(0, limit - TRUNCATION_NOTE.length) + TRUNCATION_NOTE;
   }
   const usable = limit - TRUNCATION_NOTE.length - GAP.length * 2;
