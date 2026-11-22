@@ -5,6 +5,16 @@ const BASE64_CHUNK = 16_384;
 
 /** Original bytes, not a filename/path pointer or decoded-text preview. */
 export async function attachProjectBinaryFile(projectId: string, file: File) {
+  // Reject untrusted metadata before reading or base64-encoding attachment bytes.
+  // A Unicode filename may occupy up to four UTF-8 bytes per character.
+  if (typeof file.name !== "string" || !file.name.trim() ||
+      new TextEncoder().encode(file.name).byteLength > 255) {
+    throw new Error("Binary attachment filename must be nonempty and at most 255 UTF-8 bytes.");
+  }
+  if (typeof file.type !== "string" || file.type.length > 255 ||
+      /[^\x20-\x7e]/.test(file.type)) {
+    throw new Error("Binary attachment MIME type must be printable ASCII and at most 255 bytes.");
+  }
   if (file.size > MAX_PROJECT_BINARY_FILE_BYTES) {
     throw new Error("Binary project attachments must be 1.5 MB or smaller.");
   }
