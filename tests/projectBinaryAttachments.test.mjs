@@ -127,6 +127,27 @@ test("Save copy returns exact scoped bytes with sanitized filename, and rejects 
     });
     await assert.rejects(saveProjectBinaryCopy("owner-project", "file-23"), /size validation/);
     assert.equal(downloads.length, 1);
+
+    // Nonzero unused padding bits are not a canonical encoding, even though
+    // permissive decoders may return the same bytes as the valid spelling.
+    for (const [encoded, size] of [["Zh==", 1], ["Zm9=", 2]]) {
+      globalThis.__projectBinaryApi.readProjectBinaryFile = async () => ({
+        name: "corrupt.bin", mimeType: null, dataBase64: encoded,
+        sizeBytes: size, sha256: "legacy",
+      });
+      await assert.rejects(saveProjectBinaryCopy("owner-project", "file-23"), /noncanonical base64 padding/);
+      assert.equal(downloads.length, 1, "invalid encoding must not start a download");
+    }
+
+    for (const [encoded, expected] of [["Zg==", [102]], ["Zm8=", [102, 111]]]) {
+      globalThis.__projectBinaryApi.readProjectBinaryFile = async () => ({
+        name: "valid.bin", mimeType: null, dataBase64: encoded,
+        sizeBytes: expected.length, sha256: "legacy",
+      });
+      await saveProjectBinaryCopy("owner-project", "file-23");
+      assert.deepEqual([...new Uint8Array(await blobRef.arrayBuffer())], expected);
+    }
+    assert.equal(downloads.length, 3, "canonical encodings remain downloadable");
   } finally {
     dom.window.HTMLAnchorElement.prototype.click = originalClick;
     globalThis.document = originalDocument;
