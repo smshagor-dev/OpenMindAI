@@ -228,6 +228,18 @@ pub fn backup_database(
     })
 }
 
+fn snapshot_is_readable(path: &std::path::Path) -> bool {
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+        | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let Ok(connection) = rusqlite::Connection::open_with_flags(path, flags) else {
+        return false;
+    };
+    matches!(
+        connection.query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0)),
+        Ok(result) if result == "ok"
+    )
+}
+
 pub fn list_backups(root: &PortableRootManager) -> Result<Vec<BackupInfo>, AppError> {
     let backups_dir = root.resolve_relative("backups")?;
     if !backups_dir.exists() {
@@ -248,6 +260,11 @@ pub fn list_backups(root: &PortableRootManager) -> Result<Vec<BackupInfo>, AppEr
         }
         let metadata = entry.metadata()?;
         if !metadata.is_file() {
+            continue;
+        }
+        // A matching filename alone is not evidence of a usable backup. Open
+        // read-only so listing cannot create or modify a corrupt snapshot.
+        if !snapshot_is_readable(&entry.path()) {
             continue;
         }
         let modified: chrono::DateTime<Utc> = metadata.modified()?.into();
@@ -336,6 +353,28 @@ mod tests {
             serde_json::to_value(&info).unwrap()["scope"],
             "databaseOnly"
         );
+    }
+
+    #[test]
+    fn backup_listing_skips_corrupt_and_empty_matching_snapshots() {
+        let (_temp, root, database) = setup();
+        let valid = backup_database(&root, &database).unwrap();
+        let dir = root.resolve_relative("backups").unwrap();
+        fs::write(dir.join("openmindai-corrupt.db"), b"not a sqlite database").unwrap();
+        fs::write(dir.join("openmindai-empty.db"), b"").unwrap();
+        let listed = list_backups(&root).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, valid.name);
+    }
+
+    #[test]
+    fn backup_listing_does_not_modify_invalid_snapshot_bytes() {
+        let (_temp, root, _database) = setup();
+        let path = root.resolve_relative("backups/openmindai-invalid.db").unwrap();
+        let bytes = b"broken backup sentinel";
+        fs::write(&path, bytes).unwrap();
+        assert!(list_backups(&root).unwrap().is_empty());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
     }
 
     #[test]
