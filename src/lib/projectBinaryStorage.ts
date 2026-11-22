@@ -35,6 +35,16 @@ export async function saveProjectBinaryCopy(projectId: string, fileId: string) {
       file.sizeBytes > MAX_PROJECT_BINARY_FILE_BYTES) {
     throw new Error("Saved attachment failed size validation.");
   }
+  // Native records may be legacy/corrupt: validate metadata shapes before
+  // invoking string operations, allocating decoded bytes, or creating a URL.
+  if (typeof file.dataBase64 !== "string" ||
+      typeof file.name !== "string" ||
+      typeof file.mimeType !== "string" && file.mimeType !== null ||
+      file.name.length > 4_096 ||
+      (file.mimeType !== null &&
+        (file.mimeType.length > 255 || !/^[\\x20-\\x7e]*$/.test(file.mimeType)))) {
+    throw new Error("Saved attachment has invalid metadata.");
+  }
   const expectedEncodedLength = 4 * Math.ceil(file.sizeBytes / 3);
   if (file.dataBase64.length !== expectedEncodedLength ||
       !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(file.dataBase64)) {
