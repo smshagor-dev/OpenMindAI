@@ -41,6 +41,36 @@ test("Cloud network failures permit one local fallback without remote replay", a
   assert.equal(localCalls,1);
 });
 
+test("a throwing fallback notification cannot prevent local recovery", async () => {
+  let remoteCalls = 0;
+  let localCalls = 0;
+  let notifications = 0;
+  const decision = selectExecutionRoute({ preference: "auto", task: "chat", online: true, cloudConnected: true });
+  const result = await runWithFallback(
+    decision,
+    async () => { remoteCalls++; throw new Error("HTTP 503: unavailable"); },
+    async () => { localCalls++; return "recovered"; },
+    () => { notifications++; throw new Error("notification UI unmounted"); },
+  );
+  assert.deepEqual(result, { result: "recovered", target: "local", fallback: true });
+  assert.equal(remoteCalls, 1, "never replay a remote POST");
+  assert.equal(localCalls, 1, "recover locally exactly once");
+  assert.equal(notifications, 1);
+});
+
+test("a throwing fallback notification is not called for rejected Cloud failures", async () => {
+  let notifications = 0;
+  let localCalls = 0;
+  await assert.rejects(runWithFallback(
+    { target: "cloud", offline: false, reason: "Cloud", fallbackAllowed: true },
+    async () => { throw new ResponsePersistenceError("database locked"); },
+    async () => { localCalls++; return "unexpected"; },
+    () => { notifications++; throw new Error("should not run"); },
+  ), ResponsePersistenceError);
+  assert.equal(notifications, 0);
+  assert.equal(localCalls, 0);
+});
+
 test("validation and response-persistence errors are never replayed", async()=>{
   for (const error of [new Error("Cloud/Studio: HTTP 422: invalid model"),new ResponsePersistenceError("SQLite locked")]) {
     let localCalls=0;
