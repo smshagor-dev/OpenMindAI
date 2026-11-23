@@ -16,18 +16,21 @@ export function formatTime(iso: string): string {
   return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
+const sanitizeErrorDisplay = (value: string): string =>
+  value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/g, "");
+
 export function formatError(caught: unknown): string {
-  if (caught instanceof Error) return caught.message;
-  if (typeof caught === "string") return caught;
+  if (caught instanceof Error) return sanitizeErrorDisplay(caught.message);
+  if (typeof caught === "string") return sanitizeErrorDisplay(caught);
   if (caught && typeof caught === "object") {
     const record = caught as Record<string, unknown>;
     const message = record.message ?? record.error ?? record.reason;
-    if (typeof message === "string") return message;
+    if (typeof message === "string") return sanitizeErrorDisplay(message);
     try {
-      return JSON.stringify(caught);
+      return sanitizeErrorDisplay(JSON.stringify(caught));
     } catch {
       return "Unknown application error";
     }
   }
-  return String(caught);
+  return sanitizeErrorDisplay(String(caught));
 }
