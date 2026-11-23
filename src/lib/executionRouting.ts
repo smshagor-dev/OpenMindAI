@@ -22,6 +22,17 @@ export interface RouteDecision {
 
 /** Local image-to-3D is not a reference-conditioned ML model. Never silently substitute a primitive. */
 export function selectExecutionRoute(input: RouteInput): RouteDecision {
+  // IPC and persisted settings can violate TypeScript unions at runtime.
+  // An unknown preference must never silently become Auto/Cloud.
+  if (input.preference !== "auto" && input.preference !== "local" && input.preference !== "cloud") {
+    return { target: "deferred", offline: input.online !== true, fallbackAllowed: false,
+      reason: "Invalid execution mode; no engine was contacted." };
+  }
+  if (input.task !== "chat" && input.task !== "vision" && input.task !== "search" &&
+      input.task !== "research" && input.task !== "scene3d" && input.task !== "image-to-3d") {
+    return { target: "deferred", offline: input.online !== true, fallbackAllowed: false,
+      reason: "Unsupported execution task; no engine was contacted." };
+  }
   const offline = !input.online;
   const localSupported = input.task !== "image-to-3d" && input.localAvailable !== false;
   if (input.forceLocal) {
