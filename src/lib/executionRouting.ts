@@ -43,7 +43,9 @@ export function selectExecutionRoute(input: RouteInput): RouteDecision {
       : { target: "deferred", offline, reason: "Cloud-only mode requires a connected account, internet and a supported hosted model." };
   }
   if (remoteReady) {
-    return { target: "cloud", offline: false, fallbackAllowed: true, reason: "Both: Cloud first with Local fallback." };
+    return { target: "cloud", offline: false, fallbackAllowed: localSupported, reason: localSupported
+      ? "Both: Cloud first with Local fallback."
+      : "Cloud available; no equivalent local fallback is installed." };
   }
   if (localSupported) {
     return { target: "local", offline, reason: offline
