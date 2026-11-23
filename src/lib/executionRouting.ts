@@ -129,7 +129,7 @@ export async function runWithFallback<T>(
   try {
     return { result: await remote(), target: "cloud", fallback: false };
   } catch (error) {
-    if (decision.fallbackAllowed === false || error instanceof ResponsePersistenceError || !isRecoverableCloudFailure(error))
+    if (decision.fallbackAllowed !== true || error instanceof ResponsePersistenceError || !isRecoverableCloudFailure(error))
       throw error;
     onFallback?.("Cloud request failed (" + describeFailure(error) + "). Continuing with the local engine.");
     return { result: await local(), target: "local", fallback: true };
