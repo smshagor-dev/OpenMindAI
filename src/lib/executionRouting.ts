@@ -22,6 +22,16 @@ export interface RouteDecision {
 
 /** Local image-to-3D is not a reference-conditioned ML model. Never silently substitute a primitive. */
 export function selectExecutionRoute(input: RouteInput): RouteDecision {
+  // Runtime IPC/settings data can violate TypeScript's boolean annotations.
+  // Never treat truthy strings or malformed capability flags as Cloud consent.
+  const requiredFlagsValid = typeof input.online === "boolean" &&
+    typeof input.cloudConnected === "boolean";
+  const optionalFlagsValid = (["cloudModelReady", "localAvailable", "forceLocal"] as const)
+    .every((key) => input[key] === undefined || typeof input[key] === "boolean");
+  if (!requiredFlagsValid || !optionalFlagsValid) {
+    return { target: "deferred", offline: true,
+      reason: "Invalid execution capability metadata. No Cloud or Local request was started." };
+  }
   const offline = !input.online;
   const localSupported = input.task !== "image-to-3d" && input.localAvailable !== false;
   if (input.forceLocal) {
