@@ -139,3 +139,32 @@ test("first-run Cloud/Local/Both choice survives simulated relaunch before downl
     else globalThis.window = originalWindow;
   }
 });
+
+test("Cloud recovery requires explicit fallback permission, never an omitted policy", async () => {
+  for (const fallbackAllowed of [undefined, false]) {
+    let remoteCalls = 0, localCalls = 0, notifications = 0;
+    const decision = { target: "cloud", offline: false, reason: "Cloud execution", fallbackAllowed };
+    await assert.rejects(
+      runWithFallback(
+        decision,
+        async () => { remoteCalls++; throw new Error("Cloud API request failed"); },
+        async () => { localCalls++; return "unexpected local response"; },
+        () => { notifications++; },
+      ),
+      /Cloud API request failed/,
+    );
+    assert.equal(remoteCalls, 1, "never replay the remote request");
+    assert.equal(localCalls, 0, "missing or denied permission must not start local inference");
+    assert.equal(notifications, 0, "do not announce a fallback that cannot happen");
+  }
+
+  let localCalls = 0;
+  const optedIn = { target: "cloud", offline: false, reason: "Auto recovery", fallbackAllowed: true };
+  const recovered = await runWithFallback(
+    optedIn,
+    async () => { throw new Error("Cloud API request failed"); },
+    async () => { localCalls++; return "recovered locally"; },
+  );
+  assert.deepEqual(recovered, { result: "recovered locally", target: "local", fallback: true });
+  assert.equal(localCalls, 1);
+});
