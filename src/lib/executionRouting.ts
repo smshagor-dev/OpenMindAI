@@ -131,7 +131,12 @@ export async function runWithFallback<T>(
   } catch (error) {
     if (decision.fallbackAllowed === false || error instanceof ResponsePersistenceError || !isRecoverableCloudFailure(error))
       throw error;
-    onFallback?.("Cloud request failed (" + describeFailure(error) + "). Continuing with the local engine.");
+    // Notification is best-effort: a broken UI callback must not block local recovery.
+    try {
+      onFallback?.("Cloud request failed (" + describeFailure(error) + "). Continuing with the local engine.");
+    } catch {
+      // Do not replace the recoverable Cloud error with a notification failure.
+    }
     return { result: await local(), target: "local", fallback: true };
   }
 }
