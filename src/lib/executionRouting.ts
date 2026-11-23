@@ -81,7 +81,8 @@ export function shouldShowCloudModels(
   signedIn: boolean,
   availableModelCount: number,
 ): boolean {
-  return mode !== "local" && online && signedIn && availableModelCount > 0;
+  return mode !== "local" && online && signedIn &&
+    Number.isSafeInteger(availableModelCount) && availableModelCount > 0;
 }
 
 export function describeFailure(error: unknown): string {
