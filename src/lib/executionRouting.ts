@@ -86,9 +86,19 @@ export function shouldShowCloudModels(
 
 export function describeFailure(error: unknown): string {
   if (typeof error === "string") return error;
-  if (error instanceof Error) return error.message;
-  if (error && typeof error === "object" && "message" in error)
-    return String((error as { message: unknown }).message);
+  // Transport errors are untrusted: revoked Proxies, accessors and coercion can throw.
+  // Never let diagnostic formatting mask the original request failure.
+  try {
+    if (error instanceof Error) {
+      return typeof error.message === "string" ? error.message : "Unknown request failure";
+    }
+    if (error && typeof error === "object" && "message" in error) {
+      const message = (error as { message: unknown }).message;
+      return typeof message === "string" ? message : "Unknown request failure";
+    }
+  } catch {
+    return "Unknown request failure";
+  }
   return "Unknown request failure";
 }
 
@@ -102,6 +112,15 @@ export function isRecoverableCloudFailure(error: unknown): boolean {
     return false;
   return /\bHTTP\s+(408|425|429|500|502|503|504|520|522|524)\b/i.test(message) ||
     /unreachable|connection (?:lost|refused|reset)|offline|no internet|network(?:error| failure)?|timeout|timed out|failed to fetch|cloud api request failed|cloud returned an empty assistant response|server returned non-json response|temporarily unavailable|service unavailable/i.test(message);
+}
+
+function isPersistenceFailure(error: unknown): boolean {
+  try {
+    return error instanceof ResponsePersistenceError;
+  } catch {
+    // A hostile/revoked Proxy is never a reason to retry locally.
+    return true;
+  }
 }
 
 export class ResponsePersistenceError extends Error {
@@ -129,7 +148,7 @@ export async function runWithFallback<T>(
   try {
     return { result: await remote(), target: "cloud", fallback: false };
   } catch (error) {
-    if (decision.fallbackAllowed === false || error instanceof ResponsePersistenceError || !isRecoverableCloudFailure(error))
+    if (decision.fallbackAllowed !== true || isPersistenceFailure(error) || !isRecoverableCloudFailure(error))
       throw error;
     onFallback?.("Cloud request failed (" + describeFailure(error) + "). Continuing with the local engine.");
     return { result: await local(), target: "local", fallback: true };
