@@ -139,3 +139,40 @@ test("first-run Cloud/Local/Both choice survives simulated relaunch before downl
     else globalThis.window = originalWindow;
   }
 });
+
+
+test("auto Cloud routing does not attempt unavailable or unsupported Local fallback", async () => {
+  for (const input of [
+    { preference: "auto", task: "chat", online: true, cloudConnected: true, localAvailable: false },
+    { preference: "auto", task: "image-to-3d", online: true, cloudConnected: true, localAvailable: true },
+  ]) {
+    const route = selectExecutionRoute(input);
+    assert.equal(route.target, "cloud");
+    assert.equal(route.fallbackAllowed, false);
+    let remoteCalls = 0, localCalls = 0, notifications = 0;
+    await assert.rejects(
+      runWithFallback(route,
+        async () => { remoteCalls++; throw new Error("Cloud API request failed"); },
+        async () => { localCalls++; return "unexpected local output"; },
+        () => { notifications++; }),
+      /Cloud API request failed/,
+    );
+    assert.equal(remoteCalls, 1);
+    assert.equal(localCalls, 0);
+    assert.equal(notifications, 0);
+  }
+});
+
+test("auto Cloud routing retains exactly one fallback for supported installed Local tasks", async () => {
+  const route = selectExecutionRoute({
+    preference: "auto", task: "vision", online: true, cloudConnected: true, localAvailable: true,
+  });
+  assert.equal(route.fallbackAllowed, true);
+  let remoteCalls = 0, localCalls = 0;
+  const response = await runWithFallback(route,
+    async () => { remoteCalls++; throw new Error("Cloud API request failed"); },
+    async () => { localCalls++; return "local response"; });
+  assert.deepEqual(response, { result: "local response", target: "local", fallback: true });
+  assert.equal(remoteCalls, 1);
+  assert.equal(localCalls, 1);
+});
