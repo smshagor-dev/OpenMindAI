@@ -761,8 +761,22 @@ pub fn generate_docx(markdown: &str, title: &str, dest: &Path) -> Result<(), App
     use std::io::Write;
 
     let document = word_document_xml(parse_markdown_blocks(markdown), title);
-    let file = std::fs::File::create(dest)
+    // Never truncate a pre-existing export if the caller reuses a destination.
+    // Remove only the file created by this invocation if ZIP writing fails.
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest)
         .map_err(|error| AppError::ArtifactGenerationFailed(error.to_string()))?;
+    struct IncompleteDocx<'a> { path: &'a Path, committed: bool }
+    impl Drop for IncompleteDocx<'_> {
+        fn drop(&mut self) {
+            if !self.committed {
+                let _ = std::fs::remove_file(self.path);
+            }
+        }
+    }
+    let mut cleanup = IncompleteDocx { path: dest, committed: false };
     let mut archive = zip::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
@@ -788,9 +802,12 @@ pub fn generate_docx(markdown: &str, title: &str, dest: &Path) -> Result<(), App
             .write_all(content.as_bytes())
             .map_err(|error| AppError::ArtifactGenerationFailed(error.to_string()))?;
     }
-    archive
+    let completed = archive
         .finish()
         .map_err(|error| AppError::ArtifactGenerationFailed(error.to_string()))?;
+    completed.sync_all()
+        .map_err(|error| AppError::ArtifactGenerationFailed(error.to_string()))?;
+    cleanup.committed = true;
     Ok(())
 }
 
@@ -979,6 +996,24 @@ mod tests {
             assert_eq!(size, bytes.len() as i64);
             assert!(size > 0);
         }
+    }
+
+    #[test]
+    fn docx_export_does_not_truncate_existing_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("existing.docx");
+        std::fs::write(&dest, b"existing user content").unwrap();
+        assert!(generate_docx("# Replacement", "New", &dest).is_err());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"existing user content");
+    }
+
+    #[test]
+    fn docx_export_rejects_directory_destination_without_deleting_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("output.docx");
+        std::fs::create_dir(&dest).unwrap();
+        assert!(generate_docx("text", "Title", &dest).is_err());
+        assert!(dest.is_dir());
     }
 
     #[test]
