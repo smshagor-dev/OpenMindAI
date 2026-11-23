@@ -139,3 +139,23 @@ test("first-run Cloud/Local/Both choice survives simulated relaunch before downl
     else globalThis.window = originalWindow;
   }
 });
+
+test("malformed runtime connectivity metadata cannot authorize Cloud or Local", () => {
+  const valid = { preference: "auto", task: "chat", online: true,
+    cloudConnected: true, cloudModelReady: true, localAvailable: true };
+  assert.equal(selectExecutionRoute(valid).target, "cloud");
+  for (const [field, invalid] of [
+    ["online", "false"], ["online", null], ["cloudConnected", "false"],
+    ["cloudConnected", undefined], ["cloudModelReady", "false"],
+    ["localAvailable", "false"], ["forceLocal", "false"],
+    ["forceLocal", 1],
+  ]) {
+    const route = selectExecutionRoute({ ...valid, [field]: invalid });
+    assert.equal(route.target, "deferred", field + ": " + String(invalid));
+    assert.equal(route.offline, true);
+    assert.equal(route.fallbackAllowed, undefined);
+  }
+  assert.equal(selectExecutionRoute({ ...valid, forceLocal: true }).target, "local");
+  assert.equal(selectExecutionRoute({ ...valid, cloudConnected: false }).target, "local");
+  assert.equal(selectExecutionRoute({ ...valid, localAvailable: false }).target, "cloud");
+});
