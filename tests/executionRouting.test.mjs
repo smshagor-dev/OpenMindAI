@@ -139,3 +139,12 @@ test("first-run Cloud/Local/Both choice survives simulated relaunch before downl
     else globalThis.window = originalWindow;
   }
 });
+
+test("hosted selector fails closed on malformed runtime execution modes", () => {
+  for (const mode of [null, undefined, "", "LOCAL", "invalid", 0, 1, false, true, {}, ["cloud"]]) {
+    assert.equal(shouldShowCloudModels(mode, true, true, 3), false, String(mode));
+  }
+  assert.equal(shouldShowCloudModels("auto", true, true, 3), true);
+  assert.equal(shouldShowCloudModels("cloud", true, true, 3), true);
+  assert.equal(shouldShowCloudModels("local", true, true, 3), false);
+});
