@@ -215,6 +215,31 @@ pub struct Database {
 }
 
 impl Database {
+    /// Read-only check used during startup recovery to avoid selecting a new,
+    /// empty default profile when the legacy database still contains chats.
+    pub fn has_conversations(path: &Path) -> Result<bool, AppError> {
+        if !path.is_file() {
+            return Ok(false);
+        }
+        let connection =
+            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let has_table: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversations')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_table {
+            return Ok(false);
+        }
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM conversations LIMIT 1)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(AppError::from)
+    }
+
     pub fn open(path: PathBuf) -> Result<Self, AppError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;

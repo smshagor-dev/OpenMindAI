@@ -57,7 +57,7 @@ use performance::{PerformanceMode, PerformanceProfile, PerformanceProfileManager
 use portable_root::{
     available_bytes_for_path, load_installation, preview_writable, sanitize_profile_name,
     save_installation, InstallConfig, InstallationStatus, PortableRootInfo, PortableRootManager,
-    SetupState, RECOMMENDED_INITIAL_STORAGE_BYTES,
+    SetupState, DEFAULT_PROFILE_NAME, RECOMMENDED_INITIAL_STORAGE_BYTES,
 };
 use projects::{
     project_context_message, project_context_message_for_prompt, Project,
@@ -3169,7 +3169,7 @@ pub fn run() {
     tracing::info!(root = %root.root().display(), mode = ?root.mode(), "resolved OpenMindAI root");
     // When this root was set up via the first-run wizard, honor the
     // profile-named database it configured rather than the dev-mode default.
-    let installation = match portable_root::load_installation() {
+    let mut installation = match portable_root::load_installation() {
         Ok(installation) => installation,
         Err(error) => {
             tracing::error!(%error, "failed to load installation configuration during startup");
@@ -3177,7 +3177,8 @@ pub fn run() {
             return;
         }
     };
-    let database_path = installation
+    let configured_database_path = installation
+        .as_ref()
         .filter(|config| {
             config.installation_complete && config.root == root.root().display().to_string()
         })
@@ -3185,9 +3186,55 @@ pub fn run() {
             root.root()
                 .join("data")
                 .join("database")
-                .join(config.database)
+                .join(&config.database)
         })
         .unwrap_or_else(|| root.database_path());
+    let legacy_database_path = root.database_path();
+    let restore_legacy_chats = installation.as_ref().is_some_and(|config| {
+        config.installation_complete
+            && config.root == root.root().display().to_string()
+            && config.database == format!("{DEFAULT_PROFILE_NAME}.db")
+            && configured_database_path != legacy_database_path
+            && matches!(
+                Database::has_conversations(&configured_database_path),
+                Ok(false)
+            )
+            && matches!(Database::has_conversations(&legacy_database_path), Ok(true))
+    });
+    let database_path = if restore_legacy_chats {
+        let snapshot = (|| {
+            let source = rusqlite::Connection::open(&legacy_database_path)?;
+            crate::database_backup::create_snapshot(&source, root.root())
+        })();
+        let (snapshot_name, snapshot_size) = match snapshot {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                show_installation_error(error);
+                return;
+            }
+        };
+        tracing::info!(
+            name = %snapshot_name,
+            size_bytes = snapshot_size,
+            "verified snapshot created before restoring the legacy chat database"
+        );
+
+        let Some(config) = installation.as_mut() else {
+            show_installation_error(app_error::AppError::internal(
+                "installation configuration disappeared during legacy database recovery",
+            ));
+            return;
+        };
+        config.database = "openmind_ai.db".to_string();
+        if let Err(error) = save_installation(config) {
+            show_installation_error(error);
+            return;
+        }
+        tracing::warn!("default profile is empty; reusing the legacy database containing conversations");
+        legacy_database_path
+    } else {
+        configured_database_path
+    };
     let database =
         Database::open(database_path.clone()).expect("failed to initialize SQLite database");
     match SettingsRepository::new(&database)
