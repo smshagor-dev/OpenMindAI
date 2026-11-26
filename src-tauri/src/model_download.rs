@@ -163,15 +163,16 @@ fn apply_stop_if_active(
     token: Option<&CancellationToken>,
     requested: DownloadState,
 ) -> bool {
-    if !matches!(requested, DownloadState::Cancelled | DownloadState::PausedInterrupted)
-        || !matches!(
-            status.state,
-            DownloadState::Queued
-                | DownloadState::Resolving
-                | DownloadState::Downloading
-                | DownloadState::Verifying
-        )
-    {
+    if !matches!(
+        requested,
+        DownloadState::Cancelled | DownloadState::PausedInterrupted
+    ) || !matches!(
+        status.state,
+        DownloadState::Queued
+            | DownloadState::Resolving
+            | DownloadState::Downloading
+            | DownloadState::Verifying
+    ) {
         return false;
     }
     let Some(token) = token else {
@@ -319,7 +320,8 @@ impl ModelDownloadManager {
                         || named.nlink() != 1
                     {
                         return Err(AppError::ModelDownloadFailed(
-                            "model install lock path was replaced or has multiple links".to_string(),
+                            "model install lock path was replaced or has multiple links"
+                                .to_string(),
                         ));
                     }
                 }
@@ -354,9 +356,13 @@ impl ModelDownloadManager {
         // after Resolving becomes visible but before a token exists.
         let token = CancellationToken::new();
         {
-            let mut status = self.status.lock()
+            let mut status = self
+                .status
+                .lock()
                 .map_err(|_| AppError::internal("download status lock poisoned"))?;
-            let mut active_token = self.cancel_token.lock()
+            let mut active_token = self
+                .cancel_token
+                .lock()
                 .map_err(|_| AppError::internal("download cancel lock poisoned"))?;
             activate_download(&mut status, &mut active_token, &entry, token.clone());
         }
@@ -981,7 +987,11 @@ mod tests {
         let token = CancellationToken::new();
         let mut status = DownloadStatus::queued(&entry);
         status.state = DownloadState::Resolving;
-        assert!(apply_stop_if_active(&mut status, Some(&token), DownloadState::Cancelled));
+        assert!(apply_stop_if_active(
+            &mut status,
+            Some(&token),
+            DownloadState::Cancelled
+        ));
         assert!(token.is_cancelled());
         assert!(matches!(status.state, DownloadState::Cancelled));
     }
@@ -990,7 +1000,8 @@ mod tests {
     async fn cancelling_pending_metadata_resolution_does_not_wait_for_network() {
         let token = CancellationToken::new();
         token.cancel();
-        let result = cancel_while_resolving(&token, std::future::pending::<Result<(), AppError>>()).await;
+        let result =
+            cancel_while_resolving(&token, std::future::pending::<Result<(), AppError>>()).await;
         assert!(matches!(result, Err(AppError::InferenceCancelled(_))));
     }
 
@@ -1042,7 +1053,11 @@ mod tests {
         ] {
             let mut status = DownloadStatus::queued(&entry);
             status.state = active.clone();
-            assert!(!apply_stop_if_active(&mut status, None, DownloadState::Cancelled));
+            assert!(!apply_stop_if_active(
+                &mut status,
+                None,
+                DownloadState::Cancelled
+            ));
             assert_eq!(status.state, active);
             let token = CancellationToken::new();
             assert!(apply_stop_if_active(
@@ -1357,7 +1372,8 @@ mod tests {
     #[test]
     fn cancel_does_not_rewrite_queued_status_without_active_permit() {
         let temp = tempfile::tempdir().unwrap();
-        let manager = ModelDownloadManager::new(PortableRootManager::from_root(temp.path().to_path_buf()));
+        let manager =
+            ModelDownloadManager::new(PortableRootManager::from_root(temp.path().to_path_buf()));
         let token = CancellationToken::new();
         *manager.cancel_token.lock().unwrap() = Some(token.clone());
         assert_eq!(manager.cancel().unwrap().state, DownloadState::Queued);
@@ -1367,14 +1383,21 @@ mod tests {
     #[test]
     fn pause_only_applies_while_a_transfer_owns_the_permit() {
         let temp = tempfile::tempdir().unwrap();
-        let manager = ModelDownloadManager::new(PortableRootManager::from_root(temp.path().to_path_buf()));
+        let manager =
+            ModelDownloadManager::new(PortableRootManager::from_root(temp.path().to_path_buf()));
         let permit = manager.active_download.clone().try_acquire_owned().unwrap();
         let token = CancellationToken::new();
         *manager.cancel_token.lock().unwrap() = Some(token.clone());
-        assert_eq!(manager.pause().unwrap().state, DownloadState::PausedInterrupted);
+        assert_eq!(
+            manager.pause().unwrap().state,
+            DownloadState::PausedInterrupted
+        );
         assert!(token.is_cancelled());
         drop(permit);
-        assert_eq!(manager.cancel().unwrap().state, DownloadState::PausedInterrupted);
+        assert_eq!(
+            manager.cancel().unwrap().state,
+            DownloadState::PausedInterrupted
+        );
     }
 
     #[test]

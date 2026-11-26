@@ -1,71 +1,25 @@
-# OpenMindAI Local 3D GPU Worker
+# OpenMindAI Local 3D Geometry Worker
 
-Optional local processor for Desktop → 3D Studio → Local. This worker creates **real
-GLB 2.0 polygon meshes**, not 2.5D images. It currently supports deterministic
-procedural shapes and a simple architecture preset. **It is not a learned
-text-to-3D generative model**, and neither a production-quality neural mesh
-engine nor reference-image reconstruction is implemented locally.
+Geometry adapter for Desktop 3D Studio Local generation. Desktop runs its selected local llama.cpp model through the native Rust scheduler, validates the bounded scene specification, and sends only that data to this worker. The worker creates editable GLB 2.0 polygon meshes with separate nodes and PBR materials. It does not execute model-produced code and is not a neural mesh reconstruction engine.
 
-## Prerequisites
+## Runtime and dependency status
 
-- Python 3.10+ available as \`py -3\` (Windows) or \`python3\` (macOS/Linux).
-- A working OpenCL GPU driver/runtime (AMD, Intel or NVIDIA) visible to
-  PyOpenCL. Merely having VRAM is not enough; the OpenCL driver must work.
-- \`pip install numpy pyopencl\` into the Python interpreter selected above.
-  Install/build prerequisites from your vendor OS toolchain if pip cannot
-  install PyOpenCL.
+Python 3.10+ is required (`py -3` on Windows or `python3` on macOS/Linux). Set `OPENMINDAI_3D_PYTHON` to select a specific executable, including a user-created isolated virtual environment. CPU procedural geometry uses Python's standard library only. NumPy, PyOpenCL, an OpenCL ICD, and a compatible GPU are optional acceleration dependencies. Vulkan llama.cpp support does not imply OpenCL availability.
 
-Example Windows:
+The native `/health` endpoint reports Python, package, OpenCL platform, device, and kernel readiness diagnostics. If OpenCL is missing or fails initialization, CPU geometry remains available. The application does not currently download or install Python packages: this checkout has no pinned, checksum-verified wheel manifest. It will not modify global Python. OpenCL drivers are OS-level components and are never installed or replaced by the worker.
 
-\`\`\`powershell
-py -3 -m pip install numpy pyopencl
-py -3 -c "import pyopencl as cl; print([d.name for p in cl.get_platforms() for d in p.get_devices(device_type=cl.device_type.GPU)])"
-\`\`\`
-
-Example Linux:
-
-\`\`\`bash
-python3 -m pip install numpy pyopencl
-python3 -c 'import pyopencl as cl; print([d.name for p in cl.get_platforms() for d in p.get_devices(device_type=cl.device_type.GPU)])'
-\`\`\`
-
-Opening **Local → 3D Studio** asks the Tauri backend to launch the bundled
-\`worker.py\` from its trusted application resource path. In a development
-checkout it loads \`services/local-3d-worker/worker.py\`. The worker binds only
-\`127.0.0.1:8765\`, never \`0.0.0.0\`. A native-only request marker is required;
-the worker does not set CORS headers and rejects browser Origin headers.
-This limits accidental browser access, **but is not authentication against a
-malicious process running on the same computer**.
-
-The Desktop app owns the worker process it starts and terminates it on exit.
-You can also click **Stop local worker**. On a missing GPU, driver or Python
-package, the UI displays an explicit error. No hidden CPU-only substitute or
-Cloud fallback runs.
+The worker binds only `127.0.0.1:8765`; requests require a native marker and browser Origin headers are rejected. This limits accidental browser access but is not authentication against other local processes. Desktop owns and terminates the worker process it starts.
 
 ## Jobs and output
 
-POST \`/jobs\` with \`prompt\`, \`mode\` (\`object\` or \`architecture\`) and
-\`request_key\`. GET \`/jobs/{uuid}\` polls the generated job status. GET
-\`/jobs/{uuid}/mesh\` returns a Base64 GLB when complete, downloadable from the
-Desktop UI. Generated files are stored under
-\`~/OpenMindAI/3DStudio/<uuid>.glb\` by default. Set
-\`OPENMINDAI_3D_OUTPUT_DIR\` before starting the desktop application to
-override the output directory (the packaged launcher currently uses the
-default when no custom environment is present).
+Rust sends a prompt, mode, idempotency key, and validated `scene_spec` to `POST /jobs`. `GET /jobs/{uuid}` returns worker state and `GET /jobs/{uuid}/mesh` returns the generated Base64 GLB. Desktop persists the mesh as a project asset only after validating the GLB, then completes the SQLite job. Temporary files default to `~/OpenMindAI/3DStudio/<uuid>.glb`; set `OPENMINDAI_3D_OUTPUT_DIR` to override this.
 
-Transforms are dispatched to the OpenCL device; the mesh topology is
-assembled on the CPU and serialized into a standards-compliant GLB on the CPU.
-Hence local GPU work is real, but this is **not end-to-end GPU residency**.
+Rust owns durable job state, bounded concurrency, cancellation, timeouts, local model inference, scene validation, output validation, and project asset publication. OpenCL transforms are selected only after platform/device discovery and kernel compilation succeed. Otherwise transforms, topology assembly, and GLB serialization run on CPU. This is not end-to-end GPU residency; CPU primitive construction is not neural reconstruction.
 
 ## Validate
 
-No GPU required for unit/HTTP contract tests:
-
-\`\`\`bash
+```bash
 python3 -m unittest discover -s services/local-3d-worker -p 'test_*.py' -v
-\`\`\`
+```
 
-For real hardware acceptance, start Desktop and check GPU name/status,
-generate an Object and Architecture GLB, open the exported files in a GLB
-viewer, then verify that the job ran on your actual GPU. CI fakes the GPU
-transform and does not count as physical-hardware validation.
+Tests cover CPU geometry and HTTP behavior without a physical GPU. Fake GPU transforms do not count as physical hardware acceptance.

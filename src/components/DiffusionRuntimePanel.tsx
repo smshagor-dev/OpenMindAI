@@ -9,13 +9,20 @@ const BUSY_STATES = new Set(["resolving", "downloading", "verifying", "extractin
 export function DiffusionRuntimePanel() {
   const [status, setStatus] = useState<DiffusionRuntimeStatus | null>(null);
   const [installing, setInstalling] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const check = useCallback(async () => {
+  const check = useCallback(async (showProgress = false) => {
+    if (showProgress) {
+      setChecking(true);
+      setError(null);
+    }
     try {
       setStatus(await api.diffusionRuntimeStatus());
     } catch (caught) {
       setError(formatError(caught));
+    } finally {
+      if (showProgress) setChecking(false);
     }
   }, []);
 
@@ -49,7 +56,6 @@ export function DiffusionRuntimePanel() {
   };
 
   const busy = installing || BUSY_STATES.has(status?.state ?? "");
-  const installed = status?.state === "ready";
   const unavailable = status?.state === "unsupported" || status?.state === "browserPreview";
 
   return (
@@ -82,13 +88,14 @@ export function DiffusionRuntimePanel() {
       ) : null}
 
       {error ? <p className="setup-warning" role="alert">{error}</p> : null}
-      <div className="button-row">
-        <button type="button" onClick={() => void check()} disabled={busy}>
-          <RefreshCw size={16} /> Check status
+      <div className="button-row diffusion-runtime-actions">
+        <button type="button" onClick={() => void check(true)} disabled={busy || checking}>
+          {checking ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
+          {checking ? "Checking…" : "Check status"}
         </button>
-        <button type="button" onClick={() => void install()} disabled={busy || unavailable || installed}>
+        <button type="button" onClick={() => void install()} disabled={busy || unavailable}>
           {busy ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
-          {busy ? "Installing image renderer…" : "Install / repair image renderer"}
+          {busy ? "Installing image renderer…" : "Verify / repair image renderer"}
         </button>
       </div>
       <p className="muted">

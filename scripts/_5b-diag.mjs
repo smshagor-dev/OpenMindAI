@@ -1,0 +1,22 @@
+import { WebSocket } from "ws";
+const port = Number(process.argv[2]);
+const pages = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).filter(t=>t.type==="page");
+const socket = new WebSocket(pages[0].webSocketDebuggerUrl);
+await new Promise((res,rej)=>{socket.once("open",res);socket.once("error",rej);});
+let id=0; const pending=new Map();
+socket.on("message",raw=>{const m=JSON.parse(raw);const w=pending.get(m.id);if(!w)return;pending.delete(m.id);m.error?w.rej(new Error(JSON.stringify(m.error))):w.res(m.result);});
+const call=(method,params={})=>new Promise((res,rej)=>{const i=++id;pending.set(i,{res,rej});socket.send(JSON.stringify({id:i,method,params}));});
+const ev=async expr=>{const r=await call("Runtime.evaluate",{expression:`(async()=>{${expr}})()`,awaitPromise:true,returnByValue:true});if(r.exceptionDetails)throw new Error(r.exceptionDetails.exception?.description??JSON.stringify(r.exceptionDetails));return r.result?.value;};
+await call("Runtime.enable");
+const out = await ev(`
+  const invoke=window.__TAURI_INTERNALS__.invoke;
+  const proj=(await invoke('list_local_research_projects'))[0];
+  const docs=await invoke('list_local_research_documents',{projectId:proj.id});
+  const facts=await invoke('local_research_evidence_facts',{projectId:proj.id});
+  const wb=document.querySelector('.rs-manuscript-workbench');
+  const classesDetails=document.querySelector('.rs-evidence-classes');
+  const liStrongs=[...document.querySelectorAll('.rs-manuscript-workbench li strong')].map(s=>s.innerText);
+  return {projectId:proj.id, docNames:docs.map(d=>d.name), evidenceDocs:facts.documents.map(d=>({name:d.name,class:d.sourceClass,facts:d.factCount})), workbenchMounted:Boolean(wb), classesDetailsPresent:Boolean(classesDetails), liStrongs, workbenchText: wb?wb.innerText.slice(0,1200):null};
+`);
+console.log(JSON.stringify(out,null,2));
+socket.close();

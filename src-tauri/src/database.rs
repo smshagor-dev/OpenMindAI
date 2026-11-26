@@ -6,7 +6,7 @@ mod artifact_cleanup;
 mod media_index_cleanup;
 
 use chrono::{Duration, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use crate::app_error::AppError;
@@ -97,6 +97,116 @@ const MIGRATIONS: &[Migration] = &[
         name: "014_deleted_media_indexes",
         sql: include_str!("../migrations/014_deleted_media_indexes.sql"),
     },
+    Migration {
+        number: 15,
+        name: "015_research_projects",
+        sql: include_str!("../migrations/015_research_projects.sql"),
+    },
+    Migration {
+        number: 16,
+        name: "016_research_runs",
+        sql: include_str!("../migrations/016_research_runs.sql"),
+    },
+    Migration {
+        number: 17,
+        name: "017_research_manuscript_gates",
+        sql: include_str!("../migrations/017_research_manuscript_gates.sql"),
+    },
+    Migration {
+        number: 18,
+        name: "018_research_project_experiment_option",
+        sql: include_str!("../migrations/018_research_project_experiment_option.sql"),
+    },
+    Migration {
+        number: 19,
+        name: "019_research_source_verification_status",
+        sql: include_str!("../migrations/019_research_source_verification_status.sql"),
+    },
+    Migration {
+        number: 20,
+        name: "020_research_run_routing",
+        sql: include_str!("../migrations/020_research_run_routing.sql"),
+    },
+    Migration {
+        number: 21,
+        name: "021_research_cloud_requests",
+        sql: include_str!("../migrations/021_research_cloud_requests.sql"),
+    },
+    Migration {
+        number: 22,
+        name: "022_research_cloud_request_correlation",
+        sql: include_str!("../migrations/022_research_cloud_request_correlation.sql"),
+    },
+    Migration {
+        number: 23,
+        name: "023_research_documents_and_word_target",
+        sql: include_str!("../migrations/023_research_documents_and_word_target.sql"),
+    },
+    Migration {
+        number: 24,
+        name: "024_studio3d_projects",
+        sql: include_str!("../migrations/024_studio3d_projects.sql"),
+    },
+    Migration {
+        number: 25,
+        name: "025_studio3d_assets",
+        sql: include_str!("../migrations/025_studio3d_assets.sql"),
+    },
+    Migration {
+        number: 26,
+        name: "026_studio3d_jobs",
+        sql: include_str!("../migrations/026_studio3d_jobs.sql"),
+    },
+    Migration {
+        number: 27,
+        name: "027_studio3d_job_requests",
+        sql: include_str!("../migrations/027_studio3d_job_requests.sql"),
+    },
+    Migration {
+        number: 28,
+        name: "028_studio3d_retry_required",
+        sql: include_str!("../migrations/028_studio3d_retry_required.sql"),
+    },
+    Migration {
+        number: 29,
+        name: "029_studio3d_object_count",
+        sql: include_str!("../migrations/029_studio3d_object_count.sql"),
+    },
+    Migration {
+        number: 30,
+        name: "030_studio3d_obj_stl_media_types",
+        sql: include_str!("../migrations/030_studio3d_obj_stl_media_types.sql"),
+    },
+    Migration {
+        number: 31,
+        name: "031_research_structured_document_media_types",
+        sql: include_str!("../migrations/031_research_structured_document_media_types.sql"),
+    },
+    Migration {
+        number: 32,
+        name: "032_research_page_target",
+        sql: include_str!("../migrations/032_research_page_target.sql"),
+    },
+    Migration {
+        number: 33,
+        name: "033_research_figure_assets",
+        sql: include_str!("../migrations/033_research_figure_assets.sql"),
+    },
+    Migration {
+        number: 34,
+        name: "034_research_title_jobs",
+        sql: include_str!("../migrations/034_research_title_jobs.sql"),
+    },
+    Migration {
+        number: 35,
+        name: "035_research_section_ledger",
+        sql: include_str!("../migrations/035_research_section_ledger.sql"),
+    },
+    Migration {
+        number: 36,
+        name: "036_research_project_revision",
+        sql: include_str!("../migrations/036_research_project_revision.sql"),
+    },
 ];
 
 pub struct Database {
@@ -124,6 +234,8 @@ impl Database {
             media_root,
         };
         database.migrate()?;
+        database.recover_interrupted_studio3d_jobs()?;
+        database.recover_completed_studio3d_object_counts()?;
         if let Some(root) = artifact_root {
             if let Err(error) = crate::text_artifact_save::recover(database.connection(), &root) {
                 tracing::warn!(%error,"text export recovery deferred; journal preserved");
@@ -135,6 +247,9 @@ impl Database {
         database.recover_interrupted_openagent_runs()?;
         database.recover_interrupted_openagent_steps()?;
         database.recover_interrupted_restore_events()?;
+        database.recover_interrupted_research_runs()?;
+        database.recover_interrupted_research_title_jobs()?;
+        crate::research_sections::recover_interrupted_section_jobs(database.connection())?;
         database.ensure_local_profile()?;
         if let Some(root) = &database.media_root {
             if let Err(error) =
@@ -170,6 +285,59 @@ impl Database {
                 tracing::warn!(%error, "deleted media index cleanup deferred");
             }
         }
+    }
+
+    fn recover_interrupted_studio3d_jobs(&mut self) -> Result<(), AppError> {
+        self.connection.execute(
+            "UPDATE studio3d_jobs SET status='interrupted',current_stage='interrupted',error='Desktop restarted before this job completed; automatic replay is disabled.',recovery_json=json_set(recovery_json,'$.restartObserved',json('true'),'$.safeToResume',json('false')),updated_at=?1 WHERE status='running'",
+            params![Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    fn recover_completed_studio3d_object_counts(&mut self) -> Result<(), AppError> {
+        let pending = {
+            let mut statement = self.connection.prepare(
+                "SELECT id,project_id,output_asset_id FROM studio3d_jobs WHERE status='completed' AND output_object_count=0 AND output_asset_id IS NOT NULL",
+            )?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        for (job_id, project_id, asset_id) in pending {
+            let bytes: Option<Vec<u8>> = self
+                .connection
+                .query_row(
+                    "SELECT content_blob FROM studio3d_assets WHERE id=?1 AND project_id=?2",
+                    rusqlite::params![asset_id, project_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let Some(bytes) = bytes else { continue };
+            match crate::studio3d::generated_glb_object_count(&bytes) {
+                Ok(count) if count > 0 && count <= 1024 => {
+                    self.connection.execute(
+                        "UPDATE studio3d_jobs SET output_object_count=?1,recovery_json=json_set(recovery_json,'$.objectCount',?1) WHERE id=?2 AND status='completed' AND output_object_count=0",
+                        rusqlite::params![count as i64, job_id],
+                    )?;
+                }
+                Ok(_) => tracing::warn!(
+                    job_id,
+                    "completed 3D asset has no bounded mesh objects for metadata recovery"
+                ),
+                Err(error) => {
+                    tracing::warn!(job_id, %error, "completed 3D asset object count could not be recovered")
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn connection(&self) -> &Connection {
@@ -212,14 +380,53 @@ impl Database {
             // One transaction per migration: if `migration.sql` fails
             // partway, nothing from it commits and it isn't marked applied,
             // so the next `open()` retries it cleanly instead of getting
-            // stuck half-migrated.
-            let tx = self.connection.transaction()?;
-            tx.execute_batch(migration.sql)?;
-            tx.execute(
-                "INSERT INTO schema_migrations (number, name, applied_at) VALUES (?1, ?2, ?3)",
-                params![migration.number, migration.name, Utc::now().to_rfc3339()],
-            )?;
-            tx.commit()?;
+            // stuck half-migrated. Migration 30 rebuilds a referenced table;
+            // disable FK actions only for that transaction so dropping the
+            // old table cannot null job output references or delete projects.
+            let rebuild_referenced_table = matches!(migration.number, 30 | 31);
+            if rebuild_referenced_table {
+                self.connection.pragma_update(None, "foreign_keys", "OFF")?;
+            }
+            let migration_result = (|| -> Result<(), AppError> {
+                let tx = self.connection.transaction()?;
+                if migration.number == 19 {
+                    let has_verification_status = {
+                        let mut columns = tx.prepare("PRAGMA table_info(research_sources)")?;
+                        let rows = columns.query_map([], |row| row.get::<_, String>(1))?;
+                        rows.collect::<Result<Vec<_>, _>>()?
+                            .iter()
+                            .any(|name| name == "verification_status")
+                    };
+                    if !has_verification_status {
+                        tx.execute_batch(
+                            "ALTER TABLE research_sources ADD COLUMN verification_status TEXT NOT NULL DEFAULT 'unverified' CHECK(verification_status IN ('verified','mismatch','retracted','unverified'))",
+                        )?;
+                    }
+                }
+                tx.execute_batch(migration.sql)?;
+                tx.execute(
+                    "INSERT INTO schema_migrations (number, name, applied_at) VALUES (?1, ?2, ?3)",
+                    params![migration.number, migration.name, Utc::now().to_rfc3339()],
+                )?;
+                tx.commit()?;
+                Ok(())
+            })();
+            if rebuild_referenced_table {
+                self.connection.pragma_update(None, "foreign_keys", "ON")?;
+            }
+            migration_result?;
+            if rebuild_referenced_table {
+                let violations: i64 = self.connection.query_row(
+                    "SELECT COUNT(*) FROM pragma_foreign_key_check",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if violations > 0 {
+                    return Err(AppError::DatabaseInitFailed(format!(
+                        "Studio3D asset migration created {violations} foreign-key violations"
+                    )));
+                }
+            }
         }
 
         self.record_schema_version()?;
@@ -332,6 +539,49 @@ impl Database {
             .map_err(AppError::from)
     }
 
+    fn recover_interrupted_research_runs(&self) -> Result<usize, AppError> {
+        let now = Utc::now().to_rfc3339();
+        let tx = self.connection.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE research_tasks SET status = 'interrupted',
+                 error = 'Application exited while this task was active', updated_at = ?1
+             WHERE status = 'running'
+               AND run_id IN (SELECT id FROM research_runs WHERE status IN ('running','queued'))",
+            params![now],
+        )?;
+        let mut statement = tx.prepare(
+            "SELECT id, project_id FROM research_runs WHERE status IN ('running','queued')",
+        )?;
+        let runs = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        for (run_id, project_id) in &runs {
+            tx.execute(
+                "UPDATE research_runs SET status = 'interrupted',
+                     error = 'Application exited before the run finished', updated_at = ?1
+                 WHERE id = ?2",
+                params![now, run_id],
+            )?;
+            tx.execute(
+                "INSERT INTO research_events (project_id, run_id, type, status, timestamp, payload_json)
+                 VALUES (?1, ?2, 'research.run.interrupted', 'interrupted', ?3, '{}')",
+                params![project_id, run_id, now],
+            )?;
+        }
+        tx.commit()?;
+        Ok(runs.len())
+    }
+
+    fn recover_interrupted_research_title_jobs(&self) -> Result<usize, AppError> {
+        self.connection.execute(
+            "UPDATE research_title_jobs SET status='interrupted',error='Application exited before local title inference completed',completed_at=?1 WHERE status='running'",
+            params![Utc::now().to_rfc3339()],
+        ).map_err(AppError::from)
+    }
+
     /// Records the schema version this build understands. Kept independent
     /// from `app_version` (Cargo package version) — application releases and
     /// database schema revisions evolve on different timelines.
@@ -431,6 +681,110 @@ mod tests {
             })
             .unwrap();
         assert_eq!(applied, MIGRATIONS.len() as i64);
+    }
+
+    #[test]
+    fn research_project_revision_migration_adds_revision_without_changing_saved_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("legacy.db");
+        {
+            let legacy = Database::open(path.clone()).unwrap();
+            legacy.connection.execute("INSERT INTO research_projects(id,title,prompt,output_language,status,created_at,updated_at,experiment_requested,manuscript_target_words,manuscript_page_target) VALUES('legacy','Kept','Keep evidence','English','draft','created','updated',1,4000,17)", []).unwrap();
+        }
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute("DELETE FROM schema_migrations WHERE number=36", [])
+                .unwrap();
+            connection.execute_batch("DROP TRIGGER research_projects_revision_bump; ALTER TABLE research_projects DROP COLUMN revision;").unwrap();
+        }
+        let migrated = Database::open(path).unwrap();
+        let values: (String, String, i64, i64, i64) = migrated.connection.query_row(
+            "SELECT title,prompt,experiment_requested,manuscript_page_target,revision FROM research_projects WHERE id='legacy'", [],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
+        ).unwrap();
+        assert_eq!(values, ("Kept".into(), "Keep evidence".into(), 1, 17, 1));
+    }
+
+    #[test]
+    fn studio3d_asset_schema_accepts_obj_and_stl_media_types() {
+        let database = Database::in_memory().unwrap();
+        let connection = database.connection();
+        let now = Utc::now().to_rfc3339();
+        connection
+            .execute(
+                "INSERT INTO studio3d_projects(id,name,created_at,updated_at) VALUES('project','Import tests',?1,?1)",
+                params![now],
+            )
+            .unwrap();
+        for (id, name, media_type) in [
+            ("obj", "triangle.obj", "model/obj"),
+            ("stl", "triangle.stl", "model/stl"),
+            ("gltf", "scene.gltf", "model/gltf+json"),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO studio3d_assets(id,project_id,kind,original_name,media_type,size_bytes,content_sha256,content_blob,created_at) VALUES(?1,'project','mesh',?2,?3,1,?4,X'00',?5)",
+                    params![id, name, media_type, format!("{:0>64}", id), now],
+                )
+                .unwrap();
+        }
+        let violations: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(violations, 0);
+    }
+
+    #[test]
+    fn marks_active_research_tasks_interrupted_on_recovery() {
+        let database = Database::in_memory().unwrap();
+        let now = Utc::now().to_rfc3339();
+        let db = database.connection();
+        db.execute(
+            "INSERT INTO model_registry (id,name,path,format,created_at,updated_at) VALUES ('m','Local','m.gguf','gguf',?1,?1)",
+            params![now],
+        ).unwrap();
+        db.execute("INSERT INTO conversations (id,title,created_at,updated_at) VALUES ('c','Research',?1,?1)", params![now]).unwrap();
+        db.execute(
+            "INSERT INTO research_projects (id,title,prompt,output_language,status,created_at,updated_at)
+             VALUES ('p','Study','Question','English','running',?1,?1)", params![now],
+        ).unwrap();
+        db.execute(
+            "INSERT INTO research_runs (id,project_id,conversation_id,model_id,status,started_at,updated_at)
+             VALUES ('r','p','c','m','running',?1,?1)", params![now],
+        ).unwrap();
+        db.execute(
+            "INSERT INTO research_tasks (id,run_id,agent,title,status,updated_at)
+             VALUES ('t','r','planning','Plan','running',?1)",
+            params![now],
+        )
+        .unwrap();
+
+        assert_eq!(database.recover_interrupted_research_runs().unwrap(), 1);
+        let run_status: String = db
+            .query_row("SELECT status FROM research_runs WHERE id='r'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let task_status: String = db
+            .query_row(
+                "SELECT status FROM research_tasks WHERE id='t'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let event_type: String = db
+            .query_row(
+                "SELECT type FROM research_events WHERE run_id='r' ORDER BY event_id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(run_status, "interrupted");
+        assert_eq!(task_status, "interrupted");
+        assert_eq!(event_type, "research.run.interrupted");
     }
 
     #[test]

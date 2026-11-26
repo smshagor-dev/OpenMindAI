@@ -7,8 +7,8 @@ mod document_generator;
 mod github;
 mod google;
 mod hardware;
-mod inference;
 mod image_jobs;
+mod inference;
 mod launch_planner;
 mod logging;
 mod maintenance;
@@ -19,11 +19,11 @@ mod net;
 mod performance;
 mod portable_root;
 mod projects;
+mod proxy_credentials;
 mod runtime;
 mod runtime_install;
 mod sampling;
 mod settings;
-mod proxy_credentials;
 mod storage;
 mod voice_runtime;
 mod web_provider_config;
@@ -39,14 +39,15 @@ use std::os::windows::process::CommandExt;
 use artifacts::{Artifact, ArtifactManager, ArtifactRepository, LibraryPage};
 use chat::{ChatRepository, ChatSearchPage, Conversation, Message};
 use database::Database;
+use dataset_download::{DatasetDownloadManager, DatasetDownloadStatus};
 use github::{GithubAccount, GithubIssueSummary, GithubRepoSummary, GithubRepository};
 use google::{GoogleCredentialsStatus, GoogleRepository};
 use hardware::{HardwareProfile, HardwareProfiler};
-use inference::{
-    ActiveGenerations, InferenceMedia, InferenceMode, StreamDoneEvent, StreamRequest, StreamStartedEvent,
-};
 use image_jobs::ActiveImageJobs;
-use dataset_download::{DatasetDownloadManager, DatasetDownloadStatus};
+use inference::{
+    ActiveGenerations, InferenceMedia, InferenceMode, StreamDoneEvent, StreamRequest,
+    StreamStartedEvent,
+};
 use launch_planner::{LaunchPlan, ModelLaunchPlanner};
 use maintenance::{BackupInfo, DiagnosticReport, RepairSummary};
 use model_catalog::ModelCatalogReport;
@@ -59,15 +60,16 @@ use portable_root::{
     SetupState, RECOMMENDED_INITIAL_STORAGE_BYTES,
 };
 use projects::{
-    project_context_message, project_context_message_for_prompt, Project, ProjectBinaryFileDownload,
-    ProjectBinaryFileInput, ProjectFile, ProjectFileInput, ProjectRepository,
+    project_context_message, project_context_message_for_prompt, Project,
+    ProjectBinaryFileDownload, ProjectBinaryFileInput, ProjectFile, ProjectFileInput,
+    ProjectRepository,
 };
 use reqwest::Client;
 use runtime::{allocate_local_port, LlamaRuntimeManager, LlamaRuntimeStatus, RuntimeInventory};
 use runtime_install::{RuntimeInstallStatus, RuntimeInstaller};
 use settings::{AppPreferences, SettingsRepository, UserProfile};
 use storage::{CacheClearResult, StorageMonitor, StorageSummary};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -95,6 +97,246 @@ struct AppState {
     image_jobs: ActiveImageJobs,
     warm_start: warm_start::WarmStartCoordinator,
     http: Client,
+}
+
+#[cfg(test)]
+mod research_acceptance_harness {
+    use super::*;
+    use ::tauri::Runtime;
+    use rusqlite::OptionalExtension;
+    use std::{fs, path::PathBuf, time::Duration};
+
+    fn isolated_state(temp: &tempfile::TempDir) -> AppState {
+        let root_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace root")
+            .to_path_buf();
+        let root = PortableRootManager::from_root(root_path);
+        let database_path = temp
+            .path()
+            .join("data")
+            .join("database")
+            .join("acceptance.db");
+        let database = Database::open(database_path.clone()).expect("isolated acceptance database");
+        let runtime = LlamaRuntimeManager::new(root.clone());
+        AppState {
+            root: root.clone(),
+            hardware: HardwareProfiler::detect(),
+            active_database_path: database_path,
+            database: Mutex::new(database),
+            runtime: Arc::new(Mutex::new(runtime)),
+            agent_runtime: Mutex::new(LlamaRuntimeManager::new(root.clone())),
+            agent_startup: agent_runtime::AgentStartup::default(),
+            downloads: ModelDownloadManager::new(root.clone()),
+            dataset_downloads: DatasetDownloadManager::new(root.clone()),
+            runtime_installer: RuntimeInstaller::new(root),
+            active_generations: ActiveGenerations::default(),
+            image_jobs: ActiveImageJobs::default(),
+            warm_start: warm_start::WarmStartCoordinator::default(),
+            http: net::http_client(),
+        }
+    }
+
+    async fn run_local_integration<R: Runtime>(app: &tauri::AppHandle<R>, state: &AppState) {
+        let temp = tempfile::tempdir().expect("isolated acceptance storage");
+        let database = state.database.lock().unwrap();
+        let model_path = state
+            .root
+            .root()
+            .join("models/llm/qwen/qwen3-4b/Qwen3-4B-Q4_K_M.gguf");
+        let model = ModelRegistry::new(&database, &state.root)
+            .register_gguf(&model_path)
+            .and_then(|_| ModelRegistry::new(&database, &state.root).list_models())
+            .expect("installed local model must be discoverable");
+        let model = model
+            .into_iter()
+            .find(|record| {
+                record
+                    .path
+                    .replace('\\', "/")
+                    .ends_with("Qwen3-4B-Q4_K_M.gguf")
+                    && record.enabled
+            })
+            .expect("OpenMindAI Core must be installed and enabled");
+        let now = chrono::Utc::now().to_rfc3339();
+        let project_id = uuid::Uuid::new_v4().to_string();
+        database.connection().execute(
+            "INSERT INTO research_projects (id,title,prompt,output_language,status,created_at,updated_at,experiment_requested,manuscript_target_words)
+             VALUES (?1,'Headless river restoration acceptance',?2,'English','draft',?3,?3,0,3000)",
+            rusqlite::params![project_id,
+                "Review monitoring methods and scholarly evidence on river restoration outcomes. Separate study observations from interpretation, identify limitations and gaps, and use only persisted source metadata and evidence passages." , now],
+        ).expect("create isolated native research project");
+        drop(database);
+
+        // Exercise each production extractor/import route against actual files.
+        let fixture_markdown = temp.path().join("supporting-source.md");
+        fs::write(&fixture_markdown, "# Acceptance source\n\nThis local software fixture is not a scholarly publication and contains no empirical findings. It describes monitoring design fields: site, date, method, discharge, temperature, dissolved oxygen, and macroinvertebrate observations. Distinguish those fields from measured outcomes and record missing baselines as limitations.\n\nA non-supporting passage in this fixture says that no outcome values, comparison sites, or causal results are supplied. Do not infer restoration success from this passage.").unwrap();
+        let fixture_pdf = temp.path().join("supporting-source.pdf");
+        crate::document_generator::generate_pdf(
+            "# Acceptance PDF fixture\n\nThis test fixture contains procedural guidance about monitoring river restoration sites. It reports no measured restoration outcomes and is not a scholarly publication.",
+            "Acceptance PDF fixture", &fixture_pdf,
+        ).expect("generate real PDF fixture");
+        let fixture_docx = temp.path().join("supporting-source.docx");
+        crate::document_generator::generate_docx(
+            "# Acceptance DOCX fixture\n\nThis test fixture asks reviewers to distinguish dissolved oxygen measurements, observation dates, methods, and study limitations. It reports no empirical results.",
+            "Acceptance DOCX fixture", &fixture_docx,
+        ).expect("generate real DOCX fixture");
+        for fixture in [&fixture_pdf, &fixture_docx, &fixture_markdown] {
+            crate::research_documents::import_local_research_document_inner(
+                project_id.clone(),
+                fixture.display().to_string(),
+                &state,
+            )
+            .await
+            .expect("production import/extract/index path");
+        }
+        {
+            let database = state.database.lock().unwrap();
+            let (documents, chunks): (i64, i64) = database.connection().query_row(
+                "SELECT (SELECT COUNT(*) FROM research_documents WHERE project_id=?1), (SELECT COUNT(*) FROM research_document_chunks WHERE project_id=?1)",
+                rusqlite::params![project_id], |row| Ok((row.get(0)?,row.get(1)?)),
+            ).unwrap();
+            assert_eq!(
+                documents, 3,
+                "PDF, DOCX and Markdown fixture imports persist"
+            );
+            assert!(chunks >= 3, "extracted passages are indexed locally");
+        }
+
+        let run = crate::research_projects::start_local_research_run_inner(
+            app.clone(),
+            project_id.clone(),
+            Some(model.id.clone()),
+            Some("local".into()),
+            3000,
+            &state,
+        )
+        .expect("start the production seven-section local orchestration");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60 * 60);
+        loop {
+            let status = {
+                let database = state.database.lock().unwrap();
+                crate::research_projects::read_run(database.connection(), &run.id)
+                    .unwrap()
+                    .status
+            };
+            if matches!(status.as_str(), "completed" | "failed" | "cancelled") {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "native research run exceeded one hour"
+            );
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+
+        let database = state.database.lock().unwrap();
+        let completed_run =
+            crate::research_projects::read_run(database.connection(), &run.id).unwrap();
+        let tasks = crate::research_projects::read_tasks(database.connection(), &run.id).unwrap();
+        let section_count = tasks
+            .iter()
+            .filter(|task| task.agent.starts_with("manuscript_section_"))
+            .count();
+        assert_eq!(
+            section_count, 7,
+            "the current durable graph contains seven sections"
+        );
+        let doc = database.connection();
+        let (source_count, evidence_count, event_count): (i64,i64,i64) = doc.query_row(
+            "SELECT (SELECT COUNT(*) FROM research_sources WHERE run_id=?1), (SELECT COUNT(*) FROM research_evidence WHERE run_id=?1), (SELECT COUNT(*) FROM research_events WHERE run_id=?1)",
+            rusqlite::params![run.id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+        ).unwrap();
+        eprintln!("acceptance local model={} run={} status={} sections={} sources={} evidence={} events={}", model.name, run.id, completed_run.status, section_count, source_count, evidence_count, event_count);
+        let failed_tasks = tasks
+            .iter()
+            .filter(|task| task.status != "completed")
+            .map(|task| {
+                format!(
+                    "{}={}:{}",
+                    task.agent,
+                    task.status,
+                    task.error.as_deref().unwrap_or("no error detail")
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(completed_run.status, "completed", "the real local-model run must complete every persisted task; incomplete tasks: {failed_tasks:?}");
+        assert!(
+            event_count >= tasks.len() as i64,
+            "task and run events are persisted"
+        );
+        assert!(
+            source_count > 0,
+            "live scholarly discovery should persist metadata"
+        );
+        let manuscript: Option<String> = doc.query_row(
+            "SELECT content FROM research_manuscript_revisions WHERE run_id=?1 ORDER BY revision DESC LIMIT 1",
+            rusqlite::params![run.id], |row| row.get(0),
+        ).optional().unwrap();
+        if completed_run.status == "completed" {
+            let manuscript = manuscript.expect("local assembly persists a proposal revision");
+            let actual_words = crate::research_projects::manuscript_word_count(&manuscript);
+            eprintln!(
+                "acceptance manuscript actual_words={actual_words} target=3000 citations={:?}",
+                crate::research_projects::manuscript_citation_ids(&manuscript)
+            );
+            assert!((2850..=3150).contains(&actual_words), "actual manuscript length must satisfy the 3,000-word target's 5% tolerance; got {actual_words}. Revise real section content rather than padding.");
+            let pdf_path = temp.path().join("draft.pdf");
+            crate::document_generator::generate_pdf(&manuscript, "Acceptance draft", &pdf_path)
+                .unwrap();
+            let pdf = lopdf::Document::load(&pdf_path).expect("reopen generated draft PDF");
+            assert!(!pdf.get_pages().is_empty(), "reopened PDF has pages");
+            let docx_path = temp.path().join("draft.docx");
+            crate::document_generator::generate_docx(&manuscript, "Acceptance draft", &docx_path)
+                .unwrap();
+            let file = fs::File::open(&docx_path).unwrap();
+            let mut archive = zip::ZipArchive::new(file).expect("reopen generated DOCX archive");
+            let mut xml = String::new();
+            std::io::Read::read_to_string(
+                &mut archive.by_name("word/document.xml").unwrap(),
+                &mut xml,
+            )
+            .unwrap();
+            assert!(xml.contains("document"), "DOCX main part is present");
+            let markdown_path = temp.path().join("draft.md");
+            fs::write(
+                &markdown_path,
+                format!("# DRAFT — review required\n\n{manuscript}"),
+            )
+            .unwrap();
+            let reopened_markdown = fs::read_to_string(&markdown_path).unwrap();
+            assert!(reopened_markdown.contains(&manuscript));
+            let latex = format!(
+                "\\documentclass{{article}}\n\\begin{{document}}\n{}\n\\end{{document}}\n",
+                manuscript.replace('&', "\\&")
+            );
+            let bibtex = "@misc{acceptance_fixture, title={Acceptance fixture}, year={2026}}";
+            crate::research_projects::validate_latex_source(&latex)
+                .expect("LaTeX structural validation");
+            crate::research_projects::validate_bibtex_source(bibtex)
+                .expect("BibTeX structural validation");
+        } else {
+            eprintln!(
+                "acceptance local model limitation: {}",
+                completed_run
+                    .error
+                    .unwrap_or_else(|| "run did not complete".into())
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "live acceptance: requires the installed local model, GPU/CPU runtime and public scholarly endpoints"]
+    async fn live_local_research_acceptance_uses_production_orchestrator() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = isolated_state(&temp);
+        let app = tauri::test::mock_builder()
+            .manage(state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("headless Tauri test app");
+        let state = app.state::<AppState>();
+        run_local_integration(&app.handle(), &state).await;
+    }
 }
 
 #[tauri::command]
@@ -324,14 +566,18 @@ fn list_archived_conversations(
     limit: Option<i64>,
     state: State<AppState>,
 ) -> Result<Vec<Conversation>, app_error::AppError> {
-    let db = state.database.lock()
+    let db = state
+        .database
+        .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
     ChatRepository::new(&db).list_archived_conversations(limit.unwrap_or(100))
 }
 
 #[tauri::command]
 fn restore_conversation(id: String, state: State<AppState>) -> Result<(), app_error::AppError> {
-    let db = state.database.lock()
+    let db = state
+        .database
+        .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
     ChatRepository::new(&db).restore_conversation(&id)
 }
@@ -368,11 +614,7 @@ fn search_conversations(
         .database
         .lock()
         .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
-    ChatRepository::new(&db).search_conversations(
-        &query,
-        cursor.as_deref(),
-        limit.unwrap_or(40),
-    )
+    ChatRepository::new(&db).search_conversations(&query, cursor.as_deref(), limit.unwrap_or(40))
 }
 
 #[tauri::command]
@@ -451,10 +693,7 @@ fn list_projects(
 /// Only the selected project's conversations and full text previews cross
 /// the Tauri IPC boundary. The catalog query never includes file bodies.
 #[tauri::command]
-fn get_project(
-    project_id: String,
-    state: State<AppState>,
-) -> Result<Project, app_error::AppError> {
+fn get_project(project_id: String, state: State<AppState>) -> Result<Project, app_error::AppError> {
     let db = state
         .database
         .lock()
@@ -619,10 +858,16 @@ fn create_text_artifact(
     let (_path, filename_final, relative) =
         manager.resolve_destination(&kind, filename.as_deref(), &fallback_title)?;
     let id = crate::text_artifact_save::save(
-        db.connection(), state.root.root(), crate::text_artifact_save::TextArtifactWrite {
-            conversation_id: &conversation_id, message_id: message_id.as_deref(),
-            name: &filename_final, relative: &relative,
-            mime_type: artifacts::mime_type_for(&kind), kind: &kind, content: content.as_bytes(),
+        db.connection(),
+        state.root.root(),
+        crate::text_artifact_save::TextArtifactWrite {
+            conversation_id: &conversation_id,
+            message_id: message_id.as_deref(),
+            name: &filename_final,
+            relative: &relative,
+            mime_type: artifacts::mime_type_for(&kind),
+            kind: &kind,
+            content: content.as_bytes(),
         },
     )?;
     ArtifactRepository::new(&db).find(&id)
@@ -638,6 +883,32 @@ async fn create_document_artifact(
     filename: Option<String>,
     content: String,
     title: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Artifact, app_error::AppError> {
+    create_document_artifact_impl(
+        app,
+        conversation_id,
+        message_id,
+        kind,
+        filename,
+        content,
+        title,
+        None,
+        state,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn create_document_artifact_impl(
+    app: AppHandle,
+    conversation_id: String,
+    message_id: Option<String>,
+    kind: String,
+    filename: Option<String>,
+    content: String,
+    title: Option<String>,
+    research_figures: Option<Vec<crate::research_documents::ResolvedResearchFigure>>,
     state: State<'_, AppState>,
 ) -> Result<Artifact, app_error::AppError> {
     if !matches!(kind.as_str(), "pdf" | "docx") {
@@ -686,10 +957,19 @@ async fn create_document_artifact(
     let worker_id = artifact.id.clone();
     let result = crate::document_jobs::run(permit, move || {
         let generation_result = crate::document_jobs::render(|| {
+            if let Some(figures) = research_figures.as_deref() {
+                let state = worker_app.state::<AppState>();
+                let db = state.database.lock().map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+                for figure in figures {
+                    let current = crate::research_documents::resolve_research_figure(db.connection(), &figure.project_id, &format!("research-figure:{}", figure.id))?;
+                    if current.sha256 != figure.sha256 || current.bytes != figure.bytes {
+                        return Err(app_error::AppError::ArtifactGenerationFailed("Project-owned figure changed after the export snapshot; export cancelled.".into()));
+                    }
+                }
+            }
             let generated = match kind.as_str() {
-            "pdf" => document_generator::generate_pdf(&content, &document_title, &path)
-                .map(|meta| Some(meta.page_count)),
-            "docx" => document_generator::generate_docx(&content, &document_title, &path).map(|_| None),
+            "pdf" => if let Some(figures) = research_figures.as_deref() { document_generator::generate_pdf_with_figures(&content, &document_title, &path, figures) } else { document_generator::generate_pdf(&content, &document_title, &path) }.map(|meta| Some(meta.page_count)),
+            "docx" => if let Some(figures) = research_figures.as_deref() { document_generator::generate_docx_with_figures(&content, &document_title, &path, figures) } else { document_generator::generate_docx(&content, &document_title, &path) }.map(|_| None),
             _ => unreachable!(),
         };
             generated.and_then(|pages| output.commit_for(&kind).map(|size| (pages, size)))
@@ -710,7 +990,10 @@ async fn create_document_artifact(
     if let Err(error) = &result {
         // A worker panic must not leave a permanent generating row. Never
         // overwrite an already committed ready/failed outcome on a later error.
-        let db = state.database.lock().map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+        let db = state
+            .database
+            .lock()
+            .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
         let artifacts = ArtifactRepository::new(&db);
         if artifacts.find(&artifact.id)?.status == "generating" {
             artifacts.set_failed(&artifact.id, &error.to_string())?;
@@ -817,7 +1100,11 @@ async fn create_generation_artifact(
     // Do not register voice here: its spawn_blocking TTS worker cannot be
     // interrupted safely by dropping an awaiting future.
     let media_job = if matches!(kind.as_str(), "image" | "video") {
-        Some(state.image_jobs.start_scoped(&artifact.id, Some(&conversation_id))?)
+        Some(
+            state
+                .image_jobs
+                .start_scoped(&artifact.id, Some(&conversation_id))?,
+        )
     } else {
         None
     };
@@ -828,20 +1115,26 @@ async fn create_generation_artifact(
     // Stage updates are advisory UI events. A detached window must not fail
     // the render simply because it could not receive a progress notification.
     let report_stage = |stage: &'static str| {
-        let _ = app.emit("image:progress", ImageProgressEvent {
-            artifact_id: artifact.id.clone(),
-            stage,
-            step: None,
-            total_steps: None,
-        });
+        let _ = app.emit(
+            "image:progress",
+            ImageProgressEvent {
+                artifact_id: artifact.id.clone(),
+                stage,
+                step: None,
+                total_steps: None,
+            },
+        );
     };
     let report_step = |step: u32, total_steps: u32| {
-        let _ = app.emit("image:progress", ImageProgressEvent {
-            artifact_id: artifact.id.clone(),
-            stage: "rendering",
-            step: Some(step),
-            total_steps: Some(total_steps),
-        });
+        let _ = app.emit(
+            "image:progress",
+            ImageProgressEvent {
+                artifact_id: artifact.id.clone(),
+                stage: "rendering",
+                step: Some(step),
+                total_steps: Some(total_steps),
+            },
+        );
     };
     let generation_result = if let Some(job) = media_job.as_ref() {
         let render = async {
@@ -864,8 +1157,16 @@ async fn create_generation_artifact(
             };
             report_stage("preparing");
             generate_local_media_artifact(
-                &state, &kind, &prompt, &path, use_cpu.unwrap_or(false), &image_options, &report_stage, &report_step
-            ).await
+                &state,
+                &kind,
+                &prompt,
+                &path,
+                use_cpu.unwrap_or(false),
+                &image_options,
+                &report_stage,
+                &report_step,
+            )
+            .await
         };
         tokio::pin!(render);
         // Refresh the DB timestamp while waiting for the renderer or while
@@ -896,14 +1197,26 @@ async fn create_generation_artifact(
         }
     } else {
         generate_local_media_artifact(
-            &state, &kind, &prompt, &path, use_cpu.unwrap_or(false), &image_options, &report_stage, &report_step
-        ).await
+            &state,
+            &kind,
+            &prompt,
+            &path,
+            use_cpu.unwrap_or(false),
+            &image_options,
+            &report_stage,
+            &report_step,
+        )
+        .await
     };
     // A late cancellation must never publish an image or video as ready.
-    let generation_result = if media_job.as_ref().is_some_and(|job| job.cancellation().is_cancelled()) {
-        Err(app_error::AppError::ArtifactGenerationFailed(
-            format!("{} generation cancelled by user.", if kind == "video" { "Video" } else { "Image" }),
-        ))
+    let generation_result = if media_job
+        .as_ref()
+        .is_some_and(|job| job.cancellation().is_cancelled())
+    {
+        Err(app_error::AppError::ArtifactGenerationFailed(format!(
+            "{} generation cancelled by user.",
+            if kind == "video" { "Video" } else { "Image" }
+        )))
     } else {
         generation_result
     };
@@ -1465,7 +1778,10 @@ async fn activate_model(
     let hardware = HardwareProfiler::for_inference(&state.hardware);
     let selection = selected_performance_preference(&state)?;
     let plan = ModelLaunchPlanner::plan_for_preference(
-        &model, &hardware, &selection, allocate_local_port()?,
+        &model,
+        &hardware,
+        &selection,
+        allocate_local_port()?,
     );
     let (status, _lease) = runtime::ensure_model_ready(&state.runtime, &hardware, &plan.config)?;
     state.warm_start.mark_runtime_ready(&model.id);
@@ -1745,8 +2061,7 @@ fn resolve_conversation_model(
         })?;
     let reason = routing_reason(&selected, active_model_id.as_deref(), mode, content);
 
-    if mode.eq_ignore_ascii_case("chat")
-        && active_model_id.as_deref() != Some(selected.id.as_str())
+    if mode.eq_ignore_ascii_case("chat") && active_model_id.as_deref() != Some(selected.id.as_str())
     {
         repo.set_active_model(conversation_id, Some(&selected.id))?;
     }
@@ -1794,9 +2109,16 @@ struct ChatGenerationGuard<'a> {
 }
 
 impl<'a> ChatGenerationGuard<'a> {
-    fn start(active: &'a ActiveGenerations, conversation_id: &'a str) -> Result<Self, app_error::AppError> {
+    fn start(
+        active: &'a ActiveGenerations,
+        conversation_id: &'a str,
+    ) -> Result<Self, app_error::AppError> {
         let cancellation = active.start(conversation_id)?;
-        Ok(Self { active, conversation_id, cancellation })
+        Ok(Self {
+            active,
+            conversation_id,
+            cancellation,
+        })
     }
 }
 
@@ -1808,8 +2130,8 @@ impl Drop for ChatGenerationGuard<'_> {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_streaming_completion(
-    app: &AppHandle,
+async fn run_streaming_completion<R: Runtime>(
+    app: &AppHandle<R>,
     state: &State<'_, AppState>,
     conversation_id: &str,
     model: &ModelRecord,
@@ -1830,7 +2152,10 @@ async fn run_streaming_completion(
         let hardware = HardwareProfiler::for_inference(&state.hardware);
         let selection = selected_performance_preference(state)?;
         let plan = ModelLaunchPlanner::plan_for_preference(
-            model, &hardware, &selection, allocate_local_port()?,
+            model,
+            &hardware,
+            &selection,
+            allocate_local_port()?,
         );
         if let Some(replacing) = model_switch_needed(state, &plan.config.model_path)? {
             let _ = app.emit(
@@ -1925,6 +2250,183 @@ async fn run_streaming_completion(
     }
 }
 
+/// Runs the 3D planner through the same local llama.cpp runtime and verified
+/// model registry used by chat. The model only returns data; Rust validates it
+/// and the geometry adapter never executes model output as code.
+pub(crate) async fn studio3d_local_scene_spec(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    prompt: &str,
+    architecture: bool,
+) -> Result<(String, String), app_error::AppError> {
+    if prompt.trim().is_empty() || prompt.len() > 8_000 {
+        return Err(app_error::AppError::internal(
+            "3D planning prompt is empty or too long",
+        ));
+    }
+    let model = crate::studio3d::scene_planner_for_generation(app.clone()).await?;
+    let conversation_id;
+    let assistant;
+    {
+        let database = state
+            .database
+            .lock()
+            .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+        let repository = ChatRepository::new(&database);
+        let conversation = repository.create_conversation(Some("3D Studio scene planner"))?;
+        conversation_id = conversation.id;
+        let system_prompt = if architecture {
+            "Plan only the ROOM LAYOUT for an editable two-story residential building. Return one compact schemaVersion 2 JSON document with footprint [12,10], storyHeight 3.2, and exactly 9 rooms. Coordinates are metres; x and z are room-centre coordinates, front is +Z. Each room has exactly name, floor (ground or upper), x, z, width and depth. Every room rectangle must fit inside x -6..6 and z -5..5. Room rectangles on the same floor must have disjoint interiors: for each pair, either abs(x1-x2) >= (width1+width2)/2 or abs(z1-z2) >= (depth1+depth2)/2. Use a simple coherent plan: ground rooms in two rows with Living Room, Dining Room, Kitchen and Ground Bathroom; upstairs place Bedroom 1, Bedroom 2 and Bedroom 3 in one row, with Upper Bathroom and Stair Landing in the other. Choose centers and dimensions that make adjacent edges meet without rectangle overlap; leave shared circulation through the landing. Do not output walls, furniture, geometry primitives, code or prose; the desktop constructs editable architecture from this AI-authored layout. JSON only."
+        } else {
+            "Plan an editable 3D scene. The response is constrained to schema version 1 JSON. Use only box, cylinder, sphere, cone, and wheel primitives. Give each object a unique concise name; dimensions are full width/height/depth, positions are world coordinates, and rotations are radians. Set parent to JSON null for root objects (never the string \"null\"), otherwise use an existing object's exact name; no object may parent itself. Do not add a generic root in addition to the requested main object. Use plausible dimensions and coordinates. Materials use RGB values and PBR metallic/roughness in 0..1. Geometry is constructed by the application; never return code or explanatory prose."
+        };
+        repository.add_message(
+            &conversation_id,
+            "system",
+            system_prompt,
+            "completed",
+            Some(&model.id),
+        )?;
+        repository.add_message(
+            &conversation_id,
+            "user",
+            prompt,
+            "completed",
+            Some(&model.id),
+        )?;
+        assistant = repository.add_message(
+            &conversation_id,
+            "assistant",
+            "",
+            "streaming",
+            Some(&model.id),
+        )?;
+    }
+    let generation = ChatGenerationGuard::start(&state.active_generations, &conversation_id)?;
+    let cancellation = generation.cancellation.clone();
+    let inference = run_streaming_completion(
+        app,
+        state,
+        &conversation_id,
+        &model,
+        &assistant,
+        if architecture {
+            "studio3d-architecture-planner"
+        } else {
+            "studio3d-scene-planner"
+        },
+        &[],
+        None,
+        &cancellation,
+    )
+    .await;
+    let mut response = if inference.is_ok() {
+        let database = state
+            .database
+            .lock()
+            .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+        ChatRepository::new(&database)
+            .list_messages(&conversation_id)
+            .map(|messages| {
+                messages
+                    .into_iter()
+                    .find(|message| message.id == assistant.id)
+                    .map(|message| message.content)
+                    .unwrap_or_default()
+            })
+    } else {
+        Err(inference.err().expect("error branch"))
+    };
+    let initial_validation_error = response.as_ref().ok().and_then(|text| {
+        let result = if architecture {
+            crate::studio3d::parse_architecture_spec_response(text)
+        } else {
+            crate::studio3d::parse_scene_spec_response(text)
+        };
+        result.err().map(|error| (text.len(), error))
+    });
+    if let Some((response_bytes, validation_error)) = initial_validation_error {
+        tracing::warn!(model = %model.name, response_bytes, validation_error = %validation_error, "Qwen scene plan failed validation; requesting one bounded correction");
+        let correction_assistant = {
+            let database = state
+                .database
+                .lock()
+                .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+            let repository = ChatRepository::new(&database);
+            repository.add_message(
+                    &conversation_id,
+                    "user",
+                    &format!("Correct the previous JSON once. Validation errors: {}. Room x and z are rectangle centers, not corner positions. For each same-floor room pair, ensure abs(x1-x2) >= (width1+width2)/2 OR abs(z1-z2) >= (depth1+depth2)/2. Keep all nine required rooms with the requested floors and make adjacent edges meet. Return one complete compact JSON document in the required schema; no markdown or prose.", validation_error.to_string().chars().take(400).collect::<String>()),
+                    "completed",
+                    Some(&model.id),
+                )?;
+            repository.add_message(
+                &conversation_id,
+                "assistant",
+                "",
+                "streaming",
+                Some(&model.id),
+            )?
+        };
+        let correction_inference = run_streaming_completion(
+            app,
+            state,
+            &conversation_id,
+            &model,
+            &correction_assistant,
+            if architecture {
+                "studio3d-architecture-planner"
+            } else {
+                "studio3d-scene-planner"
+            },
+            &[],
+            None,
+            &cancellation,
+        )
+        .await;
+        response = if correction_inference.is_ok() {
+            let database = state
+                .database
+                .lock()
+                .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+            ChatRepository::new(&database)
+                .list_messages(&conversation_id)
+                .map(|messages| {
+                    messages
+                        .into_iter()
+                        .find(|message| message.id == correction_assistant.id)
+                        .map(|message| message.content)
+                        .unwrap_or_default()
+                })
+        } else {
+            Err(correction_inference.err().expect("error branch"))
+        };
+        let corrected_validation_error = response.as_ref().ok().and_then(|text| {
+            let result = if architecture {
+                crate::studio3d::parse_architecture_spec_response(text)
+            } else {
+                crate::studio3d::parse_scene_spec_response(text)
+            };
+            result.err()
+        });
+        if let Some(corrected_error) = corrected_validation_error {
+            response = Err(app_error::AppError::InferenceFailed(format!(
+                "local model scene remained invalid after one correction: {corrected_error}"
+            )));
+        }
+    }
+    let response = response?;
+    if response.trim().is_empty() {
+        return Err(app_error::AppError::InferenceFailed(
+            "Local model returned an empty scene specification".into(),
+        ));
+    }
+    if let Ok(database) = state.database.lock() {
+        let _ = ChatRepository::new(&database).delete_conversation(&conversation_id);
+    }
+    Ok((model.id, response))
+}
+
 #[tauri::command]
 async fn send_chat_message(
     app: AppHandle,
@@ -1957,12 +2459,8 @@ async fn send_chat_message(
     let model = routing.model;
     state.warm_start.note_foreground_request(&model.id);
     sync_project_context_for_prompt(&state, &conversation_id, trimmed)?;
-    let dataset_context = dataset_context::build_dataset_context(
-        &state.root,
-        trimmed,
-        &model.name,
-        &routing.reason,
-    )?;
+    let dataset_context =
+        dataset_context::build_dataset_context(&state.root, trimmed, &model.name, &routing.reason)?;
 
     let generation = ChatGenerationGuard::start(&state.active_generations, &conversation_id)?;
 
@@ -2132,8 +2630,8 @@ fn select_conversation_model(
     }
 
     if normalized_mode == "chat" {
-        if let Some(model) =
-            active_model_id.and_then(|id| models.iter().find(|model| model.id == id && model.enabled))
+        if let Some(model) = active_model_id
+            .and_then(|id| models.iter().find(|model| model.id == id && model.enabled))
         {
             return Some(model.clone());
         }
@@ -2220,7 +2718,9 @@ fn sync_project_context_in_database_for_prompt(
             if let Some(base) = project_context_message_for_prompt(project, prompt) {
                 parts.push(base);
             }
-            if let Some(workspace) = local_workspace::workspace_context_for_project(db, &project.id)? {
+            if let Some(workspace) =
+                local_workspace::workspace_context_for_project(db, &project.id)?
+            {
                 parts.push(workspace);
             }
             (!parts.is_empty()).then(|| parts.join("\n\n"))
@@ -2316,15 +2816,23 @@ fn save_app_preferences(
         &preferences.network_proxy_url,
     )?;
     if !web_provider_config::valid_preference(&preferences.web_search_preferred_provider) {
-        return Err(app_error::AppError::internal("invalid preferred web search provider"));
+        return Err(app_error::AppError::internal(
+            "invalid preferred web search provider",
+        ));
     }
     if PerformanceMode::from_preference(&preferences.default_performance_profile).is_none() {
         return Err(app_error::AppError::internal("invalid performance profile"));
     }
     let saved = SettingsRepository::new(&db).save_preferences(&preferences)?;
     let proxy_url = if saved.network_proxy_mode == "manual" {
-        proxy_credentials::restore(&saved.network_proxy_url, saved.network_proxy_credential_id.as_deref(), github::secret_store::get_secret)?
-    } else { saved.network_proxy_url.clone() };
+        proxy_credentials::restore(
+            &saved.network_proxy_url,
+            saved.network_proxy_credential_id.as_deref(),
+            github::secret_store::get_secret,
+        )?
+    } else {
+        saved.network_proxy_url.clone()
+    };
     net::apply_proxy_settings(&saved.network_proxy_mode, &proxy_url);
     Ok(saved)
 }
@@ -2337,7 +2845,8 @@ fn network_proxy_for_url(url: String) -> Option<String> {
 
 /// Credential values never appear in preferences, logs or frontend responses.
 #[tauri::command]
-fn web_provider_credential_status() -> Result<web_provider_config::ProviderConfiguration, app_error::AppError> {
+fn web_provider_credential_status(
+) -> Result<web_provider_config::ProviderConfiguration, app_error::AppError> {
     web_provider_config::credential_status()
 }
 
@@ -2353,9 +2862,13 @@ fn save_web_provider_credential(
 /// Checks real search responses and parsing, not merely HEAD reachability.
 /// The probe is allowed only when web retrieval is enabled in persisted prefs.
 #[tauri::command]
-async fn check_web_connectivity(state: State<'_, AppState>) -> Result<inference::ProviderHealthReport, app_error::AppError> {
+async fn check_web_connectivity(
+    state: State<'_, AppState>,
+) -> Result<inference::ProviderHealthReport, app_error::AppError> {
     let preferences = {
-        let db = state.database.lock()
+        let db = state
+            .database
+            .lock()
             .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
         SettingsRepository::new(&db).get_preferences()?
     };
@@ -2365,16 +2878,79 @@ async fn check_web_connectivity(state: State<'_, AppState>) -> Result<inference:
     // A temporarily unavailable OS keyring must not prevent keyless provider diagnostics.
     let credentials = web_provider_config::load_credentials().unwrap_or_default();
     Ok(inference::probe_web_providers(
-        &state.http, &preferences.web_search_preferred_provider, &credentials,
-    ).await)
+        &state.http,
+        &preferences.web_search_preferred_provider,
+        &credentials,
+    )
+    .await)
 }
 
 /// Runs the app's own web search (keyless providers plus any configured keys)
 /// and returns grounding context. Used by Cloud chat so live web results work
 /// even with a model-gateway-only API key (whose web-search endpoint 403s).
 #[tauri::command]
-async fn web_search_context(query: String, mode: String) -> Result<String, app_error::AppError> {
-    inference::fetch_web_context(&query, &mode).await
+async fn web_search_context(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    query: String,
+    mode: String,
+    conversation_id: String,
+    message_id: String,
+) -> Result<String, app_error::AppError> {
+    let progress_mode = if mode == "research" {
+        "research"
+    } else {
+        "search"
+    };
+    let preferences = {
+        let db = state
+            .database
+            .lock()
+            .map_err(|_| app_error::AppError::internal("database lock poisoned"))?;
+        SettingsRepository::new(&db).get_preferences()?
+    };
+    if (progress_mode == "search" && !preferences.web_search_enabled)
+        || (progress_mode == "research" && !preferences.deep_research_enabled)
+    {
+        let _ = app.emit(
+            "web-research:progress",
+            inference::WebResearchProgressEvent {
+                conversation_id: conversation_id.clone(),
+                message_id: message_id.clone(),
+                mode: progress_mode.to_string(),
+                stage: "unavailable".to_string(),
+                completed: 0,
+                total: 0,
+                sources: 0,
+                pages_read: 0,
+                domains: Vec::new(),
+            },
+        );
+        return Ok("Live web retrieval is disabled in your privacy preferences. Do not claim current web verification or invent citations.".to_string());
+    }
+    let on_progress = |progress: inference::ResearchProgress| {
+        let _ = app.emit(
+            "web-research:progress",
+            inference::WebResearchProgressEvent {
+                conversation_id: conversation_id.clone(),
+                message_id: message_id.clone(),
+                mode: progress_mode.to_string(),
+                stage: progress.stage.to_string(),
+                completed: progress.completed,
+                total: progress.total,
+                sources: progress.sources,
+                pages_read: progress.pages_read,
+                domains: progress.domains,
+            },
+        );
+    };
+    inference::fetch_web_context_with_progress(
+        &query,
+        &mode,
+        &preferences.web_search_preferred_provider,
+        &on_progress,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -2566,6 +3142,7 @@ pub fn run() {
     let installation = match portable_root::load_installation() {
         Ok(installation) => installation,
         Err(error) => {
+            tracing::error!(%error, "failed to load installation configuration during startup");
             show_installation_error(error);
             return;
         }
@@ -2583,12 +3160,20 @@ pub fn run() {
         .unwrap_or_else(|| root.database_path());
     let database =
         Database::open(database_path.clone()).expect("failed to initialize SQLite database");
-    match SettingsRepository::new(&database).get_preferences().and_then(|preferences| {
-        let url = if preferences.network_proxy_mode == "manual" {
-            proxy_credentials::restore(&preferences.network_proxy_url, preferences.network_proxy_credential_id.as_deref(), github::secret_store::get_secret)?
-        } else { preferences.network_proxy_url.clone() };
-        Ok((preferences, url))
-    }) {
+    match SettingsRepository::new(&database)
+        .get_preferences()
+        .and_then(|preferences| {
+            let url = if preferences.network_proxy_mode == "manual" {
+                proxy_credentials::restore(
+                    &preferences.network_proxy_url,
+                    preferences.network_proxy_credential_id.as_deref(),
+                    github::secret_store::get_secret,
+                )?
+            } else {
+                preferences.network_proxy_url.clone()
+            };
+            Ok((preferences, url))
+        }) {
         Ok((preferences, url)) => net::apply_proxy_settings(&preferences.network_proxy_mode, &url),
         Err(app_error::AppError::SecretStoreFailed(_)) => {
             // No direct-network fallback when a configured credential cannot be recovered.
@@ -2643,7 +3228,7 @@ pub fn run() {
             agent_runtime::spawn_idle_monitor(app.handle().clone());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(openmind_generate_handler![
             get_portable_root,
             network_proxy_for_url,
             check_web_connectivity,
@@ -2678,6 +3263,44 @@ pub fn run() {
             create_project,
             update_project,
             delete_project,
+            list_local_research_projects,
+            create_local_research_project,
+            update_local_research_project,
+            suggest_local_research_title,
+            accept_local_research_title,
+            cancel_local_research_title_job,
+            get_local_research_title_job,
+            classify_local_research_document,
+            local_research_evidence_facts,
+            local_research_outline,
+            list_local_research_sections,
+            generate_local_research_section,
+            cancel_local_research_section,
+            save_local_research_section_edit,
+            approve_local_research_section,
+            local_research_claim_ledger,
+            assemble_local_research_sections,
+            export_local_research_section_manuscript,
+            import_local_research_document,
+            list_local_research_documents,
+            register_local_research_figure,
+            list_local_research_figure_assets,
+            local_research_figure_data_url,
+            start_local_research_run,
+            list_local_research_runs,
+            local_research_run_details,
+            local_research_run_for_conversation,
+            authorize_local_research_cloud_retry,
+            cancel_local_research_run,
+            resume_local_research_run,
+            pause_local_research_run,
+            approve_local_research_manuscript,
+            review_local_research_evidence,
+            save_local_research_manuscript_revision,
+            export_local_research_document,
+            export_local_research_academic_text,
+            export_local_research_markdown,
+            local_research_cloud_model,
             link_project_conversation,
             unlink_project_conversation,
             add_project_file,
@@ -2813,10 +3436,12 @@ mod milestone2_tests {
     }
 
     #[test]
-    fn actual_or_temp_root_persistence_round_trip() {
-        let root = PortableRootManager::resolve().unwrap_or_else(|_| {
-            PortableRootManager::from_root(tempfile::tempdir().unwrap().path().join("OpenMindAI"))
-        });
+    fn test_root_persistence_round_trip() {
+        let _env_guard = crate::portable_root::tests::ENV_LOCK.lock().unwrap();
+        let root = PortableRootManager::from_root(
+            crate::portable_root::test_root_from_env()
+                .expect("manifest-aware harness must provide a verified disposable test root"),
+        );
         root.ensure_directories().unwrap();
         let db_path = root.database_path();
         let conversation_id;
@@ -2882,8 +3507,16 @@ mod milestone2_tests {
     fn unavailable_active_model_cannot_override_a_usable_fallback() {
         let unavailable = test_model("missing", None, false);
         let fallback = test_model("available", None, true);
-        assert!(select_conversation_model(std::slice::from_ref(&unavailable), Some("missing"), "chat", "hello").is_none());
-        let selected = select_conversation_model(&[unavailable, fallback], Some("missing"), "chat", "hello").unwrap();
+        assert!(select_conversation_model(
+            std::slice::from_ref(&unavailable),
+            Some("missing"),
+            "chat",
+            "hello"
+        )
+        .is_none());
+        let selected =
+            select_conversation_model(&[unavailable, fallback], Some("missing"), "chat", "hello")
+                .unwrap();
         assert_eq!(selected.id, "available");
     }
 
