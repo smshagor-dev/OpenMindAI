@@ -1697,17 +1697,29 @@ export function App() {
   if (wizardActive) {
     return (
       <SetupWizard
-        mode={installationStatus?.setupRequired ? "full" : "preparing"}
+        mode={
+          installationStatus?.setupRequired &&
+          !["rootCreated", "runtimeReady", "modelReady"].includes(
+            installationStatus.pending?.state ?? "",
+          )
+            ? "full"
+            : "preparing"
+        }
         hardware={hardware}
         models={models}
         runtime={runtime}
         root={root}
         pending={installationStatus?.pending}
         refresh={refreshApp}
-        onDismiss={() => {
-          completeSetupPreparation();
-          setWizardActive(false);
-          void refreshApp();
+        onDismiss={async () => {
+          try {
+            await api.markSetupCompleted();
+            completeSetupPreparation();
+            setWizardActive(false);
+            await refreshApp();
+          } catch (caught) {
+            showError(caught);
+          }
         }}
       />
     );

@@ -367,6 +367,24 @@ fn complete_setup(
     let sanitized = sanitize_profile_name(&profile_name);
     let database_filename = format!("{sanitized}.db");
     let database_path = manager.database_path_for_profile(&sanitized);
+
+    // Never let first-run setup open (and migrate) an unrelated database just
+    // because the selected root/profile happens to have the same filename.
+    // A database created by this interrupted setup may be reopened only when
+    // the saved pending pointer names this exact root and profile.
+    if database_path.exists() {
+        let is_resume = portable_root::load_installation()?.is_some_and(|config| {
+            config.root == manager.root().display().to_string()
+                && config.database == database_filename
+                && config.setup_state == Some(SetupState::RootCreated)
+        });
+        if !is_resume {
+            return Err(app_error::AppError::SetupRequired(
+                "A database already exists for this profile name. Choose a different name to protect the existing database; it was not opened or changed.".to_string(),
+            ));
+        }
+    }
+
     Database::open(database_path.clone())?;
 
     let config = InstallConfig {
@@ -445,6 +463,18 @@ fn mark_model_ready() -> Result<(), app_error::AppError> {
         });
         tracing::info!("AI model marked ready");
         save_installation(&config)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn mark_setup_completed() -> Result<(), app_error::AppError> {
+    if let Some(mut config) = load_installation()? {
+        if config.installation_complete {
+            config.setup_state = Some(SetupState::Completed);
+            tracing::info!("first-run setup marked complete");
+            save_installation(&config)?;
+        }
     }
     Ok(())
 }
@@ -3240,6 +3270,7 @@ pub fn run() {
             save_setup_progress,
             mark_runtime_ready,
             mark_model_ready,
+            mark_setup_completed,
             check_storage_location,
             list_conversations,
             create_conversation,

@@ -193,6 +193,7 @@ export const api = {
   webSearchContext: (query: string, mode: string, conversationId: string, messageId: string) =>
     call<string>("web_search_context", { query, mode, conversationId, messageId }),
   markModelReady: () => call<void>("mark_model_ready"),
+  markSetupCompleted: () => call<void>("mark_setup_completed"),
   checkStorageLocation: (path: string) =>
     call<StorageLocationCheck>("check_storage_location", { path }),
   conversations: () => call<Conversation[]>("list_conversations"),
