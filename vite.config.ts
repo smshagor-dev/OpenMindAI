@@ -5,6 +5,7 @@ export default defineConfig({
   plugins: [react()],
   clearScreen: false,
   server: {
+    host: "127.0.0.1",
     port: 1420,
     strictPort: true,
     watch: {
@@ -31,6 +32,8 @@ export default defineConfig({
         manualChunks(id) {
           if (!id.includes("node_modules")) return undefined;
           if (id.includes("pdfjs-dist")) return "pdf";
+          if (id.includes("three/examples/")) return "three-extras";
+          if (id.includes("/three/")) return "three";
           if (id.includes("highlight.js") || id.includes("marked")) return "markdown";
           if (id.includes("react-dom") || id.includes("/react/") || id.includes("scheduler")) {
             return "react";
