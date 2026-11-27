@@ -37,8 +37,11 @@ function boundErrorDisplay(message: string): string {
   return `${message.slice(0, end)}…`;
 }
 
+const sanitizeErrorDisplay = (value: string): string =>
+  value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/g, "");
+
 export function formatError(caught: unknown): string {
-  return boundErrorDisplay(formatErrorUnbounded(caught));
+  return sanitizeErrorDisplay(boundErrorDisplay(formatErrorUnbounded(caught)));
 }
 
 function formatErrorUnbounded(caught: unknown): string {
