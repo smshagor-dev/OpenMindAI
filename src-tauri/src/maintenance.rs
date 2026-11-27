@@ -345,7 +345,11 @@ mod tests {
         let backups_dir = root.resolve_relative("backups").unwrap();
         fs::write(backups_dir.join("manual.db"), b"other database").unwrap();
         fs::write(backups_dir.join("notes.txt"), b"no snapshot").unwrap();
-        fs::write(backups_dir.join(".pending-openmindai-stale.db"), b"incomplete").unwrap();
+        fs::write(
+            backups_dir.join(".pending-openmindai-stale.db"),
+            b"incomplete",
+        )
+        .unwrap();
         let entries = list_backups(&root).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, created.name);

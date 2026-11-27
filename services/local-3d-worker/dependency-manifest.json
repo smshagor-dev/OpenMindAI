@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "manifestVersion": "2026-11-22.1",
+  "purpose": "Optional OpenCL transform acceleration for OpenMindAI Desktop 3D Studio. CPU procedural geometry does not require these packages.",
+  "supportedTargets": [
+    {
+      "os": "windows",
+      "architecture": "x86_64",
+      "python": "3.13",
+      "abi": "cp313",
+      "implementation": "CPython",
+      "packages": [
+        {
+          "name": "numpy",
+          "version": "2.3.5",
+          "filename": "numpy-2.3.5-cp313-cp313-win_amd64.whl",
+          "url": "https://files.pythonhosted.org/packages/0c/88/e2eaa6cffb115b85ed7c7c87775cb8bcf0816816bc98ca8dbfa2ee33fe6e/numpy-2.3.5-cp313-cp313-win_amd64.whl",
+          "sha256": "00dc4e846108a382c5869e77c6ed514394bdeb3403461d25a829711041217d5b",
+          "size": 12779090,
+          "license": "BSD-3-Clause",
+          "reason": "Required by PyOpenCL and the optional accelerated transform path."
+        },
+        {
+          "name": "pyopencl",
+          "version": "2025.2.6",
+          "filename": "pyopencl-2025.2.6-cp313-cp313-win_amd64.whl",
+          "url": "https://files.pythonhosted.org/packages/a1/95/43ace46583383cf6ec905151149da23bdad5251008f2e3585d165e32685a/pyopencl-2025.2.6-cp313-cp313-win_amd64.whl",
+          "sha256": "fd56049be789226977b19e39b1a80f6798ccb9a6701a8ef252047216222f0fde",
+          "size": 473096,
+          "license": "MIT",
+          "reason": "Python bindings only; does not install an OpenCL driver or device."
+        },
+        {
+          "name": "platformdirs",
+          "version": "4.14.8",
+          "filename": "platformdirs-4.14.8-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/5b/be/373cc7341f53bfd3acba3e5db62433fd960a45fcf73ad64a5f4d27e74910/platformdirs-4.14.8-py3-none-any.whl",
+          "sha256": "1e34af590de4d978631b751eb2202f2fee4497537a17c1720b12fcf57b331392",
+          "size": 94267,
+          "license": "MIT",
+          "reason": "PyOpenCL dependency."
+        },
+        {
+          "name": "pytools",
+          "version": "2026.1.1",
+          "filename": "pytools-2026.1.1-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/bb/45/32a4b57ff351213094a533067db1846494db9bba5f3348b75223b94f3d22/pytools-2026.1.1-py3-none-any.whl",
+          "sha256": "1f6d9a39c871b6dc761893373792f10b67886c83e38f2aa09b66e11f8c021436",
+          "size": 99212,
+          "license": "MIT",
+          "reason": "PyOpenCL dependency."
+        },
+        {
+          "name": "siphash24",
+          "version": "1.9",
+          "filename": "siphash24-1.9-cp313-cp313-win_amd64.whl",
+          "url": "https://files.pythonhosted.org/packages/b1/ae/0ae957dd525850e8eb6d4f107267202744468b55b06b70e09c8634266a90/siphash24-1.9-cp313-cp313-win_amd64.whl",
+          "sha256": "1da60d05b6014b3a6946a9829d83359b21a7e104ab5cf71dd2d835c1b78a7ebd",
+          "size": 77233,
+          "license": "Apache-2.0 OR LGPL-2.1-or-later",
+          "reason": "PyTools dependency."
+        },
+        {
+          "name": "typing-extensions",
+          "version": "4.16.0",
+          "filename": "typing_extensions-4.16.0-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl",
+          "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",
+          "size": 45571,
+          "license": "PSF-2.0",
+          "reason": "PyTools dependency."
+        },
+        {
+          "name": "mako",
+          "version": "1.4.3",
+          "filename": "mako-1.4.3-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/6d/a0/053d6af3e8f871e0073b4a36732d9e65be77a72e5434c31b94f6af78a6bb/mako-1.4.3-py3-none-any.whl",
+          "sha256": "723296007c870bfd6b3f0c3230dba7198096e5269297ebf5e4eff9e7ffa39d4f",
+          "size": 80164,
+          "license": "MIT",
+          "reason": "PyOpenCL runtime compiler template dependency."
+        },
+        {
+          "name": "markupsafe",
+          "version": "3.0.4",
+          "filename": "markupsafe-3.0.4-cp313-cp313-win_amd64.whl",
+          "url": "https://files.pythonhosted.org/packages/6f/36/163da64de88a13db79214ef75fa041be7fa13bdb42261cf5b7484de14bfb/markupsafe-3.0.4-cp313-cp313-win_amd64.whl",
+          "sha256": "1f1f9477e174582b0a1b583d60b66e1f2cf5d3fe12cee985e4aedf44766600e5",
+          "size": 14313,
+          "license": "BSD-3-Clause",
+          "reason": "Mako dependency."
+        }
+      ]
+    }
+  ]
+}
