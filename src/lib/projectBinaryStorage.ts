@@ -57,16 +57,19 @@ export async function saveProjectBinaryCopy(projectId: string, fileId: string) {
   try {
     link = document.createElement("a");
     // Names are display labels only. Never interpret stored names as paths.
-    link.download = [...file.name].map((character) => {
+    const safeName: string[] = [];
+    for (const character of file.name) {
+      if (safeName.length === 255) break;
       const code = character.charCodeAt(0);
-      return character === "/" || character === "\\" || code < 32 || code === 127 ||
+      safeName.push(character === "/" || character === "\\" || code < 32 || code === 127 ||
         code === 0x061c || code === 0x200e || code === 0x200f ||
         (code >= 0x202a && code <= 0x202e) ||
         (code >= 0x2066 && code <= 0x2069) ||
         code === 0x2028 || code === 0x2029
         ? "_"
-        : character;
-    }).join("") || "project-attachment";
+        : character);
+    }
+    link.download = safeName.join("") || "project-attachment";
     link.href = url;
     document.body.appendChild(link);
     link.click();
