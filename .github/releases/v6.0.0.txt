@@ -1,3 +1,24 @@
-# OpenMindAI v6.0.0
+# OpenMindAI v6.0.0 — Release notes
 
-Application version metadata has been advanced to 6.0.0 across the package manifests, native application configuration, portable marker, and platform launchers. This version update does not establish feature scope, release validation, or distribution status.
+## Release status
+
+The v6.0.0 source changes are on the `main` branch. The Windows x86 and x64 EXE/MSI packages were generated locally, but the configured Tauri updater signing key is unavailable in this build environment. Both release commands therefore exited with an error after producing the installer files. No updater `.sig` files were produced, the Windows files are not Authenticode-signed, and v6.0.0 has not been published. Do not distribute these local unsigned packages as an official release. The published v5.0.0 release remains the latest downloadable release.
+
+## Updates and fixes
+
+- **Version metadata:** advanced the application, Tauri, native package, portable marker, and platform launcher versions to `6.0.0`.
+- **First-run setup recovery:** fixed setup returning to the profile screen after an application restart. Setup resumes from saved progress and records completion through the native backend.
+- **Existing database protection:** setup refuses to open or migrate a database that already exists for a selected profile name, unless it is resuming that exact pending setup. Users can choose another profile name without disturbing the existing database.
+- **Previous chat recovery:** when the configured default database is empty but the legacy `openmind_ai.db` contains conversations, startup creates a verified snapshot before switching back to the database with the chats. Startup stops if the snapshot cannot be created.
+- **Cloud connection recovery:** Cloud authentication and connection failures open a dialog for entering or replacing an API key. Chat, Work, and Research Studio connection actions use the same dialog. The key continues to use secure native storage.
+- **API key access:** the dialog links to [api.openmindai.org](https://api.openmindai.org) to obtain an OpenMindAI API key.
+- **3D image requests:** when image-to-3D is requested without a Cloud connection, 3D Studio explains that Cloud and Online mode are required and opens the connection dialog. The reference image remains local until the user confirms a Cloud upload.
+
+## Windows build results
+
+The configured NSIS and MSI bundles were generated for both architectures:
+
+- x86: `OpenMindAI_6.0.0_x86-setup.exe` and `OpenMindAI_6.0.0_x86_en-US.msi`
+- x64: `OpenMindAI_6.0.0_x64-setup.exe` and `OpenMindAI_6.0.0_x64_en-US.msi`
+
+The Tauri release commands did not pass the updater-signing step because the private key corresponding to the configured public key was unavailable. No signing key was rotated. Installer acceptance was not performed, and these local artifacts are not published downloads.

@@ -27,6 +27,22 @@
 
 ---
 
+## OpenMindAI v6.0.0 — Source changes
+
+This section lists the v6.0.0 source updates and fixes currently on `main`.
+
+### Updates and fixes
+
+- **Version metadata:** advanced the application, Tauri, native package, portable marker, and platform launcher versions to `6.0.0`.
+- **First-run setup recovery:** fixed setup returning to the profile screen after a restart. Resumed setup now follows its saved progress and marks completion through the native backend.
+- **Existing database protection:** setup no longer opens or migrates an unrelated database when a selected profile name already exists. It asks the user to choose another profile name.
+- **Previous chats restored:** when the configured new default database is empty but the legacy `openmind_ai.db` contains conversations, startup first creates a verified snapshot, then selects the database with the chats. Startup stops if the snapshot cannot be created.
+- **Cloud connection prompts:** Cloud authentication and connection failures now open a dialog to enter or replace an API key. Connect Cloud actions in Chat, Work, and Research Studio use the same dialog. The key is stored using the existing secure native storage flow.
+- **API key access:** the connection dialog links to [api.openmindai.org](https://api.openmindai.org), where users can obtain a key.
+- **Image-to-3D guidance:** when image-based generation is requested without a Cloud connection, 3D Studio explains that Cloud and Online mode are required and opens the connection dialog. The reference image stays local until the user explicitly confirms a Cloud upload.
+
+See the [v6.0.0 release notes](.github/releases/v6.0.0.txt) for Windows build status and release limitations. The local v6.0.0 installers are not published downloads.
+
 ## OpenMindAI v5.0.0
 
 **Current source version:** `v6.0.0`  
