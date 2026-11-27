@@ -2,18 +2,24 @@
 //! External text is never treated as instructions. Network requests stay opt-in
 //! through the existing Web Search and Deep Research privacy preferences.
 use super::*;
+use crate::web_provider_config::SearchCredentials;
 use futures_util::{stream, StreamExt};
 use reqwest::{redirect::Policy, Url};
-use serde_json::Value;
 use serde::Serialize;
-use crate::web_provider_config::SearchCredentials;
+use serde_json::Value;
 use std::sync::{Mutex as StdMutex, OnceLock};
 use std::time::Instant;
-use std::{collections::{HashMap, HashSet}, net::{IpAddr, SocketAddr}, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    net::{IpAddr, SocketAddr},
+    time::Duration,
+};
 
 const BING_HTML: &str = "https://www.bing.com/search";
+const BRAVE_HTML: &str = "https://search.brave.com/search";
 const BRAVE_JSON: &str = "https://api.search.brave.com/res/v1/web/search";
 const GOOGLE_JSON: &str = "https://www.googleapis.com/customsearch/v1";
+const GOOGLE_NEWS_RSS: &str = "https://news.google.com/rss/search";
 const SEARCH_BYTES: usize = 1_000_000;
 const PAGE_BYTES: usize = 1_500_000;
 const PDF_MAX_EXTRACT_PAGES: usize = 8;
@@ -28,12 +34,19 @@ const MAX_PROVIDER_ATTEMPTS: usize = 3;
 const BASE_RETRY_MS: u64 = 250;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum Provider { Brave, Google, DuckDuckGo, Bing }
+enum Provider {
+    Brave,
+    Google,
+    GoogleNews,
+    DuckDuckGo,
+    Bing,
+}
 impl Provider {
     fn name(self) -> &'static str {
         match self {
-            Self::Brave => "Brave Search API",
+            Self::Brave => "Brave Search",
             Self::Google => "Google Custom Search (legacy)",
+            Self::GoogleNews => "Google News RSS",
             Self::DuckDuckGo => "DuckDuckGo",
             Self::Bing => "Bing HTML",
         }
@@ -53,13 +66,41 @@ struct PageEvidence {
 /// clickable sources without trusting model-generated hyperlinks.
 /// Milestone-free, measured progress for user-visible research activity.
 /// Counts track completed network work, never estimated elapsed percentages.
-#[derive(Clone, Copy, Debug)]
-pub(super) struct ResearchProgress {
-    pub(super) stage: &'static str,
-    pub(super) completed: usize,
-    pub(super) total: usize,
-    pub(super) sources: usize,
-    pub(super) pages_read: usize,
+#[derive(Clone, Debug)]
+pub(crate) struct ResearchProgress {
+    pub(crate) stage: &'static str,
+    pub(crate) completed: usize,
+    pub(crate) total: usize,
+    pub(crate) sources: usize,
+    pub(crate) pages_read: usize,
+    pub(crate) domains: Vec<String>,
+}
+
+fn source_domains(results: &[WebSearchResult]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    results
+        .iter()
+        .filter_map(|result| {
+            let publisher_host = result
+                .snippet
+                .strip_prefix("Publisher: ")
+                .and_then(|snippet| snippet.split_once('(').map(|(_, rest)| rest))
+                .and_then(|rest| rest.split_once(')').map(|(host, _)| host.to_string()));
+            let host = publisher_host.unwrap_or_else(|| {
+                Url::parse(&result.url)
+                    .ok()
+                    .and_then(|url| {
+                        url.host_str()
+                            .map(|host| host.trim_start_matches("www.").to_string())
+                    })
+                    .unwrap_or_default()
+            });
+            if host.is_empty() {
+                return None;
+            }
+            seen.insert(host.clone()).then_some(host)
+        })
+        .collect()
 }
 
 pub(super) struct ResearchEvidence {
@@ -102,7 +143,7 @@ pub(super) async fn gather(
     let max_duration = if mode == "research" { 85 } else { 35 };
     tokio::select! {
         _ = cancellation.cancelled() => {
-            on_progress(ResearchProgress { stage: "stopped", completed: 0, total: 0, sources: 0, pages_read: 0 });
+            on_progress(ResearchProgress { stage: "stopped", completed: 0, total: 0, sources: 0, pages_read: 0, domains: Vec::new() });
             unavailable("Web retrieval was stopped. No live verification was completed. Do not invent sources.")
         },
         result = tokio::time::timeout(
@@ -111,7 +152,7 @@ pub(super) async fn gather(
         ) => match result {
             Ok(evidence) => evidence,
             Err(_) => {
-                on_progress(ResearchProgress { stage: "unavailable", completed: 0, total: 0, sources: 0, pages_read: 0 });
+                on_progress(ResearchProgress { stage: "unavailable", completed: 0, total: 0, sources: 0, pages_read: 0, domains: Vec::new() });
                 unavailable("Web retrieval timed out. State that live verification was incomplete; never invent sources or citations.")
             }
         },
@@ -132,8 +173,20 @@ async fn research_inner(
         queries.push(format!("{query} official primary source"));
         queries.push(format!("{query} independent evidence analysis"));
         queries.push(format!("{query} recent updates criticism"));
+    } else if mode == "search" {
+        let broad_query = simplify_search_query(query);
+        if !broad_query.is_empty() && !broad_query.eq_ignore_ascii_case(query.trim()) {
+            queries.push(broad_query);
+        }
     }
-    on_progress(ResearchProgress { stage: "searching", completed: 0, total: queries.len(), sources: 0, pages_read: 0 });
+    on_progress(ResearchProgress {
+        stage: "searching",
+        completed: 0,
+        total: queries.len(),
+        sources: 0,
+        pages_read: 0,
+        domains: Vec::new(),
+    });
     let providers = configured_providers(preferred, credentials);
     let mut results: Vec<WebSearchResult> = Vec::new();
     let mut seen = HashSet::new();
@@ -142,59 +195,104 @@ async fn research_inner(
     let mut errors = Vec::new();
 
     for (index, search_query) in queries.iter().enumerate() {
-        if cancellation.is_cancelled() || results.len() >= MAX_SOURCES { break; }
+        if cancellation.is_cancelled() || results.len() >= MAX_SOURCES {
+            break;
+        }
         let mut found_in_query = false;
         for provider in &providers {
-            if cancellation.is_cancelled() || results.len() >= MAX_SOURCES { break; }
+            if cancellation.is_cancelled() || results.len() >= MAX_SOURCES {
+                break;
+            }
+            if *provider == Provider::GoogleNews && !query_needs_news_results(query) {
+                continue;
+            }
             let search = tokio::select! {
                 _ = cancellation.cancelled() => break,
                 value = search_provider_with_retry(client, *provider, search_query, credentials, cancellation) => value,
             };
             match search {
                 Ok(found) if !found.is_empty() => {
-                    found_in_query = true;
                     let mut added = 0usize;
                     for hit in found {
-                        if !is_public_web_url(&hit.url) { continue; }
+                        if !is_public_web_url(&hit.url) {
+                            continue;
+                        }
+                        // Search providers occasionally return popular but unrelated
+                        // pages (often shopping pages). Do not present them as answers
+                        // when none of the user's topic terms appear in the result.
+                        if mode != "research" && search_result_relevance(&hit, query) == 0 {
+                            continue;
+                        }
                         let key = canonical_url(&hit.url);
-                        if seen.contains(&key) { continue; }
+                        if seen.contains(&key) {
+                            continue;
+                        }
                         if mode == "research" {
-                            let host = Url::parse(&hit.url).ok()
+                            let host = Url::parse(&hit.url)
+                                .ok()
                                 .and_then(|u| u.host_str().map(str::to_string));
                             if let Some(host) = host {
-                                let count = results.iter().filter(|r|
-                                    Url::parse(&r.url).ok()
-                                        .and_then(|u| u.host_str().map(str::to_string))
-                                        .is_some_and(|current| current == host)
-                                ).count();
-                                if count >= 2 { continue; }
+                                let count = results
+                                    .iter()
+                                    .filter(|r| {
+                                        Url::parse(&r.url)
+                                            .ok()
+                                            .and_then(|u| u.host_str().map(str::to_string))
+                                            .is_some_and(|current| current == host)
+                                    })
+                                    .count();
+                                if count >= 2 {
+                                    continue;
+                                }
                             }
                         }
                         seen.insert(key);
                         results.push(hit);
                         added += 1;
-                        let provider_limit = if mode == "research" { 5 } else { WEB_SEARCH_RESULTS };
-                        if results.len() >= MAX_SOURCES || added >= provider_limit { break; }
+                        let provider_limit = if mode == "research" {
+                            5
+                        } else {
+                            WEB_SEARCH_RESULTS
+                        };
+                        if results.len() >= MAX_SOURCES || added >= provider_limit {
+                            break;
+                        }
                     }
                     if added > 0 {
+                        found_in_query = true;
                         *provider_counts.entry(provider.name()).or_insert(0) += added;
                         // Research samples two indexes for the first query, then
                         // distributes queries across providers; Search uses first
                         // available provider with results.
-                        if mode != "research" || index > 0 || provider_counts.len() >= 2 { break; }
+                        if mode != "research" || index > 0 || provider_counts.len() >= 2 {
+                            break;
+                        }
                     }
                 }
                 Ok(_) => errors.push(format!("{} returned no usable results", provider.name())),
                 Err(_error) => {
                     // Never log errors with formatted request URLs: legacy Google
                     // API credentials can occur in request query parameters.
-                    tracing::warn!(provider = provider.name(), status = _error.status(), "web provider unavailable");
+                    tracing::warn!(
+                        provider = provider.name(),
+                        status = _error.status(),
+                        "web provider unavailable"
+                    );
                     errors.push(format!("{} {}", provider.name(), _error.status()));
                 }
             }
         }
-        if found_in_query { successful_queries += 1; }
-        on_progress(ResearchProgress { stage: "searching", completed: index + 1, total: queries.len(), sources: results.len(), pages_read: 0 });
+        if found_in_query {
+            successful_queries += 1;
+        }
+        on_progress(ResearchProgress {
+            stage: "searching",
+            completed: index + 1,
+            total: queries.len(),
+            sources: results.len(),
+            pages_read: 0,
+            domains: source_domains(&results),
+        });
     }
     tracing::info!(
         total_results = results.len(),
@@ -204,23 +302,45 @@ async fn research_inner(
         "web research search phase complete"
     );
     if results.is_empty() {
-        on_progress(ResearchProgress { stage: "unavailable", completed: 0, total: 0, sources: 0, pages_read: 0 });
+        on_progress(ResearchProgress {
+            stage: "unavailable",
+            completed: 0,
+            total: 0,
+            sources: 0,
+            pages_read: 0,
+            domains: Vec::new(),
+        });
         return unavailable(&format!(
             "LIVE RETRIEVAL FAILED: no reliable search results could be obtained ({}). Internet, proxy, provider blocks, or DNS may be responsible. Do not claim web verification, fabricate citations or quote a source.",
             errors.into_iter().take(4).collect::<Vec<_>>().join("; ")
         ));
     }
 
-    if mode == "research" { rank_research_results(&mut results, query); }
+    if mode == "research" {
+        rank_research_results(&mut results, query);
+    } else {
+        results.sort_by_key(|hit| std::cmp::Reverse(search_result_relevance(hit, query)));
+    }
 
     // Preserve ranked search result order and citations. Verify public DNS for each
     // target and pin approved IPs; redirects are not followed. This prevents
     // ordinary local-network/loopback and DNS rebinding SSRF.
-    let limit = if mode == "research" { RESEARCH_PAGES } else { SEARCH_PAGES };
+    let limit = if mode == "research" {
+        RESEARCH_PAGES
+    } else {
+        SEARCH_PAGES
+    };
     let work = results.iter().take(limit).cloned().collect::<Vec<_>>();
     let page_total = work.len();
     let mut pages_checked = 0;
-    on_progress(ResearchProgress { stage: "reading", completed: 0, total: page_total, sources: results.len(), pages_read: 0 });
+    on_progress(ResearchProgress {
+        stage: "reading",
+        completed: 0,
+        total: page_total,
+        sources: results.len(),
+        pages_read: 0,
+        domains: source_domains(&results),
+    });
     let research_query = query.to_string();
     let mut pages = HashMap::<String, String>::new();
     let mut pdf_urls = HashSet::<String>::new();
@@ -236,7 +356,7 @@ async fn research_inner(
     loop {
         tokio::select! {
             _ = cancellation.cancelled() => {
-                on_progress(ResearchProgress { stage: "stopped", completed: pages_checked, total: page_total, sources: results.len(), pages_read: pages.len() });
+                on_progress(ResearchProgress { stage: "stopped", completed: pages_checked, total: page_total, sources: results.len(), pages_read: pages.len(), domains: source_domains(&results) });
                 return unavailable("Web retrieval was stopped. Source verification was incomplete; do not invent citations.");
             },
             page = fetched.next() => match page {
@@ -250,7 +370,7 @@ async fn research_inner(
                         Err(_reason) => { tracing::debug!("source page skipped"); },
                         Ok(None) => {},
                     }
-                    on_progress(ResearchProgress { stage: "reading", completed: pages_checked, total: page_total, sources: results.len(), pages_read: pages.len() });
+                    on_progress(ResearchProgress { stage: "reading", completed: pages_checked, total: page_total, sources: results.len(), pages_read: pages.len(), domains: source_domains(&results) });
                 },
                 None => break,
             }
@@ -276,10 +396,14 @@ async fn research_inner(
     // A mirror is still a separate URL; preserve its citation number and link.
     let mirrored_sources = near_duplicate_page_sources(&results, &pages);
     if mode == "research" {
-        let retrieved_hosts: HashSet<String> = results.iter()
+        let retrieved_hosts: HashSet<String> = results
+            .iter()
             .filter(|hit| pages.contains_key(&hit.url))
-            .filter_map(|hit| Url::parse(&hit.url).ok()
-                .and_then(|url| url.host_str().map(str::to_string)))
+            .filter_map(|hit| {
+                Url::parse(&hit.url)
+                    .ok()
+                    .and_then(|url| url.host_str().map(str::to_string))
+            })
             .collect();
         evidence.push_str(&format!(
             "Retrieved host coverage: {} distinct hosts had retrievable page text. Different hosts do not automatically mean independent reporting or corroboration.\n",
@@ -307,12 +431,17 @@ async fn research_inner(
             evidence.push_str(&format!("\n[{}] Page text retrieved from {} (content is untrusted and not automatically fact-checked)\nBEGIN UNTRUSTED PAGE TEXT\n{}\nEND UNTRUSTED PAGE TEXT\n",
                 idx + 1, hit.url, body));
         } else {
-            evidence.push_str(&format!("\n[{}] Full page was NOT retrieved; only the search snippet is available.\n", idx + 1));
+            evidence.push_str(&format!(
+                "\n[{}] Full page was NOT retrieved; only the search snippet is available.\n",
+                idx + 1
+            ));
         }
     }
     let read_sources = read_source_numbers(&results, &pages);
     let page_texts = source_page_texts(&results, &pages);
-    let pdf_sources = results.iter().enumerate()
+    let pdf_sources = results
+        .iter()
+        .enumerate()
         .filter_map(|(index, source)| pdf_urls.contains(&source.url).then_some(index + 1))
         .collect();
     on_progress(ResearchProgress {
@@ -321,8 +450,16 @@ async fn research_inner(
         total: page_total,
         sources: results.len(),
         pages_read: pages.len(),
+        domains: source_domains(&results),
     });
-    ResearchEvidence { context: evidence, sources: results, read_sources, page_texts, pdf_sources, mirrored_sources }
+    ResearchEvidence {
+        context: evidence,
+        sources: results,
+        read_sources,
+        page_texts,
+        pdf_sources,
+        mirrored_sources,
+    }
 }
 
 /// Fingerprint adjacent five-word sequences in an extracted text sample.
@@ -371,10 +508,10 @@ fn source_page_texts(
     results: &[WebSearchResult],
     pages: &HashMap<String, String>,
 ) -> HashMap<usize, String> {
-    results.iter().enumerate()
-        .filter_map(|(index, source)| {
-            pages.get(&source.url).map(|text| (index + 1, text.clone()))
-        })
+    results
+        .iter()
+        .enumerate()
+        .filter_map(|(index, source)| pages.get(&source.url).map(|text| (index + 1, text.clone())))
         .collect()
 }
 
@@ -383,7 +520,9 @@ fn read_source_numbers(
     results: &[WebSearchResult],
     pages: &HashMap<String, String>,
 ) -> HashSet<usize> {
-    results.iter().enumerate()
+    results
+        .iter()
+        .enumerate()
         .filter(|(_, source)| pages.contains_key(&source.url))
         .map(|(index, _)| index + 1)
         .collect()
@@ -411,19 +550,152 @@ fn rank_research_results(results: &mut [WebSearchResult], query: &str) {
     });
 }
 
+/// Topic overlap for ordinary web search. Include a few common Bangla to
+/// English topic equivalents so Bangla queries can still rank English pages.
+fn search_result_relevance(hit: &WebSearchResult, query: &str) -> usize {
+    let mut terms: HashSet<String> = query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| word.chars().count() >= 3)
+        .map(str::to_lowercase)
+        .filter(|word| {
+            !matches!(
+                word.as_str(),
+                "the" | "and" | "for" | "with" | "from" | "today" | "latest" | "news" | "please"
+            )
+        })
+        .collect();
+    let lower_query = query.to_lowercase();
+    let bangladesh_query = lower_query.contains("বাংলাদেশ") || lower_query.contains("bangladesh");
+    if bangladesh_query {
+        terms.extend([
+            "bangladesh".to_string(),
+            "dhaka".to_string(),
+            "bd".to_string(),
+        ]);
+    }
+    if lower_query.contains("খবর") || lower_query.contains("news") {
+        terms.insert("news".to_string());
+    }
+    let haystack: HashSet<String> = format!("{} {}", hit.title, hit.snippet)
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    let title_terms: HashSet<String> = hit
+        .title
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    if bangladesh_query
+        && !title_terms.iter().any(|word| {
+            word == "bangladesh"
+                || word == "dhaka"
+                || word == "bd"
+                || word.starts_with("а¦¬а¦ѕа¦‚а¦Іа¦ѕа¦¦а§‡а¦¶")
+        })
+    {
+        return 0;
+    }
+    if bangladesh_query
+        && !haystack.iter().any(|word| {
+            word == "bangladesh" || word.starts_with("বাংলাদেশ") || word == "dhaka" || word == "bd"
+        })
+    {
+        return 0;
+    }
+    terms.intersection(&haystack).count()
+}
+
+fn query_needs_news_results(query: &str) -> bool {
+    query
+        .chars()
+        .any(|character| ('\u{0980}'..='\u{09ff}').contains(&character))
+        || query
+            .split(|character: char| !character.is_alphanumeric())
+            .any(|word| {
+                matches!(
+                    word.to_ascii_lowercase().as_str(),
+                    "news"
+                        | "today"
+                        | "tonight"
+                        | "yesterday"
+                        | "latest"
+                        | "current"
+                        | "recent"
+                        | "breaking"
+                        | "update"
+                        | "updates"
+                        | "2026"
+                )
+            })
+}
+
+fn simplify_search_query(query: &str) -> String {
+    const FILLER: &[&str] = &[
+        "please",
+        "find",
+        "search",
+        "look",
+        "up",
+        "give",
+        "provide",
+        "show",
+        "tell",
+        "me",
+        "from",
+        "reliable",
+        "trusted",
+        "official",
+        "sources",
+        "source",
+        "cite",
+        "citation",
+        "citations",
+        "date",
+        "dates",
+        "link",
+        "links",
+        "with",
+        "and",
+        "the",
+        "for",
+        "about",
+    ];
+    let words = query
+        .split_whitespace()
+        .filter(|word| {
+            let normalized = word
+                .trim_matches(|character: char| !character.is_alphanumeric())
+                .to_lowercase();
+            !normalized.is_empty() && !FILLER.contains(&normalized.as_str())
+        })
+        .collect::<Vec<_>>();
+    if words.len() < 2 {
+        return String::new();
+    }
+    words.join(" ")
+}
+
 fn configured_providers(preferred: &str, credentials: &SearchCredentials) -> Vec<Provider> {
     let mut providers = Vec::new();
-    if credentials.brave_ready() { providers.push(Provider::Brave); }
-    if credentials.google_ready() { providers.push(Provider::Google); }
-    providers.extend([Provider::DuckDuckGo, Provider::Bing]);
+    providers.push(Provider::Brave);
+    if credentials.google_ready() {
+        providers.push(Provider::Google);
+    }
+    providers.extend([Provider::GoogleNews, Provider::DuckDuckGo, Provider::Bing]);
     let requested = match preferred {
         "brave" => Some(Provider::Brave),
         "google" => Some(Provider::Google),
+        "google_news" => Some(Provider::GoogleNews),
         "duckduckgo" => Some(Provider::DuckDuckGo),
         "bing" => Some(Provider::Bing),
         _ => None,
     };
-    if let Some(index) = providers.iter().position(|provider| Some(*provider) == requested) {
+    if let Some(index) = providers
+        .iter()
+        .position(|provider| Some(*provider) == requested)
+    {
         let selected = providers.remove(index);
         providers.insert(0, selected);
     }
@@ -437,9 +709,11 @@ enum ProviderFailure {
     Denied,
     Server,
     Invalid,
- }
+}
 impl ProviderFailure {
-    fn retryable(self) -> bool { matches!(self, Self::Transport | Self::Server) }
+    fn retryable(self) -> bool {
+        matches!(self, Self::Transport | Self::Server)
+    }
     fn cooldown(self) -> Option<Duration> {
         match self {
             Self::RateLimited(wait) => Some(wait),
@@ -458,13 +732,16 @@ impl ProviderFailure {
         }
     }
 }
-static PROVIDER_COOLDOWNS: OnceLock<StdMutex<HashMap<Provider, (Instant, ProviderFailure)>>> = OnceLock::new();
+static PROVIDER_COOLDOWNS: OnceLock<StdMutex<HashMap<Provider, (Instant, ProviderFailure)>>> =
+    OnceLock::new();
 fn cooldowns() -> &'static StdMutex<HashMap<Provider, (Instant, ProviderFailure)>> {
     PROVIDER_COOLDOWNS.get_or_init(|| StdMutex::new(HashMap::new()))
 }
 fn cooling_reason(provider: Provider) -> Option<ProviderFailure> {
-    cooldowns().lock().ok().and_then(|map| map.get(&provider)
-        .and_then(|(until, error)| (*until > Instant::now()).then_some(*error)))
+    cooldowns().lock().ok().and_then(|map| {
+        map.get(&provider)
+            .and_then(|(until, error)| (*until > Instant::now()).then_some(*error))
+    })
 }
 fn mark_failure(provider: Provider, error: ProviderFailure) {
     if let Some(wait) = error.cooldown() {
@@ -474,7 +751,9 @@ fn mark_failure(provider: Provider, error: ProviderFailure) {
     }
 }
 fn clear_failure(provider: Provider) {
-    if let Ok(mut map) = cooldowns().lock() { map.remove(&provider); }
+    if let Ok(mut map) = cooldowns().lock() {
+        map.remove(&provider);
+    }
 }
 async fn search_provider_with_retry(
     client: &Client,
@@ -483,7 +762,9 @@ async fn search_provider_with_retry(
     credentials: &SearchCredentials,
     cancellation: &CancellationToken,
 ) -> Result<Vec<WebSearchResult>, ProviderFailure> {
-    if let Some(reason) = cooling_reason(provider) { return Err(reason); }
+    if let Some(reason) = cooling_reason(provider) {
+        return Err(reason);
+    }
     for attempt in 0..MAX_PROVIDER_ATTEMPTS {
         let response = tokio::select! {
             _ = cancellation.cancelled() => return Err(ProviderFailure::Transport),
@@ -515,17 +796,27 @@ async fn search_provider_with_retry(
 async fn provider_text(response: reqwest::Response) -> Result<String, ProviderFailure> {
     let status = response.status();
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        let retry_after = response.headers().get(header::RETRY_AFTER)
+        let retry_after = response
+            .headers()
+            .get(header::RETRY_AFTER)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<u64>().ok())
             .map(|secs| Duration::from_secs(secs.clamp(5, 180)))
             .unwrap_or(Duration::from_secs(45));
         return Err(ProviderFailure::RateLimited(retry_after));
     }
-    if matches!(status.as_u16(), 401 | 403) { return Err(ProviderFailure::Denied); }
-    if status.is_server_error() { return Err(ProviderFailure::Server); }
-    if !status.is_success() { return Err(ProviderFailure::Invalid); }
-    response_text(response, SEARCH_BYTES).await.map_err(|_| ProviderFailure::Invalid)
+    if matches!(status.as_u16(), 401 | 403) {
+        return Err(ProviderFailure::Denied);
+    }
+    if status.is_server_error() {
+        return Err(ProviderFailure::Server);
+    }
+    if !status.is_success() {
+        return Err(ProviderFailure::Invalid);
+    }
+    response_text(response, SEARCH_BYTES)
+        .await
+        .map_err(|_| ProviderFailure::Invalid)
 }
 
 #[derive(Serialize)]
@@ -544,7 +835,11 @@ pub(crate) struct ProviderHealthReport {
 }
 impl ProviderHealthReport {
     pub(crate) fn disabled() -> Self {
-        Self { status: "disabled", provider: "", providers: Vec::new() }
+        Self {
+            status: "disabled",
+            provider: "",
+            providers: Vec::new(),
+        }
     }
 }
 pub(crate) async fn probe(
@@ -555,13 +850,27 @@ pub(crate) async fn probe(
     let enabled = configured_providers(preferred, credentials);
     let mut checks = Vec::new();
     let mut first = "";
-    for provider in [Provider::Brave, Provider::Google, Provider::DuckDuckGo, Provider::Bing] {
+    for provider in [
+        Provider::Brave,
+        Provider::Google,
+        Provider::GoogleNews,
+        Provider::DuckDuckGo,
+        Provider::Bing,
+    ] {
         if !enabled.contains(&provider) {
-            checks.push(ProviderCheck { name: provider.name(), status: "unconfigured", elapsed_ms: None });
+            checks.push(ProviderCheck {
+                name: provider.name(),
+                status: "unconfigured",
+                elapsed_ms: None,
+            });
             continue;
         }
         if let Some(reason) = cooling_reason(provider) {
-            checks.push(ProviderCheck { name: provider.name(), status: reason.status(), elapsed_ms: None });
+            checks.push(ProviderCheck {
+                name: provider.name(),
+                status: reason.status(),
+                elapsed_ms: None,
+            });
             continue;
         }
         let started = Instant::now();
@@ -570,11 +879,15 @@ pub(crate) async fn probe(
         let result = tokio::time::timeout(
             Duration::from_secs(5),
             search_provider(client, provider, "OpenMindAI software", credentials),
-        ).await.unwrap_or(Err(ProviderFailure::Transport));
+        )
+        .await
+        .unwrap_or(Err(ProviderFailure::Transport));
         let status = match result {
             Ok(items) if !items.is_empty() => {
                 clear_failure(provider);
-                if first.is_empty() { first = provider.name(); }
+                if first.is_empty() {
+                    first = provider.name();
+                }
                 "healthy"
             }
             Ok(_) => "empty_results",
@@ -589,10 +902,19 @@ pub(crate) async fn probe(
             elapsed_ms: Some(started.elapsed().as_millis()),
         });
     }
-    let checked = checks.iter().filter(|p| p.status != "unconfigured").collect::<Vec<_>>();
+    let checked = checks
+        .iter()
+        .filter(|p| p.status != "unconfigured")
+        .collect::<Vec<_>>();
     let offline = !checked.is_empty() && checked.iter().all(|p| p.status == "unreachable");
     ProviderHealthReport {
-        status: if !first.is_empty() { "online" } else if offline { "offline" } else { "restricted" },
+        status: if !first.is_empty() {
+            "online"
+        } else if offline {
+            "offline"
+        } else {
+            "restricted"
+        },
         provider: first,
         providers: checks,
     }
@@ -606,10 +928,14 @@ async fn search_provider(
 ) -> Result<Vec<WebSearchResult>, ProviderFailure> {
     match provider {
         Provider::DuckDuckGo => {
-            let response = client.get(WEB_SEARCH_ENDPOINT).query(&[("q", query)])
+            let response = client
+                .get(WEB_SEARCH_ENDPOINT)
+                .query(&[("q", query)])
                 .header(header::USER_AGENT, WEB_SEARCH_USER_AGENT)
                 .header(header::ACCEPT, "text/html,application/xhtml+xml")
-                .timeout(REQUEST_TIMEOUT).send().await
+                .timeout(REQUEST_TIMEOUT)
+                .send()
+                .await
                 .map_err(|_| ProviderFailure::Transport)?;
             let html = provider_text(response).await?;
             let hits = parse_duckduckgo_results(&html);
@@ -624,9 +950,13 @@ async fn search_provider(
         }
         Provider::Bing => {
             let html = async {
-                let response = client.get(BING_HTML).query(&[("q", query)])
+                let response = client
+                    .get(BING_HTML)
+                    .query(&[("q", query)])
                     .header(header::ACCEPT, "text/html")
-                    .timeout(REQUEST_TIMEOUT).send().await
+                    .timeout(REQUEST_TIMEOUT)
+                    .send()
+                    .await
                     .map_err(|_| ProviderFailure::Transport)?;
                 let html = provider_text(response).await?;
                 let hits = parse_bing(&html);
@@ -638,44 +968,182 @@ async fn search_provider(
                     "web provider parsed"
                 );
                 Ok::<_, ProviderFailure>(hits)
-            }.await;
+            }
+            .await;
             match html {
                 Ok(found) if !found.is_empty() => Ok(found),
-                Err(ProviderFailure::RateLimited(delay)) => Err(ProviderFailure::RateLimited(delay)),
+                Err(ProviderFailure::RateLimited(delay)) => {
+                    Err(ProviderFailure::RateLimited(delay))
+                }
                 Err(ProviderFailure::Denied) => Err(ProviderFailure::Denied),
                 _ => search_bing_rss(client, query).await,
             }
         }
         Provider::Brave => {
-            let key = credentials.brave.as_deref().ok_or(ProviderFailure::Denied)?;
-            let response = client.get(BRAVE_JSON)
-                .query(&[("q", query), ("count", "10")])
-                .header("X-Subscription-Token", key)
-                .header(header::ACCEPT, "application/json")
-                .timeout(REQUEST_TIMEOUT).send().await
-                .map_err(|_| ProviderFailure::Transport)?;
-            let raw = provider_text(response).await?;
-            let data: Value = serde_json::from_str(&raw).map_err(|_| ProviderFailure::Invalid)?;
-            Ok(parse_json_hits(data.pointer("/web/results"), "url", "description"))
+            if let Some(key) = credentials.brave.as_deref() {
+                let api = async {
+                    let response = client
+                        .get(BRAVE_JSON)
+                        .query(&[("q", query), ("count", "10")])
+                        .header("X-Subscription-Token", key)
+                        .header(header::ACCEPT, "application/json")
+                        .timeout(REQUEST_TIMEOUT)
+                        .send()
+                        .await
+                        .map_err(|_| ProviderFailure::Transport)?;
+                    let raw = provider_text(response).await?;
+                    let data: Value =
+                        serde_json::from_str(&raw).map_err(|_| ProviderFailure::Invalid)?;
+                    Ok::<_, ProviderFailure>(parse_json_hits(
+                        data.pointer("/web/results"),
+                        "url",
+                        "description",
+                    ))
+                }
+                .await;
+                if let Ok(results) = api {
+                    if !results.is_empty() {
+                        return Ok(results);
+                    }
+                }
+            }
+            search_brave_html(client, query).await
         }
         Provider::Google => {
-            let key = credentials.google_key.as_deref().ok_or(ProviderFailure::Denied)?;
-            let cx = credentials.google_engine.as_deref().ok_or(ProviderFailure::Denied)?;
-            let response = client.get(GOOGLE_JSON)
+            let key = credentials
+                .google_key
+                .as_deref()
+                .ok_or(ProviderFailure::Denied)?;
+            let cx = credentials
+                .google_engine
+                .as_deref()
+                .ok_or(ProviderFailure::Denied)?;
+            let response = client
+                .get(GOOGLE_JSON)
                 .query(&[("key", key), ("cx", cx), ("q", query)])
-                .timeout(REQUEST_TIMEOUT).send().await
+                .timeout(REQUEST_TIMEOUT)
+                .send()
+                .await
                 .map_err(|_| ProviderFailure::Transport)?;
             let raw = provider_text(response).await?;
             let data: Value = serde_json::from_str(&raw).map_err(|_| ProviderFailure::Invalid)?;
             Ok(parse_json_hits(data.get("items"), "link", "snippet"))
         }
+        Provider::GoogleNews => search_google_news_rss(client, query).await,
     }
 }
 
-async fn search_bing_rss(client: &Client, query: &str) -> Result<Vec<WebSearchResult>, ProviderFailure> {
-    let response = client.get(BING_HTML).query(&[("q", query), ("format", "rss")])
-        .header(header::ACCEPT, "application/rss+xml,application/xml,text/xml")
-        .timeout(REQUEST_TIMEOUT).send().await
+async fn search_brave_html(
+    client: &Client,
+    query: &str,
+) -> Result<Vec<WebSearchResult>, ProviderFailure> {
+    let response = client
+        .get(BRAVE_HTML)
+        .query(&[("q", query)])
+        .header(header::USER_AGENT, WEB_SEARCH_USER_AGENT)
+        .header(header::ACCEPT, "text/html,application/xhtml+xml")
+        .timeout(REQUEST_TIMEOUT)
+        .send()
+        .await
+        .map_err(|_| ProviderFailure::Transport)?;
+    let html = provider_text(response).await?;
+    let hits = parse_brave_html(&html);
+    tracing::info!(
+        provider = "Brave Search",
+        http_bytes = html.len(),
+        parsed = hits.len(),
+        "web provider parsed"
+    );
+    Ok(hits)
+}
+
+async fn search_google_news_rss(
+    client: &Client,
+    query: &str,
+) -> Result<Vec<WebSearchResult>, ProviderFailure> {
+    let response = client
+        .get(GOOGLE_NEWS_RSS)
+        .query(&[
+            ("q", query),
+            ("hl", "en-US"),
+            ("gl", "US"),
+            ("ceid", "US:en"),
+        ])
+        .header(header::USER_AGENT, WEB_SEARCH_USER_AGENT)
+        .header(
+            header::ACCEPT,
+            "application/rss+xml,application/xml,text/xml",
+        )
+        .timeout(REQUEST_TIMEOUT)
+        .send()
+        .await
+        .map_err(|_| ProviderFailure::Transport)?;
+    let xml = provider_text(response).await?;
+    let hits = parse_google_news_rss(&xml);
+    tracing::info!(
+        provider = "Google News RSS",
+        http_bytes = xml.len(),
+        parsed = hits.len(),
+        "web provider parsed"
+    );
+    Ok(hits)
+}
+
+fn parse_google_news_rss(xml: &str) -> Vec<WebSearchResult> {
+    let mut results = Vec::new();
+    let mut seen = HashSet::new();
+    for block in xml.split("<item>").skip(1).take(WEB_SEARCH_RESULTS * 3) {
+        let entry = block.split("</item>").next().unwrap_or("");
+        let title = extract_rss_text(entry, "title");
+        let url = extract_rss_text(entry, "link");
+        let published = extract_rss_text(entry, "pubDate");
+        let mut snippet = extract_rss_text(entry, "description");
+        if let Some(start) = entry.find("<source") {
+            if let Some(open_end) = entry[start..].find('>').map(|end| start + end + 1) {
+                let source_tag = &entry[start..open_end];
+                let source_name = entry[open_end..]
+                    .find("</source>")
+                    .map(|end| clean_html_text(&entry[open_end..open_end + end]));
+                let source_host = html_attribute(source_tag, "url")
+                    .and_then(|url| Url::parse(&url).ok())
+                    .and_then(|url| {
+                        url.host_str()
+                            .map(|host| host.trim_start_matches("www.").to_string())
+                    });
+                if let (Some(name), Some(host)) = (source_name, source_host) {
+                    snippet =
+                        format!("Publisher: {name} ({host}). Published: {published}. {snippet}");
+                }
+            }
+        }
+        if !title.is_empty() && is_public_web_url(&url) && seen.insert(canonical_url(&url)) {
+            results.push(WebSearchResult {
+                title,
+                url,
+                snippet,
+            });
+        }
+        if results.len() >= WEB_SEARCH_RESULTS {
+            break;
+        }
+    }
+    results
+}
+
+async fn search_bing_rss(
+    client: &Client,
+    query: &str,
+) -> Result<Vec<WebSearchResult>, ProviderFailure> {
+    let response = client
+        .get(BING_HTML)
+        .query(&[("q", query), ("format", "rss")])
+        .header(
+            header::ACCEPT,
+            "application/rss+xml,application/xml,text/xml",
+        )
+        .timeout(REQUEST_TIMEOUT)
+        .send()
+        .await
         .map_err(|_| ProviderFailure::Transport)?;
     let xml = provider_text(response).await?;
     Ok(parse_bing_rss(&xml))
@@ -690,9 +1158,15 @@ fn parse_bing_rss(xml: &str) -> Vec<WebSearchResult> {
         let url = extract_rss_text(entry, "link");
         let snippet = extract_rss_text(entry, "description");
         if !title.is_empty() && is_public_web_url(&url) && seen.insert(canonical_url(&url)) {
-            results.push(WebSearchResult { title, url, snippet });
+            results.push(WebSearchResult {
+                title,
+                url,
+                snippet,
+            });
         }
-        if results.len() >= WEB_SEARCH_RESULTS { break; }
+        if results.len() >= WEB_SEARCH_RESULTS {
+            break;
+        }
     }
     results
 }
@@ -707,39 +1181,143 @@ fn extract_rss_text(xml: &str, name: &str) -> String {
         return String::new();
     };
     let raw = xml[from..to].trim();
-    let value = raw.strip_prefix("<![CDATA[")
+    let value = raw
+        .strip_prefix("<![CDATA[")
         .and_then(|inner| inner.strip_suffix("]]>"))
         .unwrap_or(raw);
     clean_html_text(value).chars().take(600).collect()
 }
 
 fn parse_json_hits(items: Option<&Value>, link: &str, summary: &str) -> Vec<WebSearchResult> {
-    items.and_then(Value::as_array).into_iter().flatten().take(WEB_SEARCH_RESULTS).filter_map(|item| {
-        let url = item.get(link)?.as_str()?.to_string();
-        if !is_public_web_url(&url) { return None; }
-        let title = item.get("title")?.as_str()?.trim().to_string();
-        if title.is_empty() { return None; }
-        let snippet = item.get(summary).and_then(Value::as_str).unwrap_or("").chars().take(400).collect();
-        Some(WebSearchResult { url, title, snippet })
-    }).collect()
+    items
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(WEB_SEARCH_RESULTS)
+        .filter_map(|item| {
+            let url = item.get(link)?.as_str()?.to_string();
+            if !is_public_web_url(&url) {
+                return None;
+            }
+            let title = item.get("title")?.as_str()?.trim().to_string();
+            if title.is_empty() {
+                return None;
+            }
+            let snippet = item
+                .get(summary)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .chars()
+                .take(400)
+                .collect();
+            Some(WebSearchResult {
+                url,
+                title,
+                snippet,
+            })
+        })
+        .collect()
 }
 
 fn parse_bing(html: &str) -> Vec<WebSearchResult> {
     let mut hits = Vec::new();
     for section in html.split("b_algo").skip(1).take(20) {
-        if hits.len() >= WEB_SEARCH_RESULTS { break; }
-        let Some(h2) = section.find("<h2") else { continue };
-        let Some(anchor) = section[h2..].find("<a ") else { continue };
+        if hits.len() >= WEB_SEARCH_RESULTS {
+            break;
+        }
+        let Some(h2) = section.find("<h2") else {
+            continue;
+        };
+        let Some(anchor) = section[h2..].find("<a ") else {
+            continue;
+        };
         let tag = &section[h2 + anchor..];
-        let Some(href) = html_attribute(tag, "href") else { continue };
+        let Some(href) = html_attribute(tag, "href") else {
+            continue;
+        };
         let Some(start) = tag.find('>') else { continue };
-        let Some(end) = tag[start+1..].find("</a>") else { continue };
-        let title = clean_html_text(&tag[start+1..start+1+end]);
-        if title.is_empty() || !is_public_web_url(&href) { continue; }
-        let paragraph = section.find("<p").and_then(|i| section[i..].find('>').map(|n| i+n+1))
-            .and_then(|i| section[i..].find("</p>").map(|n| clean_html_text(&section[i..i+n])))
+        let Some(end) = tag[start + 1..].find("</a>") else {
+            continue;
+        };
+        let title = clean_html_text(&tag[start + 1..start + 1 + end]);
+        if title.is_empty() || !is_public_web_url(&href) {
+            continue;
+        }
+        let paragraph = section
+            .find("<p")
+            .and_then(|i| section[i..].find('>').map(|n| i + n + 1))
+            .and_then(|i| {
+                section[i..]
+                    .find("</p>")
+                    .map(|n| clean_html_text(&section[i..i + n]))
+            })
             .unwrap_or_default();
-        hits.push(WebSearchResult { title, url: href, snippet: paragraph });
+        hits.push(WebSearchResult {
+            title,
+            url: href,
+            snippet: paragraph,
+        });
+    }
+    hits
+}
+
+fn parse_brave_html(html: &str) -> Vec<WebSearchResult> {
+    let mut hits = Vec::new();
+    let mut seen = HashSet::new();
+    for block in html.split("data-type=\"web\" data-keynav=\"true\"").skip(1) {
+        if hits.len() >= WEB_SEARCH_RESULTS {
+            break;
+        }
+        let Some(result_start) = block.find("<div class=\"result-content") else {
+            continue;
+        };
+        let result = &block[result_start..];
+        let Some(anchor_start) = result.find("<a ") else {
+            continue;
+        };
+        let anchor = &result[anchor_start..];
+        let Some(url) = html_attribute(anchor, "href") else {
+            continue;
+        };
+        if !is_public_web_url(&url) || !seen.insert(canonical_url(&url)) {
+            continue;
+        }
+
+        let Some(title_start) = result.find("class=\"title search-snippet-title") else {
+            continue;
+        };
+        let Some(title_open) = result[title_start..].find('>') else {
+            continue;
+        };
+        let title_body_start = title_start + title_open + 1;
+        let Some(title_end) = result[title_body_start..].find("</div>") else {
+            continue;
+        };
+        let title = clean_html_text(&result[title_body_start..title_body_start + title_end]);
+        if title.is_empty() {
+            continue;
+        }
+
+        let snippet_marker = "class=\"content desktop-default-regular";
+        let snippet = result
+            .find(snippet_marker)
+            .and_then(|marker| result[marker..].find('>').map(|open| marker + open + 1))
+            .and_then(|start| result[start..].find("</div>").map(|end| start + end))
+            .map(|end| {
+                let start = result.find(snippet_marker).unwrap_or(end);
+                let start = result[start..]
+                    .find('>')
+                    .map(|open| start + open + 1)
+                    .unwrap_or(end);
+                clean_html_text(&result[start..end])
+            })
+            .unwrap_or_default();
+
+        hits.push(WebSearchResult {
+            title,
+            url,
+            snippet,
+        });
     }
     hits
 }
@@ -764,25 +1342,36 @@ fn canonical_url(value: &str) -> String {
         // URL hosts are case-insensitive; normalize common tracking parameters
         // while preserving content-defining query values.
         if url.query().is_some() {
-            let mut retained: Vec<(String, String)> = url.query_pairs()
+            let mut retained: Vec<(String, String)> = url
+                .query_pairs()
                 .filter(|(key, _)| {
                     let key = key.to_ascii_lowercase();
                     !key.starts_with("utm_")
-                        && !matches!(key.as_str(), "fbclid" | "gclid" | "dclid" | "msclkid" | "yclid")
+                        && !matches!(
+                            key.as_str(),
+                            "fbclid" | "gclid" | "dclid" | "msclkid" | "yclid"
+                        )
                 })
                 .map(|(key, value)| (key.into_owned(), value.into_owned()))
                 .collect();
             retained.sort();
             url.set_query(None);
-            if !retained.is_empty() { url.query_pairs_mut().extend_pairs(retained); }
+            if !retained.is_empty() {
+                url.query_pairs_mut().extend_pairs(retained);
+            }
         }
         return url.to_string();
     }
     value.to_string()
 }
 
-pub(super) async fn response_bytes(mut response: reqwest::Response, cap: usize) -> Result<Vec<u8>, String> {
-    if !response.status().is_success() { return Err(format!("HTTP {}", response.status())); }
+pub(super) async fn response_bytes(
+    mut response: reqwest::Response,
+    cap: usize,
+) -> Result<Vec<u8>, String> {
+    if !response.status().is_success() {
+        return Err(format!("HTTP {}", response.status()));
+    }
     if response.content_length().is_some_and(|n| n > cap as u64) {
         return Err("response exceeds size limit".to_string());
     }
@@ -866,7 +1455,8 @@ fn extract_pdf_text(bytes: &[u8], query: &str) -> Result<String, String> {
     let document = lopdf::Document::load_mem_with_options(
         bytes,
         lopdf::LoadOptions::with_max_decompressed_size(PDF_MAX_DECOMPRESSED_PAGE_BYTES),
-    ).map_err(|_| "PDF document could not be safely parsed".to_string())?;
+    )
+    .map_err(|_| "PDF document could not be safely parsed".to_string())?;
     if document.is_encrypted() {
         return Err("encrypted PDFs cannot be inspected".to_string());
     }
@@ -881,11 +1471,17 @@ fn extract_pdf_text(bytes: &[u8], query: &str) -> Result<String, String> {
     let per_page_budget = PDF_MAX_TEXT_CHARS / page_numbers.len();
     let mut combined = String::new();
     for page_number in page_numbers {
-        let page_text = document.extract_text_with_limit(
-            &[page_number], PDF_MAX_DECOMPRESSED_PAGE_BYTES,
-        ).map_err(|_| "PDF page text could not be safely decoded".to_string())?;
+        let page_text = document
+            .extract_text_with_limit(&[page_number], PDF_MAX_DECOMPRESSED_PAGE_BYTES)
+            .map_err(|_| "PDF page text could not be safely decoded".to_string())?;
         let readable = page_text.split_whitespace().collect::<Vec<_>>().join(" ");
-        append_pdf_page_excerpt(&mut combined, page_number, &readable, query, per_page_budget);
+        append_pdf_page_excerpt(
+            &mut combined,
+            page_number,
+            &readable,
+            query,
+            per_page_budget,
+        );
     }
     if combined.trim().chars().count() < 80 {
         return Err("PDF has insufficient extractable text (possibly scanned)".to_string());
@@ -894,11 +1490,15 @@ fn extract_pdf_text(bytes: &[u8], query: &str) -> Result<String, String> {
 }
 
 async fn fetch_readable_page(raw: &str, query: &str) -> Result<Option<PageEvidence>, String> {
-    if !is_public_web_url(raw) { return Err("nonpublic URL".to_string()); }
+    if !is_public_web_url(raw) {
+        return Err("nonpublic URL".to_string());
+    }
     let url = Url::parse(raw).map_err(|e| e.to_string())?;
     let host = url.host_str().ok_or("missing host")?;
     let port = url.port_or_known_default().ok_or("missing port")?;
-    if !matches!(port, 80 | 443) { return Err("unsafe webpage destination port".to_string()); }
+    if !matches!(port, 80 | 443) {
+        return Err("unsafe webpage destination port".to_string());
+    }
     if !url.username().is_empty() || url.password().is_some() {
         return Err("credential-bearing webpage URLs are not allowed".to_string());
     }
@@ -908,59 +1508,93 @@ async fn fetch_readable_page(raw: &str, query: &str) -> Result<Option<PageEviden
     // A proxy can resolve DNS independently and bypass our approved-IP
     // pinning. Direct-only page enrichment preserves the private-network
     // boundary; a proxy-only network keeps snippet results without page text.
-    let client = Client::builder().no_proxy()
+    let client = Client::builder()
+        .no_proxy()
         .redirect(Policy::none())
         .resolve_to_addrs(host, &addresses)
         .timeout(REQUEST_TIMEOUT)
-        .build().map_err(|_| "page client unavailable".to_string())?;
-    let response = client.get(url.clone())
-        .header(header::ACCEPT, "text/html,application/xhtml+xml,text/plain,application/pdf")
-        .send().await.map_err(|e| e.to_string())?;
-    if !response.status().is_success() { return Ok(None); }
-    let content_type = response.headers().get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
+        .build()
+        .map_err(|_| "page client unavailable".to_string())?;
+    let response = client
+        .get(url.clone())
+        .header(
+            header::ACCEPT,
+            "text/html,application/xhtml+xml,text/plain,application/pdf",
+        )
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Ok(None);
+    }
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
     let is_pdf = is_research_pdf_type(&content_type, &url);
     let text = if is_pdf {
         let pdf = response_bytes(response, PAGE_BYTES).await?;
         // PDF parsing/decompression must not block the async search runtime.
         let pdf_query = query.to_owned();
-        tokio::time::timeout(Duration::from_secs(6), tokio::task::spawn_blocking(
-            move || extract_pdf_text(&pdf, &pdf_query)
-        )).await.map_err(|_| "PDF extraction timed out".to_string())?
-            .map_err(|_| "PDF extraction worker unavailable".to_string())??
+        tokio::time::timeout(
+            Duration::from_secs(6),
+            tokio::task::spawn_blocking(move || extract_pdf_text(&pdf, &pdf_query)),
+        )
+        .await
+        .map_err(|_| "PDF extraction timed out".to_string())?
+        .map_err(|_| "PDF extraction worker unavailable".to_string())??
     } else if content_type.starts_with("text/html")
         || content_type.starts_with("text/plain")
         || content_type.starts_with("application/xhtml+xml")
     {
         let body = response_text(response, PAGE_BYTES).await?;
-        if content_type.starts_with("text/plain") { body } else { readable_html(&body) }
+        if content_type.starts_with("text/plain") {
+            body
+        } else {
+            readable_html(&body)
+        }
     } else {
         return Ok(None);
     };
-    if text.trim().chars().count() < 80 { return Ok(None); }
+    if text.trim().chars().count() < 80 {
+        return Ok(None);
+    }
     let excerpt = if is_pdf {
         select_relevant_pdf_text(&text, query)
     } else {
         select_relevant_text(&text, query)
     };
-    Ok(Some(PageEvidence { text: excerpt, is_pdf }))
+    Ok(Some(PageEvidence {
+        text: excerpt,
+        is_pdf,
+    }))
 }
 
 async fn public_addresses(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
     let mut addresses = Vec::new();
-    let resolved = tokio::time::timeout(Duration::from_secs(4), tokio::net::lookup_host((host, port)))
-        .await.map_err(|_| "DNS timeout".to_string())?
-        .map_err(|e| format!("DNS failed: {e}"))?;
+    let resolved = tokio::time::timeout(
+        Duration::from_secs(4),
+        tokio::net::lookup_host((host, port)),
+    )
+    .await
+    .map_err(|_| "DNS timeout".to_string())?
+    .map_err(|e| format!("DNS failed: {e}"))?;
     for address in resolved {
         // IPv6 literals require brackets for URL syntax.
         let literal = match address.ip() {
             IpAddr::V4(ip) => format!("http://{ip}/"),
-            IpAddr::V6(ip) => format!("http://[{ip}]/")
+            IpAddr::V6(ip) => format!("http://[{ip}]/"),
         };
-        if !is_public_web_url(&literal) { return Err("DNS answer includes nonpublic address".to_string()); }
+        if !is_public_web_url(&literal) {
+            return Err("DNS answer includes nonpublic address".to_string());
+        }
         addresses.push(address);
     }
-    if addresses.is_empty() { return Err("DNS has no addresses".to_string()); }
+    if addresses.is_empty() {
+        return Err("DNS has no addresses".to_string());
+    }
     Ok(addresses)
 }
 
@@ -968,28 +1602,61 @@ fn readable_html(html: &str) -> String {
     // Strip scripts/styles/navigation and hidden head content before extracting
     // readable text; bound the output before putting it into model context.
     let lower = html.to_ascii_lowercase();
-    let start = lower.find("<body").and_then(|i| lower[i..].find('>').map(|j| i+j+1)).unwrap_or(0);
+    let start = lower
+        .find("<body")
+        .and_then(|i| lower[i..].find('>').map(|j| i + j + 1))
+        .unwrap_or(0);
     let mut text = String::new();
     let mut cursor = start;
     let mut skipped: Vec<String> = Vec::new();
     while cursor < html.len() && text.len() < 150_000 {
         if let Some(rel) = html[cursor..].find('<') {
             let end = cursor + rel;
-            if skipped.is_empty() { text.push_str(&html[cursor..end]); text.push(' '); }
-            let Some(close) = html[end..].find('>') else { break };
-            let raw = lower[end+1..end+close].trim();
+            if skipped.is_empty() {
+                text.push_str(&html[cursor..end]);
+                text.push(' ');
+            }
+            let Some(close) = html[end..].find('>') else {
+                break;
+            };
+            let raw = lower[end + 1..end + close].trim();
             let closing = raw.starts_with('/');
-            let name = raw.trim_start_matches('/').split(|c: char| c.is_whitespace() || c=='/').next().unwrap_or("");
-            let blacklist = matches!(name, "script"|"style"|"noscript"|"svg"|"nav"|"header"|"footer"|"aside"|"form"|"iframe");
-            if closing && skipped.last().is_some_and(|v| v == name) { skipped.pop(); }
-            else if !closing && blacklist && !raw.ends_with('/') { skipped.push(name.to_string()); }
-            cursor = end+close+1;
+            let name = raw
+                .trim_start_matches('/')
+                .split(|c: char| c.is_whitespace() || c == '/')
+                .next()
+                .unwrap_or("");
+            let blacklist = matches!(
+                name,
+                "script"
+                    | "style"
+                    | "noscript"
+                    | "svg"
+                    | "nav"
+                    | "header"
+                    | "footer"
+                    | "aside"
+                    | "form"
+                    | "iframe"
+            );
+            if closing && skipped.last().is_some_and(|v| v == name) {
+                skipped.pop();
+            } else if !closing && blacklist && !raw.ends_with('/') {
+                skipped.push(name.to_string());
+            }
+            cursor = end + close + 1;
         } else {
-            if skipped.is_empty() { text.push_str(&html[cursor..]); }
+            if skipped.is_empty() {
+                text.push_str(&html[cursor..]);
+            }
             break;
         }
     }
-    decode_html_entities(&text).split_whitespace().take(24_000).collect::<Vec<_>>().join(" ")
+    decode_html_entities(&text)
+        .split_whitespace()
+        .take(24_000)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Read the whole bounded HTML response before selecting relevant passages.
@@ -1029,7 +1696,8 @@ fn research_page_clauses(text: &str) -> Vec<&str> {
 /// Token boundaries matter: "GPS-denied" matches "GPS denied", but "art"
 /// should not match "partial". Matching case is normalized for both sides.
 fn research_term_overlap(clause: &str, query_terms: &HashSet<String>) -> usize {
-    clause.split(|character: char| !character.is_alphanumeric())
+    clause
+        .split(|character: char| !character.is_alphanumeric())
         .filter(|word| !word.is_empty())
         .map(str::to_lowercase)
         .filter(|word| query_terms.contains(word))
@@ -1057,7 +1725,8 @@ fn select_relevant_pdf_text(text: &str, query: &str) -> String {
     // from the PDF page tree. Never infer an absent or malformed page number.
     let mut ranked: Vec<(usize, usize, u32, &str, usize)> = Vec::new();
     for (page_order, line) in text.lines().enumerate() {
-        let Some((number, content)) = line.strip_prefix("PDF page ")
+        let Some((number, content)) = line
+            .strip_prefix("PDF page ")
             .and_then(|line| line.split_once(": "))
         else {
             return fallback();
@@ -1072,9 +1741,7 @@ fn select_relevant_pdf_text(text: &str, query: &str) -> String {
             }
         }
     }
-    ranked.sort_by(|a, b| b.4.cmp(&a.4)
-        .then(a.0.cmp(&b.0))
-        .then(a.1.cmp(&b.1)));
+    ranked.sort_by(|a, b| b.4.cmp(&a.4).then(a.0.cmp(&b.0)).then(a.1.cmp(&b.1)));
 
     let mut selected = Vec::new();
     let mut used = 0usize;
@@ -1096,8 +1763,11 @@ fn select_relevant_pdf_text(text: &str, query: &str) -> String {
         return fallback();
     }
     selected.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-    selected.into_iter().map(|(_, _, text)| text)
-        .collect::<Vec<_>>().join("\n")
+    selected
+        .into_iter()
+        .map(|(_, _, text)| text)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// When one relevant clause is longer than the whole evidence budget, center
@@ -1109,7 +1779,8 @@ fn relevant_clause_window(
     char_limit: usize,
 ) -> String {
     let mut word_start = None;
-    for (index, character) in clause.char_indices()
+    for (index, character) in clause
+        .char_indices()
         .chain(std::iter::once((clause.len(), ' ')))
     {
         if character.is_alphanumeric() {
@@ -1117,7 +1788,8 @@ fn relevant_clause_window(
         } else if let Some(start) = word_start.take() {
             if query_terms.contains(&clause[start..index].to_lowercase()) {
                 let prefix_chars = clause[..start].chars().count();
-                return clause.chars()
+                return clause
+                    .chars()
                     .skip(prefix_chars.saturating_sub(char_limit / 5))
                     .take(char_limit)
                     .collect();
@@ -1135,8 +1807,12 @@ fn select_relevant_text(text: &str, query: &str) -> String {
 }
 
 fn select_relevant_text_bounded(text: &str, query: &str, char_limit: usize) -> String {
-    if char_limit == 0 { return String::new(); }
-    if text.chars().count() <= char_limit { return text.to_string(); }
+    if char_limit == 0 {
+        return String::new();
+    }
+    if text.chars().count() <= char_limit {
+        return text.to_string();
+    }
     let terms: HashSet<String> = query
         .split(|character: char| !character.is_alphanumeric())
         .filter(|word| word.chars().count() >= 3)
@@ -1145,8 +1821,12 @@ fn select_relevant_text_bounded(text: &str, query: &str, char_limit: usize) -> S
         .collect();
     let clauses = research_page_clauses(text);
     let fallback = || text.chars().take(char_limit).collect::<String>();
-    if clauses.is_empty() || terms.is_empty() { return fallback(); }
-    let mut best: Vec<_> = clauses.iter().enumerate()
+    if clauses.is_empty() || terms.is_empty() {
+        return fallback();
+    }
+    let mut best: Vec<_> = clauses
+        .iter()
+        .enumerate()
         .map(|(index, clause)| (index, research_term_overlap(clause, &terms)))
         .collect();
     // Stable tie breaking keeps earlier evidence first at equal relevance.
@@ -1163,11 +1843,17 @@ fn select_relevant_text_bounded(text: &str, query: &str, char_limit: usize) -> S
             return relevant_clause_window(clauses[index], &terms, char_limit);
         }
     }
-    if chosen.is_empty() { return fallback(); }
+    if chosen.is_empty() {
+        return fallback();
+    }
     // Keep selected clauses in original document order without losing their
     // budget reservations to unrelated paragraphs.
     chosen.sort_unstable();
-    chosen.into_iter().map(|index| clauses[index]).collect::<Vec<_>>().join(". ")
+    chosen
+        .into_iter()
+        .map(|index| clauses[index])
+        .collect::<Vec<_>>()
+        .join(". ")
 }
 
 #[cfg(test)]
@@ -1195,9 +1881,10 @@ mod tests {
         for offset in offsets {
             bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
         }
-        bytes.extend_from_slice(format!(
-            "trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n"
-        ).as_bytes());
+        bytes.extend_from_slice(
+            format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n")
+                .as_bytes(),
+        );
         bytes
     }
 
@@ -1207,11 +1894,13 @@ mod tests {
         assert!(count > PDF_MAX_EXTRACT_PAGES);
         let children = (0..count)
             .map(|i| format!("{} 0 R", 4 + 2 * i))
-            .collect::<Vec<_>>().join(" ");
+            .collect::<Vec<_>>()
+            .join(" ");
         let mut objects = vec![
             "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
             format!("<< /Type /Pages /Kids [{children}] /Count {count} >>"),
-            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".to_string(),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+                .to_string(),
         ];
         for i in 0..count {
             let content_id = 5 + 2 * i;
@@ -1231,7 +1920,8 @@ mod tests {
             };
             let stream = format!("BT /F1 12 Tf 72 700 Td ({body}) Tj ET");
             objects.push(format!(
-                "<< /Length {} >>\nstream\n{stream}\nendstream", stream.len()
+                "<< /Length {} >>\nstream\n{stream}\nendstream",
+                stream.len()
             ));
         }
         let mut bytes = b"%PDF-1.4\n".to_vec();
@@ -1241,16 +1931,19 @@ mod tests {
             bytes.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
         }
         let xref_offset = bytes.len();
-        bytes.extend_from_slice(format!(
-            "xref\n0 {}\n0000000000 65535 f \n", offsets.len() + 1
-        ).as_bytes());
+        bytes.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", offsets.len() + 1).as_bytes(),
+        );
         for offset in offsets {
             bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
         }
-        bytes.extend_from_slice(format!(
-            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n",
-            objects.len() + 1
-        ).as_bytes());
+        bytes.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n",
+                objects.len() + 1
+            )
+            .as_bytes(),
+        );
         bytes
     }
 
@@ -1260,12 +1953,13 @@ mod tests {
             "PDF page 1: {}\nPDF page 16: A general archival introduction. The GPS-denied drone localization trial reached 97.5% accuracy in the final experiment.\n",
             "This long document provides extensive historical context unrelated to the experiment. ".repeat(45)
         );
-        let selected = select_relevant_pdf_text(
-            &text, "GPS denied drone localization accuracy"
+        let selected = select_relevant_pdf_text(&text, "GPS denied drone localization accuracy");
+        assert!(
+            selected.contains(
+                "PDF page 16: The GPS-denied drone localization trial reached 97.5% accuracy"
+            ),
+            "{selected}"
         );
-        assert!(selected.contains(
-            "PDF page 16: The GPS-denied drone localization trial reached 97.5% accuracy"
-        ), "{selected}");
         assert!(!selected.contains("PDF page 1:"), "{selected}");
         assert!(selected.chars().count() <= PAGE_CHARS);
     }
@@ -1278,9 +1972,18 @@ mod tests {
             "PDF page 12: GPS-denied localization accuracy reached 92.5% in the held-out evaluation.\n"
         );
         let selected = select_relevant_pdf_text(text, "GPS denied drone localization accuracy");
-        assert!(selected.contains("PDF page 4: The GPS-denied drone navigation"), "{selected}");
-        assert!(selected.contains("PDF page 4: The GPS-denied drone accuracy"), "{selected}");
-        assert!(selected.contains("PDF page 12: GPS-denied localization accuracy"), "{selected}");
+        assert!(
+            selected.contains("PDF page 4: The GPS-denied drone navigation"),
+            "{selected}"
+        );
+        assert!(
+            selected.contains("PDF page 4: The GPS-denied drone accuracy"),
+            "{selected}"
+        );
+        assert!(
+            selected.contains("PDF page 12: GPS-denied localization accuracy"),
+            "{selected}"
+        );
         assert_eq!(selected.matches("PDF page 4:").count(), 2);
         assert!(selected.chars().count() <= PAGE_CHARS);
     }
@@ -1291,9 +1994,7 @@ mod tests {
             "PDF page 38: {} GPS denied drone localization achieved 93.5% accuracy in the test flight.\n",
             "Unrelated bibliographic introductory notes and catalog entries ".repeat(85)
         );
-        let selected = select_relevant_pdf_text(
-            &text, "GPS denied drone localization accuracy"
-        );
+        let selected = select_relevant_pdf_text(&text, "GPS denied drone localization accuracy");
         assert!(selected.starts_with("PDF page 38: "), "{selected}");
         assert!(selected.contains("93.5% accuracy"), "{selected}");
         assert!(selected.chars().count() <= PAGE_CHARS);
@@ -1312,9 +2013,8 @@ mod tests {
         let pdf = multipage_research_pdf_fixture(16);
         let extracted = extract_pdf_text(&pdf, "GPS denied drone localization accuracy")
             .expect("generated PDF should extract text");
-        let selected = select_relevant_pdf_text(
-            &extracted, "GPS denied drone localization accuracy"
-        );
+        let selected =
+            select_relevant_pdf_text(&extracted, "GPS denied drone localization accuracy");
         assert!(selected.contains("PDF page 16:"), "{selected}");
         assert!(selected.contains("97.5 percent accuracy"), "{selected}");
         assert!(selected.chars().count() <= PAGE_CHARS);
@@ -1337,14 +2037,17 @@ mod tests {
         assert_eq!(sample_pdf_page_numbers(&[2, 7, 10], 1), vec![2]);
         assert!(sample_pdf_page_numbers(&[1, 2], 0).is_empty());
         assert!(sample_pdf_page_numbers(&[], 8).is_empty());
-        assert_eq!(sample_pdf_page_numbers(&(1..=8).collect::<Vec<_>>(), 8).len(), 8);
+        assert_eq!(
+            sample_pdf_page_numbers(&(1..=8).collect::<Vec<_>>(), 8).len(),
+            8
+        );
     }
 
     #[test]
     fn pdf_page_text_budget_preserves_late_results_after_long_introduction() {
         let mut combined = String::new();
-        let huge_intro = "Long irrelevant historical introduction and administrative material. "
-            .repeat(900);
+        let huge_intro =
+            "Long irrelevant historical introduction and administrative material. ".repeat(900);
         let page_budget = PDF_MAX_TEXT_CHARS / PDF_MAX_EXTRACT_PAGES;
         for number in 1..=PDF_MAX_EXTRACT_PAGES {
             if number == PDF_MAX_EXTRACT_PAGES {
@@ -1352,7 +2055,8 @@ mod tests {
                     &mut combined,
                     number as u32,
                     "GPS denied drone localization reached 97.5 percent accuracy in 2026.",
-                    "GPS denied drone localization accuracy", page_budget,
+                    "GPS denied drone localization accuracy",
+                    page_budget,
                 );
             } else {
                 append_pdf_page_excerpt(&mut combined, number as u32, &huge_intro, "", page_budget);
@@ -1361,7 +2065,10 @@ mod tests {
         assert!(combined.chars().count() <= PDF_MAX_TEXT_CHARS);
         assert!(combined.contains("PDF page 8: GPS denied drone localization reached 97.5 percent"));
         let excerpt = select_relevant_text(&combined, "GPS denied drone localization accuracy");
-        assert!(excerpt.contains("97.5 percent accuracy in 2026"), "{excerpt}");
+        assert!(
+            excerpt.contains("97.5 percent accuracy in 2026"),
+            "{excerpt}"
+        );
     }
 
     #[test]
@@ -1373,14 +2080,19 @@ mod tests {
         assert!(page.chars().count() > PDF_MAX_TEXT_CHARS / PDF_MAX_EXTRACT_PAGES);
         let mut extracted = String::new();
         append_pdf_page_excerpt(
-            &mut extracted, 14, &page,
+            &mut extracted,
+            14,
+            &page,
             "GPS denied drone localization accuracy UWB",
             PDF_MAX_TEXT_CHARS / PDF_MAX_EXTRACT_PAGES,
         );
         assert!(extracted.contains("PDF page 14:"), "{extracted}");
         assert!(extracted.contains("98.75 percent accuracy"), "{extracted}");
         assert!(extracted.chars().count() <= PDF_MAX_TEXT_CHARS / PDF_MAX_EXTRACT_PAGES);
-        assert!(!extracted.contains("A lengthy municipal history"), "{extracted}");
+        assert!(
+            !extracted.contains("A lengthy municipal history"),
+            "{extracted}"
+        );
     }
 
     #[test]
@@ -1388,18 +2100,28 @@ mod tests {
         let page = "A scientific discussion about marine ecology and coastal surveys. ".repeat(115);
         let mut extracted = String::new();
         let page_budget = 160;
-        append_pdf_page_excerpt(&mut extracted, 7, &page, "quantum cryptography", page_budget);
-        assert!(extracted.starts_with("PDF page 7: A scientific discussion"), "{extracted}");
+        append_pdf_page_excerpt(
+            &mut extracted,
+            7,
+            &page,
+            "quantum cryptography",
+            page_budget,
+        );
+        assert!(
+            extracted.starts_with("PDF page 7: A scientific discussion"),
+            "{extracted}"
+        );
         assert!(extracted.chars().count() <= page_budget);
     }
 
     #[test]
     fn research_excerpt_selector_respects_custom_pdf_page_budget() {
-        let text = "The geographical and environmental survey describes ship movements. "
-            .repeat(95);
+        let text =
+            "The geographical and environmental survey describes ship movements. ".repeat(95);
         let relevant = select_relevant_text_bounded(
             &(text + "Drone localization achieved 97.5 percent accuracy."),
-            "drone localization accuracy", 240,
+            "drone localization accuracy",
+            240,
         );
         assert!(relevant.contains("97.5 percent accuracy"), "{relevant}");
         assert!(relevant.chars().count() <= 240);
@@ -1438,8 +2160,12 @@ mod tests {
 
     #[test]
     fn research_pdf_reader_extracts_text_without_executing_content() {
-        let content = extract_pdf_text(&text_pdf_fixture(), "").expect("text PDF should be readable");
-        assert!(content.contains("GPS denied drone localization"), "{content}");
+        let content =
+            extract_pdf_text(&text_pdf_fixture(), "").expect("text PDF should be readable");
+        assert!(
+            content.contains("GPS denied drone localization"),
+            "{content}"
+        );
         assert!(content.contains("87.5 percent"), "{content}");
         assert!(content.contains("PDF page 1:"), "{content}");
         assert!(content.chars().count() <= PDF_MAX_TEXT_CHARS + 1);
@@ -1457,7 +2183,10 @@ mod tests {
         let pdf = Url::parse("https://example.org/papers/study.pdf").unwrap();
         let html = Url::parse("https://example.org/news/page").unwrap();
         assert!(is_research_pdf_type("application/pdf", &html));
-        assert!(is_research_pdf_type("application/pdf; charset=binary", &pdf));
+        assert!(is_research_pdf_type(
+            "application/pdf; charset=binary",
+            &pdf
+        ));
         assert!(is_research_pdf_type("application/octet-stream", &pdf));
         assert!(!is_research_pdf_type("application/octet-stream", &html));
         assert!(!is_research_pdf_type("text/html", &pdf));
@@ -1476,18 +2205,25 @@ mod tests {
     #[test]
     fn long_research_page_scans_clauses_beyond_first_thousand() {
         let mut page = (0..1_080)
-            .map(|i| format!(
-                "Archival catalog entry {i} reports unrelated shipping and inventory records. "
-            ))
+            .map(|i| {
+                format!(
+                    "Archival catalog entry {i} reports unrelated shipping and inventory records. "
+                )
+            })
             .collect::<String>();
         page.push_str(
             "The GPS denied drone localization experiment achieved 87.5% accuracy with UWB anchors in 2026."
         );
         let clauses = research_page_clauses(&page);
         assert!(clauses.len() > 1_000);
-        assert!(clauses.last().is_some_and(|clause| clause.contains("87.5%")));
+        assert!(clauses
+            .last()
+            .is_some_and(|clause| clause.contains("87.5%")));
         let excerpt = select_relevant_text(&page, "GPS denied drone localization UWB accuracy");
-        assert!(excerpt.contains("87.5% accuracy with UWB anchors in 2026"), "{excerpt}");
+        assert!(
+            excerpt.contains("87.5% accuracy with UWB anchors in 2026"),
+            "{excerpt}"
+        );
         assert!(excerpt.chars().count() <= PAGE_CHARS);
     }
 
@@ -1496,11 +2232,10 @@ mod tests {
         let mut page = "Обзор архивных материалов содержит общую информацию о городах и музеях. "
             .repeat(1_060);
         page.push_str(
-            "Эксперимент GPS-denied drone localization достиг точности 92.5% в 2026 году."
+            "Эксперимент GPS-denied drone localization достиг точности 92.5% в 2026 году.",
         );
-        let excerpt = select_relevant_text(
-            &page, "GPS-denied drone localization эксперимент точности"
-        );
+        let excerpt =
+            select_relevant_text(&page, "GPS-denied drone localization эксперимент точности");
         assert!(excerpt.contains("92.5%"), "{excerpt}");
         assert!(excerpt.chars().count() <= PAGE_CHARS);
     }
@@ -1516,29 +2251,47 @@ mod tests {
     #[test]
     fn research_terms_split_hyphenated_queries_and_do_not_match_substrings() {
         let terms = ["gps", "denied", "drone", "art"]
-            .into_iter().map(str::to_string).collect();
-        assert_eq!(research_term_overlap("GPS-denied drone localization results", &terms), 3);
-        assert_eq!(research_term_overlap("The partial article describes a painting", &terms), 0);
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            research_term_overlap("GPS-denied drone localization results", &terms),
+            3
+        );
+        assert_eq!(
+            research_term_overlap("The partial article describes a painting", &terms),
+            0
+        );
     }
 
     #[test]
     fn research_excerpt_prioritizes_late_relevant_evidence_over_early_introduction() {
-        let mut page = "A long catalog introduction describes unrelated inventory and shipping notices. ".repeat(56);
+        let mut page =
+            "A long catalog introduction describes unrelated inventory and shipping notices. "
+                .repeat(56);
         page.push_str(
-            "GPS-denied drone localization achieved 87.5% accuracy using UWB anchors in 2026. "
+            "GPS-denied drone localization achieved 87.5% accuracy using UWB anchors in 2026. ",
         );
         let excerpt = select_relevant_text(&page, "GPS-denied drone localization accuracy");
-        assert!(excerpt.contains("87.5% accuracy using UWB anchors in 2026"), "{excerpt}");
-        assert!(!excerpt.starts_with("A long catalog introduction"), "{excerpt}");
+        assert!(
+            excerpt.contains("87.5% accuracy using UWB anchors in 2026"),
+            "{excerpt}"
+        );
+        assert!(
+            !excerpt.starts_with("A long catalog introduction"),
+            "{excerpt}"
+        );
         assert!(excerpt.chars().count() <= PAGE_CHARS);
     }
 
     #[test]
     fn research_excerpt_reserves_space_for_highest_overlap_before_weaker_clauses() {
-        let mut page = (0..38).map(|i| {
-            format!("A drone summary entry {i} describes a very general topic overview. ")
-        }).collect::<String>();
-        page.push_str("The GPS-denied drone localization accuracy study measured 92.5% on the test set.");
+        let mut page = (0..38)
+            .map(|i| format!("A drone summary entry {i} describes a very general topic overview. "))
+            .collect::<String>();
+        page.push_str(
+            "The GPS-denied drone localization accuracy study measured 92.5% on the test set.",
+        );
         let excerpt = select_relevant_text(&page, "GPS denied drone localization accuracy");
         assert!(excerpt.contains("92.5%"), "{excerpt}");
         assert!(excerpt.chars().count() <= PAGE_CHARS);
@@ -1546,10 +2299,15 @@ mod tests {
 
     #[test]
     fn research_excerpt_uses_bounded_window_when_relevant_clause_is_huge() {
-        let mut page = "Large introductory material about museum collections without research context ".repeat(65);
+        let mut page =
+            "Large introductory material about museum collections without research context "
+                .repeat(65);
         page.push_str("GPS denied drone localization achieved 93.5% accuracy in the test flight");
         let excerpt = select_relevant_text(&page, "GPS drone localization accuracy");
-        assert!(excerpt.contains("GPS denied drone localization"), "{excerpt}");
+        assert!(
+            excerpt.contains("GPS denied drone localization"),
+            "{excerpt}"
+        );
         assert!(excerpt.chars().count() <= PAGE_CHARS);
     }
 
@@ -1557,9 +2315,8 @@ mod tests {
     fn research_excerpt_handles_a_final_matching_word_without_trailing_punctuation() {
         let mut clause = "A very long extended unrelated archive heading ".repeat(75);
         clause.push_str(" GPS");
-        let excerpt = relevant_clause_window(
-            &clause, &HashSet::from(["gps".to_string()]), PAGE_CHARS
-        );
+        let excerpt =
+            relevant_clause_window(&clause, &HashSet::from(["gps".to_string()]), PAGE_CHARS);
         assert!(excerpt.contains("GPS"), "{excerpt}");
         assert!(excerpt.chars().count() <= PAGE_CHARS);
     }
@@ -1598,43 +2355,84 @@ mod tests {
     #[test]
     fn research_mirror_review_flags_similar_excerpts_across_different_hosts() {
         let original = long_research_excerpt("drone localization");
-        let mirror = original.replace("drone localization", "DRONE-localization")
+        let mirror = original
+            .replace("drone localization", "DRONE-localization")
             .replace("instrument calibration", "instrument  calibration");
         let sources = vec![
-            WebSearchResult { title: "Original".into(), url: "https://alpha.example/research".into(), snippet: "".into() },
-            WebSearchResult { title: "Independent URL".into(), url: "https://beta.example/syndicated".into(), snippet: "".into() },
+            WebSearchResult {
+                title: "Original".into(),
+                url: "https://alpha.example/research".into(),
+                snippet: "".into(),
+            },
+            WebSearchResult {
+                title: "Independent URL".into(),
+                url: "https://beta.example/syndicated".into(),
+                snippet: "".into(),
+            },
         ];
         let pages = HashMap::from([
             (sources[0].url.clone(), original),
             (sources[1].url.clone(), mirror),
         ]);
-        assert_eq!(near_duplicate_page_sources(&sources, &pages), HashMap::from([(2, 1)]));
+        assert_eq!(
+            near_duplicate_page_sources(&sources, &pages),
+            HashMap::from([(2, 1)])
+        );
     }
 
     #[test]
     fn research_mirror_review_preserves_ranked_ids_when_a_source_is_unread() {
         let shared = long_research_excerpt("drone localization");
         let sources = vec![
-            WebSearchResult { title: "Unread".into(), url: "https://a.example/unread".into(), snippet: "Only snippet".into() },
-            WebSearchResult { title: "First read".into(), url: "https://b.example/one".into(), snippet: "".into() },
-            WebSearchResult { title: "Later mirror".into(), url: "https://c.example/two".into(), snippet: "".into() },
+            WebSearchResult {
+                title: "Unread".into(),
+                url: "https://a.example/unread".into(),
+                snippet: "Only snippet".into(),
+            },
+            WebSearchResult {
+                title: "First read".into(),
+                url: "https://b.example/one".into(),
+                snippet: "".into(),
+            },
+            WebSearchResult {
+                title: "Later mirror".into(),
+                url: "https://c.example/two".into(),
+                snippet: "".into(),
+            },
         ];
         let pages = HashMap::from([
             (sources[1].url.clone(), shared.clone()),
             (sources[2].url.clone(), shared),
         ]);
-        assert_eq!(near_duplicate_page_sources(&sources, &pages), HashMap::from([(3, 2)]));
+        assert_eq!(
+            near_duplicate_page_sources(&sources, &pages),
+            HashMap::from([(3, 2)])
+        );
     }
 
     #[test]
     fn research_mirror_review_does_not_conflate_different_reports() {
         let sources = vec![
-            WebSearchResult { title: "First".into(), url: "https://a.example/first".into(), snippet: "".into() },
-            WebSearchResult { title: "Second".into(), url: "https://b.example/second".into(), snippet: "".into() },
+            WebSearchResult {
+                title: "First".into(),
+                url: "https://a.example/first".into(),
+                snippet: "".into(),
+            },
+            WebSearchResult {
+                title: "Second".into(),
+                url: "https://b.example/second".into(),
+                snippet: "".into(),
+            },
         ];
         let pages = HashMap::from([
-            (sources[0].url.clone(), long_research_excerpt("aerial navigation")),
-            (sources[1].url.clone(), long_research_excerpt("marine biodiversity")),
+            (
+                sources[0].url.clone(),
+                long_research_excerpt("aerial navigation"),
+            ),
+            (
+                sources[1].url.clone(),
+                long_research_excerpt("marine biodiversity"),
+            ),
         ]);
         assert!(near_duplicate_page_sources(&sources, &pages).is_empty());
     }
@@ -1642,8 +2440,16 @@ mod tests {
     #[test]
     fn research_mirror_review_does_not_compare_short_snippets_or_boilerplate() {
         let sources = vec![
-            WebSearchResult { title: "First".into(), url: "https://a.example/first".into(), snippet: "".into() },
-            WebSearchResult { title: "Second".into(), url: "https://b.example/second".into(), snippet: "".into() },
+            WebSearchResult {
+                title: "First".into(),
+                url: "https://a.example/first".into(),
+                snippet: "".into(),
+            },
+            WebSearchResult {
+                title: "Second".into(),
+                url: "https://b.example/second".into(),
+                snippet: "".into(),
+            },
         ];
         let tiny = "A short common paragraph repeated by publishers.".to_string();
         let pages = HashMap::from([
@@ -1663,17 +2469,33 @@ mod tests {
     #[test]
     fn retrieved_host_count_excludes_snippet_only_sources() {
         let sources = [
-            WebSearchResult { title: "One".into(), url: "https://one.example/a".into(), snippet: "A".into() },
-            WebSearchResult { title: "Two".into(), url: "https://one.example/b".into(), snippet: "B".into() },
-            WebSearchResult { title: "Three".into(), url: "https://two.example/c".into(), snippet: "C".into() },
+            WebSearchResult {
+                title: "One".into(),
+                url: "https://one.example/a".into(),
+                snippet: "A".into(),
+            },
+            WebSearchResult {
+                title: "Two".into(),
+                url: "https://one.example/b".into(),
+                snippet: "B".into(),
+            },
+            WebSearchResult {
+                title: "Three".into(),
+                url: "https://two.example/c".into(),
+                snippet: "C".into(),
+            },
         ];
         let mut pages = HashMap::new();
         pages.insert(sources[0].url.clone(), "Full page".to_string());
         pages.insert(sources[1].url.clone(), "Full page".to_string());
-        let hosts: HashSet<String> = sources.iter()
+        let hosts: HashSet<String> = sources
+            .iter()
             .filter(|hit| pages.contains_key(&hit.url))
-            .filter_map(|hit| Url::parse(&hit.url).ok()
-                .and_then(|url| url.host_str().map(str::to_string)))
+            .filter_map(|hit| {
+                Url::parse(&hit.url)
+                    .ok()
+                    .and_then(|url| url.host_str().map(str::to_string))
+            })
             .collect();
         assert_eq!(hosts.len(), 1);
     }
@@ -1681,24 +2503,53 @@ mod tests {
     #[test]
     fn source_page_texts_keep_ranked_citation_ids_and_only_retrieved_pages() {
         let sources = [
-            WebSearchResult { title: "A".into(), url: "https://example.com/a".into(), snippet: "A".into() },
-            WebSearchResult { title: "B".into(), url: "https://example.com/b".into(), snippet: "B".into() },
+            WebSearchResult {
+                title: "A".into(),
+                url: "https://example.com/a".into(),
+                snippet: "A".into(),
+            },
+            WebSearchResult {
+                title: "B".into(),
+                url: "https://example.com/b".into(),
+                snippet: "B".into(),
+            },
         ];
         let mut pages = HashMap::new();
-        pages.insert(sources[1].url.clone(), "GPS denied localization evidence".to_string());
+        pages.insert(
+            sources[1].url.clone(),
+            "GPS denied localization evidence".to_string(),
+        );
         let texts = source_page_texts(&sources, &pages);
         assert_eq!(texts.len(), 1);
-        assert_eq!(texts.get(&2).map(String::as_str), Some("GPS denied localization evidence"));
+        assert_eq!(
+            texts.get(&2).map(String::as_str),
+            Some("GPS denied localization evidence")
+        );
         assert!(!texts.contains_key(&1));
-        assert_eq!(texts.keys().copied().collect::<HashSet<_>>(), read_source_numbers(&sources, &pages));
+        assert_eq!(
+            texts.keys().copied().collect::<HashSet<_>>(),
+            read_source_numbers(&sources, &pages)
+        );
     }
 
     #[test]
     fn read_source_numbers_preserve_ranked_source_indices() {
         let results = [
-            WebSearchResult { title: "First".into(), url: "https://example.com/first".into(), snippet: "A".into() },
-            WebSearchResult { title: "Second".into(), url: "https://example.net/second".into(), snippet: "B".into() },
-            WebSearchResult { title: "Third".into(), url: "https://example.org/third".into(), snippet: "C".into() },
+            WebSearchResult {
+                title: "First".into(),
+                url: "https://example.com/first".into(),
+                snippet: "A".into(),
+            },
+            WebSearchResult {
+                title: "Second".into(),
+                url: "https://example.net/second".into(),
+                snippet: "B".into(),
+            },
+            WebSearchResult {
+                title: "Third".into(),
+                url: "https://example.org/third".into(),
+                snippet: "C".into(),
+            },
         ];
         let mut pages = HashMap::new();
         pages.insert(results[1].url.clone(), "retrieved body".to_string());
@@ -1710,8 +2561,16 @@ mod tests {
     #[test]
     fn source_evidence_counts_distinguish_retrieved_pages_from_snippets() {
         let sources = [
-            WebSearchResult { title: "A".into(), url: "https://example.com/a".into(), snippet: "Summary".into() },
-            WebSearchResult { title: "B".into(), url: "https://example.org/b".into(), snippet: "Summary".into() },
+            WebSearchResult {
+                title: "A".into(),
+                url: "https://example.com/a".into(),
+                snippet: "Summary".into(),
+            },
+            WebSearchResult {
+                title: "B".into(),
+                url: "https://example.org/b".into(),
+                snippet: "Summary".into(),
+            },
         ];
         let mut pages = HashMap::new();
         pages.insert(sources[0].url.clone(), "Retrieved text".to_string());
@@ -1722,7 +2581,9 @@ mod tests {
     #[test]
     fn canonical_url_ignores_tracking_parameter_case_and_query_order() {
         assert_eq!(
-            canonical_url("https://example.com/article?b=2&UTM_Source=newsletter&a=1&MSCLKID=abc#top"),
+            canonical_url(
+                "https://example.com/article?b=2&UTM_Source=newsletter&a=1&MSCLKID=abc#top"
+            ),
             canonical_url("https://example.com/article?a=1&b=2")
         );
         assert_ne!(
@@ -1752,21 +2613,114 @@ mod tests {
     #[test]
     fn research_ranking_prioritizes_query_matches_and_preserves_ties() {
         let mut hits = vec![
-            WebSearchResult { title: "Unrelated story".into(), url: "https://example.org/a".into(), snippet: "Other topics".into() },
-            WebSearchResult { title: "Drone localization".into(), url: "https://example.org/b".into(), snippet: "GPS denied flight".into() },
+            WebSearchResult {
+                title: "Unrelated story".into(),
+                url: "https://example.org/a".into(),
+                snippet: "Other topics".into(),
+            },
+            WebSearchResult {
+                title: "Drone localization".into(),
+                url: "https://example.org/b".into(),
+                snippet: "GPS denied flight".into(),
+            },
         ];
         rank_research_results(&mut hits, "drone localization GPS");
         assert_eq!(hits[0].url, "https://example.org/b");
     }
 
     #[test]
+    fn parses_brave_web_search_html_results() {
+        let html = r#"<div class="snippet svelte" data-pos="1" data-type="web" data-keynav="true"><div class="result-content"><a href="https://example.com/news"><div class="site-name">Example</div><div class="title search-snippet-title line-clamp-1" title="Example current report">Example current report</div></a><div class="generic-snippet"><div class="content desktop-default-regular">A <strong>verified</strong> report &amp; details.</div></div></div></div>"#;
+        let hits = parse_brave_html(html);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "Example current report");
+        assert_eq!(hits[0].url, "https://example.com/news");
+        assert_eq!(hits[0].snippet, "A verified report & details.");
+    }
+
+    #[test]
+    fn parses_google_news_rss_with_publisher_and_date() {
+        let xml = r#"<rss><channel><item><title>Bangladesh update - Al Jazeera</title><link>https://news.google.com/rss/articles/example</link><description>Fresh report on Bangladesh</description><pubDate>Thu, 19 Nov 2026 15:44:39 GMT</pubDate><source url="https://www.aljazeera.com">Al Jazeera</source></item></channel></rss>"#;
+        let hits = parse_google_news_rss(xml);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0]
+            .snippet
+            .contains("Publisher: Al Jazeera (aljazeera.com)"));
+        assert!(hits[0].snippet.contains("Thu, 19 Nov 2026"));
+        assert_eq!(source_domains(&hits), vec!["aljazeera.com"]);
+    }
+
+    #[test]
+    fn bangladesh_news_ignores_incidental_publisher_match() {
+        let unrelated = WebSearchResult {
+            title: "Actor announced as next James Bond".into(),
+            url: "https://thebangladeshtoday.com/story".into(),
+            snippet: "Publisher: The Bangladesh Today".into(),
+        };
+        let relevant = WebSearchResult {
+            title: "Bangladesh garment workers protest wage delays".into(),
+            url: "https://example.com/story".into(),
+            snippet: "Hundreds of factories temporarily closed".into(),
+        };
+        assert_eq!(
+            search_result_relevance(&unrelated, "Latest Bangladesh news today"),
+            0
+        );
+        assert!(search_result_relevance(&relevant, "Latest Bangladesh news today") > 0);
+    }
+
+    #[test]
+    fn only_uses_news_fallback_for_current_or_news_queries() {
+        assert!(query_needs_news_results(
+            "Bangladesh update news gulo daw ajker"
+        ));
+        assert!(query_needs_news_results("বাংলাদেশের আজকের খবর"));
+        assert!(query_needs_news_results("latest Windows update"));
+        assert!(!query_needs_news_results("explain binary search trees"));
+    }
+
+    #[test]
+    fn simplifies_search_queries_with_citation_instructions() {
+        assert_eq!(
+            simplify_search_query(
+                "Latest Bangladesh news today from reliable sources; cite dates and links."
+            ),
+            "Latest Bangladesh news today"
+        );
+        assert_eq!(
+            simplify_search_query("বাংলাদেশের আজকের খবর"),
+            "বাংলাদেশের আজকের খবর"
+        );
+        assert_eq!(simplify_search_query("latest news please"), "latest news");
+    }
+
+    #[test]
     fn prefers_requested_available_provider_but_keeps_fallbacks() {
         let empty = SearchCredentials::default();
         let providers = configured_providers("bing", &empty);
-        assert_eq!(providers, vec![Provider::Bing, Provider::DuckDuckGo]);
+        assert_eq!(
+            providers,
+            vec![
+                Provider::Bing,
+                Provider::Brave,
+                Provider::GoogleNews,
+                Provider::DuckDuckGo
+            ]
+        );
         let providers = configured_providers("brave", &empty);
-        assert_eq!(providers, vec![Provider::DuckDuckGo, Provider::Bing]);
-        let with_key = SearchCredentials { brave: Some("test-only".into()), ..Default::default() };
+        assert_eq!(
+            providers,
+            vec![
+                Provider::Brave,
+                Provider::GoogleNews,
+                Provider::DuckDuckGo,
+                Provider::Bing
+            ]
+        );
+        let with_key = SearchCredentials {
+            brave: Some("test-only".into()),
+            ..Default::default()
+        };
         assert_eq!(configured_providers("brave", &with_key)[0], Provider::Brave);
     }
 
@@ -1776,7 +2730,10 @@ mod tests {
         assert!(ProviderFailure::Server.retryable());
         assert!(!ProviderFailure::Denied.retryable());
         assert!(!ProviderFailure::RateLimited(Duration::from_secs(60)).retryable());
-        assert_eq!(ProviderFailure::RateLimited(Duration::from_secs(60)).cooldown(), Some(Duration::from_secs(60)));
+        assert_eq!(
+            ProviderFailure::RateLimited(Duration::from_secs(60)).cooldown(),
+            Some(Duration::from_secs(60))
+        );
     }
 
     #[tokio::test]
@@ -1791,8 +2748,15 @@ mod tests {
             socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 66\r\nContent-Length: 13\r\nConnection: close\r\n\r\nsecret-info!!").await.unwrap();
         });
         let client = Client::builder().no_proxy().build().unwrap();
-        let response = client.get(format!("http://{addr}/test")).send().await.unwrap();
-        assert_eq!(provider_text(response).await.unwrap_err(), ProviderFailure::RateLimited(Duration::from_secs(66)));
+        let response = client
+            .get(format!("http://{addr}/test"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            provider_text(response).await.unwrap_err(),
+            ProviderFailure::RateLimited(Duration::from_secs(66))
+        );
         server.await.unwrap();
     }
 
@@ -1801,8 +2765,8 @@ mod tests {
         let json = json!([{"title":"Safe", "url":"https://example.com/article", "description":"Evidence"},
             {"title":"Unsafe", "url":"http://127.0.0.1/", "description":"not allowed"}]);
         let r = parse_json_hits(Some(&json), "url", "description");
-        assert_eq!(r.len(),1);
-        assert_eq!(r[0].title,"Safe");
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].title, "Safe");
     }
     #[test]
     fn bing_rss_fallback_yields_public_links_only() {
@@ -1818,13 +2782,13 @@ mod tests {
     fn bing_html_extracts_only_result_links() {
         let html = r#"<li class="b_algo"><h2><a href="https://example.org/a">Example</a></h2><p>Useful report</p></li>"#;
         let r = parse_bing(html);
-        assert_eq!(r.len(),1);
-        assert_eq!(r[0].snippet,"Useful report");
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].snippet, "Useful report");
     }
     #[test]
     fn readable_page_strips_scripts_navigation_and_head() {
         let html="<html><head><title>Ignore</title></head><body><nav>Menu</nav><main><h1>Title</h1><script>steal secrets</script><p>Evidence &amp; facts.</p></main></body></html>";
-        let body=readable_html(html);
+        let body = readable_html(html);
         assert!(body.contains("Title"));
         assert!(body.contains("Evidence & facts."));
         assert!(!body.contains("steal secrets"));
@@ -1832,19 +2796,30 @@ mod tests {
     }
     #[test]
     fn canonicalizes_tracking_without_collapsing_distinct_queries() {
-        assert_eq!(canonical_url("https://example.com/a?utm_source=x&item=2#top"),
-                   "https://example.com/a?item=2");
+        assert_eq!(
+            canonical_url("https://example.com/a?utm_source=x&item=2#top"),
+            "https://example.com/a?item=2"
+        );
     }
     #[test]
     fn long_page_reads_relevant_passages_beyond_initial_content() {
-        let text = format!("{} A detailed independent test confirms the spacecraft result. ", "Irrelevant introduction. ".repeat(250));
+        let text = format!(
+            "{} A detailed independent test confirms the spacecraft result. ",
+            "Irrelevant introduction. ".repeat(250)
+        );
         let excerpt = select_relevant_text(&text, "spacecraft result");
         assert!(excerpt.contains("spacecraft result"));
         assert!(excerpt.chars().count() <= PAGE_CHARS);
     }
     #[tokio::test]
     async fn private_host_is_rejected_without_network_fetch() {
-        assert!(fetch_readable_page("http://127.0.0.1/admin", "test").await.is_err());
-        assert!(fetch_readable_page("http://169.254.169.254/latest/meta-data", "test").await.is_err());
+        assert!(fetch_readable_page("http://127.0.0.1/admin", "test")
+            .await
+            .is_err());
+        assert!(
+            fetch_readable_page("http://169.254.169.254/latest/meta-data", "test")
+                .await
+                .is_err()
+        );
     }
 }

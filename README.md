@@ -29,8 +29,8 @@
 
 ## OpenMindAI v5.0.0
 
-**Current source version:** `v5.0.0`  
-**Release documentation:** [v5.0.0 notes](.github/releases/v5.0.0.txt)  
+**Current source version:** `v6.0.0`  
+**Release documentation:** [v6.0.0 notes](.github/releases/v6.0.0.txt)  
 **Previous release:** [v4.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v4.0.0)
 
 v5.0.0 focuses on reliable first-run setup and native build compatibility. It fixes installations that previously reached the chat screen without a usable local llama.cpp runtime and restores compilation after dependency updates. OpenMindAI remains a local-first AI desktop application.
@@ -92,7 +92,7 @@ The project is built around five practical goals:
 | **Documents & media** | Manage conversation artifacts including code, Markdown, PDF, DOCX, images, audio, and supported video workflows. Availability depends on installed local models and hardware. |
 | **Local storage & portability** | Keep chats, models, workspaces, caches, and generated files in a selected local data root or portable drive. |
 | **Privacy & permission controls** | Local SQLite chat history, explicit project/terminal approvals, constrained agent operations, and credential separation. |
-| **Hardware-aware operation** | Detect hardware, select compatible inference paths, and use CPU fallback where supported. |
+| **Hardware-aware operation** | Detect hardware and plan local language model inference with the Vulkan runtime. |
 | **Updates & diagnostics** | Native updater, runtime lifecycle management, backups, maintenance, and validation tools. |
 
 Feature availability depends on operating system, installed runtime, model capabilities, hardware, and optional connected services. Some model downloads and online tools require internet access.
@@ -144,7 +144,8 @@ Runtime process recovery is platform-specific. Windows uses a kill-on-close Job 
 
 OpenMindAI detects CPU, memory, and available graphics hardware and uses that profile when choosing runtime and model launch settings. The goal is graceful compatibility across different machines instead of assuming a single GPU vendor or fixed workstation specification.
 
-When acceleration is unavailable, compatible CPU execution remains the fallback path.
+Language model inference requires the Vulkan runtime and a Vulkan-capable graphics device. CPU, CUDA, HIP, SYCL, and Metal llama.cpp runtime packages are not selected or installed.
+The managed llama.cpp Vulkan runtime installer currently provides Windows x64 and Linux x64 packages.
 
 ## Projects and Project Agent
 
@@ -465,7 +466,7 @@ For v5.0.0 release expectations and validation scope, see [`.github/releases/v5.
 
 ### Windows
 
-Windows x64 is the primary release-validation platform for v5.0.0. The desktop release uses a Tauri NSIS installer. GPU/runtime behavior depends on installed hardware and backend support, while CPU execution remains the compatibility path when acceleration is unavailable.
+Windows x64 is the primary release-validation platform for v5.0.0. The desktop release uses a Tauri NSIS installer. Language model inference requires the managed Vulkan runtime and compatible graphics hardware.
 
 ### Linux
 
@@ -487,7 +488,7 @@ Reconnect the drive or restore the configured location. OpenMindAI should not si
 
 ### GPU acceleration is unavailable
 
-Use a compatible fallback backend where available. Local CPU inference is slower but remains the broad compatibility path for supported models.
+Install the Vulkan llama.cpp runtime and use a Vulkan-capable graphics device. OpenMindAI does not fall back to CPU, CUDA, HIP, SYCL, or Metal inference.
 
 ### Project Agent cannot run terminal commands
 

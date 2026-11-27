@@ -53,7 +53,6 @@ fn validate_narration_language(text: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub async fn generate_voice(
     root: &PortableRootManager,
@@ -539,7 +538,10 @@ fn write_pcm16_wav(path: &Path, samples: &[f32]) -> Result<(), AppError> {
         AppError::ArtifactGenerationFailed("voice output is too large".to_string())
     })?;
 
-    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
     file.write_all(b"RIFF")?;
     file.write_all(&riff_size.to_le_bytes())?;
     file.write_all(b"WAVE")?;
@@ -926,7 +928,6 @@ mod tests {
         assert!(validate_wav(&path).is_err());
     }
 }
-
 
 #[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
 mod narration_language_tests {
