@@ -2306,9 +2306,9 @@ pub(crate) async fn studio3d_local_scene_spec(
         let conversation = repository.create_conversation(Some("3D Studio scene planner"))?;
         conversation_id = conversation.id;
         let system_prompt = if architecture {
-            "Plan only the ROOM LAYOUT for an editable two-story residential building. Return one compact schemaVersion 2 JSON document with footprint [12,10], storyHeight 3.2, and exactly 9 rooms. Coordinates are metres; x and z are room-centre coordinates, front is +Z. Each room has exactly name, floor (ground or upper), x, z, width and depth. Every room rectangle must fit inside x -6..6 and z -5..5. Room rectangles on the same floor must have disjoint interiors: for each pair, either abs(x1-x2) >= (width1+width2)/2 or abs(z1-z2) >= (depth1+depth2)/2. Use a simple coherent plan: ground rooms in two rows with Living Room, Dining Room, Kitchen and Ground Bathroom; upstairs place Bedroom 1, Bedroom 2 and Bedroom 3 in one row, with Upper Bathroom and Stair Landing in the other. Choose centers and dimensions that make adjacent edges meet without rectangle overlap; leave shared circulation through the landing. Do not output walls, furniture, geometry primitives, code or prose; the desktop constructs editable architecture from this AI-authored layout. JSON only."
+            "Create an editable 3D architectural or system scene that directly depicts the user's request. Infer the domain from the actual prompt, not from this mode name. For software, cloud, network, or data-flow architecture, create separately named component meshes arranged in meaningful layers and represent requested connections with thin boxes or cylinders. For physical buildings, model the requested floors, walls, openings, roof, and furnishings only as requested. For other architecture, represent the actual requested structure. Do not invent a default house, room count, footprint, or unrelated components. Return only compact schemaVersion 1 JSON with objects: each object has name, primitive (box, cylinder, sphere, cone, wheel), dimensions (positive full metres, at most 10 per axis), position (world coordinates within -20..20), rotation (radians), color (RGB 0..1), metallic and roughness (0..1), and parent (null or exact existing object name). Use up to 32 objects; choose the smallest number that captures the requested details and use scaled representations when needed. Use descriptive unique names. Never return code or prose."
         } else {
-            "Plan an editable 3D scene. The response is constrained to schema version 1 JSON. Use only box, cylinder, sphere, cone, and wheel primitives. Give each object a unique concise name; dimensions are full width/height/depth, positions are world coordinates, and rotations are radians. Set parent to JSON null for root objects (never the string \"null\"), otherwise use an existing object's exact name; no object may parent itself. Do not add a generic root in addition to the requested main object. Use plausible dimensions and coordinates. Materials use RGB values and PBR metallic/roughness in 0..1. Geometry is constructed by the application; never return code or explanatory prose."
+            "Create an editable 3D scene from the user's actual prompt. Identify its subject, requested components, proportions, colors, materials and spatial relationships. Compose the requested shapes using separately named editable primitives; use multiple parts for complex objects and a single part only when the request calls for one. Do not insert generic substitute objects or repeat an unrelated scene. Return only compact schemaVersion 1 JSON with objects: each object has name, primitive (box, cylinder, sphere, cone, wheel), dimensions (positive full metres, at most 10 per axis), position (world coordinates within -20..20), rotation (radians), color (RGB 0..1), metallic and roughness (0..1), and parent (null or exact existing object name). Use up to 32 objects and select only the parts required to depict the prompt. Never return code or prose."
         };
         repository.add_message(
             &conversation_id,
@@ -2368,11 +2368,7 @@ pub(crate) async fn studio3d_local_scene_spec(
         Err(inference.err().expect("error branch"))
     };
     let initial_validation_error = response.as_ref().ok().and_then(|text| {
-        let result = if architecture {
-            crate::studio3d::parse_architecture_spec_response(text)
-        } else {
-            crate::studio3d::parse_scene_spec_response(text)
-        };
+        let result = crate::studio3d::parse_scene_spec_response(text);
         result.err().map(|error| (text.len(), error))
     });
     if let Some((response_bytes, validation_error)) = initial_validation_error {
@@ -2386,7 +2382,7 @@ pub(crate) async fn studio3d_local_scene_spec(
             repository.add_message(
                     &conversation_id,
                     "user",
-                    &format!("Correct the previous JSON once. Validation errors: {}. Room x and z are rectangle centers, not corner positions. For each same-floor room pair, ensure abs(x1-x2) >= (width1+width2)/2 OR abs(z1-z2) >= (depth1+depth2)/2. Keep all nine required rooms with the requested floors and make adjacent edges meet. Return one complete compact JSON document in the required schema; no markdown or prose.", validation_error.to_string().chars().take(400).collect::<String>()),
+                    &format!("Correct the previous JSON once. Validation errors: {}. Preserve the subject, requested components, dimensions, colors and relationships from the original user request. Fix only schema or geometry errors; never substitute an unrelated scene. Return one complete compact schemaVersion 1 JSON document with valid objects and parent references; no markdown or prose.", validation_error.to_string().chars().take(400).collect::<String>()),
                     "completed",
                     Some(&model.id),
                 )?;
@@ -2432,11 +2428,7 @@ pub(crate) async fn studio3d_local_scene_spec(
             Err(correction_inference.err().expect("error branch"))
         };
         let corrected_validation_error = response.as_ref().ok().and_then(|text| {
-            let result = if architecture {
-                crate::studio3d::parse_architecture_spec_response(text)
-            } else {
-                crate::studio3d::parse_scene_spec_response(text)
-            };
+            let result = crate::studio3d::parse_scene_spec_response(text);
             result.err()
         });
         if let Some(corrected_error) = corrected_validation_error {

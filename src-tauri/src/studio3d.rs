@@ -236,8 +236,8 @@ fn validate_scene_spec(value: Value) -> Result<Value, AppError> {
     let objects = value
         .get("objects")
         .and_then(Value::as_array)
-        .filter(|items| !items.is_empty() && items.len() <= 16)
-        .ok_or_else(|| studio_error("local model scene plan must contain 1 to 16 objects"))?;
+        .filter(|items| !items.is_empty() && items.len() <= 32)
+        .ok_or_else(|| studio_error("local model scene plan must contain 1 to 32 objects"))?;
     let mut names = std::collections::HashSet::new();
     for object in objects {
         if object.as_object().is_none_or(|fields| {
@@ -358,7 +358,8 @@ fn validate_scene_spec(value: Value) -> Result<Value, AppError> {
     Ok(value)
 }
 
-pub(crate) fn parse_architecture_spec_response(response: &str) -> Result<Value, AppError> {
+#[cfg(test)]
+fn parse_architecture_spec_response(response: &str) -> Result<Value, AppError> {
     if response.len() > 64 * 1024 {
         return Err(studio_error("architectural plan exceeds the 64 KB limit"));
     }
@@ -481,6 +482,7 @@ pub(crate) fn parse_architecture_spec_response(response: &str) -> Result<Value, 
 /// inside the requested envelope. Names, floor assignments and room sizes stay
 /// AI-authored; this bounded placement pass makes its rough coordinates usable
 /// and records every moved room in the durable plan.
+#[cfg(test)]
 fn normalize_architecture_room_layout(mut value: Value) -> Result<Value, AppError> {
     let rooms = value
         .get_mut("rooms")
@@ -2171,20 +2173,15 @@ async fn execute_studio3d_local_job_inner(
         result = tokio::time::timeout(STUDIO3D_LOCAL_JOB_TIMEOUT, crate::studio3d_local_scene_spec(app, state, prompt, architecture)) =>
             result.map_err(|_| studio_error("local scene planning timed out"))??,
     };
-    let scene_spec = if architecture {
-        parse_architecture_spec_response(&scene_spec_text)?
-    } else {
-        parse_scene_spec_response(&scene_spec_text)?
-    };
+    let scene_spec = parse_scene_spec_response(&scene_spec_text)?;
     let scene_spec_sha256 = format!("{:x}", Sha256::digest(scene_spec.to_string().as_bytes()));
     {
         let db = state
             .database
             .lock()
             .map_err(|_| studio_error("database lock is unavailable"))?;
-        let planned_count = scene_spec["rooms"]
+        let planned_count = scene_spec["objects"]
             .as_array()
-            .or_else(|| scene_spec["objects"].as_array())
             .map(Vec::len)
             .unwrap_or_default();
         db.connection().execute("UPDATE studio3d_jobs SET model_id=?1,recovery_json=?2,updated_at=?3 WHERE id=?4 AND status='running'", params![model_id,serde_json::json!({"safeToResume":false,"scheduler":"native","modelProvider":"local-llama.cpp","sceneSpecificationSha256":scene_spec_sha256,"sceneObjectCount":planned_count,"sceneSpecification":scene_spec}).to_string(),Utc::now().to_rfc3339(),job_id])?;
@@ -2942,6 +2939,24 @@ mod tests {
         let mut cyclic = valid;
         cyclic["objects"][0]["parent"] = Value::from("Wheel");
         assert!(validate_scene_spec(cyclic).is_err());
+    }
+
+    #[test]
+    fn prompt_driven_scene_accepts_variable_named_components_but_bounds_complexity() {
+        let objects: Vec<Value> = (0..32)
+            .map(|index| serde_json::json!({
+                "name": format!("Service {index}"), "primitive": "box",
+                "dimensions": [1,1,1], "position": [index % 8,0,index / 8],
+                "rotation": [0,0,0], "color": [0.2,0.5,0.8],
+                "metallic": 0.1, "roughness": 0.7, "parent": null
+            }))
+            .collect();
+        let mut scene = serde_json::json!({"schemaVersion":1,"objects":objects});
+        assert!(parse_scene_spec_response(&scene.to_string()).is_ok());
+        let mut extra = scene["objects"][0].clone();
+        extra["name"] = Value::from("Overflow");
+        scene["objects"].as_array_mut().unwrap().push(extra);
+        assert!(parse_scene_spec_response(&scene.to_string()).is_err());
     }
 
     #[test]

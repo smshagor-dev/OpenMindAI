@@ -191,7 +191,7 @@ def scene_plan(prompt: str, mode: str, scene_spec=None):
         lower = prompt.casefold()
         furnishing = "unfurnished" if "unfurnished" in lower or "no furniture" in lower else "partially furnished" if "partially furnished" in lower or "partial furnishing" in lower else "fully furnished" if "furnish" in lower or "furniture" in lower else "unfurnished"
         return architecture_plan(scene_spec, furnishing)
-    if isinstance(scene_spec, dict) and isinstance(scene_spec.get("objects"), list):
+    if isinstance(scene_spec, dict) and scene_spec.get("schemaVersion") == 1 and isinstance(scene_spec.get("objects"), list):
         primitives = {"box": box_geometry, "cylinder": cylinder_geometry, "sphere": sphere_geometry,
                       "cone": cone_geometry, "wheel": torus_geometry}
         plan = []
@@ -211,29 +211,11 @@ def scene_plan(prompt: str, mode: str, scene_spec=None):
                 "rgb": tuple(color), "metallic": float(item["metallic"]),
                 "roughness": float(item["roughness"]), "rotation": tuple(rotation),
                 "parent": item.get("parent")})
-        if not 1 <= len(plan) <= 16:
-            raise RuntimeError("Native scene plan must contain 1 to 16 objects")
+        if not 1 <= len(plan) <= 32:
+            raise RuntimeError("Native scene plan must contain 1 to 32 objects")
         return plan
-    # Safe, deterministic geometry selection only. Never execute prompt as code.
-    lower = prompt.casefold()
-    if mode == "architecture":
-        return [{"name":name,"geometry":geometry,"scale":scale,"offset":offset,"rgb":rgb,
-                 "metallic":0.15,"roughness":0.6,"rotation":(0,0,0),"parent":None}
-                for name, geometry, scale, offset, rgb in [
-            ("Foundation", box_geometry(), (2.5,.12,2.0), (0,0,0), (0.40,0.48,0.57)),
-            ("Main building", box_geometry(), (1.8,1.45,1.35), (0,1.55,0), (0.69,0.76,0.87)),
-            ("Roof", box_geometry(), (2.0,.16,1.5), (0,3.13,0), (0.20,0.34,0.54)),
-            ("Entrance", box_geometry(), (.40,.79,.16), (0,.78,1.45), (0.30,0.34,0.38))]]
-    if any(word in lower for word in ("ring", "torus", "donut")):
-        geometry, name = torus_geometry(), "Ring"
-    elif any(word in lower for word in ("box", "cube", "crate", "robot", "car", "vehicle")):
-        geometry, name = box_geometry(), "Object"
-    elif any(word in lower for word in ("tower", "tube", "cylinder", "column")):
-        geometry, name = cylinder_geometry(), "Cylinder"
-    else:
-        geometry, name = sphere_geometry(), "Object"
-    return [{"name":name,"geometry":geometry,"scale":(1,1,1),"offset":(0,0,0),"rgb":(.37,.59,.94),
-             "metallic":0.15,"roughness":0.6,"rotation":(0,0,0),"parent":None}]
+    raise RuntimeError("A validated AI scene specification is required; no generic geometry will be substituted")
+
 
 def architecture_plan(spec, furnishing_mode="unfurnished"):
     """Turn the AI-authored room layout into individually editable house parts.
@@ -651,6 +633,10 @@ class Handler(BaseHTTPRequestHandler):
             scene_spec = data.get("scene_spec")
             if not isinstance(prompt,str) or not 5<=len(prompt)<=8000 or mode not in ("object","architecture"):
                 return self.send_json(422,{"message":"Invalid prompt or scene mode"})
+            if (not isinstance(scene_spec, dict) or scene_spec.get("schemaVersion") != 1
+                    or not isinstance(scene_spec.get("objects"), list)
+                    or not 1 <= len(scene_spec["objects"]) <= 32):
+                return self.send_json(422,{"message":"A validated AI scene specification is required"})
             if not isinstance(key,str) or not 1<=len(key)<=80 or not all(c.isalnum() or c in "_:-" for c in key):
                 return self.send_json(422,{"message":"Invalid idempotency key"})
             with LOCK:

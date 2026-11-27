@@ -88,7 +88,7 @@ const modeOptions: { id: UiMode; label: string; hint: string; icon: typeof Datab
   {
     id: "architecture",
     label: "3D architecture",
-    hint: "Systems, services and data flows",
+    hint: "Buildings, systems, services and data flows",
     icon: Server,
   },
 ];
@@ -251,7 +251,7 @@ const Studio3DViewport = lazy(() =>
 
 export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }: Props) {
   const [uiMode, setUiMode] = useState<UiMode>("auto");
-  const [furnishingMode, setFurnishingMode] = useState<"unfurnished" | "partially furnished" | "fully furnished">("unfurnished");
+  const [furnishingMode, setFurnishingMode] = useState<"prompt" | "unfurnished" | "partially furnished" | "fully furnished">("prompt");
   const [prompt, setPrompt] = useState("");
   const [referenceImage, setReferenceImage] = useState<ReferenceImage | null>(null);
   const [busy, setBusy] = useState(false);
@@ -564,7 +564,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
     setJob(null);
     try {
       const sceneMode = resolveMode(uiMode, text);
-      const requestPrompt = sceneMode === "architecture" ? `${text}\nFurnishing mode: ${furnishingMode}.` : text;
+      const requestPrompt = sceneMode === "architecture" && furnishingMode !== "prompt" ? `${text}\nFurnishing preference (physical buildings only): ${furnishingMode}.` : text;
       const requestKey = crypto.randomUUID();
       const route = selectExecutionRoute({
         preference: mode,
@@ -1053,7 +1053,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
                 uiMode === "object"
                   ? "Describe an object, its materials and proportions"
                   : uiMode === "architecture"
-                    ? "Describe services, layers and connections"
+                    ? "Describe buildings, systems, layers or connections"
                     : "Describe a 3D model or architecture"
               }
               onKeyDown={(event) => {
@@ -1083,6 +1083,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
                 ))}
                 {resolveMode(uiMode, prompt) === "architecture" ? <label className="studio3d-furnishing">Furnishing
                   <select aria-label="Furnishing mode" value={furnishingMode} disabled={busy} onChange={(event) => setFurnishingMode(event.target.value as typeof furnishingMode)}>
+                    <option value="prompt">Follow prompt</option>
                     <option value="unfurnished">Unfurnished</option>
                     <option value="partially furnished">Partially furnished</option>
                     <option value="fully furnished">Fully furnished</option>
