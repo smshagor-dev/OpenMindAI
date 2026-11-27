@@ -416,10 +416,8 @@ function runtimeStatusLabel(
 
 function hardwareSummary(hardware: HardwareProfile | null) {
   if (!hardware) return "detecting";
-  if (hardware.backends.cuda) return "NVIDIA CUDA";
   if (hardware.backends.vulkan) return "Vulkan";
-  if (hardware.backends.metal) return "Apple Metal";
-  return "CPU";
+  return "Vulkan required";
 }
 
 function deviceSupportLabel(item: { installed: boolean; compatible: boolean; downloadSupported: boolean }) {

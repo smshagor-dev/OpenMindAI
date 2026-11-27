@@ -251,7 +251,7 @@ mod renderer_argument_validation_tests {
     #[test]
     fn rejects_embedded_nul_without_echoing_sensitive_prompt() {
         for kind in ["image prompt", "video prompt"] {
-            let secret = "private-sentinel\\0rest";
+            let secret = "private-sentinel\0rest";
             let error = validate_renderer_prompt(secret, kind).unwrap_err();
             let message = error.to_string();
             assert!(message.contains("NUL"));
@@ -263,7 +263,7 @@ mod renderer_argument_validation_tests {
     #[test]
     fn rejects_nul_in_negative_prompt_before_spawning_renderer() {
         let options = ImageRenderOptions {
-            negative_prompt: Some("private-negative\\0suffix".into()),
+            negative_prompt: Some("private-negative\0suffix".into()),
             ..Default::default()
         };
         let message = options.validate().unwrap_err().to_string();
@@ -475,10 +475,14 @@ impl StagedImageOutput {
         let parent = final_path.parent().ok_or_else(|| {
             AppError::ArtifactGenerationFailed("image output path has no parent".into())
         })?;
-        Ok(Self { path: parent.join(format!(".openmindai-render-{}.png", Uuid::new_v4())) })
+        Ok(Self {
+            path: parent.join(format!(".openmindai-render-{}.png", Uuid::new_v4())),
+        })
     }
 
-    fn path(&self) -> &Path { &self.path }
+    fn path(&self) -> &Path {
+        &self.path
+    }
 
     fn publish(self, final_path: &Path) -> Result<(), AppError> {
         // Atomic no-clobber publication on the same filesystem.
