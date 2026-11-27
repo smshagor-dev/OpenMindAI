@@ -5,13 +5,18 @@ const BASE64_CHUNK = 16_384;
 
 /** Original bytes, not a filename/path pointer or decoded-text preview. */
 export async function attachProjectBinaryFile(projectId: string, file: File) {
-  if (file.size > MAX_PROJECT_BINARY_FILE_BYTES) {
-    throw new Error("Binary project attachments must be 1.5 MB or smaller.");
+  if (!Number.isSafeInteger(file.size) || file.size < 0 ||
+      file.size > MAX_PROJECT_BINARY_FILE_BYTES) {
+    throw new Error("Binary project attachments must have a valid size of 1.5 MB or smaller.");
   }
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  if (bytes.byteLength !== file.size) {
+  const buffer = await file.arrayBuffer();
+  // Validate the returned buffer before constructing a view or base64-encoding it.
+  // File-like sources may report an incorrect size and return far more bytes.
+  if (!(buffer instanceof ArrayBuffer) || buffer.byteLength !== file.size ||
+      buffer.byteLength > MAX_PROJECT_BINARY_FILE_BYTES) {
     throw new Error("Project attachment changed during import.");
   }
+  const bytes = new Uint8Array(buffer);
   // Use small chunks to avoid JS argument-spread limits for 1.5 MB buffers.
   const segments: string[] = [];
   for (let offset = 0; offset < bytes.length; offset += BASE64_CHUNK) {
