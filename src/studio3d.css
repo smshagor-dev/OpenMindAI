@@ -725,3 +725,79 @@
   .studio-shell.has-result { padding-top: 8px; padding-bottom: 52px; gap: 7px 12px; }
   .studio-shell.has-result .studio3d-composer textarea { max-height: 76px; }
 }
+
+/* Prompt submission opens the conversation workspace immediately. */
+.studio-shell.has-conversation {
+  justify-content: flex-start;
+  padding-top: 24px;
+}
+.studio3d-conversation {
+  width: 100%;
+  max-width: 780px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding-bottom: 24px;
+  animation: studio3d-enter .24s ease-out both;
+}
+.studio3d-user-turn {
+  align-self: flex-end;
+  max-width: min(85%, 620px);
+  min-width: 0;
+}
+.studio3d-user-turn > span, .studio3d-result-prompt > span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin: 0 8px 5px;
+  text-align: right;
+}
+.studio3d-user-turn > p, .studio3d-result-prompt > p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 12px 16px;
+  border-radius: 17px 17px 4px 17px;
+  background: var(--s-elevated);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.55;
+}
+.studio3d-result-prompt { max-width: min(100%, 620px); margin: 10px 0 4px auto; }
+.studio3d-result-prompt > p { max-height: 84px; overflow-y: auto; padding: 8px 12px; font-size: 13px; }
+.studio3d-assistant-turn { align-self: flex-start; width: min(100%, 440px); min-width: 0; }
+.studio3d-assistant-label { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 13px; font-weight: 600; }
+.studio3d-generation-card { border: 1px solid var(--border); border-radius: 20px; overflow: hidden; background: var(--s-elevated); }
+.studio3d-generation-art {
+  position: relative; display: grid; place-items: center; height: clamp(150px, 30vh, 260px);
+  overflow: hidden; isolation: isolate;
+  background: radial-gradient(ellipse at 50% 45%, color-mix(in srgb, var(--accent) 15%, var(--bg)), var(--bg) 75%);
+}
+.studio3d-generation-grid {
+  position: absolute; inset: 0;
+  background-image: linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px);
+  background-size: 26px 26px; opacity: .45;
+  mask-image: radial-gradient(ellipse, black, transparent 78%);
+}
+.studio3d-generation-orb { position: relative; width: 112px; height: 112px; color: var(--accent); animation: studio3d-orbit 3.2s ease-in-out infinite; }
+.studio3d-generation-orb svg { width: 100%; height: 100%; filter: drop-shadow(0 0 13px color-mix(in srgb, var(--accent) 45%, transparent)); }
+.studio3d-generation-scan { position: absolute; inset: 0; background: linear-gradient(transparent 44%, color-mix(in srgb, var(--accent) 18%, transparent) 50%, transparent 56%); animation: studio3d-scan 2.8s linear infinite; }
+.studio3d-generation-info { padding: 16px; }
+.studio3d-generation-heading, .studio3d-generation-stage { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.studio3d-generation-heading { font-size: 14px; }
+.studio3d-generation-percent { font-variant-numeric: tabular-nums; color: var(--accent); }
+.studio3d-generation-track { height: 6px; border-radius: 99px; overflow: hidden; margin: 13px 0 9px; background: var(--border); }
+.studio3d-generation-track > div { height: 100%; background: var(--accent); border-radius: inherit; transition: width .45s ease; }
+.studio3d-generation-stage { color: var(--muted); font-size: 12px; line-height: 1.4; margin-bottom: 14px; }
+.studio3d-generation-stage small { flex-shrink: 0; font-size: 10px; }
+.studio3d-generation-ended { padding: 14px; border-radius: 14px; border: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+.studio-shell.has-conversation .studio-composer-area { max-width: 780px; }
+@keyframes studio3d-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes studio3d-orbit { 0%, 100% { transform: perspective(350px) rotateY(-18deg) translateY(3px); opacity: .75; } 50% { transform: perspective(350px) rotateY(18deg) translateY(-4px); opacity: 1; } }
+@keyframes studio3d-scan { from { transform: translateY(-80%); } to { transform: translateY(80%); } }
+@media (prefers-reduced-motion: reduce) {
+  .studio3d-conversation, .studio3d-generation-orb, .studio3d-generation-scan { animation: none; }
+  .studio3d-generation-track > div { transition: none; }
+}
