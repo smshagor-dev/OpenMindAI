@@ -194,11 +194,26 @@ impl<'a> ChatRepository<'a> {
 
     /// Restore in place: message IDs, artifacts and project links stay intact.
     pub fn restore_conversation(&self, id: &str) -> Result<(), AppError> {
-        self.touch_conversation_with(
-            id,
-            "UPDATE conversations SET archived_at = NULL, updated_at = ?1 WHERE id = ?2",
+        // A repeated/stale restore must not reorder an already-active chat.
+        // Keep the archived-state check in the UPDATE to avoid a read/write race.
+        let changed = self.database.connection().execute(
+            "UPDATE conversations SET archived_at = NULL, updated_at = ?1
+             WHERE id = ?2 AND archived_at IS NOT NULL",
             params![Utc::now().to_rfc3339(), id],
-        )
+        )?;
+        if changed == 0 {
+            let exists: bool = self.database.connection().query_row(
+                "SELECT EXISTS(SELECT 1 FROM conversations WHERE id = ?1)",
+                params![id],
+                |row| row.get(0),
+            )?;
+            return Err(AppError::internal(if exists {
+                "conversation is not archived".to_string()
+            } else {
+                format!("conversation not found: {id}")
+            }));
+        }
+        Ok(())
     }
 
     pub fn create_conversation(&self, title: Option<&str>) -> Result<Conversation, AppError> {
@@ -771,6 +786,40 @@ mod tests {
         assert_eq!(repo.find_conversation(&created.id).unwrap().title, valid);
         repo.rename_conversation(&created.id, "Renamed").unwrap();
         assert_eq!(repo.find_conversation(&created.id).unwrap().title, "Renamed");
+    }
+
+    #[test]
+    fn restore_requires_archived_state_and_preserves_active_timestamp() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let chat = repo.create_conversation(Some("Archive transition")).unwrap();
+        let original = repo.find_conversation(&chat.id).unwrap();
+
+        // An active conversation cannot be spuriously moved to the top of recents.
+        assert!(matches!(
+            repo.restore_conversation(&chat.id),
+            Err(AppError::Internal(_))
+        ));
+        assert_eq!(repo.find_conversation(&chat.id).unwrap().updated_at, original.updated_at);
+
+        repo.archive_conversation(&chat.id).unwrap();
+        assert!(repo.find_conversation(&chat.id).unwrap().archived_at.is_some());
+        repo.restore_conversation(&chat.id).unwrap();
+        let restored = repo.find_conversation(&chat.id).unwrap();
+        assert!(restored.archived_at.is_none());
+
+        // A stale duplicate restore must leave the successful restore unchanged.
+        assert!(matches!(
+            repo.restore_conversation(&chat.id),
+            Err(AppError::Internal(_))
+        ));
+        let unchanged = repo.find_conversation(&chat.id).unwrap();
+        assert_eq!(unchanged.updated_at, restored.updated_at);
+        assert!(unchanged.archived_at.is_none());
+        assert!(matches!(
+            repo.restore_conversation("missing-conversation"),
+            Err(AppError::Internal(_))
+        ));
     }
 
     #[test]
