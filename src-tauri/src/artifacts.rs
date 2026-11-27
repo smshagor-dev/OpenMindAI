@@ -122,10 +122,13 @@ impl<'a> ArtifactRepository<'a> {
         size_bytes: i64,
         page_count: Option<i64>,
     ) -> Result<(), AppError> {
-        self.database.connection().execute(
-            "UPDATE artifacts SET status = 'ready', size_bytes = ?1, page_count = ?2, error = NULL, updated_at = ?3 WHERE id = ?4",
+        let updated = self.database.connection().execute(
+            "UPDATE artifacts SET status = 'ready', size_bytes = ?1, page_count = ?2, error = NULL, updated_at = ?3 WHERE id = ?4 AND status = 'generating'",
             rusqlite::params![size_bytes, page_count, Utc::now().to_rfc3339(), id],
         )?;
+        if updated == 0 {
+            return Err(AppError::internal("artifact is missing or no longer generating"));
+        }
         Ok(())
     }
 
@@ -141,10 +144,13 @@ impl<'a> ArtifactRepository<'a> {
     }
 
     pub fn set_failed(&self, id: &str, error: &str) -> Result<(), AppError> {
-        self.database.connection().execute(
-            "UPDATE artifacts SET status = 'failed', error = ?1, updated_at = ?2 WHERE id = ?3",
+        let updated = self.database.connection().execute(
+            "UPDATE artifacts SET status = 'failed', error = ?1, updated_at = ?2 WHERE id = ?3 AND status = 'generating'",
             rusqlite::params![error, Utc::now().to_rfc3339(), id],
         )?;
+        if updated == 0 {
+            return Err(AppError::internal("artifact is missing or no longer generating"));
+        }
         Ok(())
     }
 
@@ -595,6 +601,43 @@ mod tests {
         let failed = repo.find(&artifact.id).unwrap();
         assert_eq!(failed.status, "failed");
         assert_eq!(failed.error.as_deref(), Some("renderer crashed"));
+    }
+
+    #[test]
+    fn terminal_artifact_states_cannot_be_rewritten_by_stale_callbacks() {
+        let database = Database::in_memory().unwrap();
+        let conversation = crate::chat::ChatRepository::new(&database)
+            .create_conversation(Some("Artifact transitions"))
+            .unwrap();
+        let repo = ArtifactRepository::new(&database);
+        let ready = repo.create(&conversation.id, None, "ready.pdf", "generated/ready.pdf",
+            "application/pdf", "pdf", "generating").unwrap();
+        let failed = repo.create(&conversation.id, None, "failed.pdf", "generated/failed.pdf",
+            "application/pdf", "pdf", "generating").unwrap();
+
+        repo.set_ready(&ready.id, 42, Some(2)).unwrap();
+        let ready_before = repo.find(&ready.id).unwrap();
+        assert!(repo.set_failed(&ready.id, "late failure").is_err());
+        assert!(repo.set_ready(&ready.id, 99, None).is_err());
+        let ready_after = repo.find(&ready.id).unwrap();
+        assert_eq!(ready_after.status, "ready");
+        assert_eq!(ready_after.size_bytes, 42);
+        assert_eq!(ready_after.page_count, Some(2));
+        assert_eq!(ready_after.updated_at, ready_before.updated_at);
+        assert!(ready_after.error.is_none());
+
+        repo.set_failed(&failed.id, "render failed").unwrap();
+        let failed_before = repo.find(&failed.id).unwrap();
+        assert!(repo.set_ready(&failed.id, 100, Some(1)).is_err());
+        assert!(repo.set_failed(&failed.id, "late failure").is_err());
+        let failed_after = repo.find(&failed.id).unwrap();
+        assert_eq!(failed_after.status, "failed");
+        assert_eq!(failed_after.error.as_deref(), Some("render failed"));
+        assert_eq!(failed_after.size_bytes, 0);
+        assert_eq!(failed_after.updated_at, failed_before.updated_at);
+
+        assert!(repo.set_ready("missing", 1, None).is_err());
+        assert!(repo.set_failed("missing", "missing").is_err());
     }
 
     #[test]
