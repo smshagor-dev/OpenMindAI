@@ -122,7 +122,8 @@ export class OpenMindChatPanel {
   static createOrShow(
     context: vscode.ExtensionContext,
     clientFactory: () => ChatBackend,
-    beforeRequest?: BeforeRequest
+    beforeRequest?: BeforeRequest,
+    checkConnection?: (report: (status: string, connected: boolean) => void) => void
   ): OpenMindChatPanel {
     if (OpenMindChatPanel.current) {
       OpenMindChatPanel.current.panel.reveal(vscode.ViewColumn.Beside);
@@ -138,14 +139,15 @@ export class OpenMindChatPanel {
         localResourceRoots: [context.extensionUri]
       }
     );
-    OpenMindChatPanel.current = new OpenMindChatPanel(panel, clientFactory, beforeRequest);
+    OpenMindChatPanel.current = new OpenMindChatPanel(panel, clientFactory, beforeRequest, checkConnection);
     return OpenMindChatPanel.current;
   }
 
   private constructor(
     private readonly panel: vscode.WebviewPanel,
     private readonly clientFactory: () => ChatBackend,
-    private readonly beforeRequest?: BeforeRequest
+    private readonly beforeRequest?: BeforeRequest,
+    private readonly checkConnection?: (report: (status: string, connected: boolean) => void) => void
   ) {
     this.panel.webview.html = this.html(this.panel.webview);
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
@@ -154,6 +156,12 @@ export class OpenMindChatPanel {
         if (this.observer?.receive(message)) return;
         if (message.type === "ask" && message.text?.trim()) {
           await this.ask(message.text.trim());
+        } else if (message.type === "newChat") {
+          this.messages.splice(1);
+          this.postMessage({ type: "reset" });
+        } else if (message.type === "checkConnection") {
+          this.postMessage({ type: "connection", status: "Checking local OpenMindAI app…", connected: false });
+          this.checkConnection?.((status, connected) => this.postMessage({ type: "connection", status, connected }));
         }
       },
       null,
@@ -400,7 +408,8 @@ export class OpenMindChatViewProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly clientFactory: () => ChatBackend,
-    private readonly beforeRequest?: BeforeRequest
+    private readonly beforeRequest?: BeforeRequest,
+    private readonly checkConnection?: (report: (status: string, connected: boolean) => void) => void
   ) {}
 
   get resolved(): boolean {
@@ -418,6 +427,12 @@ export class OpenMindChatViewProvider implements vscode.WebviewViewProvider {
       if (this.observer?.receive(message)) return;
       if (message.type === "ask" && message.text?.trim()) {
         await this.ask(message.text.trim());
+      } else if (message.type === "newChat") {
+        this.messages.splice(1);
+        this.postMessage({ type: "reset" });
+      } else if (message.type === "checkConnection") {
+        this.postMessage({ type: "connection", status: "Checking local OpenMindAI app…", connected: false });
+        this.checkConnection?.((status, connected) => this.postMessage({ type: "connection", status, connected }));
       }
     });
   }
@@ -644,18 +659,22 @@ function chatHtml(webview: vscode.Webview): string {
 </html>`;
 }
 
-export async function buildWorkspaceRequest(userText: string, report?: ActivityReporter): Promise<string> {
+export async function buildWorkspaceRequest(
+  userText: string,
+  report?: ActivityReporter,
+  references: readonly unknown[] = []
+): Promise<string> {
   const workspace = vscode.workspace.workspaceFolders?.[0];
   const editor = vscode.window.activeTextEditor;
   const parts = [`User request:\n${userText}`];
+  const included = new Set<string>();
 
   if (workspace) {
     parts.push(`Workspace root: ${workspace.uri.fsPath}`);
     report?.("Reading", "workspace file tree");
     const files = await vscode.workspace.findFiles(
       "**/*",
-      "{**/node_modules/**,**/.git/**,**/dist/**,**/target/**,**/build/**}",
-      30
+      "{**/node_modules/**,**/.git/**,**/dist/**,**/target/**,**/build/**}"
     );
     parts.push(`Project files:\n${files.map((uri) => vscode.workspace.asRelativePath(uri)).join("\n")}`);
   } else {
@@ -664,23 +683,67 @@ export async function buildWorkspaceRequest(userText: string, report?: ActivityR
 
   if (editor) {
     const document = editor.document;
-    report?.("Reading", vscode.workspace.asRelativePath(document.uri));
+    const relative = workspace ? vscode.workspace.asRelativePath(document.uri) : document.uri.fsPath;
+    report?.("Reading", relative);
     const selected = editor.selection.isEmpty ? "" : document.getText(editor.selection);
     const text = selected || document.getText();
-    const maxChars = vscode.workspace.getConfiguration("openmindai").get<number>("maxContextCharacters", 800);
-    const preview = text.length > maxChars ? `${text.slice(0, maxChars)}\n[truncated]` : text;
     parts.push(
       [
         `Active file: ${vscode.workspace.asRelativePath(document.uri)}`,
         `Language: ${document.languageId}`,
         selected ? "Selected text:" : "File content:",
         `\`\`\`${document.languageId}`,
-        preview,
+        text,
         "```"
       ].join("\n")
     );
+    included.add(document.uri.toString());
   } else {
     parts.push("No active editor.");
+  }
+
+  // Native Chat references include #file, selected ranges, and pasted text. Keep their
+  // contents explicit in the prompt so backends without native VS Code tool support can use them.
+  for (const reference of references) {
+    if (!reference || typeof reference !== "object") continue;
+    const item = reference as { name?: unknown; value?: unknown };
+    const value = item.value;
+    if (typeof value === "string") {
+      if (!value.trim()) continue;
+      const name = typeof item.name === "string" ? item.name : "Chat reference";
+      parts.push(`${name}:\n${value}`);
+      continue;
+    }
+    if (value && typeof value === "object" && "value" in value && typeof value.value === "string") {
+      const content = value.value;
+      if (content.trim()) {
+        const name = typeof item.name === "string" ? item.name : "Chat reference";
+        parts.push(`${name}:\n${content}`);
+      }
+      continue;
+    }
+    let uri: vscode.Uri | undefined;
+    let range: vscode.Range | undefined;
+    if (value instanceof vscode.Uri) uri = value;
+    else if (value && typeof value === "object" && "uri" in value) {
+      const location = value as { uri?: unknown; range?: unknown };
+      if (location.uri instanceof vscode.Uri) uri = location.uri;
+      if (location.range instanceof vscode.Range) range = location.range;
+    }
+    if (!uri || included.has(uri.toString())) continue;
+    if (workspace && uri.scheme === "file" && !isWithinWorkspace(workspace.uri.fsPath, uri.fsPath)) {
+      parts.push(`Chat reference ${String(item.name ?? uri.fsPath)} is outside the open workspace and was omitted.`);
+      continue;
+    }
+    try {
+      const document = await vscode.workspace.openTextDocument(uri);
+      const content = range ? document.getText(range) : document.getText();
+      const label = typeof item.name === "string" ? item.name : (workspace ? vscode.workspace.asRelativePath(uri) : uri.fsPath);
+      parts.push(`Referenced file: ${label}\nLanguage: ${document.languageId}\n\`\`\`${document.languageId}\n${content}\n\`\`\``);
+      included.add(uri.toString());
+    } catch (error) {
+      report?.("Reading", `Could not read reference ${String(item.name ?? uri.fsPath)}`);
+    }
   }
 
   parts.push(
@@ -694,6 +757,11 @@ export async function buildWorkspaceRequest(userText: string, report?: ActivityR
   );
 
   return parts.join("\n\n");
+}
+
+function isWithinWorkspace(root: string, candidate: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
 /**
@@ -873,6 +941,28 @@ function renderChatHtml(webview: vscode.Webview, variant: "panel" | "view"): str
       gap: 10px;
     }
 
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex: 0 0 auto;
+    }
+
+    .header-actions button {
+      min-height: 26px;
+      padding: 0 8px;
+      border: 1px solid var(--om-border);
+      border-radius: 6px;
+      color: var(--om-muted);
+      background: transparent;
+      font-size: 11px;
+    }
+
+    .header-actions button:hover {
+      color: var(--om-text);
+      background: var(--om-panel-2);
+    }
+
     .agent-title-main {
       min-width: 0;
     }
@@ -899,6 +989,8 @@ function renderChatHtml(webview: vscode.Webview, variant: "panel" | "view"): str
       display: inline-flex;
       align-items: center;
       gap: 6px;
+      max-width: 190px;
+      min-width: 0;
       min-height: 24px;
       padding: 0 8px;
       border: 1px solid var(--om-border);
@@ -909,12 +1001,24 @@ function renderChatHtml(webview: vscode.Webview, variant: "panel" | "view"): str
       white-space: nowrap;
     }
 
+    #connectionText { overflow: hidden; text-overflow: ellipsis; }
+
     .status-dot {
       width: 7px;
       height: 7px;
       border-radius: 999px;
+      background: var(--om-muted);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--om-muted) 16%, transparent);
+    }
+
+    .status-pill.connected .status-dot {
       background: var(--om-success);
       box-shadow: 0 0 0 3px color-mix(in srgb, var(--om-success) 16%, transparent);
+    }
+
+    .status-pill.disconnected .status-dot {
+      background: var(--om-danger);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--om-danger) 16%, transparent);
     }
 
     .quick-row {
@@ -1026,6 +1130,31 @@ function renderChatHtml(webview: vscode.Webview, variant: "panel" | "view"): str
       min-width: 0;
       overflow-wrap: anywhere;
     }
+
+    .body p { margin: 0 0 9px; }
+    .body p:last-child { margin-bottom: 0; }
+    .body h1, .body h2, .body h3 { margin: 14px 0 7px; line-height: 1.3; }
+    .body ul, .body ol { margin: 5px 0 9px; padding-left: 22px; }
+    .body li { margin: 3px 0; }
+    .body code {
+      padding: 1px 4px;
+      border: 1px solid var(--om-border);
+      border-radius: 4px;
+      background: var(--om-panel-2);
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 0.92em;
+    }
+    .body pre {
+      overflow: auto;
+      margin: 8px 0;
+      padding: 10px;
+      border: 1px solid var(--om-border);
+      border-radius: 6px;
+      background: var(--vscode-textCodeBlock-background, var(--om-panel-2));
+      white-space: pre;
+    }
+    .body pre code { padding: 0; border: 0; background: transparent; font-size: 12px; }
+    .body a { color: var(--vscode-textLink-foreground); }
 
     .activity {
       display: none;
@@ -1159,6 +1288,9 @@ function renderChatHtml(webview: vscode.Webview, variant: "panel" | "view"): str
       grid-template-columns: 1fr;
     }
 
+    .compact .header-actions { flex-wrap: wrap; justify-content: flex-end; }
+    .compact .status-pill { max-width: 125px; }
+
     .compact .bubble {
       padding: 9px;
     }
@@ -1172,7 +1304,11 @@ function renderChatHtml(webview: vscode.Webview, variant: "panel" | "view"): str
           <span class="eyebrow">OpenMindAI Agent</span>
           <strong>Workspace coding assistant</strong>
         </div>
-        <span class="status-pill"><span class="status-dot"></span> Local</span>
+        <div class="header-actions">
+          <span class="status-pill" id="connectionStatus"><span class="status-dot"></span><span id="connectionText">Local · not checked</span></span>
+          <button type="button" id="checkConnection">Check local</button>
+          <button type="button" id="newChat">New chat</button>
+        </div>
       </div>
       <div class="quick-row" aria-label="Suggested actions">
         <button type="button" data-template="Explain the active file">Explain file</button>
@@ -1186,7 +1322,7 @@ function renderChatHtml(webview: vscode.Webview, variant: "panel" | "view"): str
         <span class="node"></span>
         <div class="bubble">
           <div class="role">OpenMindAI</div>
-          <div class="body">Ask about this workspace, request edits, or run a focused review. I can read the active file context and apply safe file changes when you approve the request.</div>
+          <div class="body"><strong>Connect your local OpenMindAI app</strong><br><br>1. Open the OpenMindAI desktop app and wait for it to finish starting.<br>2. In the app, open <strong>Settings → Agent Setup</strong>, enable <strong>Coding Workspace</strong>, and install or select an OpenAgent model.<br>3. Keep the desktop app open, then choose <strong>Check local</strong> above.<br><br>No Cloud key is needed. This extension is set to use the local app by default. After connecting, ask questions, review files, or request workspace edits here.</div>
         </div>
       </section>
       <section class="activity" id="activity" aria-live="polite">
@@ -1215,6 +1351,9 @@ function renderChatHtml(webview: vscode.Webview, variant: "panel" | "view"): str
     const activity = document.getElementById('activity');
     const activityPhase = document.getElementById('activityPhase');
     const activityDetail = document.getElementById('activityDetail');
+    const connectionStatus = document.getElementById('connectionStatus');
+    const connectionText = document.getElementById('connectionText');
+    const checkConnectionButton = document.getElementById('checkConnection');
     let activityTimer = undefined;
 
     function roleClass(role) {
@@ -1237,13 +1376,111 @@ function renderChatHtml(webview: vscode.Webview, variant: "panel" | "view"): str
       label.textContent = role;
       const body = document.createElement('div');
       body.className = 'body';
-      body.textContent = content || '';
+      renderMarkdown(body, content || '');
       bubble.append(label, body);
       section.append(node, bubble);
       messages.insertBefore(section, activity);
       messages.scrollTop = messages.scrollHeight;
     }
 
+    function renderMarkdown(container, source) {
+      const lines = String(source).replace(/\\r/g, '').split('\\n');
+      let paragraph = [];
+      let list = undefined;
+      let codeLines = undefined;
+      let codeLanguage = '';
+      const flushParagraph = () => {
+        if (!paragraph.length) return;
+        const p = document.createElement('p');
+        appendInline(p, paragraph.join(' '));
+        container.append(p);
+        paragraph = [];
+      };
+      const flushList = () => { list = undefined; };
+      for (const line of lines) {
+        const fence = line.match(/^\\s*\\x60{3}([^\\x60]*)$/);
+        if (codeLines) {
+          if (fence) {
+            const pre = document.createElement('pre');
+            const code = document.createElement('code');
+            if (codeLanguage) code.dataset.language = codeLanguage;
+            code.textContent = codeLines.join('\\n');
+            pre.append(code);
+            container.append(pre);
+            codeLines = undefined;
+            codeLanguage = '';
+          } else codeLines.push(line);
+          continue;
+        }
+        if (fence) {
+          flushParagraph(); flushList();
+          codeLines = [];
+          codeLanguage = fence[1].trim();
+          continue;
+        }
+        if (!line.trim()) { flushParagraph(); flushList(); continue; }
+        const heading = line.match(/^\\s{0,3}(#{1,3})\\s+(.+)$/);
+        if (heading) {
+          flushParagraph(); flushList();
+          const element = document.createElement('h' + heading[1].length);
+          appendInline(element, heading[2]);
+          container.append(element);
+          continue;
+        }
+        const item = line.match(/^\\s*([-*+] |\\d+\\. )(.*)$/);
+        if (item) {
+          flushParagraph();
+          const ordered = /^\\d/.test(item[1]);
+          if (!list || list.tagName !== (ordered ? 'OL' : 'UL')) {
+            flushList();
+            list = document.createElement(ordered ? 'ol' : 'ul');
+            container.append(list);
+          }
+          const li = document.createElement('li');
+          appendInline(li, item[2]);
+          list.append(li);
+          continue;
+        }
+        flushList();
+        paragraph.push(line.trim());
+      }
+      if (codeLines) {
+        const pre = document.createElement('pre');
+        const code = document.createElement('code');
+        code.textContent = codeLines.join('\\n');
+        pre.append(code);
+        container.append(pre);
+      }
+      flushParagraph();
+    }
+    function appendInline(container, text) {
+      const pattern = /(\\x60[^\\x60]+\\x60|\\*\\*[^*]+\\*\\*|\\[[^\\]]+\\]\\(https?:\\/\\/[^\\s)]+\\))/g;
+      let offset = 0;
+      for (const match of text.matchAll(pattern)) {
+        const index = match.index || 0;
+        if (index > offset) container.append(document.createTextNode(text.slice(offset, index)));
+        const token = match[0];
+        if (token.charCodeAt(0) === 96) {
+          const code = document.createElement('code');
+          code.textContent = token.slice(1, -1);
+          container.append(code);
+        } else if (token.startsWith('**')) {
+          const strong = document.createElement('strong');
+          strong.textContent = token.slice(2, -2);
+          container.append(strong);
+        } else {
+          const link = token.match(/^\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)$/);
+          const anchor = document.createElement('a');
+          anchor.textContent = link[1];
+          anchor.href = link[2];
+          anchor.target = '_blank';
+          anchor.rel = 'noopener noreferrer';
+          container.append(anchor);
+        }
+        offset = index + token.length;
+      }
+      if (offset < text.length) container.append(document.createTextNode(text.slice(offset)));
+    }
     function setActivity(phase, detail) {
       clearTimeout(activityTimer);
       activity.className = 'activity visible ' + String(phase || '').toLowerCase();
@@ -1276,6 +1513,25 @@ function renderChatHtml(webview: vscode.Webview, variant: "panel" | "view"): str
       });
     });
 
+    checkConnectionButton.addEventListener('click', () => {
+      vscode.postMessage({ type: 'checkConnection' });
+    });
+
+    document.getElementById('newChat').addEventListener('click', () => {
+      vscode.postMessage({ type: 'newChat' });
+    });
+
+    function showWelcome() {
+      messages.querySelectorAll('.message').forEach((message) => message.remove());
+      activity.classList.remove('visible', 'done', 'error');
+      activityPhase.textContent = 'Thinking';
+      activityDetail.textContent = '';
+      const section = document.createElement('section');
+      section.className = 'message assistant';
+      section.innerHTML = '<span class="node"></span><div class="bubble"><div class="role">OpenMindAI</div><div class="body"><strong>Connect your local OpenMindAI app</strong><br><br>1. Open the OpenMindAI desktop app and wait for it to finish starting.<br>2. In the app, open <strong>Settings → Agent Setup</strong>, enable <strong>Coding Workspace</strong>, and install or select an OpenAgent model.<br>3. Keep the desktop app open, then choose <strong>Check local</strong> above.<br><br>No Cloud key is needed. This extension is set to use the local app by default. After connecting, ask questions, review files, or request workspace edits here.</div></div>';
+      messages.insertBefore(section, activity);
+    }
+
     window.addEventListener('message', (event) => {
       const message = event.data;
       if (message.type === 'append') append(message.role, message.content);
@@ -1284,6 +1540,12 @@ function renderChatHtml(webview: vscode.Webview, variant: "panel" | "view"): str
         send.disabled = Boolean(message.busy);
         send.textContent = message.busy ? 'Working' : 'Send';
       }
+      if (message.type === 'connection') {
+        connectionText.textContent = message.status || 'Local connection status unknown';
+        connectionStatus.classList.toggle('connected', Boolean(message.connected));
+        connectionStatus.classList.toggle('disconnected', !message.connected && !String(message.status || '').startsWith('Checking'));
+      }
+      if (message.type === 'reset') showWelcome();
     });
 ${extraWebviewScript}
   </script>

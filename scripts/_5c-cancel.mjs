@@ -1,0 +1,32 @@
+import { WebSocket } from "ws";
+const port=Number(process.argv[2]);
+const pages=(await(await fetch(`http://127.0.0.1:${port}/json/list`)).json()).filter(t=>t.type==="page");
+const s=new WebSocket(pages[0].webSocketDebuggerUrl); await new Promise((r,j)=>{s.once("open",r);s.once("error",j);});
+let id=0;const p=new Map();s.on("message",raw=>{const m=JSON.parse(raw);const w=p.get(m.id);if(!w)return;p.delete(m.id);m.error?w.rej(new Error(JSON.stringify(m.error))):w.res(m.result);});
+const call=(m,pr={},t=90000)=>new Promise((r,j)=>{const i=++id;const tm=setTimeout(()=>{p.delete(i);j(new Error(m+" timeout"));},t);p.set(i,{res:v=>{clearTimeout(tm);r(v);},rej:e=>{clearTimeout(tm);j(e);}});s.send(JSON.stringify({id:i,method:m,params:pr}));});
+const ev=async(e,t=90000)=>{const r=await call("Runtime.evaluate",{expression:`(async()=>{${e}})()`,awaitPromise:true,returnByValue:true},t);if(r.exceptionDetails)throw new Error(r.exceptionDetails.exception?.description??JSON.stringify(r.exceptionDetails));return r.result?.value;};
+await call("Runtime.enable");
+const out=await ev(`
+  const wait=async(t,l=30000)=>{const e=Date.now()+l;while(Date.now()<e){if(await t())return true;await new Promise(r=>setTimeout(r,150));}return false;};
+  const invoke=window.__TAURI_INTERNALS__.invoke;
+  const nav=[...document.querySelectorAll('button,[role=button],a')].find(x=>x.innerText.trim()==='Research Studio'); nav&&nav.click(); await new Promise(r=>setTimeout(r,400));
+  const proj=(await invoke('list_local_research_projects'))[0];
+  const b=[...document.querySelectorAll('.rs-project-title')].find(x=>x.innerText.includes('FedAvg')); b&&b.click();
+  await wait(()=>Boolean(document.querySelector('.rs-manuscript-workbench')));
+  const row=()=>[...document.querySelectorAll('.rs-section-table tbody tr')].find(tr=>tr.firstElementChild&&tr.firstElementChild.innerText.trim()==='Discussion');
+  const gen=[...row().querySelectorAll('button')].find(x=>/Generate|Regenerate/.test(x.innerText));
+  gen.click();
+  await wait(async()=>{const secs=await invoke('list_local_research_sections',{projectId:proj.id});return secs.some(x=>x.sectionKey==='discussion'&&x.status==='running');},25000);
+  await new Promise(r=>setTimeout(r,4000));
+  // Click the row's Cancel button.
+  const cancelBtn=[...row().querySelectorAll('button')].find(x=>x.innerText.trim()==='Cancel');
+  if(!cancelBtn) throw new Error('row Cancel button not shown while running');
+  cancelBtn.click();
+  const done=await wait(async()=>{const secs=await invoke('list_local_research_sections',{projectId:proj.id});const d=secs.filter(x=>x.sectionKey==='discussion').sort((a,b)=>b.revision-a.revision)[0];return d&&['cancelled','interrupted','failed','draft'].includes(d.status);},40000);
+  const secs=await invoke('list_local_research_sections',{projectId:proj.id});
+  const d=secs.filter(x=>x.sectionKey==='discussion').sort((a,b)=>b.revision-a.revision)[0];
+  const ledger=(await invoke('local_research_claim_ledger',{projectId:proj.id})).filter(l=>l.sectionDraftId===d.id);
+  return {terminal:done, latestStatus:d.status, latestRev:d.revision, content:d.content?d.content.length:null, ledgerRows:ledger.length};
+`, 90000);
+console.log(JSON.stringify(out,null,2));
+s.close();
