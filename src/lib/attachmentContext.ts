@@ -94,13 +94,24 @@ function relevantPosition(source: string, prompt: string, from: number): number 
   return lo;
 }
 
+function safeExcerptSlice(text: string, start: number, end: number): string {
+  // Move the start forward and the end backward, never expanding the budget.
+  if (start > 0 && start < text.length &&
+      /[\uDC00-\uDFFF]/.test(text[start]) &&
+      /[\uD800-\uDBFF]/.test(text[start - 1])) start++;
+  if (end > start && end < text.length &&
+      /[\uD800-\uDBFF]/.test(text[end - 1]) &&
+      /[\uDC00-\uDFFF]/.test(text[end])) end--;
+  return text.slice(start, end);
+}
+
 /** Includes start, a query-relevant mid-document window, and the ending. */
 export function selectAttachmentExcerpt(content: string, limit: number, prompt: string): string {
   if (limit <= 0) return "";
   if (content.length <= limit) return content;
   if (limit <= TRUNCATION_NOTE.length + GAP.length * 2 + 12) {
     if (limit <= TRUNCATION_NOTE.length) return TRUNCATION_NOTE.slice(0, limit);
-    return content.slice(0, limit - TRUNCATION_NOTE.length) + TRUNCATION_NOTE;
+    return safeExcerptSlice(content, 0, limit - TRUNCATION_NOTE.length) + TRUNCATION_NOTE;
   }
   const usable = limit - TRUNCATION_NOTE.length - GAP.length * 2;
   const head = Math.max(1, Math.floor(usable * 0.35));
@@ -108,8 +119,8 @@ export function selectAttachmentExcerpt(content: string, limit: number, prompt: 
   const middle = usable - head - tail;
   const hit = relevantPosition(content, prompt, head);
   const start = Math.max(head, Math.min(content.length - tail - middle, hit - Math.floor(middle / 2)));
-  const text = content.slice(0, head) + GAP + content.slice(start, start + middle) + GAP + content.slice(-tail) + TRUNCATION_NOTE;
-  return text.slice(0, limit);
+  const text = safeExcerptSlice(content, 0, head) + GAP + safeExcerptSlice(content, start, start + middle) + GAP + safeExcerptSlice(content, content.length - tail, content.length) + TRUNCATION_NOTE;
+  return text;
 }
 
 export function serializeAttachmentContext(sources: AttachmentContextSource[], prompt: string) {
