@@ -447,22 +447,42 @@ impl DatasetDownloadManager {
 fn dataset_installed(base: &Path, id: &str) -> bool {
     let dir = base.join(dataset_location::key(id)).join("snapshot/main");
     let manifest_path = dir.join("openmindai-dataset.json");
-    let Ok(root) = fs::canonicalize(base) else { return false };
-    let Ok(canonical_dir) = fs::canonicalize(&dir) else { return false };
-    if !canonical_dir.starts_with(&root) { return false; }
-    let Ok(info) = fs::symlink_metadata(&dir) else { return false };
-    if !info.is_dir() || info.file_type().is_symlink() { return false; }
-    let Ok(meta) = fs::symlink_metadata(&manifest_path) else { return false };
+    let Ok(root) = fs::canonicalize(base) else {
+        return false;
+    };
+    let Ok(canonical_dir) = fs::canonicalize(&dir) else {
+        return false;
+    };
+    if !canonical_dir.starts_with(&root) {
+        return false;
+    }
+    let Ok(info) = fs::symlink_metadata(&dir) else {
+        return false;
+    };
+    if !info.is_dir() || info.file_type().is_symlink() {
+        return false;
+    }
+    let Ok(meta) = fs::symlink_metadata(&manifest_path) else {
+        return false;
+    };
     if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > 1024 * 1024 {
         return false;
     }
-    let Ok(bytes) = fs::read(&manifest_path) else { return false };
-    let Ok(doc) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return false };
+    let Ok(bytes) = fs::read(&manifest_path) else {
+        return false;
+    };
+    let Ok(doc) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
     if doc["datasetId"] != id || doc["source"] != "openmindai" || doc["revision"] != "main" {
         return false;
     }
-    let Some(files) = doc["files"].as_array() else { return false };
-    if files.is_empty() || files.len() > 100_000 { return false; }
+    let Some(files) = doc["files"].as_array() else {
+        return false;
+    };
+    if files.is_empty() || files.len() > 100_000 {
+        return false;
+    }
     for entry in files {
         let (Some(rel), Some(size)) = (entry["path"].as_str(), entry["size"].as_u64()) else {
             return false;
@@ -472,9 +492,15 @@ fn dataset_installed(base: &Path, id: &str) -> bool {
         }
         let target = dir.join(rel);
         // A component or final symlink can escape the portable root.
-        let Ok(real) = fs::canonicalize(&target) else { return false };
-        if !real.starts_with(&canonical_dir) { return false; }
-        let Ok(meta) = fs::symlink_metadata(&target) else { return false };
+        let Ok(real) = fs::canonicalize(&target) else {
+            return false;
+        };
+        if !real.starts_with(&canonical_dir) {
+            return false;
+        }
+        let Ok(meta) = fs::symlink_metadata(&target) else {
+            return false;
+        };
         if !meta.is_file() || meta.file_type().is_symlink() || meta.len() != size {
             return false;
         }
@@ -623,12 +649,23 @@ mod tests {
         });
         fs::write(target.join("openmindai-dataset.json"), manifest.to_string()).unwrap();
         fs::write(target.join("data.txt"), b"data").unwrap();
-        let manager = DatasetDownloadManager::new(PortableRootManager::from_root(dir.path().to_path_buf()));
-        assert_eq!(manager.installed_dataset_ids(&[id.clone()]).unwrap(), vec![id.clone()]);
-        let reopened = DatasetDownloadManager::new(PortableRootManager::from_root(dir.path().to_path_buf()));
-        assert_eq!(reopened.installed_dataset_ids(&[id.clone()]).unwrap(), vec![id.clone()]);
+        let manager =
+            DatasetDownloadManager::new(PortableRootManager::from_root(dir.path().to_path_buf()));
+        assert_eq!(
+            manager.installed_dataset_ids(&[id.clone()]).unwrap(),
+            vec![id.clone()]
+        );
+        let reopened =
+            DatasetDownloadManager::new(PortableRootManager::from_root(dir.path().to_path_buf()));
+        assert_eq!(
+            reopened.installed_dataset_ids(&[id.clone()]).unwrap(),
+            vec![id.clone()]
+        );
         fs::remove_file(target.join("data.txt")).unwrap();
-        assert!(reopened.installed_dataset_ids(&[id.clone()]).unwrap().is_empty());
+        assert!(reopened
+            .installed_dataset_ids(&[id.clone()])
+            .unwrap()
+            .is_empty());
         fs::write(target.join("data.txt"), b"x").unwrap();
         assert!(reopened.installed_dataset_ids(&[id]).unwrap().is_empty());
     }
@@ -643,14 +680,22 @@ mod tests {
         let outside = dir.path().join("private.txt");
         fs::write(&outside, b"secret").unwrap();
         for file in ["../private.txt", "missing.txt"] {
-            fs::write(target.join("openmindai-dataset.json"),
+            fs::write(
+                target.join("openmindai-dataset.json"),
                 serde_json::json!({"datasetId": id,"source":"openmindai","revision":"main",
-                    "files":[{"path":file,"size":6}]}).to_string()).unwrap();
+                    "files":[{"path":file,"size":6}]})
+                .to_string(),
+            )
+            .unwrap();
             assert!(!dataset_installed(&base, id));
         }
-        fs::write(target.join("openmindai-dataset.json"),
+        fs::write(
+            target.join("openmindai-dataset.json"),
             serde_json::json!({"datasetId":"wrong","source":"openmindai","revision":"main",
-                "files":[{"path":"private.txt","size":6}]}).to_string()).unwrap();
+                "files":[{"path":"private.txt","size":6}]})
+            .to_string(),
+        )
+        .unwrap();
         assert!(!dataset_installed(&base, id));
         assert_eq!(fs::read(outside).unwrap(), b"secret");
     }
@@ -679,7 +724,11 @@ mod tests {
         assert!(validate_partial_targets(dir.path(), &part).is_err());
         fs::remove_file(&part).unwrap();
         fs::write(&part, b"da").unwrap();
-        std::os::unix::fs::symlink(&sentinel, dir.path().join("dataset.openmindai-part.resume.json")).unwrap();
+        std::os::unix::fs::symlink(
+            &sentinel,
+            dir.path().join("dataset.openmindai-part.resume.json"),
+        )
+        .unwrap();
         assert!(validate_partial_targets(dir.path(), &part).is_err());
         assert_eq!(fs::read(&sentinel).unwrap(), b"secret");
     }
@@ -695,11 +744,16 @@ mod tests {
         let final_path = dir.path().join("data.txt");
         fs::write(&part, b"da").unwrap();
         let sidecar = dir.path().join("data.openmindai-part.resume.json");
-        fs::write(&sidecar, serde_json::json!({
-            "source": format!("{:x}", Sha256::digest(url.as_bytes())),
-            "validator": {"ETag": "\"etag-v1\""},
-            "total": 4
-        }).to_string()).unwrap();
+        fs::write(
+            &sidecar,
+            serde_json::json!({
+                "source": format!("{:x}", Sha256::digest(url.as_bytes())),
+                "validator": {"ETag": "\"etag-v1\""},
+                "total": 4
+            })
+            .to_string(),
+        )
+        .unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut request = Vec::new();
@@ -708,7 +762,9 @@ mod tests {
                 let n = socket.read(&mut buffer).await.unwrap();
                 assert!(n > 0);
                 request.extend_from_slice(&buffer[..n]);
-                if request.ends_with(b"\r\n\r\n") { break; }
+                if request.ends_with(b"\r\n\r\n") {
+                    break;
+                }
             }
             let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
             assert!(request.contains("range: bytes=2-"));
@@ -717,11 +773,24 @@ mod tests {
                 b"HTTP/1.1 206 Partial Content\r\nETag: \"etag-v1\"\r\nContent-Range: bytes 2-3/4\r\nContent-Length: 2\r\nConnection: close\r\n\r\nta"
             ).await.unwrap();
         });
-        let mut manager = DatasetDownloadManager::new(PortableRootManager::from_root(dir.path().to_path_buf()));
+        let mut manager =
+            DatasetDownloadManager::new(PortableRootManager::from_root(dir.path().to_path_buf()));
         manager.client = Client::builder().no_proxy().build().unwrap();
         manager.resolve_base = format!("{base}/datasets/");
         let hash = format!("{:x}", Sha256::digest(b"data"));
-        assert_eq!(manager.download_file("owner/example", "data.txt", &final_path, Some(4), Some(&hash)).await.unwrap(), 4);
+        assert_eq!(
+            manager
+                .download_file(
+                    "owner/example",
+                    "data.txt",
+                    &final_path,
+                    Some(4),
+                    Some(&hash)
+                )
+                .await
+                .unwrap(),
+            4
+        );
         server.await.unwrap();
         assert_eq!(fs::read(final_path).unwrap(), b"data");
         assert!(!part.exists());

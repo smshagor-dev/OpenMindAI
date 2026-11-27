@@ -182,7 +182,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         let link = root.path().join("junction");
-        let result = Command::new("pwsh").args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:TEST_LINK -Target $env:TEST_TARGET -ErrorAction Stop | Out-Null"]).env("TEST_LINK", &link).env("TEST_TARGET", outside.path()).output().unwrap();
+        let result = Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:TEST_LINK -Target $env:TEST_TARGET -ErrorAction Stop | Out-Null"]).env("TEST_LINK", &link).env("TEST_TARGET", outside.path()).output().unwrap();
         assert!(
             result.status.success(),
             "junction fixture failed: {}",
