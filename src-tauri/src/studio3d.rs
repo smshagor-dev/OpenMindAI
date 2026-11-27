@@ -220,6 +220,90 @@ fn studio3d_cancellations() -> &'static Mutex<HashMap<String, CancellationToken>
     STUDIO3D_CANCELLATIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SceneIntent {
+    summary: String,
+    requirements: Vec<String>,
+    assumptions: Vec<String>,
+}
+
+fn bounded_text(text: &str, max_chars: usize) -> bool {
+    !text.trim().is_empty() && text.chars().count() <= max_chars && !text.chars().any(char::is_control)
+}
+
+pub(crate) fn parse_scene_intent(response: &str) -> Result<SceneIntent, AppError> {
+    if response.len() > 16 * 1024 {
+        return Err(studio_error("3D intent exceeds its size limit"));
+    }
+    let intent: SceneIntent = serde_json::from_str(response.trim())
+        .map_err(|_| studio_error("local AI returned invalid 3D intent JSON"))?;
+    if !bounded_text(&intent.summary, 240)
+        || !(1..=12).contains(&intent.requirements.len())
+        || intent.requirements.iter().any(|text| !bounded_text(text, 240))
+        || intent.assumptions.len() > 6
+        || intent.assumptions.iter().any(|text| !bounded_text(text, 160))
+    {
+        return Err(studio_error("local AI returned an empty or oversized design intent"));
+    }
+    Ok(intent)
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SceneRequirementCheck {
+    requirement_index: usize,
+    satisfied: bool,
+    evidence: Vec<String>,
+    reason: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SceneReview {
+    checks: Vec<SceneRequirementCheck>,
+    issues: Vec<String>,
+}
+
+impl SceneReview {
+    pub(crate) fn is_accepted(&self) -> bool {
+        !self.checks.is_empty() && self.issues.is_empty() && self.checks.iter().all(|check| check.satisfied)
+    }
+}
+
+pub(crate) fn compact_scene_for_review(plan: &Value) -> Vec<Value> {
+    plan["objects"].as_array().into_iter().flatten().map(|object| {
+        serde_json::json!([object["name"], object["primitive"], object["dimensions"],
+            object["position"], object["rotation"], object["color"],
+            object["metallic"], object["roughness"], object["parent"]])
+    }).collect()
+}
+
+pub(crate) fn parse_scene_review(response: &str, intent: &SceneIntent, plan: &Value) -> Result<SceneReview, AppError> {
+    if response.len() > 32 * 1024 {
+        return Err(studio_error("3D fidelity review exceeds its size limit"));
+    }
+    let review: SceneReview = serde_json::from_str(response.trim())
+        .map_err(|_| studio_error("local AI returned invalid fidelity review JSON"))?;
+    let names: std::collections::HashSet<&str> = plan["objects"].as_array().into_iter()
+        .flatten().filter_map(|object| object["name"].as_str()).collect();
+    let mut covered = std::collections::HashSet::new();
+    if review.checks.len() != intent.requirements.len()
+        || review.issues.len() > 8
+        || review.issues.iter().any(|issue| !bounded_text(issue, 160))
+        || review.checks.iter().any(|check| {
+            check.requirement_index >= intent.requirements.len()
+                || !covered.insert(check.requirement_index)
+                || !bounded_text(&check.reason, 160)
+                || check.evidence.len() > 8
+                || check.evidence.iter().any(|name| !names.contains(name.as_str()))
+        })
+    {
+        return Err(studio_error("3D review must cover every requirement exactly once and cite only real scene objects"));
+    }
+    Ok(review)
+}
+
 fn validate_scene_spec(value: Value) -> Result<Value, AppError> {
     if value.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
         return Err(studio_error("scene plan schemaVersion must be 1"));
@@ -2168,12 +2252,11 @@ async fn execute_studio3d_local_job_inner(
     } else {
         "object"
     };
-    let (model_id, scene_spec_text) = tokio::select! {
+    let (model_id, scene_spec, reasoning) = tokio::select! {
         _ = token.cancelled() => return Err(studio_error("3D job cancelled during local model planning")),
-        result = tokio::time::timeout(STUDIO3D_LOCAL_JOB_TIMEOUT, crate::studio3d_local_scene_spec(app, state, prompt, architecture)) =>
-            result.map_err(|_| studio_error("local scene planning timed out"))??,
+        result = tokio::time::timeout(STUDIO3D_LOCAL_JOB_TIMEOUT.saturating_sub(started.elapsed()), crate::studio3d_prompt_driven_scene(app, state, job_id, prompt, architecture)) =>
+            result.map_err(|_| studio_error("local prompt understanding and scene review timed out"))??,
     };
-    let scene_spec = parse_scene_spec_response(&scene_spec_text)?;
     let scene_spec_sha256 = format!("{:x}", Sha256::digest(scene_spec.to_string().as_bytes()));
     {
         let db = state
@@ -2184,7 +2267,10 @@ async fn execute_studio3d_local_job_inner(
             .as_array()
             .map(Vec::len)
             .unwrap_or_default();
-        db.connection().execute("UPDATE studio3d_jobs SET model_id=?1,recovery_json=?2,updated_at=?3 WHERE id=?4 AND status='running'", params![model_id,serde_json::json!({"safeToResume":false,"scheduler":"native","modelProvider":"local-llama.cpp","sceneSpecificationSha256":scene_spec_sha256,"sceneObjectCount":planned_count,"sceneSpecification":scene_spec}).to_string(),Utc::now().to_rfc3339(),job_id])?;
+        // Persist bounded diagnostics; the complete plan is passed directly to
+        // the worker, not duplicated into the 16 KiB recovery metadata.
+        let reasoning_sha256 = format!("{:x}", Sha256::digest(reasoning.to_string().as_bytes()));
+        db.connection().execute("UPDATE studio3d_jobs SET model_id=?1,recovery_json=?2,updated_at=?3 WHERE id=?4 AND status='running'", params![model_id,serde_json::json!({"safeToResume":false,"scheduler":"native","modelProvider":"local-llama.cpp","sceneSpecificationSha256":scene_spec_sha256,"sceneObjectCount":planned_count,"reasoningPipeline":"intent-plan-review-v1","intent":reasoning["intent"],"planningAttempts":reasoning["planningAttempts"],"reviewKind":reasoning["reviewKind"],"reviewSha256":reasoning_sha256,"reviewAccepted":true}).to_string(),Utc::now().to_rfc3339(),job_id])?;
     }
     transition_studio3d_job(
         app.clone(),
@@ -2939,6 +3025,25 @@ mod tests {
         let mut cyclic = valid;
         cyclic["objects"][0]["parent"] = Value::from("Wheel");
         assert!(validate_scene_spec(cyclic).is_err());
+    }
+
+    #[test]
+    fn intent_and_review_require_complete_grounded_checks() {
+        let intent = parse_scene_intent(r#"{"summary":"Red robot","requirements":["Red body","Two wheels"],"assumptions":[]}"#).unwrap();
+        assert!(parse_scene_intent(r#"{"summary":"generic","requirements":[],"assumptions":[]}"#).is_err());
+        let plan = serde_json::json!({"objects":[{"name":"Body"},{"name":"Wheel"}]});
+        let mut review = serde_json::json!({"checks":[
+            {"requirementIndex":0,"satisfied":true,"evidence":["Body"],"reason":"Red body"},
+            {"requirementIndex":1,"satisfied":false,"evidence":["Wheel"],"reason":"Only one wheel"}
+        ],"issues":[]});
+        assert!(!parse_scene_review(&review.to_string(), &intent, &plan).unwrap().is_accepted());
+        review["checks"][1]["satisfied"] = Value::Bool(true);
+        assert!(parse_scene_review(&review.to_string(), &intent, &plan).unwrap().is_accepted());
+        review["checks"][1]["evidence"][0] = Value::from("Missing mesh");
+        assert!(parse_scene_review(&review.to_string(), &intent, &plan).is_err());
+        review["checks"][1]["evidence"][0] = Value::from("Wheel");
+        review["checks"][1]["requirementIndex"] = Value::from(0);
+        assert!(parse_scene_review(&review.to_string(), &intent, &plan).is_err());
     }
 
     #[test]
