@@ -9,9 +9,10 @@ export function groupConversationsByDate(conversations: Conversation[]): Convers
   const pinned = conversations.filter((conversation) => conversation.pinned);
   const rest = conversations.filter((conversation) => !conversation.pinned);
 
-  const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-  const today = startOfDay(new Date());
-  const oneDay = 24 * 60 * 60 * 1000;
+  // Compare local calendar dates, not elapsed milliseconds (DST days vary in length).
+  const calendarDay = (date: Date) =>
+    Number.isNaN(date.getTime()) ? null : Math.floor(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000);
+  const today = calendarDay(new Date())!;
 
   const buckets: ConversationGroup[] = [
     { label: "Today", conversations: [] },
@@ -22,8 +23,8 @@ export function groupConversationsByDate(conversations: Conversation[]): Convers
   ];
 
   for (const conversation of rest) {
-    const updated = startOfDay(new Date(conversation.updatedAt));
-    const daysAgo = Math.round((today - updated) / oneDay);
+    const updated = calendarDay(new Date(conversation.updatedAt));
+    const daysAgo = updated === null ? Number.POSITIVE_INFINITY : today - updated;
     if (daysAgo <= 0) buckets[0].conversations.push(conversation);
     else if (daysAgo === 1) buckets[1].conversations.push(conversation);
     else if (daysAgo <= 7) buckets[2].conversations.push(conversation);
