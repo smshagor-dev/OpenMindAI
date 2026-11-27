@@ -22,18 +22,24 @@ export interface RouteDecision {
 
 /** Local image-to-3D is not a reference-conditioned ML model. Never silently substitute a primitive. */
 export function selectExecutionRoute(input: RouteInput): RouteDecision {
-  // IPC and persisted settings can violate TypeScript unions at runtime.
-  // An unknown preference must never silently become Auto/Cloud.
-  if (input.preference !== "auto" && input.preference !== "local" && input.preference !== "cloud") {
-    return { target: "deferred", offline: input.online !== true, fallbackAllowed: false,
-      reason: "Invalid execution mode; no engine was contacted." };
-  }
-  if (input.task !== "chat" && input.task !== "vision" && input.task !== "search" &&
-      input.task !== "research" && input.task !== "scene3d" && input.task !== "image-to-3d") {
-    return { target: "deferred", offline: input.online !== true, fallbackAllowed: false,
-      reason: "Unsupported execution task; no engine was contacted." };
+  // Runtime IPC/settings data can violate TypeScript's boolean annotations.
+  // Never treat truthy strings or malformed capability flags as Cloud consent.
+  const requiredFlagsValid = typeof input.online === "boolean" &&
+    typeof input.cloudConnected === "boolean";
+  const optionalFlagsValid = (["cloudModelReady", "localAvailable", "forceLocal"] as const)
+    .every((key) => input[key] === undefined || typeof input[key] === "boolean");
+  if (!requiredFlagsValid || !optionalFlagsValid) {
+    return { target: "deferred", offline: true, fallbackAllowed: false,
+      reason: "Invalid execution capability metadata. No Cloud or Local request was started." };
   }
   const offline = !input.online;
+  // Runtime settings and IPC payloads can bypass TypeScript's discriminated unions.
+  // An unknown preference must never silently become Auto and contact Cloud.
+  if (!(["auto", "local", "cloud"] as readonly unknown[]).includes(input.preference) ||
+      !(["chat", "vision", "search", "research", "scene3d", "image-to-3d"] as readonly unknown[]).includes(input.task)) {
+    return { target: "deferred", offline, fallbackAllowed: false,
+      reason: "Invalid execution mode or task. No inference request was started." };
+  }
   const localSupported = input.task !== "image-to-3d" && input.localAvailable !== false;
   if (input.forceLocal) {
     return localSupported
@@ -54,7 +60,9 @@ export function selectExecutionRoute(input: RouteInput): RouteDecision {
       : { target: "deferred", offline, reason: "Cloud-only mode requires a connected account, internet and a supported hosted model." };
   }
   if (remoteReady) {
-    return { target: "cloud", offline: false, fallbackAllowed: true, reason: "Both: Cloud first with Local fallback." };
+    return { target: "cloud", offline: false, fallbackAllowed: localSupported, reason: localSupported
+      ? "Both: Cloud first with Local fallback."
+      : "Cloud available; no equivalent local fallback is installed." };
   }
   if (localSupported) {
     return { target: "local", offline, reason: offline
@@ -76,13 +84,20 @@ export function cloudProbeDelayMs(
   jitter = 1,
 ): number {
   if (connected) return 60_000;
-  const attempts = Math.max(1, Math.floor(consecutiveFailures));
+  // Invalid telemetry must never produce NaN timer delays or disable recovery.
+  const attempts = Number.isFinite(consecutiveFailures)
+    ? Math.max(1, Math.floor(consecutiveFailures))
+    : 1;
+  const boundedJitter = Number.isFinite(jitter) ? jitter : 1;
   const seconds = Math.min(60, 5 * 2 ** Math.min(4, attempts - 1));
-  return Math.round(seconds * 1000 * Math.max(0.8, Math.min(1.2, jitter)));
+  return Math.round(seconds * 1000 * Math.max(0.8, Math.min(1.2, boundedJitter)));
 }
 
 /** Mirrors Mobile's explicit offline/local-only privacy override. */
 export function requestsLocalOnly(prompt: string): boolean {
+  // Explicit device-retention instructions are privacy constraints, not Cloud preferences.
+  // Keep the wildcard bounded so unrelated prose cannot accidentally trigger the override.
+  if (/\b(?:keep|store|process|run)\s+(?:(?:this|my|the|everything|all data|all files)\s+)?(?:only\s+)?on\s+(?:my|this|the)\s+(?:device|computer|machine|pc)\b|\bnever\s+(?:send|upload|share)\b.{0,40}\b(?:cloud|server|internet)\b/i.test(prompt)) return true;
   return /\b(offline[ -]only|local[ -]only|on[ -]device only|without internet|no cloud|do not (use|send|upload|share).{0,25}(cloud|internet|server)|don['’]?t (use|send|upload|share).{0,25}(cloud|internet|server)|only (use )?(local|offline))\b|শুধু\s*(লোকাল|অফলাইন)|ইন্টারনেট\s*ছা[ড়ড]া|ক্লাউডে\s*পাঠা(?:বে\s*না|বেন\s*না)|без\s+интернета|только\s+локально|не\s+отправл.{0,20}облак/i.test(prompt);
 }
 
@@ -92,14 +107,25 @@ export function shouldShowCloudModels(
   signedIn: boolean,
   availableModelCount: number,
 ): boolean {
-  return mode !== "local" && online && signedIn && availableModelCount > 0;
+  return mode !== "local" && online && signedIn &&
+    Number.isSafeInteger(availableModelCount) && availableModelCount > 0;
 }
 
 export function describeFailure(error: unknown): string {
   if (typeof error === "string") return error;
-  if (error instanceof Error) return error.message;
-  if (error && typeof error === "object" && "message" in error)
-    return String((error as { message: unknown }).message);
+  // Cloud adapters can reject with arbitrary objects, including throwing
+  // accessors and revoked proxies. Error reporting must never mask the original
+  // failure or prevent a permitted local fallback.
+  try {
+    if (error !== null && (typeof error === "object" || typeof error === "function")) {
+      const message = (error as { message?: unknown }).message;
+      if (typeof message === "string") return message;
+      if (typeof message === "number" || typeof message === "boolean")
+        return String(message);
+    }
+  } catch {
+    // Never invoke untrusted toString/valueOf as a fallback.
+  }
   return "Unknown request failure";
 }
 
@@ -113,6 +139,15 @@ export function isRecoverableCloudFailure(error: unknown): boolean {
     return false;
   return /\bHTTP\s+(408|425|429|500|502|503|504|520|522|524)\b/i.test(message) ||
     /unreachable|connection (?:lost|refused|reset)|offline|no internet|network(?:error| failure)?|timeout|timed out|failed to fetch|cloud api request failed|cloud returned an empty assistant response|server returned non-json response|temporarily unavailable|service unavailable/i.test(message);
+}
+
+function isPersistenceFailure(error: unknown): boolean {
+  try {
+    return error instanceof ResponsePersistenceError;
+  } catch {
+    // A hostile/revoked Proxy is never a reason to retry locally.
+    return true;
+  }
 }
 
 export class ResponsePersistenceError extends Error {
@@ -140,9 +175,14 @@ export async function runWithFallback<T>(
   try {
     return { result: await remote(), target: "cloud", fallback: false };
   } catch (error) {
-    if (decision.fallbackAllowed === false || error instanceof ResponsePersistenceError || !isRecoverableCloudFailure(error))
+    if (decision.fallbackAllowed !== true || isPersistenceFailure(error) || !isRecoverableCloudFailure(error))
       throw error;
-    onFallback?.("Cloud request failed (" + describeFailure(error) + "). Continuing with the local engine.");
+    // Notification is best-effort: a broken UI callback must not block local recovery.
+    try {
+      onFallback?.("Cloud request failed (" + describeFailure(error) + "). Continuing with the local engine.");
+    } catch {
+      // Do not replace the recoverable Cloud error with a notification failure.
+    }
     return { result: await local(), target: "local", fallback: true };
   }
 }

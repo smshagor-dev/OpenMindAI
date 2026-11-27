@@ -144,20 +144,26 @@ impl<'a> StorageMonitor<'a> {
     /// database, conversation history, or generated artifacts -- so this is
     /// always safe to run without a repair/diagnostics pass first.
     pub fn clear_cache(&self) -> Result<CacheClearResult, AppError> {
-        let mut bytes_freed = 0;
-        for relative in ["cache", "temp"] {
-            let path = self.root.resolve_relative(relative)?;
-            bytes_freed += clear_directory_contents(&path)?;
-        }
-
-        if let Some(cache) = STORAGE_SUMMARY_CACHE.get() {
-            if let Ok(mut current) = cache.write() {
-                STORAGE_CACHE_EPOCH.fetch_add(1, Ordering::AcqRel);
-                *current = None;
+        // Even a failed cleanup may have removed files before returning an
+        // error. Invalidate the snapshot and any in-flight scan in both cases.
+        let result = (|| {
+            let mut bytes_freed = 0;
+            for relative in ["cache", "temp"] {
+                let path = self.root.resolve_relative(relative)?;
+                bytes_freed += clear_directory_contents(&path)?;
             }
-        }
+            Ok(CacheClearResult { bytes_freed })
+        })();
+        invalidate_storage_summary();
+        result
+    }
+}
 
-        Ok(CacheClearResult { bytes_freed })
+fn invalidate_storage_summary() {
+    let cache = STORAGE_SUMMARY_CACHE.get_or_init(|| RwLock::new(None));
+    if let Ok(mut current) = cache.write() {
+        STORAGE_CACHE_EPOCH.fetch_add(1, Ordering::AcqRel);
+        *current = None;
     }
 }
 
@@ -294,6 +300,27 @@ mod cache_tests {
         fs::write(cache.join("nested").join("data"), b"abc").unwrap();
         assert_eq!(clear_directory_contents(&cache).unwrap(), 3);
         assert!(fs::read_dir(&cache).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn invalidation_clears_snapshot_and_advances_epoch_after_partial_cleanup() {
+        // Model a cleanup which already deleted some files before an I/O error.
+        let cache = STORAGE_SUMMARY_CACHE.get_or_init(|| RwLock::new(None));
+        let before = STORAGE_CACHE_EPOCH.load(Ordering::Acquire);
+        {
+            let mut current = cache.write().unwrap();
+            *current = Some((
+                "failed-cleanup-root".into(),
+                Instant::now(),
+                empty_storage_summary("failed-cleanup-root".into()),
+            ));
+        }
+        let simulated_cleanup: Result<(), std::io::Error> =
+            Err(std::io::Error::other("partial deletion"));
+        invalidate_storage_summary();
+        assert!(simulated_cleanup.is_err());
+        assert!(cache.read().unwrap().is_none());
+        assert!(STORAGE_CACHE_EPOCH.load(Ordering::Acquire) > before);
     }
 
     #[test]
