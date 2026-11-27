@@ -33,6 +33,7 @@ type Props = {
   mode: ExecutionMode;
   internetAvailable: boolean;
   connection: CloudConnection | null;
+  onConnectCloud: (reason: string) => void;
 };
 
 type SceneMode = "object" | "architecture";
@@ -248,7 +249,7 @@ const Studio3DViewport = lazy(() =>
   import("./Studio3DViewport").then((module) => ({ default: module.Studio3DViewport })),
 );
 
-export function Studio3D({ mode, internetAvailable, connection }: Props) {
+export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }: Props) {
   const [uiMode, setUiMode] = useState<UiMode>("auto");
   const [furnishingMode, setFurnishingMode] = useState<"unfurnished" | "partially furnished" | "fully furnished">("unfurnished");
   const [prompt, setPrompt] = useState("");
@@ -572,7 +573,14 @@ export function Studio3D({ mode, internetAvailable, connection }: Props) {
         cloudConnected,
         localAvailable: true,
       });
-      if (route.target === "deferred") throw new Error(route.reason);
+      if (route.target === "deferred") {
+        if (referenceImage && !cloudConnected) {
+          const reason = "Image-based 3D creation needs OpenMindAI Cloud. Connect with an API key from api.openmindai.org, then choose Online mode and try again. Your image has not left this device.";
+          onConnectCloud(reason);
+          throw new Error("Connect OpenMindAI Cloud to create a 3D model from this image. Your image has not left this device.");
+        }
+        throw new Error(route.reason);
+      }
       const target = route.target;
       if (!studioProjectId) throw new Error("Create or select a local 3D project before generating so the job and its output can be saved durably.");
       if (referenceImage && target === "local") throw new Error("Local neural image-to-3D is unavailable because no compatible reconstruction model is installed. Your reference image remains on this device.");
@@ -696,7 +704,7 @@ export function Studio3D({ mode, internetAvailable, connection }: Props) {
       pending.current = false;
       setBusy(false);
     }
-  }, [prompt, uiMode, furnishingMode, poll, rememberScene, mode, internetAvailable, cloudConnected, referenceImage, studioProjectId, updateNativeJob]);
+  }, [prompt, uiMode, furnishingMode, poll, rememberScene, mode, internetAvailable, cloudConnected, referenceImage, studioProjectId, updateNativeJob, onConnectCloud]);
 
   const cancelGeneration = useCallback(async () => {
     cancelRef.current = true;

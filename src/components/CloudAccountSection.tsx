@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { cloud, cloudModelDisplayName, type CloudConnection, type CloudModel } from "../cloudApi";
 import { formatError } from "../lib/format";
+import { api } from "../api_legacy";
 
 /**
  * Cloud account panel shown in Settings → Cloud. Connection uses a developer
@@ -196,7 +197,8 @@ export function CloudAccountSection(props: {
         </button>
       </form>
       <p className="muted cloud-account-register">
-        Get your API key from the developer dashboard at <strong>api.openmindai.org</strong>.
+        Get your API key from the developer dashboard at{" "}
+        <a href="https://api.openmindai.org" onClick={(event) => { event.preventDefault(); void api.openExternalUrl("https://api.openmindai.org"); }}>api.openmindai.org</a>.
       </p>
     </div>
   );

@@ -3,6 +3,7 @@ import type { Message } from "./types";
 import { api as local } from "./api_legacy";
 import { describeFailure, ResponsePersistenceError } from "./lib/executionRouting";
 import { userMessageDisplay } from "./lib/chat";
+import { cloudConnectionPromptReason, promptForCloudConnection } from "./lib/cloudConnectionPrompt";
 export type { ExecutionMode } from "./lib/executionRouting";
 
 export type StudioSection = "research-studio" | "3d-studio" | "web-search";
@@ -93,7 +94,13 @@ export type QueuedScene = {
 const call = <T>(command: string, args?: Record<string, unknown>) => {
   if (!("__TAURI_INTERNALS__" in window))
     return Promise.reject(new Error("Cloud features require the OpenMindAI desktop application."));
-  return invoke<T>(command, args);
+  return invoke<T>(command, args).catch((error: unknown) => {
+    if (command !== "cloud_disconnect") {
+      const reason = cloudConnectionPromptReason(error);
+      if (reason) promptForCloudConnection(reason);
+    }
+    throw error;
+  });
 };
 
 let oneTimeOutboxRecovery: Promise<void> | null = null;

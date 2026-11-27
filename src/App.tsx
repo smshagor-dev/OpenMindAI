@@ -42,6 +42,8 @@ import type {
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { CloudConnectDialog } from "./components/CloudConnectDialog";
+import { CLOUD_CONNECT_PROMPT_EVENT, promptForCloudConnection, type CloudConnectPromptDetail } from "./lib/cloudConnectionPrompt";
 import { ChatHistoryNotice } from "./components/ChatHistoryNotice";
 import { SetupWizard } from "./components/SetupWizard";
 import { ChatSearch } from "./components/ChatSearch";
@@ -232,6 +234,17 @@ export function App() {
         } else {
           const status = await cloud.status();
           if (!alive) return;
+          if (!status.connected && status.message) {
+            if (lastCloudStatusMessageRef.current !== status.message) {
+              const reason = /unreachable/i.test(status.message)
+                ? "OpenMindAI Cloud could not be reached. Check your internet connection; reconnect with an API key from api.openmindai.org if needed."
+                : "OpenMindAI Cloud could not verify the saved session. Reconnect using an API key from api.openmindai.org.";
+              promptForCloudConnection(reason);
+            }
+            lastCloudStatusMessageRef.current = status.message;
+          } else {
+            lastCloudStatusMessageRef.current = null;
+          }
           setCloudConnection(status);
           if (!status.connected) {
             setCloudModels([]);
@@ -433,6 +446,7 @@ export function App() {
   const [archivesOpen, setArchivesOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState("general");
+  const [cloudConnectReason, setCloudConnectReason] = useState<string | null>(null);
   const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(null);
   const [pendingModelId, setPendingModelId] = useState<string | null>(null);
   const [modelSwitching, setModelSwitching] = useState(false);
@@ -444,6 +458,16 @@ export function App() {
   const runtimeAutostartAttemptedRef = useRef(false);
   const runtimeAutoInstallAttemptedRef = useRef(false);
   const runtimeInstallInFlightRef = useRef(false);
+  const lastCloudStatusMessageRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const onCloudConnectPrompt = (event: Event) => {
+      const detail = (event as Event & { detail?: CloudConnectPromptDetail }).detail;
+      if (detail?.reason) setCloudConnectReason(detail.reason);
+    };
+    window.addEventListener(CLOUD_CONNECT_PROMPT_EVENT, onCloudConnectPrompt);
+    return () => window.removeEventListener(CLOUD_CONNECT_PROMPT_EVENT, onCloudConnectPrompt);
+  }, []);
 
   const showError = useCallback((caught: unknown) => {
     setError(formatError(caught));
@@ -2065,10 +2089,7 @@ export function App() {
             executionMode={executionMode}
             showCloudModels={showCloudApiModels}
             cloudUnavailable={executionMode === "cloud" && !showCloudApiModels}
-            onConnectCloud={() => {
-              setSettingsSection("cloud");
-              setView("settings");
-            }}
+            onConnectCloud={() => setCloudConnectReason("Connect OpenMindAI Cloud with an API key from api.openmindai.org to continue.")}
             cloudModels={showCloudApiModels ? cloudModels : []}
             activeCloudModelId={showCloudApiModels ? cloudModel : ""}
             onSelectCloudModel={setCloudModel}
@@ -2086,6 +2107,7 @@ export function App() {
             mode={executionMode}
             internetAvailable={internetAvailable}
             connection={cloudConnection}
+            onConnectCloud={setCloudConnectReason}
           /></Suspense>
         ) : view === "research-studio" || view === "research-run" ? (
           <Suspense fallback={<div className="app-loading">Loading Research Studio…</div>}><ResearchStudio
@@ -2097,10 +2119,7 @@ export function App() {
               setSettingsSection("models");
               setView("settings");
             }}
-            onConnect={() => {
-              setSettingsSection("cloud");
-              setView("settings");
-            }}
+            onConnect={() => setCloudConnectReason("Connect OpenMindAI Cloud with an API key from api.openmindai.org to continue.")}
           /></Suspense>
         ) : view === "tools" ? (
           <ToolsWorkspace
@@ -2161,10 +2180,7 @@ export function App() {
               executionMode={executionMode}
               showCloudModels={showCloudApiModels}
               cloudUnavailable={executionMode === "cloud" && !showCloudApiModels}
-              onConnectCloud={() => {
-                setSettingsSection("cloud");
-                setView("settings");
-              }}
+              onConnectCloud={() => setCloudConnectReason("Connect OpenMindAI Cloud with an API key from api.openmindai.org to continue.")}
               cloudModels={showCloudApiModels ? cloudModels : []}
               activeCloudModelId={showCloudApiModels ? cloudModel : ""}
               onSelectCloudModel={setCloudModel}
@@ -2317,6 +2333,16 @@ export function App() {
         onConfirm={() => deleteTarget && void performDelete(deleteTarget)}
         onCancel={() => setDeleteTarget(null)}
       />
+      {cloudConnectReason ? (
+        <CloudConnectDialog
+          reason={cloudConnectReason}
+          onClose={() => setCloudConnectReason(null)}
+          onConnectionChange={(connection) => {
+            connectedCloud(connection);
+            if (connection.connected) setCloudConnectReason(null);
+          }}
+        />
+      ) : null}
     </main>
   );
 }

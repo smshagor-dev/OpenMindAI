@@ -4207,6 +4207,23 @@ button {
   font-size: 13px;
 }
 
+.cloud-connect-overlay {
+  z-index: 1200;
+}
+
+.cloud-connect-dialog {
+  position: relative;
+  width: min(520px, calc(100vw - 32px));
+}
+
+.cloud-connect-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: grid;
+  place-items: center;
+}
+
 .cloud-account-disconnect {
   align-self: flex-start;
   padding: 8px 16px;
