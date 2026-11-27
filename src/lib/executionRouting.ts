@@ -23,6 +23,13 @@ export interface RouteDecision {
 /** Local image-to-3D is not a reference-conditioned ML model. Never silently substitute a primitive. */
 export function selectExecutionRoute(input: RouteInput): RouteDecision {
   const offline = !input.online;
+  // Runtime settings and IPC payloads can bypass TypeScript's discriminated unions.
+  // An unknown preference must never silently become Auto and contact Cloud.
+  if (!(["auto", "local", "cloud"] as readonly unknown[]).includes(input.preference) ||
+      !(["chat", "vision", "search", "research", "scene3d", "image-to-3d"] as readonly unknown[]).includes(input.task)) {
+    return { target: "deferred", offline, fallbackAllowed: false,
+      reason: "Invalid execution mode or task. No inference request was started." };
+  }
   const localSupported = input.task !== "image-to-3d" && input.localAvailable !== false;
   if (input.forceLocal) {
     return localSupported

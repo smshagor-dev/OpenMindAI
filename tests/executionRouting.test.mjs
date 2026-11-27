@@ -326,3 +326,26 @@ test("Cloud recovery requires explicit fallback permission, never an omitted pol
   assert.deepEqual(recovered, { result: "recovered locally", target: "local", fallback: true });
   assert.equal(localCalls, 1);
 });
+
+test("invalid runtime execution selectors defer without contacting either engine", async () => {
+  const valid = { preference: "auto", task: "chat", online: true, cloudConnected: true };
+  for (const invalid of [
+    { preference: "automatic" }, { preference: "" }, { preference: null },
+    { preference: 0 }, { task: "unknown" }, { task: null }, { task: "" },
+  ]) {
+    const decision = selectExecutionRoute({ ...valid, ...invalid });
+    assert.equal(decision.target, "deferred", JSON.stringify(invalid));
+    assert.equal(decision.fallbackAllowed, false);
+    let remoteCalls = 0, localCalls = 0;
+    await assert.rejects(
+      runWithFallback(decision, async () => { remoteCalls++; return "remote"; },
+        async () => { localCalls++; return "local"; }),
+      /Invalid execution mode or task/,
+    );
+    assert.equal(remoteCalls, 0);
+    assert.equal(localCalls, 0);
+  }
+  assert.equal(selectExecutionRoute(valid).target, "cloud", "valid Auto behavior is unchanged");
+  assert.equal(selectExecutionRoute({ ...valid, preference: "local" }).target, "local");
+  assert.equal(selectExecutionRoute({ ...valid, preference: "cloud" }).target, "cloud");
+});
