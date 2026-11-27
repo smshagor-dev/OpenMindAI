@@ -6,7 +6,7 @@ This extension talks to either the local OpenMindAI runtime or the hosted OpenMi
 
 ```txt
 openmindai.endpoint = auto
-openmindai.backend  = auto
+openmindai.backend  = local
 ```
 
 Current features:
@@ -16,9 +16,12 @@ Current features:
 - **Local or Cloud backend**, switchable from the OpenMindAI status bar item
 - **OpenMindAI Cloud** hosted models over the OpenAI-compatible gateway, API key stored in VS Code Secret Storage
 - Codex-style progress states while planning, reading, thinking, and writing
+- First-run guide for connecting to the OpenMindAI desktop app
+- Local connection status and check action in the chat window
+- New-chat control for starting a clean conversation
 - Direct workspace edits from chat responses
 - Local and Cloud connection check
-- Ask OpenMindAI with active editor context
+- Ask OpenMindAI with active editor context and native Chat references such as `#file` and selected ranges
 - Explain selected code
 - Propose a selected-code fix with a diff preview before applying
 
@@ -34,9 +37,9 @@ Set it up once:
 
 ## Local or Live
 
-Pick where requests run from the status bar item (`openmindai.backend`):
+The extension defaults to **Local** and discovers the running OpenMindAI desktop app automatically. Pick another route from the status bar item (`openmindai.backend`) if needed:
 
-- **Auto** (default): the **local runtime stays primary** — it is used whenever it is reachable. OpenMindAI Live (Cloud) is used only as a fallback when the local runtime is genuinely unavailable *and* a Cloud key and model are configured.
+- **Auto**: the local runtime stays primary — it is used whenever it is reachable. OpenMindAI Live (Cloud) is used only as a fallback when the local runtime is genuinely unavailable *and* a Cloud key and model are configured.
 - **Local**: always the local OpenMindAI runtime or native interface. Local errors are reported directly (no silent switch to Cloud).
 - **Live (Cloud)**: always OpenMindAI Cloud hosted models.
 
@@ -47,7 +50,7 @@ The chat participant, the right-side chat, Ask, Explain, and Fix all follow the 
 Cloud settings:
 
 ```txt
-openmindai.backend       = auto
+openmindai.backend       = cloud
 openmindai.cloudEndpoint = https://cloud.openmindai.org/api/v1/
 openmindai.cloudModel    = (pick with "OpenMindAI: Select Cloud Model")
 ```
@@ -61,13 +64,13 @@ From this extension folder:
 ```powershell
 npm ci
 npm run compile
-npm exec --yes --package=@vscode/vsce@4.0.0 -- vsce package --out dist/openmindai-vscode-0.2.0-marketplace.vsix
+npm exec --yes --package=@vscode/vsce@4.0.0 -- vsce package --out dist/openmindai-vscode-0.3.0-marketplace.vsix
 ```
 
 The upload-ready package is:
 
 ```txt
-dist/openmindai-vscode-0.2.0-marketplace.vsix
+dist/openmindai-vscode-0.3.0-marketplace.vsix
 ```
 
 ## Manual install
@@ -75,25 +78,24 @@ dist/openmindai-vscode-0.2.0-marketplace.vsix
 Install or upgrade the generated VSIX:
 
 ```powershell
-code --install-extension dist/openmindai-vscode-0.2.0-marketplace.vsix --force
+code --install-extension dist/openmindai-vscode-0.3.0-marketplace.vsix --force
 ```
 
 Reload VS Code after installing.
 
-## Setup
+## Setup from the OpenMindAI desktop app
 
-1. Start the OpenMindAI desktop app so the local API is running.
-2. In VS Code, run `OpenMindAI: Check Local Connection` from the Command Palette.
-3. Open the right-side panel with `OpenMindAI: Open Right-Side Chat`.
-4. Use VS Code Chat with `@openmindai` for native chat participant workflows.
-5. Select code and use `OpenMindAI: Explain Selection` or `OpenMindAI: Fix Selection` from the editor context menu.
+1. Open the OpenMindAI desktop application and wait for it to finish starting.
+2. In the app, open **Settings → Agent Setup**, enable **Coding Workspace**, and install or select an OpenAgent model.
+3. Leave the desktop app open. The VS Code extension discovers its local coding-agent endpoint automatically; no Cloud key is required.
+4. In VS Code, open **OpenMindAI: Open Right-Side Chat** and click **Check local** to confirm the connection.
+5. Ask about the open project, use `@openmindai` in VS Code Chat, or select code and run **Explain Selection** or **Fix Selection**.
 
 Default settings:
 
 ```txt
 openmindai.endpoint = auto
 openmindai.model = openmind-local
-openmindai.maxOutputTokens = 2048
 openmindai.autoStartNativeInterface = false
 ```
 
@@ -121,9 +123,9 @@ If the desktop runtime is not running, configure `openmindai.nativeInterfaceRoot
 
 ## Output tokens
 
-`openmindai.maxOutputTokens` (default `2048`, range `16`-`8192`) is the response token budget for each request. Raise it for large file edits, because edit responses contain the full new file content. If a reply stops at this limit before any answer is produced, the extension tells you to increase it instead of showing an empty reply.
+The desktop coding agent receives the full active file, native Chat `#file` references, selected ranges, and workspace file list without an extension character cap or a user-configured token cap. The extension requests the maximum output budget supported by the local endpoint; the OpenMindAI desktop app measures the prompt against the configured model context and fits the actual output budget.
 
-The budget never exceeds what fits in the model's context window after the prompt. The context that counts is the context per request: Agent Setup splits the configured context across its parallel workers, so 8192 tokens with 2 workers gives each request about 4096. The coding agent and llama-server use the per-slot context the server reports, and Agent Setup shows the same value. The native interface fallback uses `openmindai.nativeContextSize` and also caps the budget at half of it. If the prompt alone does not fit, the request fails with a message instead of being truncated.
+The desktop agent uses the actual context per request: Agent Setup splits the configured context across parallel workers when needed, and the coding agent reads the runtime's per-slot context. If the full prompt is larger than the model can accept, the desktop reports that; there is no extension-side text truncation.
 
 ## Edit format
 
@@ -141,7 +143,7 @@ For compatibility, a reply that is only a JSON object with exactly this schema (
 
 ## Marketplace upload
 
-Upload `dist/openmindai-vscode-0.2.0-marketplace.vsix` in the Visual Studio Marketplace publisher portal as a Visual Studio Code extension.
+Upload `dist/openmindai-vscode-0.3.0-marketplace.vsix` in the Visual Studio Marketplace publisher portal as a Visual Studio Code extension.
 
 ## Development
 
