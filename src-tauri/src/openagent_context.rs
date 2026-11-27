@@ -772,7 +772,7 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         fs::write(outside.path().join("secret.rs"), "EXTERNAL_SECRET").unwrap();
         let link = root.path().join("linked");
-        let result = std::process::Command::new("pwsh").args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:TEST_LINK -Target $env:TEST_TARGET -ErrorAction Stop | Out-Null"]).env("TEST_LINK", &link).env("TEST_TARGET", outside.path()).output().unwrap();
+        let result = std::process::Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:TEST_LINK -Target $env:TEST_TARGET -ErrorAction Stop | Out-Null"]).env("TEST_LINK", &link).env("TEST_TARGET", outside.path()).output().unwrap();
         assert!(
             result.status.success(),
             "{}",
@@ -973,3 +973,4 @@ mod tests {
         assert!(!context.contains("outside secret"));
     }
 }
+

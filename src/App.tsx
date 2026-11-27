@@ -1,7 +1,9 @@
 import { requestedDocumentArtifact } from "./lib/documentIntent";
-import { Archive, Check, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
+import { Archive, Check, Cpu, Globe, Pencil, Pin, PinOff, Trash2 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -11,6 +13,7 @@ import {
   type SetStateAction,
 } from "react";
 import { io, type Socket } from "socket.io-client";
+import { invoke } from "@tauri-apps/api/core";
 import { api } from "./api";
 import type {
   Artifact,
@@ -39,6 +42,8 @@ import type {
 import { Sidebar } from "./components/Sidebar";
 import { ChatView } from "./components/ChatView";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { CloudConnectDialog } from "./components/CloudConnectDialog";
+import { CLOUD_CONNECT_PROMPT_EVENT, promptForCloudConnection, type CloudConnectPromptDetail } from "./lib/cloudConnectionPrompt";
 import { ChatHistoryNotice } from "./components/ChatHistoryNotice";
 import { SetupWizard } from "./components/SetupWizard";
 import { ChatSearch } from "./components/ChatSearch";
@@ -46,17 +51,27 @@ import { ArchivedChats } from "./components/ArchivedChats";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ChatModeSwitcher } from "./components/ChatModeSwitcher";
 import { Library } from "./components/Library";
-import { ModelsManager } from "./components/ModelsManager";
-import { DatasetsManager } from "./components/DatasetsManager";
 import { TitleBarControls } from "./components/TitleBarControls";
 import { StatusBar } from "./components/StatusBar";
 import { PreviewPanel, type PreviewTarget } from "./components/PreviewPanel";
 import { ToolsWorkspace } from "./components/ToolsWorkspace";
 import { ProjectsWorkspace } from "./components/ProjectsWorkspace";
 import { WorkWorkspace } from "./components/WorkWorkspace";
-import { StudioHub } from "./components/StudioHub";
-import { Studio3D } from "./components/Studio3D";
-import { ResearchStudio } from "./components/ResearchStudio";
+const Studio3D = lazy(() => import("./components/Studio3D").then((module) => ({ default: module.Studio3D })));
+const ResearchStudio = lazy(() => import("./components/ResearchStudio").then((module) => ({ default: module.ResearchStudio })));
+const APP_BOOTSTRAP_TIMEOUT_MS = 12_000;
+
+function withBootstrapTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      window.setTimeout(
+        () => reject(new Error(`${label} did not respond within ${APP_BOOTSTRAP_TIMEOUT_MS / 1000} seconds.`)),
+        APP_BOOTSTRAP_TIMEOUT_MS,
+      );
+    }),
+  ]);
+}
 import {
   cloud,
   hostedChat,
@@ -64,7 +79,6 @@ import {
   type CloudConnection,
   type CloudModel,
   type ExecutionMode,
-  type StudioSection,
 } from "./cloudApi";
 import {
   cloudProbeDelayMs,
@@ -101,7 +115,7 @@ import {
 } from "./lib/imageGeneration";
 import { ConversationState } from "./lib/conversationState";
 
-type View = "chat" | "work" | "settings" | "tools" | "projects" | StudioSection;
+type View = "chat" | "work" | "settings" | "tools" | "projects" | "research-studio" | "research-run" | "3d-studio";
 
 type RuntimeAction = "start" | "restart" | "stop";
 
@@ -140,12 +154,12 @@ export function App() {
   );
   const copyrightYear = new Date().getFullYear();
   const [view, setView] = useState<View>("chat");
+  const [researchRunId, setResearchRunId] = useState<string | null>(null);
   const [executionMode, setExecutionMode] = useState<ExecutionMode>(
     () => setupExecutionMode() ?? "local",
   );
   const [internetAvailable, setInternetAvailable] = useState(() => window.navigator.onLine);
   const [routeNotice, setRouteNotice] = useState<string | null>(null);
-  const [studioSubmission, setStudioSubmission] = useState<string | null>(null);
   const [studioOutboxReady, setStudioOutboxReady] = useState(false);
   const [cloudConnection, setCloudConnection] = useState<CloudConnection | null>(null);
   const [cloudModels, setCloudModels] = useState<CloudModel[]>([]);
@@ -220,6 +234,17 @@ export function App() {
         } else {
           const status = await cloud.status();
           if (!alive) return;
+          if (!status.connected && status.message) {
+            if (lastCloudStatusMessageRef.current !== status.message) {
+              const reason = /unreachable/i.test(status.message)
+                ? "OpenMindAI Cloud could not be reached. Check your internet connection; reconnect with an API key from api.openmindai.org if needed."
+                : "OpenMindAI Cloud could not verify the saved session. Reconnect using an API key from api.openmindai.org.";
+              promptForCloudConnection(reason);
+            }
+            lastCloudStatusMessageRef.current = status.message;
+          } else {
+            lastCloudStatusMessageRef.current = null;
+          }
           setCloudConnection(status);
           if (!status.connected) {
             setCloudModels([]);
@@ -299,10 +324,11 @@ export function App() {
       window.removeEventListener("offline", disconnect);
     };
   }, []);
-  const connectedCloud = (connection: CloudConnection) => {
+  const connectedCloud = useCallback((connection: CloudConnection) => {
     setCloudConnection(connection);
     setCloudModels([]);
     setCloudModel("");
+    if (!connection.connected) return;
     void cloud
       .models()
       .then((models) => {
@@ -315,7 +341,7 @@ export function App() {
         setCloudModels([]);
         setCloudModel("");
       });
-  };
+  }, []);
   const [root, setRoot] = useState<PortableRootInfo | null>(null);
   const [installationStatus, setInstallationStatus] = useState<InstallationStatus | null>(null);
   const [wizardActive, setWizardActive] = useState<boolean | null>(null);
@@ -419,9 +445,8 @@ export function App() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [archivesOpen, setArchivesOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
-  const [modelsOpen, setModelsOpen] = useState(false);
-  const [datasetsOpen, setDatasetsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState("general");
+  const [cloudConnectReason, setCloudConnectReason] = useState<string | null>(null);
   const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(null);
   const [pendingModelId, setPendingModelId] = useState<string | null>(null);
   const [modelSwitching, setModelSwitching] = useState(false);
@@ -433,6 +458,16 @@ export function App() {
   const runtimeAutostartAttemptedRef = useRef(false);
   const runtimeAutoInstallAttemptedRef = useRef(false);
   const runtimeInstallInFlightRef = useRef(false);
+  const lastCloudStatusMessageRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const onCloudConnectPrompt = (event: Event) => {
+      const detail = (event as Event & { detail?: CloudConnectPromptDetail }).detail;
+      if (detail?.reason) setCloudConnectReason(detail.reason);
+    };
+    window.addEventListener(CLOUD_CONNECT_PROMPT_EVENT, onCloudConnectPrompt);
+    return () => window.removeEventListener(CLOUD_CONNECT_PROMPT_EVENT, onCloudConnectPrompt);
+  }, []);
 
   const showError = useCallback((caught: unknown) => {
     setError(formatError(caught));
@@ -452,17 +487,17 @@ export function App() {
   const refreshApp = useCallback(async () => {
     const initialView = chatState.captureView();
     const results = await Promise.allSettled([
-      api.root(),
-      api.conversations(),
-      api.hardware(),
-      api.storage(),
-      api.models(),
-      api.refreshRuntimeInventory(),
-      api.runtimeStatus(),
-      api.performance(),
-      api.preferences(),
-      api.userProfile(),
-      api.installationStatus(),
+      withBootstrapTimeout(api.root(), "Native workspace IPC"),
+      withBootstrapTimeout(api.conversations(), "Native conversation IPC"),
+      withBootstrapTimeout(api.hardware(), "Native hardware IPC"),
+      withBootstrapTimeout(api.storage(), "Native storage IPC"),
+      withBootstrapTimeout(api.models(), "Native model IPC"),
+      withBootstrapTimeout(api.refreshRuntimeInventory(), "Native runtime IPC"),
+      withBootstrapTimeout(api.runtimeStatus(), "Native runtime status IPC"),
+      withBootstrapTimeout(api.performance(), "Native performance IPC"),
+      withBootstrapTimeout(api.preferences(), "Native preferences IPC"),
+      withBootstrapTimeout(api.userProfile(), "Native profile IPC"),
+      withBootstrapTimeout(api.installationStatus(), "Native installation IPC"),
     ]);
 
     const firstError = results.find((result) => result.status === "rejected");
@@ -522,11 +557,17 @@ export function App() {
           : current,
       );
     }
+    if (!installationStatusInfo) {
+      setWizardActive(false);
+      showError(firstError?.status === "rejected" ? firstError.reason : new Error("Native desktop services did not respond. Check the app logs, then retry in Settings."));
+    }
     setRefreshedOnce(true);
   }, [showError, chatState, setActiveId]);
 
   useEffect(() => {
-    void refreshApp();
+    // Keep the data refresh outside the synchronous effect phase; its async
+    // completion hydrates the desktop shell after the initial commit.
+    void Promise.resolve().then(refreshApp);
   }, [refreshApp]);
 
   useEffect(() => {
@@ -671,10 +712,7 @@ export function App() {
   }, [preferences?.socketRealtimeEnabled, preferences?.socketUrl, chatState]);
 
   useEffect(() => {
-    if (!activeId) {
-      setEditingMessageId(null);
-      return;
-    }
+    if (!activeId) return;
     void refreshMessages(activeId);
     void chatState
       .loadArtifacts(activeId, api.listArtifacts)
@@ -771,7 +809,14 @@ export function App() {
     let clearedDraftRevision: number | null = null;
     let requestView = chatState.captureView();
     const editTargetId = editingMessageId;
-    const inferredMode = inferChatMode(content, attachments);
+    const detectedMode = inferChatMode(content, attachments);
+    const autoVerifyOnline =
+      detectedMode === "chat" &&
+      attachments.length === 0 &&
+      preferences?.webSearchEnabled !== false &&
+      !requestsLocalOnly(content) &&
+      shouldAutoVerifyOnline(content);
+    const inferredMode = autoVerifyOnline ? "search" : detectedMode;
     const messageContent = buildMessageContent(content, attachments, inferredMode);
     const inferenceMedia = attachmentMedia(attachments);
     let conversationId = activeId;
@@ -999,6 +1044,7 @@ export function App() {
     internetAvailable,
     cloudConnection?.connected,
     preferences?.autoGenerateTitles,
+    preferences?.webSearchEnabled,
     preferences?.openArtifactsAfterGeneration,
     prompt,
     refreshMessages,
@@ -1136,29 +1182,6 @@ export function App() {
     [setAttachments, setPrompt],
   );
 
-  // Studio submissions are actually sent to the local engine, not left as
-  // drafts that require a second click. The existing composer failure recovery
-  // still retains the complete request if the local runtime is unavailable.
-  useEffect(() => {
-    if (studioSubmission === null || view !== "chat") return;
-    if (prompt !== studioSubmission) {
-      setStudioSubmission(null);
-      return;
-    }
-    if (chatState.anyBusy()) return;
-    setStudioSubmission(null);
-    void sendMessage();
-  }, [studioSubmission, view, prompt, sendMessage, chatState]);
-  const submitStudioLocally = useCallback(
-    (content: string) => {
-      setAttachments([]);
-      setEditingMessageId(null);
-      setPrompt(content);
-      setView("chat");
-      setStudioSubmission(content);
-    },
-    [setAttachments, setPrompt],
-  );
   const startToolPrompt = useCallback(
     (content: string) => {
       setEditingMessageId(null);
@@ -1173,7 +1196,6 @@ export function App() {
     },
     [setPrompt],
   );
-
   const regenerate = useCallback(
     async (assistantMessageId: string) => {
       if (!activeId) return;
@@ -1699,17 +1721,29 @@ export function App() {
   if (wizardActive) {
     return (
       <SetupWizard
-        mode={installationStatus?.setupRequired ? "full" : "preparing"}
+        mode={
+          installationStatus?.setupRequired &&
+          !["rootCreated", "runtimeReady", "modelReady"].includes(
+            installationStatus.pending?.state ?? "",
+          )
+            ? "full"
+            : "preparing"
+        }
         hardware={hardware}
         models={models}
         runtime={runtime}
         root={root}
         pending={installationStatus?.pending}
         refresh={refreshApp}
-        onDismiss={() => {
-          completeSetupPreparation();
-          setWizardActive(false);
-          void refreshApp();
+        onDismiss={async () => {
+          try {
+            await api.markSetupCompleted();
+            completeSetupPreparation();
+            setWizardActive(false);
+            await refreshApp();
+          } catch (caught) {
+            showError(caught);
+          }
         }}
       />
     );
@@ -1735,7 +1769,10 @@ export function App() {
         onOpenSearch={() => setSearchOpen(true)}
         onOpenArchived={() => setArchivesOpen(true)}
         onOpenConversation={(id) => {
-          setView("chat");
+          void invoke<string | null>("local_research_run_for_conversation", { conversationId: id }).then((runId) => {
+            if (runId) { setResearchRunId(runId); setView("research-run"); }
+            else setView("chat");
+          }).catch(() => setView("chat"));
           setActiveId(id);
           setEditingMessageId(null);
           setEditingTitle(false);
@@ -1754,8 +1791,6 @@ export function App() {
         onDelete={requestDeleteConversation}
         onDuplicate={duplicateConversation}
         onOpenLibrary={() => setLibraryOpen(true)}
-        onOpenModels={() => setModelsOpen(true)}
-        onOpenDatasets={() => setDatasetsOpen(true)}
         onOpenTools={() => setView("tools")}
         onOpenProjects={() => setView("projects")}
         onOpenStudio={(section) => setView(section)}
@@ -1767,7 +1802,7 @@ export function App() {
 
       <section className="workspace">
         <header className="topbar" data-tauri-drag-region="">
-          <div>
+          <div className="topbar-title">
             {view === "chat" && !activeConversation ? null : view === "chat" &&
               activeConversation &&
               editingTitle ? (
@@ -1807,9 +1842,7 @@ export function App() {
                           ? "Research Studio"
                           : view === "3d-studio"
                             ? "3D Studio"
-                            : view === "web-search"
-                              ? "Web Search"
-                              : "Settings"}
+                          : "Settings"}
               </h1>
             )}
           </div>
@@ -1824,6 +1857,7 @@ export function App() {
                 setWorkThreadId(null);
                 setActiveId(null);
                 setMessages([]);
+                setEditingMessageId(null);
                 setPrompt("");
                 setAttachments([]);
                 setView("work");
@@ -1835,7 +1869,7 @@ export function App() {
                 className={executionMode === "auto" ? "active" : ""}
                 aria-pressed={executionMode === "auto"}
                 onClick={() => changeExecutionMode("auto")}
-                title="Automatically route to Cloud when connected or Local when offline"
+                title="Automatically verifies factual questions online when search is enabled, then routes to Cloud or Local"
               >
                 Auto
               </button>
@@ -1844,9 +1878,9 @@ export function App() {
                 className={executionMode === "local" ? "active" : ""}
                 aria-pressed={executionMode === "local"}
                 onClick={() => changeExecutionMode("local")}
-                title="Use this computer for local inference"
+                title="Run AI on this computer. Online source checks may still use the internet when Web Search is enabled."
               >
-                Local
+                <Cpu size={14} aria-hidden="true" /> Offline
               </button>
               <button
                 type="button"
@@ -1855,18 +1889,14 @@ export function App() {
                 onClick={() => changeExecutionMode("cloud")}
                 title={
                   cloudConnection?.connected
-                    ? "Connected to OpenMindAI Cloud"
-                    : "Sign in from Research Studio to use Cloud"
+                    ? "Online mode connected to OpenMindAI Cloud"
+                    : "Sign in from Research Studio to use Online mode"
                 }
               >
-                <span
-                  className={
-                    internetAvailable && cloudConnection?.connected
-                      ? "studio-dot good"
-                      : "studio-dot"
-                  }
-                />{" "}
-                Cloud
+                {internetAvailable && cloudConnection?.connected ? (
+                  <span className="execution-mode-online-dot" aria-label="Online and connected" title="Online and connected" />
+                ) : null}
+                <Globe size={14} aria-hidden="true" /> Online
               </button>
             </div>
           </div>
@@ -2059,10 +2089,7 @@ export function App() {
             executionMode={executionMode}
             showCloudModels={showCloudApiModels}
             cloudUnavailable={executionMode === "cloud" && !showCloudApiModels}
-            onConnectCloud={() => {
-              setSettingsSection("cloud");
-              setView("settings");
-            }}
+            onConnectCloud={() => setCloudConnectReason("Connect OpenMindAI Cloud with an API key from api.openmindai.org to continue.")}
             cloudModels={showCloudApiModels ? cloudModels : []}
             activeCloudModelId={showCloudApiModels ? cloudModel : ""}
             onSelectCloudModel={setCloudModel}
@@ -2076,34 +2103,24 @@ export function App() {
             onPreview={setPreviewTarget}
           />
         ) : view === "3d-studio" ? (
-          <Studio3D
+          <Suspense fallback={<div className="app-loading">Loading 3D Studio…</div>}><Studio3D
             mode={executionMode}
             internetAvailable={internetAvailable}
             connection={cloudConnection}
-          />
-        ) : view === "research-studio" ? (
-          <ResearchStudio
+            onConnectCloud={setCloudConnectReason}
+          /></Suspense>
+        ) : view === "research-studio" || view === "research-run" ? (
+          <Suspense fallback={<div className="app-loading">Loading Research Studio…</div>}><ResearchStudio
             connected={Boolean(internetAvailable && cloudConnection?.connected)}
-            onConnect={() => {
-              setSettingsSection("cloud");
+            mode={executionMode}
+            initialRunId={view === "research-run" ? researchRunId : null}
+            onRunStarted={(runId) => { setResearchRunId(runId); setView("research-run"); }}
+            onOpenModelManager={() => {
+              setSettingsSection("models");
               setView("settings");
             }}
-          />
-        ) : view === "web-search" ? (
-          <StudioHub
-            key={view}
-            section={view}
-            mode={executionMode}
-            internetAvailable={internetAvailable}
-            connection={cloudConnection}
-            onConnected={connectedCloud}
-            onDisconnect={() => {
-              setCloudConnection({ connected: false, user: null, message: null });
-              setCloudModels([]);
-              setCloudModel("");
-            }}
-            onLocalPrompt={submitStudioLocally}
-          />
+            onConnect={() => setCloudConnectReason("Connect OpenMindAI Cloud with an API key from api.openmindai.org to continue.")}
+          /></Suspense>
         ) : view === "tools" ? (
           <ToolsWorkspace
             models={models}
@@ -2115,7 +2132,10 @@ export function App() {
               setView("chat");
             }}
             onOpenLibrary={() => setLibraryOpen(true)}
-            onOpenModels={() => setModelsOpen(true)}
+            onOpenModels={() => {
+              setSettingsSection("models");
+              setView("settings");
+            }}
             onOpenSettings={(section) => {
               setSettingsSection(section ?? "general");
               setView("settings");
@@ -2160,10 +2180,7 @@ export function App() {
               executionMode={executionMode}
               showCloudModels={showCloudApiModels}
               cloudUnavailable={executionMode === "cloud" && !showCloudApiModels}
-              onConnectCloud={() => {
-                setSettingsSection("cloud");
-                setView("settings");
-              }}
+              onConnectCloud={() => setCloudConnectReason("Connect OpenMindAI Cloud with an API key from api.openmindai.org to continue.")}
               cloudModels={showCloudApiModels ? cloudModels : []}
               activeCloudModelId={showCloudApiModels ? cloudModel : ""}
               onSelectCloudModel={setCloudModel}
@@ -2236,6 +2253,7 @@ export function App() {
             installRuntime={() => void installRuntime()}
             cancelRuntimeInstall={() => void cancelRuntimeInstall()}
             initialSection={settingsSection}
+            onCloudConnectionChange={connectedCloud}
           />
         )}
         <footer className="workspace-footer">
@@ -2285,8 +2303,7 @@ export function App() {
         }}
         onClose={() => setSearchOpen(false)}
       /> : null}
-      <ArchivedChats
-        open={archivesOpen}
+      {archivesOpen ? <ArchivedChats
         onClose={() => setArchivesOpen(false)}
         onRestore={async (conversation) => {
           await api.restoreConversation(conversation.id);
@@ -2297,7 +2314,7 @@ export function App() {
             item.id === conversation.id ? { ...item, archivedAt: null } : item
           ));
         }}
-      />
+      /> : null}
       <Library
         open={libraryOpen}
         onClose={() => setLibraryOpen(false)}
@@ -2307,50 +2324,6 @@ export function App() {
           setEditingMessageId(null);
         }}
       />
-      {modelsOpen ? (
-        <div className="modal-overlay" role="presentation" onClick={() => setModelsOpen(false)}>
-          <div
-            className="modal-card models-modal-card"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Models"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <h2>Models</h2>
-            <ModelsManager
-              hardware={hardware}
-              models={models}
-              runtime={runtime}
-              root={root}
-              refresh={refreshApp}
-            />
-            <div className="modal-actions">
-              <button type="button" className="ghost-button" onClick={() => setModelsOpen(false)}>
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-      {datasetsOpen ? (
-        <div className="modal-overlay" role="presentation" onClick={() => setDatasetsOpen(false)}>
-          <div
-            className="modal-card models-modal-card datasets-modal-card"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Datasets"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <h2>Datasets</h2>
-            <DatasetsManager />
-            <div className="modal-actions">
-              <button type="button" className="ghost-button" onClick={() => setDatasetsOpen(false)}>
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
       <ConfirmDialog
         open={deleteTarget !== null}
         title="Delete this conversation?"
@@ -2360,6 +2333,16 @@ export function App() {
         onConfirm={() => deleteTarget && void performDelete(deleteTarget)}
         onCancel={() => setDeleteTarget(null)}
       />
+      {cloudConnectReason ? (
+        <CloudConnectDialog
+          reason={cloudConnectReason}
+          onClose={() => setCloudConnectReason(null)}
+          onConnectionChange={(connection) => {
+            connectedCloud(connection);
+            if (connection.connected) setCloudConnectReason(null);
+          }}
+        />
+      ) : null}
     </main>
   );
 }
@@ -2388,4 +2371,15 @@ function persistedChatMode(content: string): ChatMode {
   if (content.startsWith("[Mode: Voice Creation]")) return "voice";
   if (content.startsWith("[Mode: Image/Vision Review]")) return "vision";
   return "chat";
+}
+
+function shouldAutoVerifyOnline(prompt: string): boolean {
+  const text = prompt.trim();
+  if (!text) return false;
+  if (/\b(?:20\d{2}|updates?|latest|current|today|recent|news|price|schedule|version|release)\b/i.test(text))
+    return true;
+  if (/[?？]/u.test(text)) return true;
+  return /^(?:please\s+)?(?:who|what|when|where|which|whom|whose|how many|how much|how old|is|are|was|were|did|does|do|has|have)\b/i.test(
+    text,
+  ) || /(?:^|\s)(?:কি|কী|কে|কারা|কখন|কোথায়|কোথায়|কত|কোন|কার|কেন)\s*[?؟]?$/u.test(text);
 }
