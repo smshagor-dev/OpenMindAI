@@ -1,6 +1,6 @@
 {
   "name": "open-mind-ai",
-  "version": "5.0.0",
+  "version": "6.0.0",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -13,6 +13,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "lint": "eslint .",
+    "test": "node --test tests",
     "test:chat-routing": "node --test tests/chatModeRouting.test.mjs",
     "test:image": "node --experimental-strip-types --test tests/imageGeneration.test.mjs",
     "test:pdf": "node --test tests/pdfIngestion.test.mjs tests/pdfWorkBudget.test.mjs",
@@ -39,7 +40,8 @@
     "test:project-catalog": "node --test tests/projectCatalogPaging.test.mjs",
     "test:project-binary": "node --test tests/projectBinaryAttachments.test.mjs",
     "test:backup-scope": "node --experimental-strip-types --test tests/backupScope.test.mjs",
-    "test:setup-storage": "node --test tests/setupStorageValidation.test.mjs"
+    "test:setup-storage": "node --test tests/setupStorageValidation.test.mjs",
+    "test:studio3d": "node --experimental-strip-types --test tests/studio3dMeshRoundtrip.test.mjs tests/studio3dIncrementalEdit.test.mjs"
   },
   "allowScripts": {
     "esbuild@0.25.12": true
@@ -73,6 +75,7 @@
     "esbuild": "0.28.2",
     "eslint": "^10.14.0",
     "eslint-plugin-react-hooks": "^7.1.1",
+    "gltf-validator": "^2.0.0-dev.3.10",
     "jsdom": "31.0.0",
     "prettier": "^3.10.1",
     "typescript": "5.9.3"
