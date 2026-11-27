@@ -149,7 +149,7 @@ export async function runWithFallback<T>(
   try {
     return { result: await remote(), target: "cloud", fallback: false };
   } catch (error) {
-    if (decision.fallbackAllowed === false || error instanceof ResponsePersistenceError || !isRecoverableCloudFailure(error))
+    if (decision.fallbackAllowed !== true || error instanceof ResponsePersistenceError || !isRecoverableCloudFailure(error))
       throw error;
     // Notification is best-effort: a broken UI callback must not block local recovery.
     try {

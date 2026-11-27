@@ -74,7 +74,7 @@ test("a throwing fallback notification is not called for rejected Cloud failures
 test("validation and response-persistence errors are never replayed", async()=>{
   for (const error of [new Error("Cloud/Studio: HTTP 422: invalid model"),new ResponsePersistenceError("SQLite locked")]) {
     let localCalls=0;
-    await assert.rejects(runWithFallback({target:"cloud",offline:false,reason:"Connected"},async()=>{throw error;},async()=>{localCalls++;return "wrong";}));
+    await assert.rejects(runWithFallback({target:"cloud",offline:false,reason:"Connected",fallbackAllowed:true},async()=>{throw error;},async()=>{localCalls++;return "wrong";}));
     assert.equal(localCalls,0);
   }
 });
@@ -295,5 +295,34 @@ test("auto Cloud routing retains exactly one fallback for supported installed Lo
     async () => { localCalls++; return "local response"; });
   assert.deepEqual(response, { result: "local response", target: "local", fallback: true });
   assert.equal(remoteCalls, 1);
+  assert.equal(localCalls, 1);
+});
+
+test("Cloud recovery requires explicit fallback permission, never an omitted policy", async () => {
+  for (const fallbackAllowed of [undefined, false]) {
+    let remoteCalls = 0, localCalls = 0, notifications = 0;
+    const decision = { target: "cloud", offline: false, reason: "Cloud execution", fallbackAllowed };
+    await assert.rejects(
+      runWithFallback(
+        decision,
+        async () => { remoteCalls++; throw new Error("Cloud API request failed"); },
+        async () => { localCalls++; return "unexpected local response"; },
+        () => { notifications++; },
+      ),
+      /Cloud API request failed/,
+    );
+    assert.equal(remoteCalls, 1, "never replay the remote request");
+    assert.equal(localCalls, 0, "missing or denied permission must not start local inference");
+    assert.equal(notifications, 0, "do not announce a fallback that cannot happen");
+  }
+
+  let localCalls = 0;
+  const optedIn = { target: "cloud", offline: false, reason: "Auto recovery", fallbackAllowed: true };
+  const recovered = await runWithFallback(
+    optedIn,
+    async () => { throw new Error("Cloud API request failed"); },
+    async () => { localCalls++; return "recovered locally"; },
+  );
+  assert.deepEqual(recovered, { result: "recovered locally", target: "local", fallback: true });
   assert.equal(localCalls, 1);
 });
