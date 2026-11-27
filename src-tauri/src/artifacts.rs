@@ -122,10 +122,13 @@ impl<'a> ArtifactRepository<'a> {
         size_bytes: i64,
         page_count: Option<i64>,
     ) -> Result<(), AppError> {
-        self.database.connection().execute(
-            "UPDATE artifacts SET status = 'ready', size_bytes = ?1, page_count = ?2, error = NULL, updated_at = ?3 WHERE id = ?4",
+        let updated = self.database.connection().execute(
+            "UPDATE artifacts SET status = 'ready', size_bytes = ?1, page_count = ?2, error = NULL, updated_at = ?3 WHERE id = ?4 AND status = 'generating'",
             rusqlite::params![size_bytes, page_count, Utc::now().to_rfc3339(), id],
         )?;
+        if updated == 0 {
+            return Err(AppError::internal("artifact is missing or no longer generating"));
+        }
         Ok(())
     }
 
@@ -141,10 +144,13 @@ impl<'a> ArtifactRepository<'a> {
     }
 
     pub fn set_failed(&self, id: &str, error: &str) -> Result<(), AppError> {
-        self.database.connection().execute(
-            "UPDATE artifacts SET status = 'failed', error = ?1, updated_at = ?2 WHERE id = ?3",
+        let updated = self.database.connection().execute(
+            "UPDATE artifacts SET status = 'failed', error = ?1, updated_at = ?2 WHERE id = ?3 AND status = 'generating'",
             rusqlite::params![error, Utc::now().to_rfc3339(), id],
         )?;
+        if updated == 0 {
+            return Err(AppError::internal("artifact is missing or no longer generating"));
+        }
         Ok(())
     }
 
@@ -377,7 +383,7 @@ impl<'a> ArtifactManager<'a> {
 
         let (directory, reservation) =
             crate::artifact_output::reserve_directory(self.root.root(), Path::new(subdir))?;
-        let filename = format!("{stem}.{extension}");
+        let filename = bounded_artifact_filename(&stem, &extension);
         let path = self
             .root
             .root()
@@ -420,15 +426,19 @@ fn default_extension(kind: &str) -> &'static str {
 }
 
 fn split_stem_extension(hint: &str, kind: &str) -> (String, String) {
-    // Split the raw hint into stem/extension *before* sanitizing, so the dash-collapsing
-    // in `sanitize_filename` never runs across the extension boundary (it otherwise leaves a
-    // stray trailing dash, e.g. "Report!!.md" -> "Report-.md" instead of "Report.md").
+    // The renderer decides the bytes and MIME type. Never let a caller rename
+    // a generated PDF, document, image, audio or video to a misleading suffix.
+    // Text/code artifacts intentionally retain user-selected extensions.
+    let fixed_extension = matches!(kind, "pdf" | "docx" | "markdown" | "image" | "audio" | "video");
     let trimmed = hint.trim();
     if let Some(dot_index) = trimmed.rfind('.') {
         let (raw_stem, raw_ext) = trimmed.split_at(dot_index);
-        let ext = sanitize_filename(raw_ext.trim_start_matches('.'));
+        let ext = sanitize_filename_bounded(raw_ext.trim_start_matches('.'), 12);
         if !ext.is_empty() {
-            return (sanitize_filename(raw_stem), ext);
+            return (
+                sanitize_filename(raw_stem),
+                if fixed_extension { default_extension(kind).to_string() } else { ext },
+            );
         }
     }
     (
@@ -437,9 +447,45 @@ fn split_stem_extension(hint: &str, kind: &str) -> (String, String) {
     )
 }
 
+// Keep a single filename component within the common 255-byte filesystem limit.
+// Truncate only on UTF-8 scalar boundaries and reserve space for the extension.
+fn bounded_artifact_filename(stem: &str, extension: &str) -> String {
+    const MAX_COMPONENT_BYTES: usize = 255;
+    const MAX_EXTENSION_BYTES: usize = 32;
+    let extension: String = extension
+        .chars()
+        .take_while(|c| c.len_utf8() <= MAX_EXTENSION_BYTES)
+        .scan(0usize, |used, c| {
+            if *used + c.len_utf8() > MAX_EXTENSION_BYTES {
+                None
+            } else {
+                *used += c.len_utf8();
+                Some(c)
+            }
+        })
+        .collect();
+    let available = MAX_COMPONENT_BYTES - extension.len() - 1;
+    let stem = if stem.is_empty() { "artifact" } else { stem };
+    let mut prefix = String::new();
+    for c in stem.chars() {
+        if prefix.len() + c.len_utf8() > available {
+            break;
+        }
+        prefix.push(c);
+    }
+    format!("{prefix}.{extension}")
+}
+
 fn sanitize_filename(name: &str) -> String {
+    sanitize_filename_bounded(name, 40)
+}
+
+/// At most 40 stem scalars and 12 extension scalars: even four-byte UTF-8
+/// characters plus the separator fit inside a 255-byte filename component.
+fn sanitize_filename_bounded(name: &str, max_chars: usize) -> String {
     let cleaned: String = name
         .chars()
+        .take(max_chars)
         .map(|c| {
             if c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ' ') {
                 c
@@ -459,6 +505,51 @@ fn sanitize_filename(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_artifact_extensions_match_their_actual_format() {
+        for (kind, expected) in [
+            ("pdf", "pdf"), ("docx", "docx"), ("markdown", "md"),
+            ("image", "png"), ("audio", "wav"), ("video", "webm"),
+        ] {
+            let (stem, extension) = split_stem_extension("report.exe", kind);
+            assert_eq!(stem, "report");
+            assert_eq!(extension, expected);
+            assert_eq!(split_stem_extension("report", kind).1, expected);
+            assert_eq!(split_stem_extension("report.PDF", kind).1, expected);
+        }
+        assert_eq!(split_stem_extension("script.py", "code"), ("script".into(), "py".into()));
+        assert_eq!(split_stem_extension("notes.log", "text"), ("notes".into(), "log".into()));
+    }
+
+    #[test]
+    fn final_artifact_filename_respects_utf8_byte_limit() {
+        let name = bounded_artifact_filename(&"𐐀".repeat(1000), &"𐐀".repeat(100));
+        assert!(name.len() <= 255);
+        assert!(name.ends_with(&format!(".{}", "𐐀".repeat(8))));
+        assert_eq!(bounded_artifact_filename("", "pdf"), "artifact.pdf");
+        assert_eq!(bounded_artifact_filename("report", "pdf"), "report.pdf");
+        assert!(bounded_artifact_filename(&"a".repeat(1000), "txt").len() <= 255);
+    }
+
+    #[test]
+    fn artifact_filename_components_fit_portable_byte_limits() {
+        let long_ascii = "a".repeat(100_000);
+        assert_eq!(sanitize_filename(&long_ascii), "a".repeat(40));
+        let long_unicode = "😀".repeat(100_000);
+        let (stem, extension) = split_stem_extension(&format!("{long_unicode}.{}", "😀".repeat(100)), "code");
+        assert_eq!(stem, "");
+        assert_eq!(extension, "txt");
+        // Four-byte letters (rather than emoji punctuation) exercise the
+        // maximum possible UTF-8 bytes retained by sanitization.
+        let long_letters = "𐐀".repeat(100_000);
+        let (stem, ext) = split_stem_extension(&format!("{long_letters}.{}", "𐐀".repeat(100)), "code");
+        assert_eq!(stem.chars().count(), 40);
+        assert_eq!(ext.chars().count(), 12);
+        assert!(format!("{stem}.{ext}").len() <= 255);
+        assert_eq!(split_stem_extension("Report!!.md", "markdown"), ("Report".to_string(), "md".to_string()));
+    }
+
 
     #[test]
     fn deleted_conversation_does_not_leave_a_late_document_output() {
@@ -549,6 +640,43 @@ mod tests {
         let failed = repo.find(&artifact.id).unwrap();
         assert_eq!(failed.status, "failed");
         assert_eq!(failed.error.as_deref(), Some("renderer crashed"));
+    }
+
+    #[test]
+    fn terminal_artifact_states_cannot_be_rewritten_by_stale_callbacks() {
+        let database = Database::in_memory().unwrap();
+        let conversation = crate::chat::ChatRepository::new(&database)
+            .create_conversation(Some("Artifact transitions"))
+            .unwrap();
+        let repo = ArtifactRepository::new(&database);
+        let ready = repo.create(&conversation.id, None, "ready.pdf", "generated/ready.pdf",
+            "application/pdf", "pdf", "generating").unwrap();
+        let failed = repo.create(&conversation.id, None, "failed.pdf", "generated/failed.pdf",
+            "application/pdf", "pdf", "generating").unwrap();
+
+        repo.set_ready(&ready.id, 42, Some(2)).unwrap();
+        let ready_before = repo.find(&ready.id).unwrap();
+        assert!(repo.set_failed(&ready.id, "late failure").is_err());
+        assert!(repo.set_ready(&ready.id, 99, None).is_err());
+        let ready_after = repo.find(&ready.id).unwrap();
+        assert_eq!(ready_after.status, "ready");
+        assert_eq!(ready_after.size_bytes, 42);
+        assert_eq!(ready_after.page_count, Some(2));
+        assert_eq!(ready_after.updated_at, ready_before.updated_at);
+        assert!(ready_after.error.is_none());
+
+        repo.set_failed(&failed.id, "render failed").unwrap();
+        let failed_before = repo.find(&failed.id).unwrap();
+        assert!(repo.set_ready(&failed.id, 100, Some(1)).is_err());
+        assert!(repo.set_failed(&failed.id, "late failure").is_err());
+        let failed_after = repo.find(&failed.id).unwrap();
+        assert_eq!(failed_after.status, "failed");
+        assert_eq!(failed_after.error.as_deref(), Some("render failed"));
+        assert_eq!(failed_after.size_bytes, 0);
+        assert_eq!(failed_after.updated_at, failed_before.updated_at);
+
+        assert!(repo.set_ready("missing", 1, None).is_err());
+        assert!(repo.set_failed("missing", "missing").is_err());
     }
 
     #[test]
