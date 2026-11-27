@@ -67,7 +67,10 @@ export function planAttachmentContext(sources: AttachmentContextSource[]): Attac
 }
 
 function relevantPosition(source: string, prompt: string, from: number): number {
-  const terms = [...new Set((prompt.toLowerCase().normalize("NFKC").match(/[\p{L}\p{N}]{4,}/gu) ?? [])
+  // Only the first 4 Ki UTF-16 units can influence relevance. Avoid normalizing
+  // or tokenizing arbitrarily large user prompts just to select 16 terms.
+  const prefix = prompt.slice(0, 4096).replace(/[\uD800-\uDBFF]$/, "");
+  const terms = [...new Set((prefix.toLowerCase().normalize("NFKC").match(/[\p{L}\p{N}]{4,}/gu) ?? [])
     .filter(term => !["please", "about", "these", "those", "document", "explain", "summarize", "what", "which", "from", "with"].includes(term)))].slice(0, 16);
   if (!terms.length) return Math.floor(source.length / 2);
   const lower = source.toLowerCase().normalize("NFKC");
