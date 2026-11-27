@@ -126,6 +126,23 @@ function resolveMode(mode: UiMode, prompt: string): SceneMode {
   return ARCH_HINTS.some((hint) => lower.includes(hint)) ? "architecture" : "object";
 }
 
+const reasoningStageLabels: Record<string, string> = {
+  "understanding-prompt": "Understanding your request",
+  "planning-scene": "Planning your 3D scene",
+  "reviewing-prompt-fidelity": "Checking design against your prompt",
+  "refining-scene": "Refining missing details",
+  "geometry-generation": "Building editable geometry",
+};
+
+function readSceneIntent(recovery: Record<string, unknown> | undefined): { summary: string; requirements: string[]; assumptions: string[] } | null {
+  const value = recovery?.intent;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const intent = value as Record<string, unknown>;
+  if (typeof intent.summary !== "string") return null;
+  const strings = (items: unknown) => Array.isArray(items) ? items.filter((item): item is string => typeof item === "string") : [];
+  return { summary: intent.summary, requirements: strings(intent.requirements), assumptions: strings(intent.assumptions) };
+}
+
 function explain(error: unknown): string {
   if (typeof error === "string") return error;
   if (error instanceof Error) return error.message;
@@ -1233,7 +1250,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
         {busy && !mesh ? (
           <div className="studio3d-status" role="status">
             <Loader2 size={15} className="studio3d-spin" />
-            <span>{nativeJob?.status === "running" ? `Native job · ${nativeJob.currentStage}` : statusLabel}</span>
+            <span>{nativeJob?.status === "running" ? reasoningStageLabels[nativeJob.currentStage] ?? `Native job · ${nativeJob.currentStage}` : statusLabel}</span>
             <button
               type="button"
               className="studio3d-cancel"
@@ -1247,6 +1264,14 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
           <div className="studio-banner" role="status">
             {notice}
           </div>
+        ) : null}
+        {nativeJob?.inferenceRoute === "local" && readSceneIntent(nativeJob.recovery) ? (
+          <details className="studio3d-note">
+            <summary>Understood request · {readSceneIntent(nativeJob.recovery)?.summary}</summary>
+            {readSceneIntent(nativeJob.recovery)?.requirements.map((requirement, index) => <p key={index}>{requirement}</p>)}
+            {readSceneIntent(nativeJob.recovery)?.assumptions.length ? <p>Assumptions: {readSceneIntent(nativeJob.recovery)?.assumptions.join("; ")}</p> : null}
+            {nativeJob.recovery.reviewAccepted === true ? <p>Local AI prompt review passed. Inspect the scene for final visual accuracy.</p> : null}
+          </details>
         ) : null}
         {!busy && nativeJob ? (
           <p className="studio3d-note" role="status">

@@ -33,6 +33,15 @@ class DependencyManifestTests(unittest.TestCase):
 
 
 class DependencyTransactionTests(unittest.TestCase):
+    def setUp(self):
+        # Transaction tests exercise a supported target without requiring the
+        # CI host itself to run Windows CPython 3.13 or installing any wheels.
+        target = manager.target_for(manager.load_manifest(), SimpleNamespace(major=3, minor=13), "Windows", "AMD64")
+        self.assertIsNotNone(target)
+        patcher = mock.patch.object(manager, "target_for", return_value=target)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_active_environment_health_runs_import_smoke(self):
         with tempfile.TemporaryDirectory() as temporary:
             python = manager._python_in(Path(temporary) / "active")

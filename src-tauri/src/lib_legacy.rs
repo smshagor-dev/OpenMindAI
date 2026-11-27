@@ -2379,13 +2379,24 @@ pub(crate) async fn studio3d_prompt_driven_scene(
         studio3d_reasoning_stage(app, job_id, "reviewing-prompt-fidelity", json!({}))?;
         let review_text = studio3d_phase(app, state, &model, "studio3d-review", reviewer_system,
             &json!({"request":prompt,"intent":intent_value,"objects":compact_scene_for_review(&plan)})).await?;
-        let review = parse_scene_review(&review_text, &intent, &plan)?;
+        let review = match parse_scene_review(&review_text, &intent, &plan) {
+            Ok(review) => review,
+            Err(error) if attempt == 0 => {
+                feedback = json!({"reviewError":error.to_string().chars().take(400).collect::<String>()});
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         let review_value = serde_json::to_value(&review)
             .map_err(|error| app_error::AppError::internal(error.to_string()))?;
         if review.is_accepted() {
             return Ok((model.id, plan, json!({"intent":intent_value,"review":review_value,"planningAttempts":attempt+1,"reviewKind":"same-model-semantic-audit"})));
         }
-        feedback = json!({"review":review_value,"previousObjects":compact_scene_for_review(&plan)});
+        // Keep only actionable review feedback in the next mandatory input;
+        // the original prompt remains intact even on small context windows.
+        let rejected_checks: Vec<Value> = review_value["checks"].as_array().into_iter()
+            .flatten().filter(|check| check["satisfied"] == false).cloned().collect();
+        feedback = json!({"rejectedChecks":rejected_checks,"issues":review_value["issues"]});
     }
     Err(app_error::AppError::InferenceFailed("The local AI could not produce a scene that passed prompt-fidelity review after two attempts. Try a more specific or smaller design; no generic model was substituted.".into()))
 }

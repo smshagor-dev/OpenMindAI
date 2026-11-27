@@ -233,7 +233,7 @@ fn bounded_text(text: &str, max_chars: usize) -> bool {
 }
 
 pub(crate) fn parse_scene_intent(response: &str) -> Result<SceneIntent, AppError> {
-    if response.len() > 16 * 1024 {
+    if response.len() > 8 * 1024 {
         return Err(studio_error("3D intent exceeds its size limit"));
     }
     let intent: SceneIntent = serde_json::from_str(response.trim())
@@ -2267,10 +2267,17 @@ async fn execute_studio3d_local_job_inner(
             .as_array()
             .map(Vec::len)
             .unwrap_or_default();
-        // Persist bounded diagnostics; the complete plan is passed directly to
-        // the worker, not duplicated into the 16 KiB recovery metadata.
-        let reasoning_sha256 = format!("{:x}", Sha256::digest(reasoning.to_string().as_bytes()));
-        db.connection().execute("UPDATE studio3d_jobs SET model_id=?1,recovery_json=?2,updated_at=?3 WHERE id=?4 AND status='running'", params![model_id,serde_json::json!({"safeToResume":false,"scheduler":"native","modelProvider":"local-llama.cpp","sceneSpecificationSha256":scene_spec_sha256,"sceneObjectCount":planned_count,"reasoningPipeline":"intent-plan-review-v1","intent":reasoning["intent"],"planningAttempts":reasoning["planningAttempts"],"reviewKind":reasoning["reviewKind"],"reviewSha256":reasoning_sha256,"reviewAccepted":true}).to_string(),Utc::now().to_rfc3339(),job_id])?;
+        // Preserve the full scene and review when they fit the existing bounded
+        // recovery record. Always retain hashes, intent and acceptance metadata.
+        let review_sha256 = format!("{:x}", Sha256::digest(reasoning["review"].to_string().as_bytes()));
+        let mut recovery = serde_json::json!({"safeToResume":false,"scheduler":"native","modelProvider":"local-llama.cpp","sceneSpecificationSha256":scene_spec_sha256,"sceneObjectCount":planned_count,"reasoningPipeline":"intent-plan-review-v1","intent":reasoning["intent"],"planningAttempts":reasoning["planningAttempts"],"reviewKind":reasoning["reviewKind"],"reviewSha256":review_sha256,"reviewAccepted":true});
+        for (key, value) in [("sceneSpecification", &scene_spec), ("review", &reasoning["review"])] {
+            recovery[key] = value.clone();
+            if recovery.to_string().len() > 14 * 1024 {
+                recovery.as_object_mut().unwrap().remove(key);
+            }
+        }
+        db.connection().execute("UPDATE studio3d_jobs SET model_id=?1,recovery_json=?2,updated_at=?3 WHERE id=?4 AND status='running'", params![model_id,recovery.to_string(),Utc::now().to_rfc3339(),job_id])?;
     }
     transition_studio3d_job(
         app.clone(),
