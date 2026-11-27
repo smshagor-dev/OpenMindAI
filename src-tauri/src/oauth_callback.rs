@@ -343,12 +343,42 @@ mod tests {
 
     #[tokio::test]
     async fn ipv6_loopback_callback_works() {
-        let (address, task) = start("[::1]:0", Duration::from_secs(3)).await;
-        exchange(
-            address,
-            request("/oauth2/callback?state=synthetic-state&code=ipv6").as_bytes(),
-        )
-        .await;
+        let listener = match TcpListener::bind("[::1]:0").await {
+            Ok(listener) => listener,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::AddrNotAvailable
+                ) =>
+            {
+                eprintln!("IPv6 loopback is unavailable under this host's socket policy: {error}");
+                return;
+            }
+            Err(error) => panic!("could not bind IPv6 loopback: {error}"),
+        };
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(receive(listener, PATH, STATE, Duration::from_secs(3)));
+        let mut socket = match TcpStream::connect(address).await {
+            Ok(socket) => socket,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                task.abort();
+                eprintln!(
+                    "IPv6 loopback connections are blocked by this host's socket policy: {error}"
+                );
+                return;
+            }
+            Err(error) => panic!("could not connect to IPv6 loopback: {error}"),
+        };
+        socket
+            .write_all(request("/oauth2/callback?state=synthetic-state&code=ipv6").as_bytes())
+            .await
+            .unwrap();
+        let mut response = String::new();
+        timeout(Duration::from_secs(2), socket.read_to_string(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"));
         assert_eq!(task.await.unwrap().unwrap(), "ipv6");
     }
 }

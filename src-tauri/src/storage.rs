@@ -1,11 +1,11 @@
 use std::{
     fs,
     path::Path,
-    time::{Duration, Instant},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         OnceLock, RwLock,
     },
+    time::{Duration, Instant},
 };
 
 use serde::Serialize;
@@ -16,7 +16,8 @@ use crate::{
 };
 
 const STORAGE_CACHE_TTL: Duration = Duration::from_secs(30);
-static STORAGE_SUMMARY_CACHE: OnceLock<RwLock<Option<(String, Instant, StorageSummary)>>> = OnceLock::new();
+static STORAGE_SUMMARY_CACHE: OnceLock<RwLock<Option<(String, Instant, StorageSummary)>>> =
+    OnceLock::new();
 static STORAGE_SCAN_RUNNING: AtomicBool = AtomicBool::new(false);
 // Invalidations must also reject scans started before the filesystem changed.
 static STORAGE_CACHE_EPOCH: AtomicU64 = AtomicU64::new(0);
@@ -55,9 +56,9 @@ fn snapshot_for_root(
     cached: &Option<(String, Instant, StorageSummary)>,
     requested_root: &str,
 ) -> Option<StorageSummary> {
-    cached.as_ref().and_then(|(root, _, summary)| {
-        (root == requested_root).then(|| summary.clone())
-    })
+    cached
+        .as_ref()
+        .and_then(|(root, _, summary)| (root == requested_root).then(|| summary.clone()))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -227,7 +228,8 @@ mod cache_tests {
     fn storage_size_does_not_follow_external_directory_symlinks() {
         use std::os::unix::fs::symlink;
         let root = std::env::temp_dir().join(format!("storage-link-root-{}", uuid::Uuid::new_v4()));
-        let external = std::env::temp_dir().join(format!("storage-link-external-{}", uuid::Uuid::new_v4()));
+        let external =
+            std::env::temp_dir().join(format!("storage-link-external-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&external).unwrap();
         fs::write(external.join("private.bin"), vec![7u8; 8192]).unwrap();
@@ -243,7 +245,8 @@ mod cache_tests {
     fn cache_clear_unlinks_symlink_without_deleting_external_files() {
         use std::os::unix::fs::symlink;
         let root = std::env::temp_dir().join(format!("cache-link-root-{}", uuid::Uuid::new_v4()));
-        let external = std::env::temp_dir().join(format!("cache-link-external-{}", uuid::Uuid::new_v4()));
+        let external =
+            std::env::temp_dir().join(format!("cache-link-external-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         fs::create_dir_all(&external).unwrap();
         fs::write(external.join("keep.bin"), b"keep").unwrap();
