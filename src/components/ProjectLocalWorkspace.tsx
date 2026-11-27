@@ -35,6 +35,10 @@ import { confirmWorkspaceDiscard } from "../lib/workspaceDiscardGuard";
 import "../projects-local-workspace.css";
 
 export function ProjectLocalWorkspace(props: { projectId: string; projectName: string }) {
+  return <ProjectLocalWorkspaceSession key={props.projectId} {...props} />;
+}
+
+function ProjectLocalWorkspaceSession(props: { projectId: string; projectName: string }) {
   const [status, setStatus] = useState<ProjectLocalAccessStatus | null>(null);
   const [activeRootId, setActiveRootId] = useState<string | null>(null);
   const [currentPath, setCurrentPath] = useState("");
@@ -67,8 +71,7 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
   );
   const editorDirty = editorPath !== null && editorContent !== editorOriginal;
   const listingIsCurrent = activeRoot !== null && listedAt?.projectId === props.projectId &&
-    listedAt.rootId === activeRoot.id && listedAt.path === currentPath &&
-    directoryGate.current.isDisplayed(props.projectId, activeRoot.id, currentPath);
+    listedAt.rootId === activeRoot.id && listedAt.path === currentPath;
   const visibleEntries = listingIsCurrent ? entries : [];
   const isCurrentListing = () => Boolean(activeRoot &&
     directoryGate.current.isDisplayed(props.projectId, activeRoot.id, currentPath));
@@ -106,13 +109,6 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
     let alive = true;
     const gate = directoryGate.current;
     directoryGate.current.select(props.projectId, null);
-    setStatus(null);
-    setActiveRootId(null);
-    setEntries([]);
-    setListedAt(null);
-    setDirectoryPending(false);
-    setLoading(true);
-    setError(null);
     void loadStatus()
       .then((next) => {
         if (!alive) return;
@@ -133,27 +129,8 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
 
   useEffect(() => {
     directoryGate.current.select(props.projectId, activeRoot?.id ?? null);
-    setEntries([]);
-    setListedAt(null);
-    setDirectoryPending(Boolean(activeRoot));
-    setRenameTarget(null);
-    setDeleteTarget(null);
-    setNewItemKind(null);
-    setNewItemName("");
-    if (!activeRoot) {
-      setCurrentPath("");
-      setLocationInput("");
-      return;
-    }
-    setCurrentPath("");
-    setLocationInput(activeRoot.path);
-    setTerminalCwd(activeRoot.path);
-    setEditorPath(null);
-    setEditorContent("");
-    setEditorOriginal("");
-    setEditorRevision(null);
-    void loadDirectory(activeRoot.id, "");
-  }, [activeRoot?.id, activeRoot?.path, loadDirectory, props.projectId]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (activeRoot) void Promise.resolve().then(() => loadDirectory(activeRoot.id, ""));
+  }, [activeRoot, loadDirectory, props.projectId]);
 
   const run = async <T,>(key: string, action: () => Promise<T>): Promise<T | undefined> => {
     if (busy) return undefined;
@@ -429,6 +406,13 @@ export function ProjectLocalWorkspace(props: { projectId: string; projectName: s
                   setEntries([]);
                   setListedAt(null);
                   setDirectoryPending(true);
+                  setEditorPath(null);
+                  setEditorContent("");
+                  setEditorOriginal("");
+                  setEditorRevision(null);
+                  setCurrentPath("");
+                  setLocationInput(root.path);
+                  setTerminalCwd(root.path);
                   setActiveRootId(root.id);
                 }}
               >
@@ -669,7 +653,7 @@ function sameDisplayPath(left: string, right: string) {
 }
 
 function workspacePathContains(parent: string, child: string): boolean {
-  const normalize = (path: string) => path.replace(/\\\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const normalize = (path: string) => path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
   const normalizedParent = normalize(parent);
   const normalizedChild = normalize(child);
   return normalizedChild === normalizedParent || normalizedChild.startsWith(`${normalizedParent}/`);

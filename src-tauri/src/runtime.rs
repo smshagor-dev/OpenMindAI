@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     app_error::AppError,
-    hardware::{BackendKind, GpuVendor, HardwareProfile},
+    hardware::{BackendKind, HardwareProfile},
     launch_planner::ModelLaunchConfig,
     portable_root::PortableRootManager,
     process_ownership,
@@ -243,6 +243,7 @@ impl LlamaRuntimeManager {
         let manifests = RuntimeRegistry::new(&self.root).discover()?;
         let validations = manifests
             .into_iter()
+            .filter(|manifest| manifest.backend == BackendKind::Vulkan)
             .map(|manifest| validate_manifest(&self.root, manifest))
             .collect::<Result<Vec<_>, _>>()?;
         let selected = RuntimeSelector::select(&validations, hardware);
@@ -334,6 +335,11 @@ impl LlamaRuntimeManager {
         hardware: &HardwareProfile,
         config: &ModelLaunchConfig,
     ) -> Result<ModelLaunch, AppError> {
+        if config.backend != BackendKind::Vulkan {
+            return Err(AppError::RuntimeStartFailed(
+                "OpenMindAI requires the Vulkan inference backend".to_string(),
+            ));
+        }
         let model_path = resolve_model_path(&self.root, &config.model_path)?;
         let model_path_string = model_path.display().to_string();
         let explicit_mmproj = if config.mmproj_path.is_some() {
@@ -344,8 +350,6 @@ impl LlamaRuntimeManager {
         let selected = self.inventory(hardware)?.selected.ok_or_else(|| {
             AppError::RuntimeNotFound("no usable llama.cpp runtime found".to_string())
         })?;
-        let selected_backend = selected.manifest.backend.clone();
-
         let child_alive = self
             .child
             .as_mut()
@@ -354,7 +358,7 @@ impl LlamaRuntimeManager {
         let same_backend = self
             .active_runtime
             .as_ref()
-            .is_some_and(|runtime| runtime.manifest.backend == selected_backend);
+            .is_some_and(|runtime| runtime.manifest.backend == BackendKind::Vulkan);
 
         // Reuse the resident server only when its actual KV context matches
         // the new memory-aware launch plan. Available RAM can change after
@@ -438,32 +442,21 @@ impl LlamaRuntimeManager {
             "--parallel".to_string(),
             config.parallelism.to_string(),
         ];
-        if let Some(mmproj_path) = explicit_mmproj.or_else(|| discover_mmproj_sibling(&model_path)) {
+        if let Some(mmproj_path) = explicit_mmproj.or_else(|| discover_mmproj_sibling(&model_path))
+        {
             args.push("--mmproj".to_string());
             args.push(mmproj_path.display().to_string());
         }
-        if config.gpu_layers > 0 && selected_backend != BackendKind::Cpu {
-            args.push("--gpu-layers".to_string());
-            args.push(config.gpu_layers.to_string());
-        } else if config.gpu_layers == 0 && config.backend == BackendKind::Cpu {
-            // A CPU placement must be explicit: newer llama-server builds otherwise fit
-            // layers onto the GPU automatically.
-            args.push("--gpu-layers".to_string());
-            args.push("0".to_string());
-            args.push("--device".to_string());
-            args.push("none".to_string());
-        }
+        args.push("--gpu-layers".to_string());
+        args.push(config.gpu_layers.max(1).to_string());
         if !config.mmap {
             args.push("--no-mmap".to_string());
         }
         if config.mlock {
             args.push("--mlock".to_string());
         }
-        // Vulkan flash-attention support varies by llama.cpp build. Avoid
-        // paying for a failed launch/retry on the common Windows AMD path.
-        if config.flash_attention && selected_backend != BackendKind::Vulkan {
-            args.push("--flash-attn".to_string());
-        }
+        // Vulkan flash-attention remains disabled until the packaged build is
+        // capability-probed.
 
         let mut command = Command::new(server_path);
         command
@@ -471,13 +464,14 @@ impl LlamaRuntimeManager {
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
         hide_console_window(&mut command);
-        let child = self
-            .spawn_owned(command)
-            .map_err(|error| AppError::ModelLoadFailed(error.to_string()))?;
+        self.loaded_model_path = Some(model_path_string);
+        let child = self.spawn_owned(command).map_err(|error| {
+            self.state = ServerState::Failed;
+            AppError::ModelLoadFailed(error.to_string())
+        })?;
 
         self.child = Some(child);
         self.endpoint = Some(format!("http://{}:{}", config.host, config.port));
-        self.loaded_model_path = Some(model_path_string);
         self.loaded_context_size = Some(config.context_size);
         self.loaded_config = Some(config.clone());
         self.active_runtime = Some(selected);
@@ -526,6 +520,23 @@ impl LlamaRuntimeManager {
         self.child
             .as_mut()
             .is_some_and(|child| child.try_wait().ok().flatten().is_none())
+    }
+
+    pub fn scene_planner_runtime(&self) -> Option<&RuntimeValidation> {
+        self.active_runtime.as_ref()
+    }
+
+    pub fn scene_planner_status(&mut self, path: &str) -> (&'static str, &'static str) {
+        if self.loaded_model_path.as_deref() != Some(path) {
+            return ("validatedNotLoaded", "Verified model is not loaded");
+        }
+        if self.state == ServerState::Failed || !self.is_process_alive() {
+            return ("backendInitializationFailed", "The selected model's llama-server failed or exited");
+        }
+        if self.health_target().is_some_and(|(host, port)| http_health_ok(&host, port)) {
+            return ("inferenceReady", "The selected model's llama-server passed its health probe");
+        }
+        ("temporarilyUnavailable", "The selected model's llama-server is still loading or unhealthy")
     }
 
     pub fn state(&self) -> ServerState {
@@ -624,7 +635,9 @@ fn ensure_model_ready_checked(
 ) -> Result<(LlamaRuntimeStatus, ModelLease), AppError> {
     let check_cancelled = || {
         if cancellation.is_some_and(CancellationToken::is_cancelled) {
-            Err(AppError::InferenceCancelled("generation cancelled".to_string()))
+            Err(AppError::InferenceCancelled(
+                "generation cancelled".to_string(),
+            ))
         } else {
             Ok(())
         }
@@ -697,7 +710,9 @@ pub async fn ensure_model_ready_cancellable(
     cancellation: &CancellationToken,
 ) -> Result<(LlamaRuntimeStatus, ModelLease), AppError> {
     if cancellation.is_cancelled() {
-        return Err(AppError::InferenceCancelled("generation cancelled".to_string()));
+        return Err(AppError::InferenceCancelled(
+            "generation cancelled".to_string(),
+        ));
     }
 
     let shared = Arc::clone(runtime);
@@ -783,41 +798,8 @@ impl RuntimeSelector {
 }
 
 pub(crate) fn preferred_backend_order(hardware: &HardwareProfile) -> Vec<BackendKind> {
-    let mut order = Vec::new();
-    let has_nvidia = hardware
-        .gpus
-        .iter()
-        .any(|gpu| gpu.vendor == GpuVendor::Nvidia && !gpu.is_software);
-    let has_amd = hardware
-        .gpus
-        .iter()
-        .any(|gpu| gpu.vendor == GpuVendor::Amd && !gpu.is_software);
-    let has_intel = hardware
-        .gpus
-        .iter()
-        .any(|gpu| gpu.vendor == GpuVendor::Intel && !gpu.is_software);
-
-    if has_nvidia {
-        order.push(BackendKind::Cuda);
-    }
-    if has_amd {
-        // Windows AMD packages are Vulkan-first in OpenMindAI. This keeps the
-        // runtime choice aligned with the launch planner on RX 580-class GPUs.
-        if cfg!(target_os = "windows") {
-            order.push(BackendKind::Vulkan);
-            order.push(BackendKind::Hip);
-        } else {
-            order.push(BackendKind::Hip);
-        }
-    }
-    if has_intel {
-        order.push(BackendKind::Sycl);
-    }
-    if !order.contains(&BackendKind::Vulkan) {
-        order.push(BackendKind::Vulkan);
-    }
-    order.push(BackendKind::Cpu);
-    order
+    let _ = hardware;
+    vec![BackendKind::Vulkan]
 }
 
 /// Fast metadata validation. Model launch and `/health` are the source of
@@ -986,6 +968,7 @@ fn same_model_launch_settings(loaded: &ModelLaunchConfig, requested: &ModelLaunc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hardware::GpuVendor;
     use crate::hardware::{CpuProfile, MemoryProfile};
 
     #[test]
@@ -998,7 +981,10 @@ mod tests {
         fs::write(&model, b"fixture model").unwrap();
         fs::write(&wanted, b"fixture projector").unwrap();
         fs::write(root.root().join("mmproj-AAA-other.gguf"), b"other").unwrap();
-        assert_eq!(resolve_mmproj_path(&root, &model, Some("mmproj-Lens.gguf")).unwrap(), Some(fs::canonicalize(wanted).unwrap()));
+        assert_eq!(
+            resolve_mmproj_path(&root, &model, Some("mmproj-Lens.gguf")).unwrap(),
+            Some(fs::canonicalize(wanted).unwrap())
+        );
         assert!(resolve_mmproj_path(&root, &model, Some("missing.gguf")).is_err());
         let outside = temp.path().join("outside.gguf");
         fs::write(&outside, b"outside").unwrap();
@@ -1121,17 +1107,10 @@ mod tests {
             to_stop.cancel();
         };
         let profile = hardware(GpuVendor::Nvidia);
-        let load = ensure_model_ready_cancellable(
-            &runtime,
-            &profile,
-            &config,
-            &cancelled,
-        );
-        let (result, ()) = timeout(Duration::from_secs(2), async {
-            tokio::join!(load, stop)
-        })
-        .await
-        .expect("the async caller blocked on the runtime mutex");
+        let load = ensure_model_ready_cancellable(&runtime, &profile, &config, &cancelled);
+        let (result, ()) = timeout(Duration::from_secs(2), async { tokio::join!(load, stop) })
+            .await
+            .expect("the async caller blocked on the runtime mutex");
         assert!(matches!(result, Err(AppError::InferenceCancelled(_))));
         release_tx.send(()).expect("release held lock");
         holder.join().expect("mutex holder exited");
@@ -1240,7 +1219,7 @@ mod tests {
     }
 
     #[test]
-    fn selector_prefers_cuda_when_valid_on_nvidia() {
+    fn selector_uses_vulkan_even_on_nvidia() {
         let runtimes = vec![
             RuntimeValidation {
                 manifest: manifest(BackendKind::Vulkan, Some("vulkan.exe")),
@@ -1265,11 +1244,11 @@ mod tests {
         ];
 
         let selected = RuntimeSelector::select(&runtimes, &hardware(GpuVendor::Nvidia)).unwrap();
-        assert_eq!(selected.manifest.backend, BackendKind::Cuda);
+        assert_eq!(selected.manifest.backend, BackendKind::Vulkan);
     }
 
     #[test]
-    fn selector_falls_back_to_vulkan_then_cpu() {
+    fn selector_uses_vulkan_when_alternate_backend_is_invalid() {
         let runtimes = vec![
             RuntimeValidation {
                 manifest: manifest(BackendKind::Cuda, Some("cuda.exe")),
@@ -1321,13 +1300,20 @@ mod tests {
         fs::write(dir.join("broken.json"), b"{invalid").unwrap();
         fs::write(
             dir.join("usable.json"),
-            serde_json::to_vec(&manifest(BackendKind::Cpu, Some("runtimes/llama/cpu/server")))
-                .unwrap(),
+            serde_json::to_vec(&manifest(
+                BackendKind::Cpu,
+                Some("runtimes/llama/cpu/server"),
+            ))
+            .unwrap(),
         )
         .unwrap();
+        let server = root.resolve_relative("runtimes/llama/cpu/server").unwrap();
+        fs::create_dir_all(server.parent().unwrap()).unwrap();
+        fs::write(&server, b"test server").unwrap();
         let discovered = RuntimeRegistry::new(&root).discover().unwrap();
         assert_eq!(discovered.len(), 1);
-        assert_eq!(discovered[0].backend, BackendKind::Cpu);
+        let validation = validate_manifest(&root, discovered[0].clone()).unwrap();
+        assert!(validation.usable);
     }
 
     #[test]
