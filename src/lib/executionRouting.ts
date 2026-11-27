@@ -86,9 +86,19 @@ export function shouldShowCloudModels(
 
 export function describeFailure(error: unknown): string {
   if (typeof error === "string") return error;
-  if (error instanceof Error) return error.message;
-  if (error && typeof error === "object" && "message" in error)
-    return String((error as { message: unknown }).message);
+  // Cloud adapters can reject with arbitrary objects, including throwing
+  // accessors and revoked proxies. Error reporting must never mask the original
+  // failure or prevent a permitted local fallback.
+  try {
+    if (error !== null && (typeof error === "object" || typeof error === "function")) {
+      const message = (error as { message?: unknown }).message;
+      if (typeof message === "string") return message;
+      if (typeof message === "number" || typeof message === "boolean")
+        return String(message);
+    }
+  } catch {
+    // Never invoke untrusted toString/valueOf as a fallback.
+  }
   return "Unknown request failure";
 }
 
