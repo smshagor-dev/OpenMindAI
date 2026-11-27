@@ -244,8 +244,8 @@ mod tests {
 
     #[test]
     fn page_bounds_are_large_but_finite() {
-        assert!(MAX_PAGES >= 1000);
-        assert!(MAX_PAGE_BYTES >= 1024 * 1024);
+        const { assert!(MAX_PAGES >= 1000) };
+        const { assert!(MAX_PAGE_BYTES >= 1024 * 1024) };
     }
 
     #[tokio::test]

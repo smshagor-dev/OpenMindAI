@@ -955,7 +955,8 @@ mod tests {
         let context = build_repository_context(
             &[("root".into(), temp.path().display().to_string())],
             "refresh session",
-        ).unwrap();
+        )
+        .unwrap();
         assert!(context.contains("RELEVANT FILE [opaque.rs]"));
     }
 
@@ -1048,4 +1049,3 @@ mod tests {
         assert!(!context.contains("outside secret"));
     }
 }
-

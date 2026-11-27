@@ -10,6 +10,6 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
-[dev-dependencies]
 serde_json = "1"
+[dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
