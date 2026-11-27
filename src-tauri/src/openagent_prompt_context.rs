@@ -337,7 +337,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn tiny_slots_respect_output_margin_and_boundaries() {
         let transcript = VecDeque::new();
@@ -345,7 +344,8 @@ mod tests {
             let pack = build_prompt_context(input("task", "repository", &transcript, window));
             assert_eq!(
                 pack.max_output_tokens,
-                (window / 6).clamp(MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS)
+                (window / 6)
+                    .clamp(MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS)
                     .min(window.saturating_sub(PROMPT_MARGIN_TOKENS)),
                 "incorrect output budget at {window} tokens"
             );
