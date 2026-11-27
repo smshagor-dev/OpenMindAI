@@ -194,7 +194,7 @@ export function ChatView(props: {
             : props.executionMode === "cloud"
               ? "Running on OpenMindAI Cloud."
               : props.executionMode === "auto"
-                ? "Auto: runs on this computer first, falls back to OpenMindAI Cloud."
+                ? "Auto: checks factual questions against online sources when available, then uses Cloud or Local."
                 : "Running on installed local models on this computer."
       }
     />

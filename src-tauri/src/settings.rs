@@ -344,20 +344,28 @@ impl<'a> SettingsRepository<'a> {
         // Retain fields introduced by newer versions when an older client saves
         // known settings. Known keys always come from the validated, sanitized
         // AppPreferences model, never from the previous JSON document.
-        let raw_previous: Option<String> = self.database.connection().query_row(
-            "SELECT value_json FROM app_settings WHERE key = ?1",
-            params![SETTINGS_KEY],
-            |row| row.get(0),
-        ).optional()?;
+        let raw_previous: Option<String> = self
+            .database
+            .connection()
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = ?1",
+                params![SETTINGS_KEY],
+                |row| row.get(0),
+            )
+            .optional()?;
         if let Some(raw) = raw_previous {
             let stored: serde_json::Value = serde_json::from_str(&raw)
                 .map_err(|_| AppError::internal("Invalid stored preferences"))?;
-            let old_fields = stored.as_object()
+            let old_fields = stored
+                .as_object()
                 .ok_or_else(|| AppError::internal("Stored preferences must be an object"))?;
-            let new_fields = sanitized.as_object_mut()
+            let new_fields = sanitized
+                .as_object_mut()
                 .ok_or_else(|| AppError::internal("Invalid preferences"))?;
             for (key, value) in old_fields {
-                new_fields.entry(key.clone()).or_insert_with(|| value.clone());
+                new_fields
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
             }
         }
         crate::proxy_credentials::protect(
@@ -368,11 +376,15 @@ impl<'a> SettingsRepository<'a> {
         // Retain settings introduced by a newer version when an older client
         // edits a known preference. Known keys always take the validated,
         // sanitized value from this request; unknown keys cannot override them.
-        if let (Some(serde_json::Value::Object(previous_fields)), serde_json::Value::Object(current_fields)) =
-            (previous.as_ref(), &mut sanitized)
+        if let (
+            Some(serde_json::Value::Object(previous_fields)),
+            serde_json::Value::Object(current_fields),
+        ) = (previous.as_ref(), &mut sanitized)
         {
             for (key, value) in previous_fields {
-                current_fields.entry(key.clone()).or_insert_with(|| value.clone());
+                current_fields
+                    .entry(key.clone())
+                    .or_insert_with(|| value.clone());
             }
         }
         self.database
@@ -441,7 +453,9 @@ impl<'a> SettingsRepository<'a> {
         .try_fold(0usize, |total, field| total.checked_add(field.len()))
         .ok_or_else(|| AppError::internal("User profile text exceeds storage limit"))?;
         if text_bytes > MAX_PROFILE_TEXT_BYTES {
-            return Err(AppError::internal("User profile text exceeds storage limit"));
+            return Err(AppError::internal(
+                "User profile text exceeds storage limit",
+            ));
         }
         // A downgraded client must not erase fields written by a newer release.
         // Only unknown top-level keys are carried forward; known fields always
@@ -455,13 +469,12 @@ impl<'a> SettingsRepository<'a> {
                 |row| row.get(0),
             )
             .optional()?;
-        let mut updated = serde_json::to_value(profile)
-            .map_err(|error| AppError::internal(error.to_string()))?;
+        let mut updated =
+            serde_json::to_value(profile).map_err(|error| AppError::internal(error.to_string()))?;
         if let Some(existing) = existing {
             let previous: serde_json::Value = serde_json::from_str(&existing)
                 .map_err(|error| AppError::internal(error.to_string()))?;
-            if let (Some(previous), Some(updated)) =
-                (previous.as_object(), updated.as_object_mut())
+            if let (Some(previous), Some(updated)) = (previous.as_object(), updated.as_object_mut())
             {
                 for (key, value) in previous {
                     if !updated.contains_key(key) {
@@ -495,22 +508,36 @@ fn validate_avatar_data_url(avatar: &str) -> Result<(), AppError> {
         return Ok(());
     }
     if avatar.len() > MAX_PROFILE_AVATAR_DATA_URL_BYTES {
-        return Err(AppError::internal("Profile avatar exceeds the 4 MiB encoded size limit"));
+        return Err(AppError::internal(
+            "Profile avatar exceeds the 4 MiB encoded size limit",
+        ));
     }
-    let encoded = ["data:image/png;base64,", "data:image/jpeg;base64,",
-        "data:image/webp;base64,", "data:image/gif;base64,"]
-        .iter()
-        .find_map(|prefix| avatar.strip_prefix(prefix))
-        .ok_or_else(|| AppError::internal("Profile avatar must be a supported raster image data URL"))?;
+    let encoded = [
+        "data:image/png;base64,",
+        "data:image/jpeg;base64,",
+        "data:image/webp;base64,",
+        "data:image/gif;base64,",
+    ]
+    .iter()
+    .find_map(|prefix| avatar.strip_prefix(prefix))
+    .ok_or_else(|| {
+        AppError::internal("Profile avatar must be a supported raster image data URL")
+    })?;
     if encoded.is_empty() || encoded.len() % 4 != 0 {
-        return Err(AppError::internal("Profile avatar has invalid Base64 encoding"));
+        return Err(AppError::internal(
+            "Profile avatar has invalid Base64 encoding",
+        ));
     }
     let payload = encoded.trim_end_matches('=');
     if encoded.len() - payload.len() > 2
-        || !payload.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/')
+        || !payload
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/')
         || !encoded[payload.len()..].bytes().all(|byte| byte == b'=')
     {
-        return Err(AppError::internal("Profile avatar has invalid Base64 encoding"));
+        return Err(AppError::internal(
+            "Profile avatar has invalid Base64 encoding",
+        ));
     }
     Ok(())
 }
@@ -566,11 +593,14 @@ mod tests {
         profile.full_name = "Updated again".into();
         repo.save_user_profile(&profile).unwrap();
 
-        let stored: String = database.connection().query_row(
-            "SELECT value_json FROM app_settings WHERE key = ?1",
-            params![USER_PROFILE_KEY],
-            |row| row.get(0),
-        ).unwrap();
+        let stored: String = database
+            .connection()
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = ?1",
+                params![USER_PROFILE_KEY],
+                |row| row.get(0),
+            )
+            .unwrap();
         let json: serde_json::Value = serde_json::from_str(&stored).unwrap();
         assert_eq!(json["fullName"], "Updated again");
         assert_eq!(json["about"], "Bangla বাংলা");
@@ -590,11 +620,14 @@ mod tests {
             params![USER_PROFILE_KEY],
         ).unwrap();
         repo.save_user_profile(&profile).unwrap();
-        let stored: String = database.connection().query_row(
-            "SELECT value_json FROM app_settings WHERE key = ?1",
-            params![USER_PROFILE_KEY],
-            |row| row.get(0),
-        ).unwrap();
+        let stored: String = database
+            .connection()
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = ?1",
+                params![USER_PROFILE_KEY],
+                |row| row.get(0),
+            )
+            .unwrap();
         let json: serde_json::Value = serde_json::from_str(&stored).unwrap();
         assert_eq!(json["email"], "new@example.org");
         assert_eq!(json["futureFlag"], 42);
@@ -645,12 +678,22 @@ mod tests {
             ..Default::default()
         };
         repo.save_user_profile(&profile).unwrap();
-        let context = repo.get_user_profile().unwrap().to_system_context().unwrap();
+        let context = repo
+            .get_user_profile()
+            .unwrap()
+            .to_system_context()
+            .unwrap();
         assert!(context.contains("[Profile field truncated]"));
         assert!(context.contains("বাংলা🧪"));
         assert!(context.chars().count() < 5_000);
-        assert_eq!(repo.get_user_profile().unwrap().custom_instructions, profile.custom_instructions);
-        assert_eq!(repo.get_user_profile().unwrap().full_name, profile.full_name);
+        assert_eq!(
+            repo.get_user_profile().unwrap().custom_instructions,
+            profile.custom_instructions
+        );
+        assert_eq!(
+            repo.get_user_profile().unwrap().full_name,
+            profile.full_name
+        );
     }
 
     #[test]
@@ -676,11 +719,14 @@ mod tests {
         repo.save_user_profile(&profile).unwrap();
 
         for invalid in [
-            "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=" .to_string(),
+            "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=".to_string(),
             "data:text/html;base64,PHNjcmlwdD4=".to_string(),
             "data:image/png;base64,not-base64!".to_string(),
             "data:image/png;base64,".to_string(),
-            format!("data:image/png;base64,{}", "A".repeat(MAX_PROFILE_AVATAR_DATA_URL_BYTES)),
+            format!(
+                "data:image/png;base64,{}",
+                "A".repeat(MAX_PROFILE_AVATAR_DATA_URL_BYTES)
+            ),
         ] {
             profile.full_name = "Should not persist".into();
             profile.avatar_data_url = invalid;
@@ -696,8 +742,13 @@ mod tests {
         let database = Database::in_memory().unwrap();
         let repo = SettingsRepository::new(&database);
         let mut profile = UserProfile::default();
-        for avatar in ["", "data:image/png;base64,AAAA", "data:image/jpeg;base64,AAAA",
-            "data:image/webp;base64,AAAA", "data:image/gif;base64,AAAA"] {
+        for avatar in [
+            "",
+            "data:image/png;base64,AAAA",
+            "data:image/jpeg;base64,AAAA",
+            "data:image/webp;base64,AAAA",
+            "data:image/gif;base64,AAAA",
+        ] {
             profile.avatar_data_url = avatar.into();
             repo.save_user_profile(&profile).unwrap();
             assert_eq!(repo.get_user_profile().unwrap().avatar_data_url, avatar);
@@ -734,25 +785,37 @@ mod tests {
         assert_eq!(saved.language, "Bangla");
         assert!(!saved.telemetry_enabled);
 
-        let raw: String = database.connection().query_row(
-            "SELECT value_json FROM app_settings WHERE key = ?1",
-            params![SETTINGS_KEY],
-            |row| row.get(0),
-        ).unwrap();
+        let raw: String = database
+            .connection()
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = ?1",
+                params![SETTINGS_KEY],
+                |row| row.get(0),
+            )
+            .unwrap();
         let document: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(document["futureFeature"], serde_json::json!({"nested":[1,{"enabled":true}]}));
+        assert_eq!(
+            document["futureFeature"],
+            serde_json::json!({"nested":[1,{"enabled":true}]})
+        );
         assert_eq!(document["language"], "Bangla");
         assert_eq!(document["telemetryEnabled"], false);
 
         preferences.language = "English".to_string();
         repo.save_preferences(&preferences).unwrap();
-        let raw: String = database.connection().query_row(
-            "SELECT value_json FROM app_settings WHERE key = ?1",
-            params![SETTINGS_KEY],
-            |row| row.get(0),
-        ).unwrap();
+        let raw: String = database
+            .connection()
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = ?1",
+                params![SETTINGS_KEY],
+                |row| row.get(0),
+            )
+            .unwrap();
         let document: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(document["futureFeature"], serde_json::json!({"nested":[1,{"enabled":true}]}));
+        assert_eq!(
+            document["futureFeature"],
+            serde_json::json!({"nested":[1,{"enabled":true}]})
+        );
     }
 
     #[test]
@@ -831,11 +894,14 @@ mod tests {
             assert!(!saved.telemetry_enabled);
         }
         let reopened = Database::open(path).unwrap();
-        let raw: String = reopened.connection().query_row(
-            "SELECT value_json FROM app_settings WHERE key = ?1",
-            params![SETTINGS_KEY],
-            |row| row.get(0),
-        ).unwrap();
+        let raw: String = reopened
+            .connection()
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = ?1",
+                params![SETTINGS_KEY],
+                |row| row.get(0),
+            )
+            .unwrap();
         let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(value["futureNested"]["enabled"], true);
         assert_eq!(value["futureNested"]["limit"], 7);
