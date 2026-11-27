@@ -26,7 +26,22 @@ export function formatTime(iso: string): string {
   }
 }
 
+const MAX_ERROR_DISPLAY_UNITS = 2_048;
+
+function boundErrorDisplay(message: string): string {
+  if (message.length <= MAX_ERROR_DISPLAY_UNITS) return message;
+  let end = MAX_ERROR_DISPLAY_UNITS - 1;
+  // Keep the truncation suffix within the limit and avoid lone high surrogates.
+  const last = message.charCodeAt(end - 1);
+  if (last >= 0xD800 && last <= 0xDBFF) end -= 1;
+  return `${message.slice(0, end)}…`;
+}
+
 export function formatError(caught: unknown): string {
+  return boundErrorDisplay(formatErrorUnbounded(caught));
+}
+
+function formatErrorUnbounded(caught: unknown): string {
   // Error reporting must never replace the original failure with another throw.
   // Unknown values can contain throwing accessors, Proxies, or toString methods.
   try {
