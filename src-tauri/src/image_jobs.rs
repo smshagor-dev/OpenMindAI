@@ -188,10 +188,15 @@ mod tests {
             let _ = started.send(());
         });
         tokio::task::yield_now().await;
-        assert!(!second.is_finished(), "queued job started while a render was running");
+        assert!(
+            !second.is_finished(),
+            "queued job started while a render was running"
+        );
 
         drop(first);
-        next_started.await.expect("second image runs after first finishes");
+        next_started
+            .await
+            .expect("second image runs after first finishes");
         second.await.unwrap();
         assert!(jobs.try_reserve_renderer().is_some());
     }
