@@ -100,6 +100,19 @@ test("the API model selector appears only when online and Cloud is authenticated
   assert.equal(shouldShowCloudModels("local", true, true, 2), false, "Local always shows local models");
 });
 
+test("Cloud model selector rejects malformed discovery counts", () => {
+  for (const count of [NaN, Infinity, -Infinity, -1, -0.5, 0.5, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.equal(shouldShowCloudModels("auto", true, true, count), false, String(count));
+  }
+  for (const count of [1, 2, Number.MAX_SAFE_INTEGER]) {
+    assert.equal(shouldShowCloudModels("auto", true, true, count), true, String(count));
+  }
+  assert.equal(shouldShowCloudModels("cloud", true, true, 1), true);
+  assert.equal(shouldShowCloudModels("local", true, true, 1), false);
+  assert.equal(shouldShowCloudModels("auto", false, true, 1), false);
+  assert.equal(shouldShowCloudModels("auto", true, false, 1), false);
+});
+
 test("explicit offline-only prompts override authenticated Cloud, including multilingual input", () => {
   for (const prompt of [
     "This is sensitive; offline only, do not use cloud",
