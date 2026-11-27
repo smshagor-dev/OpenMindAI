@@ -83,17 +83,14 @@ function relevantPosition(source: string, prompt: string, from: number): number 
 }
 
 function safeExcerptSlice(text: string, start: number, end: number): string {
-  if (start > 0 && start < text.length) {
-    const current = text.charCodeAt(start);
-    const previous = text.charCodeAt(start - 1);
-    if (current >= 0xdc00 && current <= 0xdfff && previous >= 0xd800 && previous <= 0xdbff) start += 1;
-  }
-  if (end > start && end < text.length) {
-    const previous = text.charCodeAt(end - 1);
-    const next = text.charCodeAt(end);
-    if (previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end -= 1;
-  }
-  return text.slice(start, Math.max(start, end));
+  // Move the start forward and the end backward, never expanding the budget.
+  if (start > 0 && start < text.length &&
+      /[\uDC00-\uDFFF]/.test(text[start]) &&
+      /[\uD800-\uDBFF]/.test(text[start - 1])) start++;
+  if (end > start && end < text.length &&
+      /[\uD800-\uDBFF]/.test(text[end - 1]) &&
+      /[\uDC00-\uDFFF]/.test(text[end])) end--;
+  return text.slice(start, end);
 }
 
 /** Includes start, a query-relevant mid-document window, and the ending. */
@@ -110,10 +107,8 @@ export function selectAttachmentExcerpt(content: string, limit: number, prompt: 
   const middle = usable - head - tail;
   const hit = relevantPosition(content, prompt, head);
   const start = Math.max(head, Math.min(content.length - tail - middle, hit - Math.floor(middle / 2)));
-  const text = safeExcerptSlice(content, 0, head) + GAP
-    + safeExcerptSlice(content, start, start + middle) + GAP
-    + safeExcerptSlice(content, content.length - tail, content.length) + TRUNCATION_NOTE;
-  return text.slice(0, limit);
+  const text = safeExcerptSlice(content, 0, head) + GAP + safeExcerptSlice(content, start, start + middle) + GAP + safeExcerptSlice(content, content.length - tail, content.length) + TRUNCATION_NOTE;
+  return text;
 }
 
 export function serializeAttachmentContext(sources: AttachmentContextSource[], prompt: string) {

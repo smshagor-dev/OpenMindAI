@@ -78,6 +78,11 @@ impl<'a> ChatRepository<'a> {
         cursor: Option<&str>,
         requested_limit: i64,
     ) -> Result<ChatSearchPage, AppError> {
+        // Reject oversized raw input before trim() scans whitespace padding.
+        // 1024 UTF-8 bytes accommodates 256 four-byte Unicode scalars.
+        if query.len() > 1024 {
+            return Err(AppError::internal("chat search query exceeds 1024 bytes"));
+        }
         let query = query.trim();
         if query.chars().count() > 256 {
             return Err(AppError::internal(
@@ -1792,4 +1797,25 @@ mod tests {
         assert_eq!(repo.list_archived_conversations(500).unwrap().len(), 3);
         assert!(repo.restore_conversation("missing-id").is_err());
     }
+
+    #[test]
+    fn chat_search_rejects_oversized_raw_input_before_trimming() {
+        let db = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&db);
+        let chat = repo.create_conversation(Some("needle")).unwrap();
+
+        // Whitespace-only input previously bypassed the post-trim character cap.
+        assert!(repo.search_conversations(&" ".repeat(1_000_000), None, 10).is_err());
+        assert!(repo.search_conversations(&format!("{}needle", " ".repeat(1025)), None, 10).is_err());
+
+        // The full 256-scalar limit still accommodates four-byte Unicode.
+        assert!(repo.search_conversations(&"🦀".repeat(256), None, 10).is_ok());
+        assert!(repo.search_conversations(&"🦀".repeat(257), None, 10).is_err());
+
+        // Ordinary whitespace normalization and title search remain supported.
+        let result = repo.search_conversations("  needle  ", None, 10).unwrap();
+        assert_eq!(result.conversations.len(), 1);
+        assert_eq!(result.conversations[0].id, chat.id);
+    }
+
 }
