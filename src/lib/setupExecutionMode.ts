@@ -6,7 +6,7 @@ import type { ExecutionMode } from "./executionRouting";
 const MODE_KEY = "openmindai.setup.executionMode.v1";
 const PREPARING_KEY = "openmindai.setup.preparing.v1";
 
-export function isExecutionMode(value: string | null): value is ExecutionMode {
+export function isExecutionMode(value: unknown): value is ExecutionMode {
   return value === "auto" || value === "local" || value === "cloud";
 }
 
@@ -20,8 +20,27 @@ export function setupExecutionMode(): ExecutionMode | null {
 }
 
 export function beginSetupPreparation(mode: ExecutionMode): void {
-  window.localStorage.setItem(MODE_KEY, mode);
-  window.localStorage.setItem(PREPARING_KEY, "pending");
+  // Runtime callers may bypass TypeScript. Never persist an invalid preference.
+  if (!isExecutionMode(mode)) {
+    throw new TypeError("Invalid setup execution mode");
+  }
+
+  // A previous attempt may have left a pending marker. Invalidate it before
+  // writing a new mode, and publish pending only after that write succeeds.
+  window.localStorage.removeItem(PREPARING_KEY);
+  try {
+    window.localStorage.setItem(MODE_KEY, mode);
+    window.localStorage.setItem(PREPARING_KEY, "pending");
+  } catch (error) {
+    // Storage may reject a write after persisting the mode. Never resume with
+    // a stale or partially written pending marker.
+    try {
+      window.localStorage.removeItem(PREPARING_KEY);
+    } catch {
+      // Best effort: the original storage failure remains authoritative.
+    }
+    throw error;
+  }
 }
 
 export function setupPreparationPending(): boolean {
