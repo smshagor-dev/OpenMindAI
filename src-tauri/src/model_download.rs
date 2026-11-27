@@ -146,6 +146,18 @@ fn ensure_download_not_cancelled(token: &CancellationToken) -> Result<(), AppErr
     }
 }
 
+/// Preserve the verified partial for resume if cancellation arrives during hashing.
+/// Never expose a cancelled partial as a completed installed model.
+fn publish_verified_partial(
+    part_path: &Path,
+    final_path: &Path,
+    token: &CancellationToken,
+) -> Result<(), AppError> {
+    ensure_download_not_cancelled(token)?;
+    fs::rename(part_path, final_path)?;
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct ModelDownloadManager {
     root: PortableRootManager,
@@ -518,7 +530,7 @@ impl ModelDownloadManager {
         match prepare_partial_download(&part_path, metadata.size_bytes, metadata.sha256.as_deref())?
         {
             PartialDownloadState::Complete { verification, .. } => {
-                fs::rename(&part_path, &final_path)?;
+                publish_verified_partial(&part_path, &final_path, token)?;
                 tracing::info!(
                     path = %final_path.display(),
                     "recovered complete verified model partial without re-downloading"
@@ -583,7 +595,7 @@ impl ModelDownloadManager {
             VerificationState::Unverified
         };
 
-        fs::rename(&part_path, &final_path)?;
+        publish_verified_partial(&part_path, &final_path, token)?;
         Ok((final_path, verification))
     }
 
@@ -1322,6 +1334,36 @@ mod tests {
             ensure_download_not_cancelled(&token),
             Err(AppError::InferenceCancelled(_))
         ));
+    }
+
+    #[test]
+    fn cancelled_verified_partial_is_preserved_for_resume() {
+        let temp = tempfile::tempdir().unwrap();
+        let part = temp.path().join("model.part");
+        let final_path = temp.path().join("model.gguf");
+        fs::write(&part, b"verified model bytes").unwrap();
+        let token = CancellationToken::new();
+        token.cancel();
+
+        assert!(matches!(
+            publish_verified_partial(&part, &final_path, &token),
+            Err(AppError::InferenceCancelled(_))
+        ));
+        assert_eq!(fs::read(&part).unwrap(), b"verified model bytes");
+        assert!(!final_path.exists());
+    }
+
+    #[test]
+    fn active_verified_partial_publishes_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let part = temp.path().join("model.part");
+        let final_path = temp.path().join("model.gguf");
+        fs::write(&part, b"verified model bytes").unwrap();
+        let token = CancellationToken::new();
+
+        publish_verified_partial(&part, &final_path, &token).unwrap();
+        assert!(!part.exists());
+        assert_eq!(fs::read(&final_path).unwrap(), b"verified model bytes");
     }
 
     #[test]
