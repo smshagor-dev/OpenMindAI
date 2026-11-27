@@ -27,6 +27,9 @@ const MIN_RESPONSE_TOKENS: u32 = 256;
 const CHAT_OUTPUT_TOKENS: u32 = 2_048;
 const LONG_OUTPUT_TOKENS: u32 = 4_096;
 const SEARCH_OUTPUT_TOKENS: u32 = 3_072;
+const RESEARCH_AGENT_OUTPUT_TOKENS: u32 = 1_280;
+const RESEARCH_MANUSCRIPT_OUTPUT_TOKENS: u32 = 8_192;
+const RESEARCH_SECTION_OUTPUT_TOKENS: u32 = 3_072;
 
 /// Estimate the input budget without scanning image base64 bytes as prose.
 /// This is intentionally conservative; it does not replace the model tokenizer.
@@ -57,6 +60,9 @@ fn estimated_prompt_tokens(messages: &[Value]) -> u32 {
 /// llama-server context. None means the prompt leaves insufficient headroom.
 pub fn chat_output_budget(mode: &str, context_size: u32, messages: &[Value]) -> Option<u32> {
     let desired = match mode.trim().to_ascii_lowercase().as_str() {
+        "research-agent" => RESEARCH_AGENT_OUTPUT_TOKENS,
+        "research-manuscript" => RESEARCH_MANUSCRIPT_OUTPUT_TOKENS,
+        "research-section" => RESEARCH_SECTION_OUTPUT_TOKENS,
         "document" | "pdf" | "research" | "thinking" => LONG_OUTPUT_TOKENS,
         "search" => SEARCH_OUTPUT_TOKENS,
         _ => CHAT_OUTPUT_TOKENS,
@@ -86,7 +92,9 @@ pub fn compact_chat_context(
     // Keep at least 1024 tokens for the answer and 512 for the model's chat
     // template and special tokens. The actual reply budget is computed later.
     let input_capacity = context_size.saturating_sub(1_536);
-    let latest_user = messages.iter().rposition(|message| message["role"] == "user");
+    let latest_user = messages
+        .iter()
+        .rposition(|message| message["role"] == "user");
     let mandatory: Vec<bool> = messages
         .iter()
         .enumerate()
@@ -118,7 +126,8 @@ pub fn compact_chat_context(
         if keep[index] {
             continue;
         }
-        let tokens = estimated_prompt_tokens(std::slice::from_ref(&messages[index])).saturating_sub(128);
+        let tokens =
+            estimated_prompt_tokens(std::slice::from_ref(&messages[index])).saturating_sub(128);
         if tokens > remaining {
             break;
         }
@@ -162,7 +171,10 @@ pub fn compact_chat_context(
         let mut with_note = selected.clone();
         with_note.push(note_message.clone());
         if estimated_prompt_tokens(&with_note) <= input_capacity {
-            let insertion = selected.iter().position(|message| message["role"] != "system").unwrap_or(selected.len());
+            let insertion = selected
+                .iter()
+                .position(|message| message["role"] != "system")
+                .unwrap_or(selected.len());
             selected.insert(insertion, note_message);
         }
     }
@@ -292,10 +304,27 @@ mod tests {
     fn response_budget_grows_for_writing_but_respects_context() {
         let messages = vec![json!({"role": "user", "content": "Write a short report"})];
         assert_eq!(chat_output_budget("chat", 8_192, &messages), Some(2_048));
-        assert_eq!(chat_output_budget("document", 8_192, &messages), Some(4_096));
+        assert_eq!(
+            chat_output_budget("document", 8_192, &messages),
+            Some(4_096)
+        );
         assert_eq!(chat_output_budget("pdf", 8_192, &messages), Some(4_096));
-        assert_eq!(chat_output_budget("research", 8_192, &messages), Some(4_096));
-        assert_eq!(chat_output_budget("thinking", 8_192, &messages), Some(4_096));
+        assert_eq!(
+            chat_output_budget("research", 8_192, &messages),
+            Some(4_096)
+        );
+        assert_eq!(
+            chat_output_budget("research-agent", 8_192, &messages),
+            Some(1_280)
+        );
+        assert_eq!(
+            chat_output_budget("research-manuscript", 8_192, &messages),
+            Some(7_513)
+        );
+        assert_eq!(
+            chat_output_budget("thinking", 8_192, &messages),
+            Some(4_096)
+        );
         assert_eq!(chat_output_budget("search", 8_192, &messages), Some(3_072));
         assert!(chat_output_budget("document", 4_096, &messages).unwrap() < 4_096);
     }
@@ -333,22 +362,34 @@ mod tests {
         let window = compact_chat_context(history, 32_768).unwrap();
         assert_eq!(window.omitted_messages, 0);
         assert_eq!(window.messages.len(), 52);
-        assert!(window.messages.iter().any(|message| message["content"] == "শেষ প্রশ্ন: explain in Bangla"));
+        assert!(window
+            .messages
+            .iter()
+            .any(|message| message["content"] == "শেষ প্রশ্ন: explain in Bangla"));
     }
 
     #[test]
     fn compacts_older_long_turns_with_explicit_notice() {
-        let mut history = vec![json!({"role": "system", "content": "Preserve safety requirements."})];
+        let mut history =
+            vec![json!({"role": "system", "content": "Preserve safety requirements."})];
         for i in 0..16 {
-            history.push(json!({"role": "user", "content": format!("{i} {}", "long ".repeat(650))}));
+            history
+                .push(json!({"role": "user", "content": format!("{i} {}", "long ".repeat(650))}));
             history.push(json!({"role": "assistant", "content": format!("Reply {i} {}", "draft ".repeat(650))}));
         }
         history.push(json!({"role": "user", "content": "সর্বশেষ প্রশ্ন"}));
         let result = compact_chat_context(history, 8_192).unwrap();
         assert!(result.omitted_messages > 0);
-        assert!(result.messages.iter().any(|message| message["content"] == "সর্বশেষ প্রশ্ন"));
-        assert!(result.messages.iter().any(|message| message["content"] == "Preserve safety requirements."));
-        assert!(context_omission_notice(result.omitted_messages).contains("older conversation messages"));
+        assert!(result
+            .messages
+            .iter()
+            .any(|message| message["content"] == "সর্বশেষ প্রশ্ন"));
+        assert!(result
+            .messages
+            .iter()
+            .any(|message| message["content"] == "Preserve safety requirements."));
+        assert!(context_omission_notice(result.omitted_messages)
+            .contains("older conversation messages"));
         assert!(chat_output_budget("chat", 8_192, &result.messages).is_some());
     }
 
@@ -380,8 +421,14 @@ mod tests {
 
     #[test]
     fn chat_penalties_apply_to_qwen3_only() {
-        assert_eq!(SamplingProfile::for_chat_model("qwen3"), SamplingProfile::CORE_CHAT);
-        assert_eq!(SamplingProfile::for_chat_model("Qwen3"), SamplingProfile::CORE_CHAT);
+        assert_eq!(
+            SamplingProfile::for_chat_model("qwen3"),
+            SamplingProfile::CORE_CHAT
+        );
+        assert_eq!(
+            SamplingProfile::for_chat_model("Qwen3"),
+            SamplingProfile::CORE_CHAT
+        );
         for family in ["nemotron_h", "llama", "gemma3", "qwen2vl", "phi3", ""] {
             let profile = SamplingProfile::for_chat_model(family);
             assert_eq!(profile, SamplingProfile::GENERAL_CHAT, "{family}");

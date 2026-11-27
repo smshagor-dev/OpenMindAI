@@ -15,6 +15,7 @@ import {
   ChatBackend,
   ChatMessage,
   DEFAULT_MAX_OUTPUT_TOKENS,
+  MAX_MAX_OUTPUT_TOKENS,
   OpenMindClient,
   RequestProfile,
   resolveMaxOutputTokens
@@ -102,7 +103,7 @@ export function activate(context: vscode.ExtensionContext): unknown {
   updateBackendStatus();
 
   const previewProvider = new PreviewContentProvider();
-  const viewProvider = new OpenMindChatViewProvider(context, createClient, prepareForChatSurface);
+  const viewProvider = new OpenMindChatViewProvider(context, createClient, prepareForChatSurface, reportConnectionStatus);
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider("openmindai-preview", previewProvider),
     output,
@@ -145,7 +146,7 @@ export function activate(context: vscode.ExtensionContext): unknown {
   const harness = require("./testHooks") as typeof import("./testHooks");
   return harness.installTestHooks({
     viewProvider,
-    openPanel: () => OpenMindChatPanel.createOrShow(context, createClient, prepareForChatSurface),
+    openPanel: () => OpenMindChatPanel.createOrShow(context, createClient, prepareForChatSurface, reportConnectionStatus),
     activePanel: () => OpenMindChatPanel.active,
     runParticipant: (prompt, output) => handleParticipantRequest(prompt, output, () => false),
     target: () => activeTarget(),
@@ -268,7 +269,7 @@ function createCloudClient(): CloudClient {
     apiKey: key,
     model,
     requestTimeoutMs: config.get<number>("requestTimeoutMs", 300000),
-    maxOutputTokens: resolveMaxOutputTokens(config.get<number>("maxOutputTokens", DEFAULT_MAX_OUTPUT_TOKENS)),
+    maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS,
     label: `OpenMindAI Cloud (${model})`
   });
 }
@@ -280,9 +281,9 @@ function createLocalClient(): OpenMindClient {
     throw new Error("OpenMindAI endpoint was not found. Start the desktop app or set openmindai.endpoint.");
   }
   const profile = PROFILE_BY_KIND[target.kind];
-  let maxOutputTokens = resolveMaxOutputTokens(
-    config.get<number>("maxOutputTokens", DEFAULT_MAX_OUTPUT_TOKENS)
-  );
+  let maxOutputTokens = target.kind === "coding-agent"
+    ? MAX_MAX_OUTPUT_TOKENS
+    : MAX_MAX_OUTPUT_TOKENS;
   let contextSize: number | undefined;
   if (profile === "native-gateway") {
     // The native worker rejects prompt + max_tokens beyond its context window, so leave
@@ -355,7 +356,8 @@ export interface ParticipantOutput {
 async function handleParticipantRequest(
   prompt: string,
   response: ParticipantOutput,
-  isCancelled: () => boolean
+  isCancelled: () => boolean,
+  references: readonly unknown[] = []
 ): Promise<void> {
   const report = (phase: ActivityPhase, detail?: string): void => {
     response.progress(detail ? `${phase}: ${detail}` : phase);
@@ -363,7 +365,7 @@ async function handleParticipantRequest(
 
   try {
     report("Planning", "Preparing workspace context");
-    const workspaceRequest = await buildWorkspaceRequest(prompt, report);
+    const workspaceRequest = await buildWorkspaceRequest(prompt, report, references);
     if (isCancelled()) return;
 
     await prepareForRequest((message) => report("Thinking", message));
@@ -412,7 +414,8 @@ function registerChatParticipant(context: vscode.ExtensionContext): vscode.Dispo
             response.markdown(text);
           }
         },
-        () => token.isCancellationRequested
+        () => token.isCancellationRequested,
+        request.references
       );
     }
   );
@@ -437,7 +440,7 @@ async function openNativeChat(context: vscode.ExtensionContext): Promise<void> {
         error instanceof Error ? error.message : String(error)
       }`
     );
-    OpenMindChatPanel.createOrShow(context, createClient, prepareForChatSurface);
+    OpenMindChatPanel.createOrShow(context, createClient, prepareForChatSurface, reportConnectionStatus);
   }
 }
 
@@ -450,13 +453,18 @@ async function openRightSideChat(context: vscode.ExtensionContext): Promise<void
         error instanceof Error ? error.message : String(error)
       }`
     );
-    OpenMindChatPanel.createOrShow(context, createClient, prepareForChatSurface);
+    OpenMindChatPanel.createOrShow(context, createClient, prepareForChatSurface, reportConnectionStatus);
   }
 }
 
-async function checkConnection(): Promise<void> {
+function reportConnectionStatus(report: (status: string, connected: boolean) => void): void {
+  void checkConnection(report);
+}
+
+async function checkConnection(report?: (status: string, connected: boolean) => void): Promise<void> {
+  report?.("Checking OpenMindAI local connection…", false);
   if (backendSetting() === "cloud") {
-    await checkCloudConnection();
+    await checkCloudConnection(report);
     return;
   }
   try {
@@ -471,6 +479,7 @@ async function checkConnection(): Promise<void> {
           const cloud = createCloudClient();
           const models = (await cloud.listModels()) as Array<{ id: string }>;
           emitEvent("connection", `cloud: ${cloud.label}`);
+          report?.(`Connected to ${cloud.label}`, true);
           vscode.window.showInformationMessage(
             `OpenMindAI Live (Cloud) is reachable via ${cloud.label}. ${models.length} model(s) available.`
           );
@@ -481,6 +490,7 @@ async function checkConnection(): Promise<void> {
         const ready = await client.ready();
         const target = activeTarget();
         emitEvent("connection", `${target?.kind ?? "none"}: ${client.label}`);
+        report?.(`Connected to ${client.label}`, true);
         if (target?.kind === "coding-agent" && target.agent?.configured === false) {
           vscode.window.showWarningMessage(
             `OpenMindAI is reachable, but ${target.agent.message ?? "no coding agent is configured."}`
@@ -505,11 +515,13 @@ async function checkConnection(): Promise<void> {
       }
     );
   } catch (error) {
+    report?.("OpenMindAI app not connected · Open the desktop app and check Agent Setup", false);
     showError("OpenMindAI connection check failed", error);
   }
 }
 
-async function checkCloudConnection(): Promise<void> {
+async function checkCloudConnection(report?: (status: string, connected: boolean) => void): Promise<void> {
+  report?.("Checking OpenMindAI Cloud connection…", false);
   try {
     await vscode.window.withProgress(
       {
@@ -520,12 +532,14 @@ async function checkCloudConnection(): Promise<void> {
         const client = createCloudClient();
         const models = (await client.listModels()) as Array<{ id: string }>;
         emitEvent("connection", `cloud: ${client.label}`);
+        report?.(`Connected to ${client.label}`, true);
         vscode.window.showInformationMessage(
           `OpenMindAI Cloud is reachable via ${client.label}. ${models.length} model(s) available.`
         );
       }
     );
   } catch (error) {
+    report?.("OpenMindAI Cloud is not connected · Check your key and model", false);
     showError("OpenMindAI Cloud connection check failed", error);
   }
 }
@@ -848,12 +862,8 @@ function activeEditorContext(): string {
     return `Active file: ${document.uri.fsPath}\nLanguage: ${document.languageId}\nSelected text:\n\`\`\`${document.languageId}\n${selected}\n\`\`\``;
   }
 
-  const maxContext = vscode.workspace
-    .getConfiguration("openmindai")
-    .get<number>("maxContextCharacters", 800);
   const fullText = document.getText();
-  const preview = fullText.length > maxContext ? `${fullText.slice(0, maxContext)}\n[truncated]` : fullText;
-  return `Active file: ${document.uri.fsPath}\nLanguage: ${document.languageId}\nFile preview:\n\`\`\`${document.languageId}\n${preview}\n\`\`\``;
+  return `Active file: ${document.uri.fsPath}\nLanguage: ${document.languageId}\nFile content:\n\`\`\`${document.languageId}\n${fullText}\n\`\`\``;
 }
 
 async function showMarkdown(title: string, content: string): Promise<void> {
