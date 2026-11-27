@@ -123,7 +123,7 @@ test("Save copy returns exact scoped bytes with sanitized filename, and rejects 
     assert.equal(dom.window.document.querySelectorAll("a").length, 0);
 
     globalThis.__projectBinaryApi.readProjectBinaryFile = async () => ({
-      name: "corrupt.bin", mimeType: null, dataBase64: "AA==", sizeBytes: 30, sha256: "x",
+      name: "corrupt.bin", mimeType: null, dataBase64: "AA==", sizeBytes: 2, sha256: "x",
     });
     await assert.rejects(saveProjectBinaryCopy("owner-project", "file-23"), /size validation/);
     assert.equal(downloads.length, 1);
@@ -134,6 +134,40 @@ test("Save copy returns exact scoped bytes with sanitized filename, and rejects 
     globalThis.setTimeout = originalTimer;
     delete globalThis.__projectBinaryApi;
     dom.window.close();
+  }
+});
+
+test("binary upload rejects malformed declared sizes and inconsistent returned buffers before native writes", async () => {
+  let reads = 0;
+  let writes = 0;
+  globalThis.__projectBinaryApi = {
+    addProjectBinaryFile: async () => { writes += 1; return { status: "attached" }; },
+  };
+  const fakeFile = (size, buffer) => ({
+    name: "payload.bin", type: "application/octet-stream", size,
+    arrayBuffer: async () => { reads += 1; return buffer; },
+  });
+  try {
+    for (const size of [-1, NaN, Infinity, 1.5, 1_500_001]) {
+      await assert.rejects(attachProjectBinaryFile("project", fakeFile(size, new ArrayBuffer(0))), /valid size/);
+    }
+    assert.equal(reads, 0, "invalid declared sizes must fail before reading");
+    await assert.rejects(
+      attachProjectBinaryFile("project", fakeFile(1, new ArrayBuffer(1_500_001))),
+      /changed during import/,
+    );
+    await assert.rejects(
+      attachProjectBinaryFile("project", fakeFile(4, new ArrayBuffer(3))),
+      /changed during import/,
+    );
+    await assert.rejects(
+      attachProjectBinaryFile("project", fakeFile(1, new Uint8Array([7]))),
+      /changed during import/,
+    );
+    assert.equal(reads, 3);
+    assert.equal(writes, 0, "invalid uploads must never reach native persistence");
+  } finally {
+    delete globalThis.__projectBinaryApi;
   }
 });
 

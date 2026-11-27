@@ -200,13 +200,22 @@ mod tests {
             for suffix in ['¹', '²', '³'] {
                 let alias = format!("{prefix}{suffix}");
                 assert!(unsafe_portable_filename(&alias), "{alias}");
-                assert!(unsafe_portable_filename(&format!("{alias}.pdf")), "{alias}.pdf");
+                assert!(
+                    unsafe_portable_filename(&format!("{alias}.pdf")),
+                    "{alias}.pdf"
+                );
             }
         }
         for name in ["COM1.pdf", "LPT9.docx", "CON.txt", "NUL"] {
             assert!(unsafe_portable_filename(name), "{name}");
         }
-        for name in ["COM0.pdf", "LPT10.pdf", "COM⁴.pdf", "summary¹.pdf", "café.pdf"] {
+        for name in [
+            "COM0.pdf",
+            "LPT10.pdf",
+            "COM⁴.pdf",
+            "summary¹.pdf",
+            "café.pdf",
+        ] {
             assert!(!unsafe_portable_filename(name), "{name}");
         }
 
@@ -231,7 +240,7 @@ mod tests {
         std::os::unix::fs::symlink(target, link).unwrap();
         #[cfg(windows)]
         {
-            let result = std::process::Command::new("pwsh").args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:TEST_LINK -Target $env:TEST_TARGET -ErrorAction Stop | Out-Null"])
+            let result = std::process::Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:TEST_LINK -Target $env:TEST_TARGET -ErrorAction Stop | Out-Null"])
                 .env("TEST_LINK", link).env("TEST_TARGET", target).output().unwrap();
             assert!(
                 result.status.success(),

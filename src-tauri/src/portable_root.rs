@@ -12,8 +12,40 @@ use crate::app_error::AppError;
 
 const MARKER_FILE: &str = "openmindai.marker";
 const INSTALL_CONFIG_FILE: &str = "install.json";
-pub const CURRENT_SCHEMA_VERSION: u32 = 8;
+pub const CURRENT_SCHEMA_VERSION: u32 = 9;
 pub const DEFAULT_PROFILE_NAME: &str = "openmindai";
+
+#[cfg(test)]
+pub(crate) fn test_root_from_env() -> Result<PathBuf, String> {
+    let configured = env::var_os("OPENMINDAI_TEST_ROOT")
+        .ok_or_else(|| "OPENMINDAI_TEST_ROOT must identify a disposable test root".to_string())?;
+    let expected = env::var_os("OPENMINDAI_EXPECTED_ROOT").ok_or_else(|| {
+        "OPENMINDAI_EXPECTED_ROOT must match the disposable test root".to_string()
+    })?;
+    let active = env::var_os("OPENMINDAI_ROOT")
+        .ok_or_else(|| "OPENMINDAI_ROOT must point to the disposable test root".to_string())?;
+    let canonical = |path: &std::ffi::OsStr| {
+        fs::canonicalize(path).map_err(|error| format!("cannot canonicalize test root: {error}"))
+    };
+    let configured = canonical(&configured)?;
+    if canonical(&expected)? != configured || canonical(&active)? != configured {
+        return Err("test root, expected root, and active root do not match".to_string());
+    }
+    let temp = fs::canonicalize(env::temp_dir())
+        .map_err(|error| format!("cannot canonicalize temporary directory: {error}"))?;
+    if !configured.starts_with(&temp)
+        || !configured
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("openmindai-rust-tests-"))
+    {
+        return Err(
+            "test root must be a named OpenMindAI disposable directory under the OS temp directory"
+                .to_string(),
+        );
+    }
+    Ok(configured)
+}
 /// Rough initial footprint for a first-run install: llama.cpp runtime +
 /// Qwen3 4B Q4_K_M model + database + safety margin. Used only to preview
 /// "is there probably enough room" on the setup wizard's Storage screen —
@@ -58,7 +90,11 @@ pub fn preview_writable(path: &Path) -> bool {
         // Never truncate or delete a pre-existing file (or follow a planted
         // symlink) merely to check whether a storage location is writable.
         let probe = path.join(format!(".openmindai-write-test-{}", uuid::Uuid::new_v4()));
-        return match fs::OpenOptions::new().write(true).create_new(true).open(&probe) {
+        return match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+        {
             Ok(file) => {
                 drop(file);
                 fs::remove_file(&probe).is_ok()
@@ -153,8 +189,7 @@ impl InstallConfig {
     /// finished install, so they count as provisioned to avoid forcing existing
     /// users back through the wizard.
     pub fn is_fully_provisioned(&self) -> bool {
-        self.installation_complete
-            && matches!(self.setup_state, None | Some(SetupState::Completed))
+        self.installation_complete && matches!(self.setup_state, None | Some(SetupState::Completed))
     }
 
     /// Builds the resume descriptor for a setup that still needs finishing.
@@ -356,10 +391,7 @@ impl PortableRootManager {
         // capability-relative handle. A concurrent symlink replacement of an
         // intermediate directory must not redirect initialization outside it.
         fs::create_dir_all(&self.root)?;
-        let root = cap_std::fs::Dir::open_ambient_dir(
-            &self.root,
-            cap_std::ambient_authority(),
-        )?;
+        let root = cap_std::fs::Dir::open_ambient_dir(&self.root, cap_std::ambient_authority())?;
         for relative in REQUIRED_DIRECTORIES {
             root.create_dir_all(relative)?;
         }
@@ -405,15 +437,16 @@ impl PortableRootManager {
         fs::create_dir_all(&self.root)?;
         // A fixed .write-test name could be a symlink to unrelated user data.
         // Use an unpredictable exclusive file so validation cannot overwrite it.
-        let probe = self.root.join(format!(".write-test-{}", uuid::Uuid::new_v4()));
+        let probe = self
+            .root
+            .join(format!(".write-test-{}", uuid::Uuid::new_v4()));
         let file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&probe)
             .map_err(|error| AppError::RootNotWritable(error.to_string()))?;
         drop(file);
-        fs::remove_file(&probe)
-            .map_err(|error| AppError::RootNotWritable(error.to_string()))?;
+        fs::remove_file(&probe).map_err(|error| AppError::RootNotWritable(error.to_string()))?;
         Ok(())
     }
 
@@ -605,6 +638,8 @@ pub(crate) mod tests {
     struct EnvRestore {
         root: Option<std::ffi::OsString>,
         install_config: Option<std::ffi::OsString>,
+        expected_root: Option<std::ffi::OsString>,
+        test_root: Option<std::ffi::OsString>,
     }
 
     impl EnvRestore {
@@ -612,6 +647,8 @@ pub(crate) mod tests {
             let restore = Self {
                 root: env::var_os("OPENMINDAI_ROOT"),
                 install_config: env::var_os("OPENMINDAI_INSTALL_CONFIG"),
+                expected_root: env::var_os("OPENMINDAI_EXPECTED_ROOT"),
+                test_root: env::var_os("OPENMINDAI_TEST_ROOT"),
             };
             env::remove_var("OPENMINDAI_ROOT");
             restore
@@ -628,7 +665,55 @@ pub(crate) mod tests {
                 Some(value) => env::set_var("OPENMINDAI_INSTALL_CONFIG", value),
                 None => env::remove_var("OPENMINDAI_INSTALL_CONFIG"),
             }
+            match self.expected_root.take() {
+                Some(value) => env::set_var("OPENMINDAI_EXPECTED_ROOT", value),
+                None => env::remove_var("OPENMINDAI_EXPECTED_ROOT"),
+            }
+            match self.test_root.take() {
+                Some(value) => env::set_var("OPENMINDAI_TEST_ROOT", value),
+                None => env::remove_var("OPENMINDAI_TEST_ROOT"),
+            }
         }
+    }
+
+    #[test]
+    fn test_root_requires_matching_explicit_disposable_root() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _restore = EnvRestore::capture();
+        let parent = tempfile::tempdir().unwrap();
+        let path = parent
+            .path()
+            .join(format!("openmindai-rust-tests-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&path).unwrap();
+        env::set_var("OPENMINDAI_ROOT", &path);
+        env::set_var("OPENMINDAI_TEST_ROOT", &path);
+        env::set_var("OPENMINDAI_EXPECTED_ROOT", &path);
+        assert_eq!(
+            test_root_from_env().unwrap(),
+            fs::canonicalize(&path).unwrap()
+        );
+
+        env::set_var("OPENMINDAI_EXPECTED_ROOT", parent.path());
+        assert!(test_root_from_env().unwrap_err().contains("do not match"));
+
+        env::set_var("OPENMINDAI_EXPECTED_ROOT", &path);
+        env::set_var("OPENMINDAI_ROOT", parent.path());
+        assert!(test_root_from_env().unwrap_err().contains("do not match"));
+    }
+
+    #[test]
+    fn test_root_rejects_missing_or_non_disposable_configuration() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _restore = EnvRestore::capture();
+        assert!(test_root_from_env().is_err());
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("production");
+        fs::create_dir(&path).unwrap();
+        env::set_var("OPENMINDAI_ROOT", &path);
+        env::set_var("OPENMINDAI_TEST_ROOT", &path);
+        env::set_var("OPENMINDAI_EXPECTED_ROOT", &path);
+        assert!(test_root_from_env().unwrap_err().contains("disposable"));
     }
 
     #[test]
