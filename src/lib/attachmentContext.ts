@@ -111,7 +111,8 @@ export function selectAttachmentExcerpt(content: string, limit: number, prompt: 
   if (limit <= 0) return "";
   if (content.length <= limit) return content;
   if (limit <= TRUNCATION_NOTE.length + GAP.length * 2 + 12) {
-    if (limit <= TRUNCATION_NOTE.length) return TRUNCATION_NOTE.slice(0, limit);
+    // Preserve source evidence when the full truncation notice will not fit.
+    if (limit <= TRUNCATION_NOTE.length) return safeExcerptSlice(content, 0, limit);
     return safeExcerptSlice(content, 0, limit - TRUNCATION_NOTE.length) + TRUNCATION_NOTE;
   }
   const usable = limit - TRUNCATION_NOTE.length - GAP.length * 2;
