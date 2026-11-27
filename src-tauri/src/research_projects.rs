@@ -1903,18 +1903,23 @@ pub(crate) fn start_local_research_run(
     model_id: Option<String>,
     execution_mode: Option<String>,
     manuscript_target_words: i64,
+    source_run_id: Option<String>,
+    change_request: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<LocalResearchRun, AppError> {
-    start_local_research_run_inner(
+    start_local_research_run_with_change(
         app,
         project_id,
         model_id,
         execution_mode,
         manuscript_target_words,
+        source_run_id.as_deref(),
+        change_request.as_deref(),
         &state,
     )
 }
 
+#[allow(dead_code)]
 pub(super) fn start_local_research_run_inner<R: Runtime>(
     app: AppHandle<R>,
     project_id: String,
@@ -1923,19 +1928,67 @@ pub(super) fn start_local_research_run_inner<R: Runtime>(
     manuscript_target_words: i64,
     state: &AppState,
 ) -> Result<LocalResearchRun, AppError> {
+    start_local_research_run_with_change(app, project_id, model_id, execution_mode, manuscript_target_words, None, None, state)
+}
+
+fn revised_research_brief(previous: &str, change: &str) -> Result<String, AppError> {
+    let change = change.trim();
+    if change.chars().count() < 5 || change.chars().count() > 800 {
+        return Err(AppError::Internal("Describe the requested changes in 5–800 characters.".into()));
+    }
+    let brief = format!("Latest change request (takes precedence): {change}\n\nPrevious research instructions (retain unless explicitly changed):\n{previous}");
+    if brief.chars().count() > 16_000 {
+        return Err(AppError::Internal("The accumulated research brief is too long. Start a new project with a consolidated brief.".into()));
+    }
+    Ok(brief)
+}
+
+fn research_run_brief(connection: &rusqlite::Connection, run_id: &str) -> Result<Option<String>, AppError> {
+    let payload: Option<String> = connection.query_row(
+        "SELECT payload_json FROM research_events WHERE run_id=?1 AND type='research.run.queued' ORDER BY event_id LIMIT 1",
+        params![run_id], |row| row.get(0),
+    ).optional()?;
+    Ok(payload.and_then(|payload| serde_json::from_str::<Value>(&payload).ok())
+        .and_then(|value| value["researchBrief"].as_str().map(str::to_owned)))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_local_research_run_with_change<R: Runtime>(
+    app: AppHandle<R>,
+    project_id: String,
+    model_id: Option<String>,
+    execution_mode: Option<String>,
+    manuscript_target_words: i64,
+    source_run_id: Option<&str>,
+    change_request: Option<&str>,
+    state: &AppState,
+) -> Result<LocalResearchRun, AppError> {
     let database = state
         .database
         .lock()
         .map_err(|_| AppError::internal("database lock poisoned"))?;
     let connection = database.connection();
-    let (project_title, experiment_requested): (String, bool) = connection
+    let (project_title, experiment_requested, original_prompt): (String, bool, String) = connection
         .query_row(
-            "SELECT title, experiment_requested FROM research_projects WHERE id = ?1",
+            "SELECT title, experiment_requested, prompt FROM research_projects WHERE id = ?1",
             params![project_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?
         .ok_or_else(|| AppError::Internal("Research project was not found.".into()))?;
+    let (research_brief, model_id, execution_mode) = match (source_run_id, change_request) {
+        (None, None) => (original_prompt, model_id, execution_mode),
+        (Some(source), Some(change)) => {
+            let previous = read_run(connection, source)?;
+            if previous.project_id != project_id || !matches!(previous.status.as_str(), "completed" | "cancelled" | "failed" | "interrupted") {
+                return Err(AppError::Internal("Changes require a finished or stopped run from this project.".into()));
+            }
+            let prior_brief = research_run_brief(connection, source)?.unwrap_or(original_prompt);
+            let route: Option<String> = connection.query_row("SELECT requested_mode FROM research_run_routing WHERE run_id=?1", params![source], |row| row.get(0)).optional()?;
+            (revised_research_brief(&prior_brief, change)?, Some(previous.model_id), route.or(execution_mode))
+        }
+        _ => return Err(AppError::Internal("A change request must reference its source research run.".into())),
+    };
     let execution_mode = execution_mode
         .unwrap_or_else(|| "auto".into())
         .to_ascii_lowercase();
@@ -2007,11 +2060,7 @@ pub(super) fn start_local_research_run_inner<R: Runtime>(
         &tx,
         &project_id,
         &run_id,
-        &connection.query_row(
-            "SELECT prompt FROM research_projects WHERE id=?1",
-            params![project_id],
-            |row| row.get::<_, String>(0),
-        )?,
+        &research_brief,
         &now,
     )?;
     tx.execute(
@@ -2028,7 +2077,7 @@ pub(super) fn start_local_research_run_inner<R: Runtime>(
         Some("queued"),
         Some(0),
         Some(specs.len() as u32),
-        json!({"modelId": model.id,"localDocuments":attached_document_count}),
+        json!({"modelId": model.id,"localDocuments":attached_document_count,"researchBrief":research_brief,"sourceRunId":source_run_id,"changeRequest":change_request,"requestedMode":execution_mode}),
     )?;
     let run = read_run(&tx, &run_id)?;
     tx.commit()?;
@@ -2889,6 +2938,8 @@ async fn execute_local_research_run<R: Runtime>(
                 ))
             },
         )?;
+        // The run's immutable brief takes precedence over subsequently edited project settings.
+        let prompt = research_run_brief(&tx, &run_id)?.unwrap_or(prompt);
         let run = read_run(&tx, &run_id)?;
         let event = record_event(
             &tx,
@@ -3858,6 +3909,18 @@ fn cloud_text_content(value: &Value) -> Option<String> {
 mod tests {
     use super::*;
     use crate::database::Database;
+
+    #[test]
+    fn research_change_preserves_previous_instructions_and_prioritizes_latest_request() {
+        let first = revised_research_brief("Compare federated learning methods.", "Add a limitations section.").unwrap();
+        let second = revised_research_brief(&first, "Include privacy risks.").unwrap();
+        assert!(second.starts_with("Latest change request (takes precedence): Include privacy risks."));
+        assert!(second.contains("Add a limitations section."));
+        assert!(second.contains("Compare federated learning methods."));
+        assert!(revised_research_brief("original", " ").is_err());
+        assert!(revised_research_brief("original", &"a".repeat(801)).is_err());
+        assert!(revised_research_brief(&"a".repeat(16000), "Add limits.").is_err());
+    }
 
     #[test]
     fn research_title_response_requires_a_single_valid_json_title_field() {

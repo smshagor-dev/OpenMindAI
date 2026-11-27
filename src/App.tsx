@@ -2115,6 +2115,7 @@ export function App() {
             mode={executionMode}
             initialRunId={view === "research-run" ? researchRunId : null}
             onRunStarted={(runId) => { setResearchRunId(runId); setView("research-run"); }}
+            onNewResearch={() => { setResearchRunId(null); setView("research-studio"); }}
             onOpenModelManager={() => {
               setSettingsSection("models");
               setView("settings");

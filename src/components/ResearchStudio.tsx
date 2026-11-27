@@ -408,6 +408,7 @@ export function ResearchStudio({
   onRunStarted,
   onOpenModelManager,
   initialRunId,
+  onNewResearch,
 }: {
   connected: boolean;
   mode: ExecutionMode;
@@ -415,6 +416,7 @@ export function ResearchStudio({
   onRunStarted: (runId: string) => void;
   onOpenModelManager: () => void;
   initialRunId: string | null;
+  onNewResearch: () => void;
 }) {
   const [projects, setProjects] = useState<ResearchProject[]>([]);
   const [localProjects, setLocalProjects] = useState<LocalResearchProject[]>([]);
@@ -438,6 +440,10 @@ export function ResearchStudio({
     });
   }, [selectedLocalProjectId]);
   const [selectedLocalRunId, setSelectedLocalRunId] = useState<string | null>(null);
+  const [runWorkspace, setRunWorkspace] = useState(Boolean(initialRunId));
+  const [changeRequest, setChangeRequest] = useState("");
+  const [changeBusy, setChangeBusy] = useState(false);
+  const [startingResearch, setStartingResearch] = useState(false);
   const [localRunDetailsState, setLocalRunDetailsState] = useState<LocalResearchRunDetails | null>(null);
   const localRunDetails = localRunDetailsState?.run.id === selectedLocalRunId && localRunDetailsState.run.projectId === selectedLocalProjectId
     ? localRunDetailsState
@@ -508,6 +514,7 @@ export function ResearchStudio({
 
   useEffect(() => {
     if (!initialRunId) return;
+    setRunWorkspace(true);
     let alive = true;
     void invoke<LocalResearchRunDetails>("local_research_run_details", { runId: initialRunId }).then((detail) => {
       if (!alive) return;
@@ -871,6 +878,8 @@ export function ResearchStudio({
     }
     setBusy(true);
     setError(null);
+    setStartingResearch(true);
+    setRunWorkspace(true);
     void (async () => {
       try {
         const project = await persistLocalResearchDraft();
@@ -901,8 +910,10 @@ export function ResearchStudio({
       } catch (caught) {
         setDocumentImportProgress(null);
         setError(explain(caught));
+        setRunWorkspace(false);
       } finally {
         setBusy(false);
+        setStartingResearch(false);
       }
     })();
   }, [prompt, persistLocalResearchDraft, pendingDocumentPaths, selectedModelId, selectedResearchRoute, manuscriptTargetWords, onRunStarted]);
@@ -1045,6 +1056,38 @@ export function ResearchStudio({
     [activeId],
   );
 
+  const submitResearchChange = async () => {
+    const source = localRunDetails?.run;
+    const request = changeRequest.trim();
+    if (!source || changeBusy || busy || request.length < 5 || !["completed", "cancelled", "failed", "interrupted"].includes(source.status)) return;
+    if (editingManuscript) { setError("Save or cancel the open manuscript edit before requesting a research revision."); return; }
+    setChangeBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const project = localProjects.find((item) => item.id === source.projectId);
+      const run = await invoke<LocalResearchRun>("start_local_research_run", {
+        projectId: source.projectId, modelId: source.modelId, executionMode: selectedResearchRoute,
+        manuscriptTargetWords: project?.manuscript_target_words ?? manuscriptTargetWords,
+        sourceRunId: source.id, changeRequest: request,
+      });
+      setLocalRuns((items) => [run, ...items.filter((item) => item.id !== run.id)]);
+      setSelectedLocalRunId(run.id);
+      setSelectedTaskId(null);
+      setChangeRequest("");
+      setRunWorkspace(true);
+      onRunStarted(run.id);
+      setNotice("Change request started a linked research run. The previous run and manuscript remain saved.");
+    } catch (caught) { setError(explain(caught)); }
+    finally { setChangeBusy(false); }
+  };
+  const briefEvent = localRunDetails?.events.find((event) => event.type === "research.run.queued");
+  const currentChange = typeof briefEvent?.payload.changeRequest === "string" ? briefEvent.payload.changeRequest : null;
+  const sourceRunId = typeof briefEvent?.payload.sourceRunId === "string" ? briefEvent.payload.sourceRunId : null;
+  const projectPrompt = localProjects.find((project) => project.id === selectedLocalProjectId)?.prompt ?? prompt;
+  const currentBrief = typeof briefEvent?.payload.researchBrief === "string" ? briefEvent.payload.researchBrief : projectPrompt;
+  const canRequestChange = Boolean(localRunDetails && ["completed", "cancelled", "failed", "interrupted"].includes(localRunDetails.run.status));
+
   // Every mode starts a local Rust research run. Cloud access is available
   // only through its bounded inference command.
   if (!useCloud) {
@@ -1053,15 +1096,30 @@ export function ResearchStudio({
         {sidebarSlot &&
           createPortal(
             <div className="studio-side rs-side">
-              <button className="rs-new-btn" type="button" onClick={() => { setPrompt(""); setTitle(""); setError(null); setNotice(null); setExperimentRequested(false); setManuscriptTargetWords(3500); setManuscriptPageTarget(24); setCustomPageTarget(30); setCustomPageTargetInput("30"); setPageTargetError(null); setSelectedModelId(""); setSelectedResearchRoute("auto"); setOutputLanguage("English"); setSelectedLocalProjectId(null); setSelectedLocalRunId(null); setPendingDocumentPaths([]); }}><Pencil size={16} /> New local research</button>
+              <button className="rs-new-btn" type="button" disabled={startingResearch || changeBusy} onClick={() => { setRunWorkspace(false); onNewResearch(); setChangeRequest(""); setPrompt(""); setTitle(""); setError(null); setNotice(null); setExperimentRequested(false); setManuscriptTargetWords(3500); setManuscriptPageTarget(24); setCustomPageTarget(30); setCustomPageTargetInput("30"); setPageTargetError(null); setSelectedModelId(""); setSelectedResearchRoute("auto"); setOutputLanguage("English"); setSelectedLocalProjectId(null); setSelectedLocalRunId(null); setPendingDocumentPaths([]); }}><Pencil size={16} /> New local research</button>
               <h2>Local projects</h2>
-              {localProjects.length ? <div className="rs-projects">{localProjects.map((project) => <button key={project.id} className={`rs-project-title ${selectedLocalProjectId === project.id ? "active" : ""}`} title={project.prompt} onClick={() => { setSelectedLocalProjectId(project.id); setSelectedLocalRunId(null); setPendingDocumentPaths([]); setTitle(project.title); setPrompt(project.prompt); setOutputLanguage(project.output_language || "English"); setExperimentRequested(project.experiment_requested); setManuscriptTargetWords(project.manuscript_target_words ?? 3500); const pages = project.manuscript_page_target ?? 24; setManuscriptPageTarget(pages); if (!PAGE_PRESETS.includes(pages as typeof PAGE_PRESETS[number])) { setCustomPageTarget(pages); setCustomPageTargetInput(String(pages)); } setPageTargetError(null); setResearchProjectConflict(false); setNotice(`Loaded local project: ${project.title} (revision ${project.revision})`); }}>{project.title}</button>)}</div> : <p className="rs-sidebar-empty">Local research projects will appear here.</p>}
-              {localRuns.length > 0 ? <><h2>Runs</h2><div className="rs-projects">{localRuns.map((run) => <button key={run.id} className={`rs-project-title ${selectedLocalRunId === run.id ? "active" : ""}`} onClick={() => setSelectedLocalRunId(run.id)}>{new Date(run.startedAt).toLocaleString()} · {run.status}</button>)}</div></> : null}
+              {localProjects.length ? <div className="rs-projects">{localProjects.map((project) => <button key={project.id} className={`rs-project-title ${selectedLocalProjectId === project.id ? "active" : ""}`} title={project.prompt} disabled={startingResearch || changeBusy} onClick={() => { setRunWorkspace(false); onNewResearch(); setChangeRequest(""); setSelectedLocalProjectId(project.id); setSelectedLocalRunId(null); setPendingDocumentPaths([]); setTitle(project.title); setPrompt(project.prompt); setOutputLanguage(project.output_language || "English"); setExperimentRequested(project.experiment_requested); setManuscriptTargetWords(project.manuscript_target_words ?? 3500); const pages = project.manuscript_page_target ?? 24; setManuscriptPageTarget(pages); if (!PAGE_PRESETS.includes(pages as typeof PAGE_PRESETS[number])) { setCustomPageTarget(pages); setCustomPageTargetInput(String(pages)); } setPageTargetError(null); setResearchProjectConflict(false); setNotice(`Loaded local project: ${project.title} (revision ${project.revision})`); }}>{project.title}</button>)}</div> : <p className="rs-sidebar-empty">Local research projects will appear here.</p>}
+              {localRuns.length > 0 ? <><h2>Runs</h2><div className="rs-projects">{localRuns.map((run) => <button key={run.id} className={`rs-project-title ${selectedLocalRunId === run.id ? "active" : ""}`} disabled={startingResearch || changeBusy} onClick={() => { setRunWorkspace(true); setChangeRequest(""); setSelectedTaskId(null); setSelectedLocalRunId(run.id); onRunStarted(run.id); }}>{new Date(run.startedAt).toLocaleString()} · {run.status}</button>)}</div></> : null}
             </div>,
             sidebarSlot,
           )}
-        <main className="rs rs-main">
-          {initialRunId ? <div className="rs-card"><span className="rs-eyebrow">Research run</span><h1>Live research progress</h1><p>Track each research stage, review sources, and follow the manuscript as it is prepared.</p></div> : <section className="rs-card rs-new">
+        <main className={`rs rs-main${runWorkspace ? " rs-chat-workspace" : ""}`}>
+          <div className={runWorkspace ? "rs-chat-scroll" : "rs-create-content"}>
+          {runWorkspace ? <section className="rs-research-thread">
+            <header><span className="rs-eyebrow">Research conversation</span><h1>{localProjects.find((project) => project.id === selectedLocalProjectId)?.title || title || "Research Studio"}</h1></header>
+            <div className="rs-chat-user"><small>You</small><p dir="auto">{currentChange ?? currentBrief}</p></div>
+            {sourceRunId ? <p className="rs-linked-run">Based on an earlier run · <button type="button" disabled={changeBusy} onClick={() => { setSelectedLocalRunId(sourceRunId); setChangeRequest(""); onRunStarted(sourceRunId); }}>Open previous version</button></p> : null}
+            {currentChange ? <details><summary>Accumulated research instructions</summary><pre className="rs-local-result">{currentBrief}</pre></details> : null}
+            <div className="rs-chat-assistant"><Sparkles size={17} /> OpenMindAI Research</div>
+            {!localRunDetails ? <div className="rs-chat-generating" role="status"><Loader2 className="rs-spin" size={23} /><strong>{startingResearch ? "Preparing research…" : "Loading research run…"}</strong><span>{documentImportProgress ?? "0% · Waiting for persisted task progress"}</span></div> : null}
+            {error ? <p className="rs-error" role="alert">{error}</p> : null}
+            {notice ? <p className="rs-notice" role="status">{notice}</p> : null}
+            {localRunDetails ? <div className="rs-actions">
+              {["queued", "running"].includes(localRunDetails.run.status) ? <button type="button" disabled={changeBusy} onClick={() => void invoke("pause_local_research_run", { runId: localRunDetails.run.id }).then(refreshCurrentRun).catch((caught: unknown) => setError(explain(caught)))}><PauseCircle size={15} /> Pause run</button> : null}
+              {LIVE.has(localRunDetails.run.status) ? <button type="button" disabled={changeBusy} onClick={() => void invoke("cancel_local_research_run", { runId: localRunDetails.run.id }).then(refreshCurrentRun).catch((caught: unknown) => setError(explain(caught)))}><Square size={15} /> Stop run</button> : null}
+              {["interrupted", "failed", "paused"].includes(localRunDetails.run.status) ? <button type="button" disabled={changeBusy} onClick={() => void invoke<LocalResearchRun>("resume_local_research_run", { runId: localRunDetails.run.id }).then(refreshCurrentRun).catch((caught: unknown) => setError(explain(caught)))}><Play size={15} /> Resume run</button> : null}
+            </div> : null}
+          </section> : <section className="rs-card rs-new">
             <span className="rs-eyebrow">Local Research</span>
             <h1>Research with your chosen model route.</h1>
             <p>Projects, runs, task results, and activity are stored on this device. The native orchestrator schedules every research task locally; models provide inference through an installed local runtime or the configured secure Cloud gateway.</p>
@@ -1189,10 +1247,10 @@ export function ResearchStudio({
               {localRunDetails && ["interrupted", "failed", "paused"].includes(localRunDetails.run.status) ? <button type="button" disabled={busy} onClick={() => void invoke<LocalResearchRun>("resume_local_research_run", { runId: localRunDetails.run.id }).then((run) => { setLocalRuns((items) => [run, ...items.filter((item) => item.id !== run.id)]); setNotice("Run resumed from its last completed task."); }).catch((caught: unknown) => setError(explain(caught)))}><Play size={15} /> Resume run</button> : null}
             </div>
           </section>}
-          {localRunDetails ? <section className="rs-card">
+          {runWorkspace && localRunDetails ? <section className="rs-card">
             <span className="rs-eyebrow">Native run · {localRunDetails.run.status}</span>
             <h2>Research task graph</h2>
-            {(() => { const total = localRunDetails.tasks.length; const completed = localRunDetails.tasks.filter((task) => ["completed", "complete", "done"].includes(task.status)).length; const percent = total ? Math.round(completed * 100 / total) : 0; return <><p>{completed} of {total} tasks completed · {percent}%</p><div className="rs-progress" role="progressbar" aria-label="Research task completion" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}><div className="rs-progress-bar" style={{ width: `${percent}%` }} /></div></>; })()}
+            {(() => { const total = localRunDetails.tasks.length; const completed = localRunDetails.tasks.filter((task) => ["completed", "complete", "done"].includes(task.status)).length; const percent = total ? Math.round(completed * 100 / total) : 0; return <><div className="rs-chat-progress-heading">{LIVE.has(localRunDetails.run.status) ? <Loader2 className="rs-spin" size={20} /> : null}<strong>{LIVE.has(localRunDetails.run.status) ? "Researching…" : localRunDetails.run.status === "completed" ? "Research run complete" : localRunDetails.run.status}</strong><strong>{percent}%</strong></div><p>{completed} of {total} tasks completed</p><div className="rs-progress" role="progressbar" aria-label="Research task completion" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}><div className="rs-progress-bar" style={{ width: `${percent}%` }} /></div></>; })()}
             <div className="rs-local-graph-scroll"><svg className="rs-local-graph" viewBox="0 0 1640 350" role="group" aria-label="Research task dependency graph">
               {localRunDetails.dependencies.map(([taskId, parentId]) => {
                 const task = localRunDetails.tasks.find((item) => item.id === taskId);
@@ -1240,7 +1298,13 @@ export function ResearchStudio({
               {localRunDetails.manuscript.status === "accepted" ? <><button type="button" onClick={() => void invoke<{ id: string; name: string }>("export_local_research_document", { runId: localRunDetails.run.id, format: "pdf", allowDraft: false }).then((artifact) => setNotice(`Accepted PDF export created: ${artifact.name}`)).catch((caught: unknown) => setError(explain(caught)))}>Export accepted PDF</button><button type="button" onClick={() => void invoke<{ id: string; name: string }>("export_local_research_document", { runId: localRunDetails.run.id, format: "docx", allowDraft: false }).then((artifact) => setNotice(`Accepted DOCX export created: ${artifact.name}`)).catch((caught: unknown) => setError(explain(caught)))}>Export accepted DOCX</button></> : null}
             </section> : null}
             {localRunDetails.run.error ? <p className="rs-error" role="alert">{localRunDetails.run.error}</p> : null}
-          </section> : selectedLocalProjectId ? <section className="rs-card"><h2>Research history</h2><p>Select a prior run or start the first native run for this project.</p></section> : null}
+          </section> : !runWorkspace && selectedLocalProjectId ? <section className="rs-card"><h2>Research history</h2><p>Select a prior run or start the first native run for this project.</p></section> : null}
+          </div>
+          {runWorkspace ? <form className="rs-change-composer" onSubmit={(event) => { event.preventDefault(); void submitResearchChange(); }}>
+            <div className="rs-change-input"><textarea aria-label="Research change request" rows={2} maxLength={800} dir="auto" value={changeRequest} onChange={(event) => setChangeRequest(event.target.value)} placeholder="Ask for changes to this research…" onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void submitResearchChange(); } }} />
+              <button className="rs-primary rs-send" type="submit" aria-label="Send research change request" disabled={!canRequestChange || changeBusy || busy || changeRequest.trim().length < 5 || editingManuscript}>{changeBusy ? <Loader2 size={18} className="rs-spin" /> : <Sparkles size={18} />}</button></div>
+            <small>{canRequestChange ? "Starts a linked research revision with fresh evidence checks. Previous versions are retained." : "Draft your changes now; send after the active run finishes or is stopped."}</small>
+          </form> : null}
         </main>
       </div>
     );
