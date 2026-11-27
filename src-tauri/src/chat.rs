@@ -341,11 +341,18 @@ impl<'a> ChatRepository<'a> {
     }
 
     pub fn set_pinned(&self, id: &str, pinned: bool) -> Result<(), AppError> {
-        self.touch_conversation_with(
-            id,
-            "UPDATE conversations SET pinned = ?1, updated_at = ?2 WHERE id = ?3",
+        // Repeated UI actions must not reorder a chat that already has the
+        // requested pin state. Guard the write atomically in SQLite.
+        let changed = self.database.connection().execute(
+            "UPDATE conversations SET pinned = ?1, updated_at = ?2
+             WHERE id = ?3 AND pinned != ?1",
             params![pinned as i64, Utc::now().to_rfc3339(), id],
-        )
+        )?;
+        if changed == 0 {
+            // Distinguish an idempotent request from an invalid conversation ID.
+            self.find_conversation(id)?;
+        }
+        Ok(())
     }
 
     pub fn set_active_model(&self, id: &str, model_id: Option<&str>) -> Result<(), AppError> {
@@ -966,6 +973,36 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[1].content, "saved");
         assert_eq!(messages[1].status, "failed");
+    }
+
+    #[test]
+    fn repeated_pin_actions_preserve_timestamp_and_missing_ids_fail() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let chat = repo.create_conversation(Some("Pinned")).unwrap();
+        let sentinel = "2020-01-01T00:00:00+00:00";
+
+        database.connection().execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            params![sentinel, chat.id],
+        ).unwrap();
+        repo.set_pinned(&chat.id, false).unwrap();
+        assert_eq!(repo.find_conversation(&chat.id).unwrap().updated_at, sentinel);
+
+        repo.set_pinned(&chat.id, true).unwrap();
+        assert!(repo.find_conversation(&chat.id).unwrap().pinned);
+        database.connection().execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            params![sentinel, chat.id],
+        ).unwrap();
+        repo.set_pinned(&chat.id, true).unwrap();
+        let unchanged = repo.find_conversation(&chat.id).unwrap();
+        assert!(unchanged.pinned);
+        assert_eq!(unchanged.updated_at, sentinel);
+
+        repo.set_pinned(&chat.id, false).unwrap();
+        assert!(!repo.find_conversation(&chat.id).unwrap().pinned);
+        assert!(repo.set_pinned("missing-chat", true).is_err());
     }
 
     #[test]
