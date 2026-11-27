@@ -4,8 +4,11 @@ use std::{
     path::Path,
 };
 
-use cap_std::{ambient_authority, fs::{Dir, OpenOptions as CapabilityOpenOptions}};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use cap_std::{
+    ambient_authority,
+    fs::{Dir, OpenOptions as CapabilityOpenOptions},
+};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -386,6 +389,26 @@ fn save_media_index(
 /// intact, and cleanup must only unlink this operation's private staging file.
 fn publish_media_index(directory: &Dir, message_id: &str, bytes: &[u8]) -> Result<(), AppError> {
     let target = format!("{message_id}.json");
+    // `rename` semantics differ on Windows: replacing a directory with a
+    // file can remove the empty directory before failing. Probe with an
+    // opened directory handle first so a collision is never mutated.
+    if directory.open_dir(&target).is_ok() {
+        return Err(AppError::from(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            "media index target is a directory",
+        )));
+    }
+    match directory.symlink_metadata(&target) {
+        Ok(metadata) if metadata.is_dir() => {
+            return Err(AppError::from(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                "media index target is a directory",
+            )));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(AppError::from(error)),
+    }
     let temporary = format!(".pending-{}-{}.json", message_id, uuid::Uuid::new_v4());
     let mut options = CapabilityOpenOptions::new();
     options.write(true).create_new(true);
@@ -549,8 +572,11 @@ pub(crate) async fn create_soundscape_artifact(
             .map(|conversation| conversation.title)
             .unwrap_or_else(|_| "soundscape".to_string());
         let manager = ArtifactManager::new(&state.root);
-        let (output, filename, relative) =
-            manager.stage_destination("audio", Some("procedural-soundscape.wav"), &fallback_title)?;
+        let (output, filename, relative) = manager.stage_destination(
+            "audio",
+            Some("procedural-soundscape.wav"),
+            &fallback_title,
+        )?;
         let artifacts = ArtifactRepository::new(&db);
         let artifact = artifacts.create(
             &conversation_id,
@@ -603,9 +629,22 @@ pub(crate) async fn create_soundscape_artifact(
 fn validate_procedural_soundscape_prompt(prompt: &str) -> Result<(), AppError> {
     let normalized = prompt.to_ascii_lowercase();
     const PRESETS: &[&str] = &[
-        "rain", "ocean", "wave", "sea", "wind", "beep",
-        "notification", "alert", "ui sound", "music", "lofi",
-        "ambient", "beat", "melody", "cinematic", "sound effect",
+        "rain",
+        "ocean",
+        "wave",
+        "sea",
+        "wind",
+        "beep",
+        "notification",
+        "alert",
+        "ui sound",
+        "music",
+        "lofi",
+        "ambient",
+        "beat",
+        "melody",
+        "cinematic",
+        "sound effect",
     ];
     if PRESETS.iter().any(|preset| normalized.contains(preset)) {
         return Ok(());
@@ -871,7 +910,11 @@ mod tests {
         let (_temp, root) = media_fixture();
         let outside = root.root().join("sentinel.json");
         fs::write(&outside, b"preserve").unwrap();
-        for id in ["../sentinel", "AAAA0000-0000-4000-8000-000000000004", "bad-id"] {
+        for id in [
+            "../sentinel",
+            "AAAA0000-0000-4000-8000-000000000004",
+            "bad-id",
+        ] {
             assert!(save_media_index(&root, id, &[image_ref("private")]).is_err());
         }
         assert_eq!(fs::read(outside).unwrap(), b"preserve");
@@ -882,7 +925,12 @@ mod tests {
         let (_temp, root) = media_fixture();
         let dir = root.resolve_relative("data/media-index").unwrap();
         let target = dir.join(format!("{INDEX_ID}.json"));
-        fs::create_dir(&target).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        assert!(
+            target.is_dir(),
+            "fixture collision directory was not created: {}",
+            target.display()
+        );
         fs::write(target.join("sentinel"), b"preserve").unwrap();
         assert!(save_media_index(&root, INDEX_ID, &[image_ref("new")]).is_err());
         assert_eq!(fs::read(target.join("sentinel")).unwrap(), b"preserve");
@@ -927,13 +975,21 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(!output.exists());
-        assert!(result.unwrap_err().to_string().contains("Stable Audio Open"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Stable Audio Open"));
     }
 
     #[test]
     fn accepts_explicit_procedural_presets() {
-        for prompt in ["gentle rain for 4 seconds", "ocean waves", "wind",
-            "notification beep", "ambient lofi at 90 BPM"] {
+        for prompt in [
+            "gentle rain for 4 seconds",
+            "ocean waves",
+            "wind",
+            "notification beep",
+            "ambient lofi at 90 BPM",
+        ] {
             assert!(validate_procedural_soundscape_prompt(prompt).is_ok());
         }
     }
