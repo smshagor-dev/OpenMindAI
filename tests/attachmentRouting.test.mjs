@@ -20,11 +20,13 @@ try {
       setup(builder) {
         builder.onResolve({ filter: /^\.\/media$/ }, () => ({ path: "media", namespace: "fixture" }));
         builder.onResolve({ filter: /^\.\/pdf$/ }, () => ({ path: "pdf", namespace: "fixture" }));
-        builder.onLoad({ filter: /.*/, namespace: "fixture" }, ({ path }) => ({
-          contents: path === "pdf"
-            ? "export async function extractPdfText(){ globalThis.__pdfReads++; return {text:'PDF BODY',pageCount:1,pagesRead:1,scannedPages:[],unreadPages:[],visionPages:[],warnings:[],truncated:false}; }"
-            : "export async function transcribeAudioFile(){ globalThis.__audioReads++; return {durationSeconds:1,text:'AUDIO BODY'}; } export async function analyzeVideoFile(){throw Error('unexpected video')}",
-        })),
+        builder.onLoad({ filter: /.*/, namespace: "fixture" }, ({ path }) => {
+          return {
+            contents: path === "pdf"
+              ? "export async function extractPdfText(){ globalThis.__pdfReads++; return {text:'PDF BODY',pageCount:1,pagesRead:1,scannedPages:[],unreadPages:[],visionPages:[],warnings:[],truncated:false}; }"
+              : "export async function transcribeAudioFile(){ globalThis.__audioReads++; return {durationSeconds:1,text:'AUDIO BODY'}; } export async function analyzeVideoFile(){throw Error('unexpected video')}",
+          };
+        });
       },
     }],
   });

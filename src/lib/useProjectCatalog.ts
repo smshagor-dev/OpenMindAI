@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { api } from "../api";
 import type { Project, ProjectSummary } from "../types";
 import { formatError } from "./format";
@@ -10,14 +10,20 @@ import { formatError } from "./format";
 export function useProjectCatalog() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [loadedDetail, setLoadedDetail] = useState<Project | null>(null);
+  const [loadedDetailState, setLoadedDetailState] = useState<{ projectId: string; revision: number; project: Project } | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [detailLoading, setDetailLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [catalogError, setCatalogError] = useState<string | null>(null);
-  const [detailError, setDetailError] = useState<string | null>(null);
+  const [detailErrorState, setDetailErrorState] = useState<{ projectId: string; revision: number; message: string } | null>(null);
   const [detailRevision, setDetailRevision] = useState(0);
+  const loadedDetail = loadedDetailState?.projectId === activeId && loadedDetailState.revision === detailRevision
+    ? loadedDetailState.project
+    : null;
+  const detailError = detailErrorState?.projectId === activeId && detailErrorState.revision === detailRevision
+    ? detailErrorState.message
+    : null;
+  const detailLoading = activeId !== null && loadedDetail === null && detailError === null;
   const catalogVersion = useRef(0);
   const detailVersion = useRef(0);
   const selectedIdRef = useRef(activeId);
@@ -26,6 +32,16 @@ export function useProjectCatalog() {
     selectedIdRef.current = activeId;
   }, [activeId]);
   const loadMoreInFlight = useRef(false);
+
+  const setActiveProject: Dispatch<SetStateAction<Project | null>> = useCallback((change) => {
+    setLoadedDetailState((current) => {
+      const currentProject = current?.projectId === activeId && current.revision === detailRevision
+        ? current.project
+        : null;
+      const project = typeof change === "function" ? change(currentProject) : change;
+      return project ? { projectId: project.id, revision: detailRevision, project } : null;
+    });
+  }, [activeId, detailRevision]);
 
   const refreshProjects = useCallback(async (preferredId?: string | null) => {
     const version = ++catalogVersion.current;
@@ -93,25 +109,14 @@ export function useProjectCatalog() {
 
   useEffect(() => {
     const version = ++detailVersion.current;
-    if (!activeId) {
-      setLoadedDetail(null);
-      setDetailLoading(false);
-      setDetailError(null);
-      return;
-    }
-    setDetailLoading(true);
-    setDetailError(null);
-    // Never display the previous project's text during a fast selection.
-    setLoadedDetail(null);
+    if (!activeId) return;
     void api.getProject(activeId)
       .then((project) => {
-        if (version === detailVersion.current) setLoadedDetail(project);
+        if (version === detailVersion.current) setLoadedDetailState({ projectId: activeId, revision: detailRevision, project });
       })
       .catch((error) => {
-        if (version === detailVersion.current) setDetailError(formatError(error));
-      })
-      .finally(() => {
-        if (version === detailVersion.current) setDetailLoading(false);
+        if (version === detailVersion.current)
+          setDetailErrorState({ projectId: activeId, revision: detailRevision, message: formatError(error) });
       });
     return () => {
       detailVersion.current += 1;
@@ -122,7 +127,7 @@ export function useProjectCatalog() {
   const activeProject = loadedDetail?.id === activeId ? loadedDetail : null;
   return {
     projects, setProjects, activeId, setActiveId, activeProject,
-    setActiveProject: setLoadedDetail, loading, detailLoading,
+    setActiveProject, loading, detailLoading,
     loadingMore, nextCursor, loadMore, refreshProjects,
     catalogError, detailError,
   };

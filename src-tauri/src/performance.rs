@@ -93,16 +93,18 @@ impl PerformanceProfileManager {
                 profile.cpu_threads = baseline_threads.div_ceil(2).max(1);
                 profile.system_memory_budget_bytes =
                     profile.system_memory_budget_bytes.saturating_mul(3) / 4;
-                profile.vram_budget_bytes =
-                    profile.vram_budget_bytes.map(|bytes| bytes.saturating_mul(3) / 4);
+                profile.vram_budget_bytes = profile
+                    .vram_budget_bytes
+                    .map(|bytes| bytes.saturating_mul(3) / 4);
                 profile.flash_attention = false;
             }
             PerformanceMode::Balanced => {
                 profile.cpu_threads = (baseline_threads.saturating_mul(3) / 4).max(1);
                 profile.system_memory_budget_bytes =
                     profile.system_memory_budget_bytes.saturating_mul(9) / 10;
-                profile.vram_budget_bytes =
-                    profile.vram_budget_bytes.map(|bytes| bytes.saturating_mul(9) / 10);
+                profile.vram_budget_bytes = profile
+                    .vram_budget_bytes
+                    .map(|bytes| bytes.saturating_mul(9) / 10);
             }
             PerformanceMode::Performance => {
                 profile.cpu_threads = baseline_threads.saturating_add(2).min(logical);
@@ -137,7 +139,11 @@ mod tests {
         let mut hardware = HardwareProfile {
             operating_system: "test".into(),
             architecture: "x86_64".into(),
-            cpu: CpuProfile { name: "cpu".into(), physical_cores: Some(6), logical_threads: 12 },
+            cpu: CpuProfile {
+                name: "cpu".into(),
+                physical_cores: Some(6),
+                logical_threads: 12,
+            },
             memory: MemoryProfile {
                 total_bytes: 16 * 1024 * 1024 * 1024,
                 available_bytes: 10 * 1024 * 1024 * 1024,
@@ -146,18 +152,32 @@ mod tests {
             primary_gpu: None,
             recommended_inference_gpu: None,
             backends: BackendProfile {
-                cpu: true, cuda: false, vulkan: false, sycl: false, hip: false, metal: false,
+                cpu: true,
+                cuda: false,
+                vulkan: false,
+                sycl: false,
+                hip: false,
+                metal: false,
             },
             detection_complete: true,
         };
         for has_gpu in [false, true] {
             if has_gpu {
                 hardware.gpus.push(GpuInfo {
-                    id: "gpu0".into(), name: "gpu".into(), vendor: GpuVendor::Nvidia,
-                    vendor_id: None, device_id: None, subsystem_id: None, revision: None,
+                    id: "gpu0".into(),
+                    name: "gpu".into(),
+                    vendor: GpuVendor::Nvidia,
+                    vendor_id: None,
+                    device_id: None,
+                    subsystem_id: None,
+                    revision: None,
                     dedicated_vram_bytes: Some(8 * 1024 * 1024 * 1024),
-                    dedicated_system_memory_bytes: None, shared_memory_bytes: None,
-                    luid: None, is_discrete: true, is_integrated: false, is_software: false,
+                    dedicated_system_memory_bytes: None,
+                    shared_memory_bytes: None,
+                    luid: None,
+                    is_discrete: true,
+                    is_integrated: false,
+                    is_software: false,
                     available_backends: vec![BackendKind::Cpu, BackendKind::Cuda],
                     recommended_backend: BackendKind::Cuda,
                 });
@@ -187,7 +207,10 @@ mod tests {
             }
         }
         assert!(PerformanceMode::from_preference("Unknown").is_none());
-        assert_eq!(PerformanceMode::from_preference("  eco  "), Some(PerformanceMode::Eco));
+        assert_eq!(
+            PerformanceMode::from_preference("  eco  "),
+            Some(PerformanceMode::Eco)
+        );
     }
 
     #[test]

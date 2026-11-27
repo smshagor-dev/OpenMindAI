@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArchiveRestore } from "lucide-react";
+import { Archive } from "lucide-react";
 import { api } from "../api";
 import type { Conversation } from "../types";
 
@@ -8,28 +8,20 @@ import type { Conversation } from "../types";
 const ARCHIVE_LIMIT = 200;
 
 export function ArchivedChats(props: {
-  open: boolean;
   onClose: () => void;
   onRestore: (conversation: Conversation) => Promise<void>;
 }) {
-  const { open, onClose, onRestore } = props;
+  const { onClose, onRestore } = props;
   const [rows, setRows] = useState<Conversation[]>([]);
   const [filter, setFilter] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const loading = !loaded;
   const [restoringId, setRestoringId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const version = useRef(0);
 
   useEffect(() => {
-    if (!open) {
-      version.current += 1;
-      return;
-    }
     const ticket = ++version.current;
-    setRows([]);
-    setFilter("");
-    setError(null);
-    setLoading(true);
     void api.listArchivedConversations(ARCHIVE_LIMIT)
       .then((conversations) => {
         if (ticket === version.current) setRows(conversations);
@@ -38,21 +30,19 @@ export function ArchivedChats(props: {
         if (ticket === version.current) setError(String(reason));
       })
       .finally(() => {
-        if (ticket === version.current) setLoading(false);
+        if (ticket === version.current) setLoaded(true);
       });
     return () => { version.current += 1; };
-  }, [open]);
+  }, []);
 
   useEffect(() => {
-    if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !restoringId) onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, onClose, restoringId]);
+  }, [onClose, restoringId]);
 
-  if (!open) return null;
   const visible = rows.filter((item) =>
     item.title.toLocaleLowerCase().includes(filter.trim().toLocaleLowerCase())
   );
@@ -102,7 +92,7 @@ export function ArchivedChats(props: {
                 onClick={() => void restore(item)}
                 aria-label={`Restore ${item.title}`}
               >
-                <ArchiveRestore size={15} /> Restore
+                <Archive size={15} /> Restore
               </button>
             </div>
           ))}
