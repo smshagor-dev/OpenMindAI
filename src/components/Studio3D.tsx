@@ -39,11 +39,13 @@ type Props = {
 
 type SceneMode = "object" | "architecture";
 type UiMode = "auto" | SceneMode;
+type SceneTurn = { id: string; prompt: string; status: "ready" | "pending" | "failed" | "stopped" };
 type HistoryEntry = {
   id: string;
   target?: "local" | "cloud";
   assetId?: number;
   localAssetId?: string;
+  turns?: SceneTurn[];
   title: string;
   mode: SceneMode;
   prompt: string;
@@ -273,6 +275,10 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
   const [furnishingMode, setFurnishingMode] = useState<"prompt" | "unfurnished" | "partially furnished" | "fully furnished">("prompt");
   const [prompt, setPrompt] = useState("");
   const [submittedPrompt, setSubmittedPrompt] = useState<string | null>(null);
+  const [turns, setTurns] = useState<SceneTurn[]>([]);
+  const [revisionAssetId, setRevisionAssetId] = useState<string | null>(null);
+  const [isRevising, setIsRevising] = useState(false);
+  const threadBottomRef = useRef<HTMLDivElement>(null);
   const [referenceImage, setReferenceImage] = useState<ReferenceImage | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -397,6 +403,8 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
           setPersistentSceneJson(undefined);
           setPersistentProjectId(null);
           setSceneTitle(asset.originalName);
+          setTurns([{ id: asset.id, prompt: `Imported mesh: ${asset.originalName}`, status: "ready" }]);
+          setRevisionAssetId(null);
           setSubmittedPrompt(`Imported mesh: ${asset.originalName}`);
           setPrompt("");
           setNativeJob(null);
@@ -458,6 +466,8 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
       setPersistentSceneId(saved.id);
       setPersistentSceneJson(saved.sceneJson);
       setPersistentProjectId(saved.projectId);
+      setTurns([{ id: saved.id, prompt: saved.prompt, status: "ready" }]);
+      setRevisionAssetId(null);
       setSubmittedPrompt(saved.prompt);
       setPrompt("");
       setNativeJob(null);
@@ -572,30 +582,52 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
     throw new Error("The local geometry worker did not finish in time.");
   }, [updateNativeJob]);
 
-  const generate = useCallback(async (overridePrompt?: string) => {
+  const generate = useCallback(async (overridePrompt?: string, forceNew = false) => {
     const text = (overridePrompt ?? prompt).trim();
     if (pending.current || text.length < 5) return;
+    const revision = !forceNew && Boolean(mesh);
+    const previousEntry = history.find((item) => item.id === activeId);
+    if (revision && (!revisionAssetId || jobTarget !== "local" || mode === "cloud" || persistentSceneId)) {
+      setError("Chat changes require a locally generated procedural model. Open a generated local scene or use the selected-object editor for imported, manually saved or Cloud scenes.");
+      return;
+    }
+    if (revision && referenceImage) {
+      setError("Remove the reference image before sending a text-only scene revision.");
+      return;
+    }
+    // A revision is based on the last stored generated asset, not unsaved viewport edits.
+    if (revision && !window.confirm("Apply this change to the last generated model? Unsaved manual editor changes are not included. The previous generated asset is kept.")) return;
+    const turnId = crypto.randomUUID();
+    const nextTurns: SceneTurn[] = [...(forceNew ? [] : turns), { id: turnId, prompt: text, status: "pending" }];
+    setTurns(nextTurns);
+    setIsRevising(revision);
+    let succeeded = false;
     pending.current = true;
     cancelRef.current = false;
     nativeJobId.current = null;
     setSubmittedPrompt(text);
     setPrompt("");
     setNativeJob(null);
-    setActiveId(null);
-    setSceneTitle(titleFrom(text));
+    if (!revision) {
+      setActiveId(null);
+      setRevisionAssetId(null);
+      if (forceNew || !sceneTitle) setSceneTitle(titleFrom(text));
+    }
     setBusy(true);
     setError(null);
     setNotice(null);
-    setMesh(null);
-    setPersistentSceneId(null);
-    setPersistentSceneJson(undefined);
-    setPersistentProjectId(null);
+    if (!revision) {
+      setMesh(null);
+      setPersistentSceneId(null);
+      setPersistentSceneJson(undefined);
+      setPersistentProjectId(null);
+    }
     setJob(null);
     try {
-      const sceneMode = resolveMode(uiMode, text);
-      const requestPrompt = sceneMode === "architecture" && furnishingMode !== "prompt" ? `${text}\nFurnishing preference (physical buildings only): ${furnishingMode}.` : text;
+      const sceneMode = revision ? (previousEntry?.mode ?? resolveMode(uiMode, submittedPrompt ?? text)) : resolveMode(uiMode, text);
+      const requestPrompt = !revision && sceneMode === "architecture" && furnishingMode !== "prompt" ? `${text}\nFurnishing preference (physical buildings only): ${furnishingMode}.` : text;
       const requestKey = crypto.randomUUID();
-      const route = selectExecutionRoute({
+      const route = revision ? { target: "local" as const, reason: "Revise the existing local scene" } : selectExecutionRoute({
         preference: mode,
         task: referenceImage ? "image-to-3d" : "scene3d",
         online: internetAvailable,
@@ -641,11 +673,11 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
       if (cancelRef.current) { setNotice("Generation cancelled."); return; }
       const native = await invoke<NativeStudioJob>("create_studio3d_job", {
         projectId: studioProjectId,
-        generationMode: referenceImage ? "image-to-3d" : sceneMode === "architecture" ? "architecture" : "text-to-3d",
+        generationMode: revision ? "scene-edit" : referenceImage ? "image-to-3d" : sceneMode === "architecture" ? "architecture" : "text-to-3d",
         inferenceRoute: target,
         modelId: "",
         engineId: target === "local" ? "native-rust-scheduler/opencl-procedural-adapter" : "openmindai-cloud-studio",
-        inputAssetIds: referenceImage?.assetId ? [referenceImage.assetId] : [],
+        inputAssetIds: revision && revisionAssetId ? [revisionAssetId] : referenceImage?.assetId ? [referenceImage.assetId] : [],
         input: requestPrompt,
       });
       nativeJobId.current = native.id;
@@ -714,9 +746,14 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
       if (target === "cloud") await updateNativeJob({ status: "completed", currentStage: "published", outputAssetId: outputAsset.id, outputSha256: outputAsset.contentSha256 });
       setProjectAssets((assets) => [outputAsset, ...assets.filter((asset) => asset.id !== outputAsset.id)]);
       setMesh(file);
-      const sceneId = finished?.id ?? nativeOutputAsset?.id ?? `asset-${cloudAssetId}`;
+      const sceneId = revision && activeId ? activeId : finished?.id ?? nativeOutputAsset?.id ?? `asset-${cloudAssetId}`;
+      const threadTitle = revision ? sceneTitle : titleFrom(text);
+      const completedTurns: SceneTurn[] = nextTurns.map((turn) => turn.id === turnId ? { ...turn, status: "ready" } : turn);
+      setTurns(completedTurns);
       setActiveId(sceneId);
-      setSceneTitle(titleFrom(text));
+      setRevisionAssetId(target === "local" ? outputAsset.id : null);
+      setSceneTitle(threadTitle);
+      succeeded = true;
       setPersistentSceneId(null);
       setPersistentSceneJson(undefined);
       setPersistentProjectId(null);
@@ -725,12 +762,13 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
         target,
         ...(cloudAssetId ? { assetId: cloudAssetId } : {}),
         ...(target === "local" ? { localAssetId: outputAsset.id } : {}),
-        title: titleFrom(text),
+        title: threadTitle,
         mode: sceneMode,
-        prompt: text,
-        createdAt: new Date().toISOString(),
+        prompt: previousEntry?.prompt ?? text,
+        turns: completedTurns,
+        createdAt: previousEntry?.createdAt ?? new Date().toISOString(),
       });
-      setNotice(`Scene built on ${target === "cloud" ? "OpenMindAI Cloud" : "your computer"} (${sceneMode}).`);
+      setNotice(revision ? "Scene updated. Previous generated asset retained." : `Scene built on ${target === "cloud" ? "OpenMindAI Cloud" : "your computer"} (${sceneMode}).`);
     } catch (caught) {
       if (nativeJobId.current && !cancelRef.current) {
         const message = explain(caught);
@@ -739,10 +777,16 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
       if (cancelRef.current) setNotice("Generation stopped.");
       else setError(explain(caught));
     } finally {
+      if (!succeeded) {
+        const failedTurns: SceneTurn[] = nextTurns.map((turn) => turn.id === turnId ? { ...turn, status: cancelRef.current ? "stopped" : "failed" } : turn);
+        setTurns(failedTurns);
+        if (revision && previousEntry) rememberScene({ ...previousEntry, turns: failedTurns });
+      }
       pending.current = false;
       setBusy(false);
+      setIsRevising(false);
     }
-  }, [prompt, uiMode, furnishingMode, poll, rememberScene, mode, internetAvailable, cloudConnected, referenceImage, studioProjectId, updateNativeJob, onConnectCloud]);
+  }, [prompt, uiMode, furnishingMode, poll, rememberScene, mode, internetAvailable, cloudConnected, referenceImage, studioProjectId, updateNativeJob, onConnectCloud, mesh, history, activeId, revisionAssetId, jobTarget, persistentSceneId, turns, sceneTitle, submittedPrompt]);
 
   const cancelGeneration = useCallback(async () => {
     cancelRef.current = true;
@@ -762,7 +806,9 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
     setPersistentSceneId(null);
     setPersistentSceneJson(undefined);
     setPersistentProjectId(null);
-    setSubmittedPrompt(entry.prompt);
+    setTurns(entry.turns ?? [{ id: entry.id, prompt: entry.prompt, status: "ready" }]);
+    setSubmittedPrompt(entry.turns?.at(-1)?.prompt ?? entry.prompt);
+    setRevisionAssetId(entry.target === "cloud" ? null : entry.localAssetId ?? entry.id);
     setPrompt("");
     setNativeJob(null);
     setUiMode(entry.mode);
@@ -804,6 +850,8 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
       if (activeId === entry.id) {
         setActiveId(null);
         setSceneTitle("");
+        setTurns([]);
+        setRevisionAssetId(null);
         setSubmittedPrompt(null);
         setNativeJob(null);
         setMesh(null);
@@ -813,6 +861,8 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
   );
 
   const newScene = useCallback(() => {
+    setTurns([]);
+    setRevisionAssetId(null);
     setSubmittedPrompt(null);
     setNativeJob(null);
     nativeJobId.current = null;
@@ -835,7 +885,12 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
   const showingResult = Boolean(mesh);
   const inWorkspace = submittedPrompt !== null || showingResult;
   const activeGenerationJob = nativeJob && nativeJob.id === nativeJobId.current ? nativeJob : null;
-  const generationProgress = studio3dProgress(activeGenerationJob?.inferenceRoute ?? jobTarget, activeGenerationJob?.currentStage ?? "preparing", showingResult);
+  const generationProgress = studio3dProgress(activeGenerationJob?.inferenceRoute ?? jobTarget, activeGenerationJob?.currentStage ?? "preparing", showingResult && !busy);
+  const pendingTurn = turns.at(-1);
+  const displayedTurns = turns.slice(0, -1);
+  useEffect(() => {
+    threadBottomRef.current?.scrollIntoView({ block: "end", behavior: "auto" });
+  }, [turns.length, busy, showingResult]);
   const understoodIntent = readSceneIntent(activeGenerationJob?.recovery);
   const activeEntry = history.find((item) => item.id === activeId) ?? null;
   const statusLabel = (() => {
@@ -955,7 +1010,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
                   void invoke<LoadedStudioAsset>("load_studio3d_asset", { assetId: asset.id }).then((loaded) => {
                     void normalizeMeshAsset(loaded.dataBase64, asset.mediaType).then((editableGlb) => setMesh({ filename: asset.originalName, data_base64: editableGlb }));
                     setActiveId(asset.id); setPersistentSceneId(null); setPersistentSceneJson(undefined); setPersistentProjectId(null);
-                    setSceneTitle(asset.originalName); setSubmittedPrompt(`Imported mesh: ${asset.originalName}`); setPrompt(""); setNativeJob(null); setUiMode("object");
+                    setSceneTitle(asset.originalName); setTurns([{ id: asset.id, prompt: `Imported mesh: ${asset.originalName}`, status: "ready" }]); setRevisionAssetId(null); setSubmittedPrompt(`Imported mesh: ${asset.originalName}`); setPrompt(""); setNativeJob(null); setUiMode("object");
                   }).catch((caught: unknown) => setError(explain(caught)));
                 }}>Open mesh</button>}
               </article>) : <p className="studio3d-empty">{studioProjectId ? "Imported images and GLB models will appear here." : "Select a project to import files."}</p>}
@@ -968,7 +1023,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
                   if (!studioProjectId || !window.confirm(`Delete ${scene.title} and all its saved revisions?`)) return;
                   void invoke("delete_studio3d_scene", { projectId: studioProjectId, sceneId: scene.id }).then(() => {
                     setSavedScenes((items) => items.filter((item) => item.id !== scene.id));
-                    if (persistentSceneId === scene.id) { setPersistentSceneId(null); setPersistentSceneJson(undefined); setPersistentProjectId(null); setActiveId(null); setSceneTitle(""); setSubmittedPrompt(null); setNativeJob(null); setMesh(null); }
+                    if (persistentSceneId === scene.id) { setPersistentSceneId(null); setPersistentSceneJson(undefined); setPersistentProjectId(null); setActiveId(null); setSceneTitle(""); setTurns([]); setRevisionAssetId(null); setSubmittedPrompt(null); setNativeJob(null); setMesh(null); }
                     setStudioProjects((items) => items.map((item) => item.id === studioProjectId ? { ...item, sceneCount: Math.max(0, item.sceneCount - 1) } : item));
                   }).catch((caught: unknown) => setError(explain(caught)));
                 }}><Trash2 size={14} /></button>
@@ -1008,7 +1063,8 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
           sidebarSlot,
         )}
 
-      <div className={`studio-shell ${showingResult ? "has-result" : inWorkspace ? "has-conversation" : "is-empty"}`}>
+      <div className={`studio-shell ${inWorkspace ? "studio-chat-workspace" : "is-empty"}`}>
+        <div className={inWorkspace ? "studio3d-thread-scroll" : "studio3d-home-content"}>
         {error && (
           <div className="studio-error" role="alert">
             <span>{error}</span>
@@ -1022,6 +1078,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
           </div>
         )}
 
+        {inWorkspace && displayedTurns.length > 0 ? <div className="studio3d-thread-history">{displayedTurns.map((turn) => <div className="studio3d-history-turn" key={turn.id}><div className="studio3d-user-turn"><span>You</span><p>{turn.prompt}</p></div><div className="studio3d-assistant-label"><Sparkles size={16} /> OpenMindAI</div><p className="studio-muted">{turn.status === "ready" ? "Scene revision created." : turn.status === "stopped" ? "Generation stopped." : "Generation did not complete."}</p></div>)}</div> : null}
         {showingResult && mesh ? (
           <div className="studio-result">
             <header className="studio-page-header">
@@ -1033,7 +1090,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
                   </span>
                 ) : null}
               </h1>
-              {submittedPrompt ? <div className="studio3d-result-prompt"><span>You</span><p>{submittedPrompt}</p></div> : null}
+              {submittedPrompt && !isRevising && pendingTurn?.status === "ready" ? <div className="studio3d-result-prompt"><span>You</span><p>{submittedPrompt}</p></div> : null}
               {activeGenerationJob?.status === "completed" ? <p className="studio-meta" role="status">3D model ready · {generationProgress.percent}%</p> : null}
               {understoodIntent ? <details className="studio3d-result-prompt"><summary>Understood request · {understoodIntent.summary}</summary>{understoodIntent.requirements.map((requirement, index) => <p key={index}>{requirement}</p>)}{understoodIntent.assumptions.length ? <p>Assumptions: {understoodIntent.assumptions.join("; ")}</p> : null}</details> : null}
               {job?.output && typeof job.output === "object" ? (
@@ -1051,7 +1108,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
               }
             >
               <Studio3DViewport
-                key={activeId ?? mesh.filename}
+                key={revisionAssetId ?? activeId ?? mesh.filename}
                 dataBase64={mesh.data_base64}
                 onSaveRevision={studioProjectId || persistentProjectId ? saveProjectRevision : undefined}
                 sceneJson={persistentSceneJson}
@@ -1075,14 +1132,15 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
               <button
                 type="button"
                 className="studio3d-secondary"
-                disabled={busy || (submittedPrompt ?? prompt).trim().length < 5}
-                onClick={() => void generate(submittedPrompt ?? prompt)}
+                disabled={busy || (turns[0]?.prompt ?? submittedPrompt ?? prompt).trim().length < 5}
+                onClick={() => void generate(turns[0]?.prompt ?? submittedPrompt ?? prompt, true)}
               >
                 <RotateCcw size={15} /> Regenerate
               </button>
             </div>
           </div>
-        ) : inWorkspace ? (
+        ) : null}
+        {inWorkspace && (!showingResult || isRevising || pendingTurn?.status === "failed" || pendingTurn?.status === "stopped") ? (
           <section className="studio3d-conversation" aria-label="3D generation conversation">
             <div className="studio3d-user-turn"><span>You</span><p>{submittedPrompt}</p></div>
             <div className="studio3d-assistant-turn">
@@ -1100,7 +1158,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
                     <div className="studio3d-generation-scan" />
                   </div>
                   <div className="studio3d-generation-info">
-                    <div className="studio3d-generation-heading"><strong>Generating 3D model</strong><strong className="studio3d-generation-percent">{generationProgress.percent}%</strong></div>
+                    <div className="studio3d-generation-heading"><strong>{isRevising ? "Updating 3D model" : "Generating 3D model"}</strong><strong className="studio3d-generation-percent">{generationProgress.percent}%</strong></div>
                     <div className="studio3d-generation-track" role="progressbar" aria-label="Completed generation stages" aria-valuemin={0} aria-valuemax={100} aria-valuenow={generationProgress.percent} aria-valuetext={generationProgress.label}>
                       <div style={{ width: `${generationProgress.percent}%` }} />
                     </div>
@@ -1110,13 +1168,13 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
                 </div>
               ) : (
                 <div className="studio3d-generation-ended">
-                  <p>{error ? "The scene could not be generated." : "No new model is displayed."}</p>
+                  <p>{showingResult ? "The change was not applied. Your previous model is still available." : error ? "The scene could not be generated." : "No new model is displayed."}</p>
                   <button type="button" className="studio3d-cancel" disabled={!submittedPrompt} onClick={() => void generate(submittedPrompt ?? "")}><RotateCcw size={14} /> Try again</button>
                 </div>
               )}
             </div>
           </section>
-        ) : (
+        ) : !inWorkspace ? (
           <div className="studio3d-welcome">
             <h1>What would you like to create?</h1>
             <p className="studio-muted">
@@ -1124,7 +1182,9 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
               both processors can produce a downloadable GLB mesh.
             </p>
           </div>
-        )}
+        ) : null}
+        {inWorkspace ? <div ref={threadBottomRef} /> : null}
+        </div>
 
         <div className="studio-composer-area">
           <form
@@ -1136,7 +1196,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
           >
             <textarea
               ref={promptRef}
-              aria-label="Describe your scene"
+              aria-label={showingResult ? "Request changes to this 3D scene" : "Describe your scene"}
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
               minLength={5}
@@ -1144,7 +1204,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
               rows={2}
               disabled={busy}
               placeholder={
-                inWorkspace ? "Describe your next 3D scene…" : uiMode === "object"
+                showingResult ? "Ask for changes to this model…" : inWorkspace ? "Describe your scene or try again…" : uiMode === "object"
                   ? "Describe an object, its materials and proportions"
                   : uiMode === "architecture"
                     ? "Describe buildings, systems, layers or connections"
@@ -1158,7 +1218,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
               }}
             />
             <div className="studio3d-composer-toolbar">
-              <div className="studio3d-mode-choice" role="group" aria-label="Scene type">
+              <div className="studio3d-mode-choice" role="group" aria-label="Scene type" hidden={inWorkspace}>
                 {modeOptions.map((option) => (
                   <button
                     type="button"
@@ -1175,7 +1235,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
                     <option.icon size={15} /> {option.label}
                   </button>
                 ))}
-                {resolveMode(uiMode, prompt) === "architecture" ? <label className="studio3d-furnishing">Furnishing
+                {!inWorkspace && resolveMode(uiMode, prompt) === "architecture" ? <label className="studio3d-furnishing">Furnishing
                   <select aria-label="Furnishing mode" value={furnishingMode} disabled={busy} onChange={(event) => setFurnishingMode(event.target.value as typeof furnishingMode)}>
                     <option value="prompt">Follow prompt</option>
                     <option value="unfurnished">Unfurnished</option>
@@ -1183,7 +1243,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
                     <option value="fully furnished">Fully furnished</option>
                   </select>
                 </label> : null}
-                <label className="studio3d-attach" title="Reference image is uploaded only when an available Cloud image model is used">
+                {!inWorkspace ? <label className="studio3d-attach" title="Reference image is uploaded only when an available Cloud image model is used">
                   <ImageUp size={15} /> Reference image
                   <input
                     type="file"
@@ -1196,12 +1256,13 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
                       event.currentTarget.value = "";
                     }}
                   />
-                </label>
+                </label> : null}
               </div>
+              {showingResult ? <span className="studio3d-revision-scope">Change request · current generated scene</span> : inWorkspace ? <span className="studio3d-revision-scope">3D conversation</span> : null}
               <button
                 type="submit"
                 className="studio3d-send"
-                aria-label="Generate scene"
+                aria-label={showingResult ? "Send change request" : "Generate scene"}
                 disabled={busy || prompt.trim().length < 5}
               >
                 {busy ? <Loader2 size={18} className="studio3d-spin" /> : <Play size={18} />}
@@ -1238,7 +1299,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
             </div>
           )}
 
-          <p className="studio3d-processor">
+          {!inWorkspace ? <p className="studio3d-processor">
             <Cpu size={13} /> {routeToCloud ? "OpenMindAI Cloud" : gpuLabel}
             {!routeToCloud && !gpu?.worker_ready ? (
               <button
@@ -1255,12 +1316,12 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
                 <RefreshCw size={12} /> Retry
               </button>
             ) : null}
-          </p>
-          <div className="studio3d-note">
+          </p> : null}
+          {!inWorkspace ? <div className="studio3d-note">
             {routeToCloud
               ? "Online scenes use OpenMindAI Cloud. Reference images need an available Cloud image model."
               : "Offline scenes use local procedural triangle meshes. OpenCL accelerates transforms when its Python package and a compatible driver are ready; CPU geometry remains available."}
-          </div>
+          </div> : null}
           {!inWorkspace && !routeToCloud && gpu?.diagnostics ? <details className="studio3d-dependencies">
             <summary>Dependency Manager · Verify Runtime</summary>
             <dl>
@@ -1342,7 +1403,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
             {notice}
           </div>
         ) : null}
-        {inWorkspace && !showingResult && activeGenerationJob?.inferenceRoute === "local" && understoodIntent ? (
+        {inWorkspace && !showingResult && !busy && activeGenerationJob?.inferenceRoute === "local" && understoodIntent ? (
           <details className="studio3d-note">
             <summary>Understood request · {understoodIntent.summary}</summary>
             {understoodIntent.requirements.map((requirement, index) => <p key={index}>{requirement}</p>)}

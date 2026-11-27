@@ -801,3 +801,25 @@
   .studio3d-conversation, .studio3d-generation-orb, .studio3d-generation-scan { animation: none; }
   .studio3d-generation-track > div { transition: none; }
 }
+
+/* Conversation scrolls independently; the change composer remains visible. */
+.studio-shell.studio-chat-workspace { display: flex; flex-direction: column; overflow: hidden; min-height: 0; padding: 0 16px 10px; }
+.studio3d-thread-scroll { flex: 1 1 0; min-height: 0; overflow: auto; padding: 24px 4px 16px; }
+.studio3d-thread-history { width: min(100%, 780px); margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+.studio3d-history-turn { display: flex; flex-direction: column; gap: 8px; padding-bottom: 12px; }
+.studio3d-history-turn > .studio-muted { margin: 0 0 0 24px; }
+.studio3d-thread-scroll > .studio-result { width: min(100%, 1120px); margin: 0 auto 24px; }
+.studio3d-thread-scroll .studio-editor { height: clamp(360px, 60vh, 700px); }
+.studio3d-thread-scroll .studio-editor .studio-right-rail { min-height: 0; grid-column: 2; grid-row: 1 / span 2; display: grid; grid-template-rows: minmax(140px, .4fr) minmax(0, .6fr); gap: 10px; }
+.studio3d-thread-scroll .studio-editor .studio-scene-tree, .studio3d-thread-scroll .studio-editor .studio-inspector { min-height: 0; overflow: auto; }
+.studio3d-thread-scroll .studio3d-conversation { padding-top: 12px; }
+.studio-shell.studio-chat-workspace > .studio-composer-area { flex: 0 0 auto; position: relative; bottom: auto; margin: 0 auto; width: min(100%, 780px); padding: 6px 0; background: var(--bg); }
+.studio-chat-workspace .studio3d-composer-toolbar { justify-content: flex-end; }
+.studio-chat-workspace .studio3d-mode-choice { display: none; }
+.studio3d-revision-scope { color: var(--muted); font-size: 11px; margin-right: auto; }
+.studio-chat-workspace > .studio-banner, .studio-chat-workspace > .studio3d-note { flex: 0 0 auto; margin: 3px auto; }
+@container (max-width: 760px) {
+  .studio3d-thread-scroll .studio-editor { height: auto; display: flex; flex-direction: column; }
+  .studio3d-thread-scroll .studio-editor .studio-viewer { min-height: 300px; }
+  .studio3d-thread-scroll .studio-editor .studio-right-rail { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); grid-template-rows: minmax(140px, 250px); }
+}
