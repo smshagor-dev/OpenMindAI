@@ -836,6 +836,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
   const inWorkspace = submittedPrompt !== null || showingResult;
   const activeGenerationJob = nativeJob && nativeJob.id === nativeJobId.current ? nativeJob : null;
   const generationProgress = studio3dProgress(activeGenerationJob?.inferenceRoute ?? jobTarget, activeGenerationJob?.currentStage ?? "preparing", showingResult);
+  const understoodIntent = readSceneIntent(activeGenerationJob?.recovery);
   const activeEntry = history.find((item) => item.id === activeId) ?? null;
   const statusLabel = (() => {
     const status = job?.status?.toLowerCase();
@@ -1033,6 +1034,8 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
                 ) : null}
               </h1>
               {submittedPrompt ? <div className="studio3d-result-prompt"><span>You</span><p>{submittedPrompt}</p></div> : null}
+              {activeGenerationJob?.status === "completed" ? <p className="studio-meta" role="status">3D model ready · {generationProgress.percent}%</p> : null}
+              {understoodIntent ? <details className="studio3d-result-prompt"><summary>Understood request · {understoodIntent.summary}</summary>{understoodIntent.requirements.map((requirement, index) => <p key={index}>{requirement}</p>)}{understoodIntent.assumptions.length ? <p>Assumptions: {understoodIntent.assumptions.join("; ")}</p> : null}</details> : null}
               {job?.output && typeof job.output === "object" ? (
                 <p className="studio-meta">
                   {(job.output as { vertices?: number }).vertices ?? 0} vertices ·{" "}
@@ -1339,17 +1342,17 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
             {notice}
           </div>
         ) : null}
-        {inWorkspace && nativeJob?.inferenceRoute === "local" && readSceneIntent(nativeJob.recovery) ? (
+        {inWorkspace && !showingResult && activeGenerationJob?.inferenceRoute === "local" && understoodIntent ? (
           <details className="studio3d-note">
-            <summary>Understood request · {readSceneIntent(nativeJob.recovery)?.summary}</summary>
-            {readSceneIntent(nativeJob.recovery)?.requirements.map((requirement, index) => <p key={index}>{requirement}</p>)}
-            {readSceneIntent(nativeJob.recovery)?.assumptions.length ? <p>Assumptions: {readSceneIntent(nativeJob.recovery)?.assumptions.join("; ")}</p> : null}
-            {nativeJob.recovery.reviewAccepted === true ? <p>Local AI prompt review passed. Inspect the scene for final visual accuracy.</p> : null}
+            <summary>Understood request · {understoodIntent.summary}</summary>
+            {understoodIntent.requirements.map((requirement, index) => <p key={index}>{requirement}</p>)}
+            {understoodIntent.assumptions.length ? <p>Assumptions: {understoodIntent.assumptions.join("; ")}</p> : null}
+            {activeGenerationJob.recovery.reviewAccepted === true ? <p>Local AI prompt review passed. Inspect the scene for final visual accuracy.</p> : null}
           </details>
         ) : null}
-        {inWorkspace && !busy && nativeJob ? (
+        {inWorkspace && !busy && activeGenerationJob ? (
           <p className="studio3d-note" role="status">
-            Saved job: {nativeJob.status} · {nativeJob.currentStage}{nativeJob.status === "interrupted" ? " · restart recovery is manual" : ""}
+            Saved job: {activeGenerationJob.status} · {activeGenerationJob.currentStage}{activeGenerationJob.status === "interrupted" ? " · restart recovery is manual" : ""}
           </p>
         ) : null}
       </div>
