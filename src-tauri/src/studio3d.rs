@@ -304,6 +304,50 @@ pub(crate) fn parse_scene_review(response: &str, intent: &SceneIntent, plan: &Va
     Ok(review)
 }
 
+// Apply only explicit changes to an already validated generated scene. Names
+// not mentioned in the patch retain their complete original object data.
+pub(crate) fn apply_scene_revision(base: &Value, response: &str) -> Result<Value, AppError> {
+    if response.len() > 64 * 1024 {
+        return Err(studio_error("scene revision exceeds its size limit"));
+    }
+    let patch: Value = serde_json::from_str(response.trim())
+        .map_err(|_| studio_error("invalid scene revision JSON"))?;
+    if patch.as_object().is_none_or(|fields| fields.len() != 2 || !fields.contains_key("upsert") || !fields.contains_key("remove")) {
+        return Err(studio_error("scene revision must contain only upsert and remove"));
+    }
+    let updates = patch["upsert"].as_array().filter(|items| items.len() <= 32)
+        .ok_or_else(|| studio_error("invalid scene revision upserts"))?;
+    let removals = patch["remove"].as_array().filter(|items| items.len() <= 32)
+        .ok_or_else(|| studio_error("invalid scene revision removals"))?;
+    let base = validate_scene_spec(base.clone())?;
+    let objects = base["objects"].as_array().unwrap();
+    let mut result = objects.clone();
+    let mut touched = std::collections::HashSet::new();
+    for removal in removals {
+        let name = removal.as_str().ok_or_else(|| studio_error("invalid removed object name"))?;
+        if !touched.insert(name.to_owned()) || !objects.iter().any(|object| object["name"].as_str() == Some(name)) {
+            return Err(studio_error("duplicate or unknown removed object"));
+        }
+        result.retain(|object| object["name"].as_str() != Some(name));
+    }
+    for update in updates {
+        let name = update["name"].as_str().ok_or_else(|| studio_error("missing revised object name"))?;
+        if !touched.insert(name.to_owned()) {
+            return Err(studio_error("duplicate or conflicting scene revision"));
+        }
+        if let Some(index) = result.iter().position(|object| object["name"].as_str() == Some(name)) {
+            result[index] = update.clone();
+        } else {
+            result.push(update.clone());
+        }
+    }
+    let revised = normalize_scene_spec(serde_json::json!({"schemaVersion":1,"objects":result})).and_then(validate_scene_spec)?;
+    if revised == base {
+        return Err(studio_error("scene revision did not change the model"));
+    }
+    Ok(revised)
+}
+
 fn validate_scene_spec(value: Value) -> Result<Value, AppError> {
     if value.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
         return Err(studio_error("scene plan schemaVersion must be 1"));
@@ -2137,9 +2181,9 @@ pub(crate) async fn execute_studio3d_local_job(
             "only queued 3D jobs may be dispatched; uncertain or started jobs are never replayed",
         ));
     }
-    if route != "local" || !matches!(mode.as_str(), "text-to-3d" | "architecture") {
+    if route != "local" || !matches!(mode.as_str(), "text-to-3d" | "architecture" | "scene-edit") {
         return Err(studio_error(
-            "the local procedural adapter only accepts local text or architecture jobs",
+            "the local procedural adapter only accepts local text, architecture or scene revision jobs",
         ));
     }
     let request: Value = serde_json::from_str(&request)
@@ -2153,6 +2197,27 @@ pub(crate) async fn execute_studio3d_local_job(
             "local generation prompt must contain 5 to 8,000 characters",
         ));
     }
+    let base_scene = if mode == "scene-edit" {
+        let ids = request["inputAssetIds"].as_array()
+            .filter(|ids| ids.len() == 1)
+            .ok_or_else(|| studio_error("a scene revision requires exactly one prior generated asset"))?;
+        let asset_id = ids[0].as_str().ok_or_else(|| studio_error("invalid revision asset id"))?;
+        let db = state.database.lock().map_err(|_| studio_error("database lock is unavailable"))?;
+        let previous: String = db.connection().query_row(
+            "SELECT j.recovery_json FROM studio3d_jobs j JOIN studio3d_assets a ON a.id=j.output_asset_id AND a.project_id=j.project_id AND a.content_sha256=j.output_sha256 WHERE j.project_id=?1 AND j.output_asset_id=?2 AND j.status='completed' AND j.inference_route='local' ORDER BY j.completed_at DESC LIMIT 1",
+            params![project_id,asset_id], |row| row.get(0),
+        ).optional()?.ok_or_else(|| studio_error("this asset has no completed local generated scene to revise"))?;
+        let metadata: Value = serde_json::from_str(&previous).map_err(|_| studio_error("invalid source scene metadata"))?;
+        let plan = validate_scene_spec(metadata["sceneSpecification"].clone())
+            .map_err(|_| studio_error("the original editable scene specification is not available; generate a new local scene first"))?;
+        let digest = format!("{:x}", Sha256::digest(plan.to_string().as_bytes()));
+        if metadata["sceneSpecificationSha256"].as_str() != Some(digest.as_str()) {
+            return Err(studio_error("source scene specification checksum mismatch"));
+        }
+        Some(plan)
+    } else {
+        None
+    };
     let token = CancellationToken::new();
     {
         let mut active = studio3d_cancellations()
@@ -2169,6 +2234,7 @@ pub(crate) async fn execute_studio3d_local_job(
         &project_id,
         mode == "architecture",
         prompt,
+        base_scene.as_ref(),
         token.clone(),
         &state,
     )
@@ -2206,6 +2272,7 @@ async fn execute_studio3d_local_job_inner(
     project_id: &str,
     architecture: bool,
     prompt: &str,
+    base_scene: Option<&Value>,
     token: CancellationToken,
     state: &State<'_, AppState>,
 ) -> Result<Studio3DAsset, AppError> {
@@ -2254,7 +2321,7 @@ async fn execute_studio3d_local_job_inner(
     };
     let (model_id, scene_spec, reasoning) = tokio::select! {
         _ = token.cancelled() => return Err(studio_error("3D job cancelled during local model planning")),
-        result = tokio::time::timeout(STUDIO3D_LOCAL_JOB_TIMEOUT.saturating_sub(started.elapsed()), crate::studio3d_prompt_driven_scene(app, state, job_id, prompt, architecture)) =>
+        result = tokio::time::timeout(STUDIO3D_LOCAL_JOB_TIMEOUT.saturating_sub(started.elapsed()), crate::studio3d_prompt_driven_scene(app, state, job_id, prompt, architecture, base_scene)) =>
             result.map_err(|_| studio_error("local prompt understanding and scene review timed out"))??,
     };
     let scene_spec_sha256 = format!("{:x}", Sha256::digest(scene_spec.to_string().as_bytes()));
@@ -3032,6 +3099,25 @@ mod tests {
         let mut cyclic = valid;
         cyclic["objects"][0]["parent"] = Value::from("Wheel");
         assert!(validate_scene_spec(cyclic).is_err());
+    }
+
+    #[test]
+    fn scene_revision_preserves_untouched_objects_and_rejects_bad_patches() {
+        let part = |name: &str| serde_json::json!({"name":name,"primitive":"box","dimensions":[1,1,1],"position":[0,0,0],"rotation":[0,0,0],"color":[0.2,0.3,0.4],"metallic":0.0,"roughness":0.7,"parent":null});
+        let base = serde_json::json!({"schemaVersion":1,"objects":[part("Body"),part("Wheel")]});
+        let mut changed = part("Body");
+        changed["color"] = serde_json::json!([1,0,0]);
+        let patch = serde_json::json!({"upsert":[changed],"remove":[]});
+        let revised = apply_scene_revision(&base, &patch.to_string()).unwrap();
+        assert_eq!(revised["objects"][0]["color"], serde_json::json!([1,0,0]));
+        assert_eq!(revised["objects"][1], base["objects"][1]);
+        assert!(apply_scene_revision(&base, r#"{"upsert":[],"remove":["Missing"]}"#).is_err());
+        assert!(apply_scene_revision(&base, r#"{"upsert":[],"remove":[]}"#).is_err());
+        assert!(apply_scene_revision(&base, r#"{"upsert":[],"remove":["Body","Wheel"]}"#).is_err());
+        let added = serde_json::json!({"upsert":[part("Camera")],"remove":["Wheel"]});
+        let revised = apply_scene_revision(&base, &added.to_string()).unwrap();
+        assert_eq!(revised["objects"][0], base["objects"][0]);
+        assert_eq!(revised["objects"][1]["name"], "Camera");
     }
 
     #[test]

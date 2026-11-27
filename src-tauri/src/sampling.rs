@@ -63,7 +63,7 @@ pub fn chat_output_budget(mode: &str, context_size: u32, messages: &[Value]) -> 
         "research-agent" => RESEARCH_AGENT_OUTPUT_TOKENS,
         "research-manuscript" => RESEARCH_MANUSCRIPT_OUTPUT_TOKENS,
         "research-section" => RESEARCH_SECTION_OUTPUT_TOKENS,
-        "studio3d-scene-planner" | "studio3d-architecture-planner" => LONG_OUTPUT_TOKENS,
+        "studio3d-scene-planner" | "studio3d-architecture-planner" | "studio3d-revision-planner" => LONG_OUTPUT_TOKENS,
         "studio3d-intent" => CHAT_OUTPUT_TOKENS,
         "studio3d-review" => RESEARCH_SECTION_OUTPUT_TOKENS,
         "document" | "pdf" | "research" | "thinking" => LONG_OUTPUT_TOKENS,
