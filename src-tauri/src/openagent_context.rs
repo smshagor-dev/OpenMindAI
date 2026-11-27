@@ -474,7 +474,17 @@ fn read_relevance_text(path: &Path) -> Result<Option<String>, AppError> {
     let mut bytes = Vec::with_capacity(metadata.len().min(MAX_RELEVANCE_SCAN_BYTES) as usize);
     let mut limited = fs::File::open(path)?.take(MAX_RELEVANCE_SCAN_BYTES);
     limited.read_to_end(&mut bytes)?;
-    Ok(String::from_utf8(bytes).ok())
+    match std::str::from_utf8(&bytes) {
+        Ok(text) => Ok(Some(text.to_owned())),
+        Err(error) if error.error_len().is_none()
+            && bytes.len() as u64 == MAX_RELEVANCE_SCAN_BYTES
+            && metadata.len() > MAX_RELEVANCE_SCAN_BYTES =>
+        {
+            Ok(Some(String::from_utf8(bytes[..error.valid_up_to()].to_vec())
+                .expect("validated UTF-8 prefix")))
+        }
+        Err(_) => Ok(None),
+    }
 }
 
 fn read_source_excerpt(path: &Path, terms: &HashSet<String>) -> Result<Option<String>, AppError> {
@@ -630,6 +640,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn oversized_goal_tokenization_is_bounded_and_unicode_safe() {
+        let goal = format!("rust security {} late_unique_term", "界".repeat(100_000));
+        let terms = goal_terms(&goal);
+        assert!(terms.contains("rust"));
+        assert!(terms.contains("security"));
+        assert!(!terms.contains("late_unique_term"));
+        assert!(terms.len() <= 32);
+        let boundary = format!("{}🚀security", "a".repeat(MAX_GOAL_SCAN_BYTES - 1));
+        let bounded_terms = goal_terms(&boundary);
+        assert!(!bounded_terms.contains("security"));
+        assert!(goal_terms("বাংলা নিরাপত্তা rust").contains("rust"));
+    }
+
+    #[test]
     fn goal_tokenization_bounds_oversized_ascii_and_unicode_inputs() {
         let oversized = format!("session {} secret_tail", "a".repeat(2_000_000));
         let terms = goal_terms(&oversized);
@@ -637,7 +661,7 @@ mod tests {
         assert!(!terms.contains("secret_tail"));
         assert!(terms.iter().all(|term| term.len() <= MAX_GOAL_SCAN_BYTES));
 
-        let unicode = format!("{}session_hidden", "😀".repeat(1023));
+        let unicode = format!("{}session_hidden", "😀".repeat(1024));
         assert!(goal_terms(&unicode).is_empty());
         assert_eq!(goal_terms("refresh_session alpha-beta project"),
             HashSet::from(["refresh_session".to_string(), "alpha-beta".to_string()]));
@@ -786,7 +810,7 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         fs::write(outside.path().join("secret.rs"), "EXTERNAL_SECRET").unwrap();
         let link = root.path().join("linked");
-        let result = std::process::Command::new("pwsh").args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:TEST_LINK -Target $env:TEST_TARGET -ErrorAction Stop | Out-Null"]).env("TEST_LINK", &link).env("TEST_TARGET", outside.path()).output().unwrap();
+        let result = std::process::Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:TEST_LINK -Target $env:TEST_TARGET -ErrorAction Stop | Out-Null"]).env("TEST_LINK", &link).env("TEST_TARGET", outside.path()).output().unwrap();
         assert!(
             result.status.success(),
             "{}",
@@ -915,6 +939,43 @@ mod tests {
     }
 
     #[test]
+    fn relevance_sample_keeps_valid_prefix_when_byte_limit_splits_unicode() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("opaque.rs");
+        // The first byte of a three-byte scalar lands at the final sample byte.
+        let mut content = b"fn refresh_session() {}\n".to_vec();
+        content.resize(MAX_RELEVANCE_SCAN_BYTES as usize - 1, b' ');
+        content.extend_from_slice("€".as_bytes());
+        fs::write(&path, content).unwrap();
+        let sample = read_relevance_text(&path).unwrap().unwrap();
+        assert!(sample.contains("refresh_session"));
+        assert_eq!(sample.len(), MAX_RELEVANCE_SCAN_BYTES as usize - 1);
+        assert!(!sample.contains('�'));
+
+        let context = build_repository_context(
+            &[("root".into(), temp.path().display().to_string())],
+            "refresh session",
+        ).unwrap();
+        assert!(context.contains("RELEVANT FILE [opaque.rs]"));
+    }
+
+    #[test]
+    fn relevance_sample_rejects_malformed_utf8_inside_sample() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("invalid.rs");
+        fs::write(&path, [b"fn refresh_session() {}".as_slice(), &[0xff]].concat()).unwrap();
+        assert!(read_relevance_text(&path).unwrap().is_none());
+    }
+
+    #[test]
+    fn relevance_sample_rejects_incomplete_scalar_at_actual_eof() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("incomplete.rs");
+        fs::write(&path, [b"fn refresh_session() {}".as_slice(), &[0xe2]].concat()).unwrap();
+        assert!(read_relevance_text(&path).unwrap().is_none());
+    }
+
+    #[test]
     fn content_relevance_selects_source_even_when_path_is_generic() {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir_all(temp.path().join("src")).unwrap();
@@ -987,3 +1048,4 @@ mod tests {
         assert!(!context.contains("outside secret"));
     }
 }
+
