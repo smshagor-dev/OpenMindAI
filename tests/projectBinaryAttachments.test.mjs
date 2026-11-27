@@ -103,7 +103,7 @@ test("Save copy returns exact scoped bytes with sanitized filename, and rejects 
     readProjectBinaryFile: async (projectId, fileId) => {
       requested.push([projectId, fileId]);
       return {
-        name: "../../untrusted\\filename.png",
+        name: "../../বাংলা\\invoice\u202Egnp.exe\u2066\u2029.png",
         mimeType: "image/png",
         dataBase64: globalThis.btoa(String.fromCharCode(0, 255, 137, 80, 78, 71)),
         sizeBytes: 6,
@@ -117,6 +117,8 @@ test("Save copy returns exact scoped bytes with sanitized filename, and rejects 
     assert.equal(downloads.length, 1);
     assert.equal(downloads[0].name.includes("/"), false);
     assert.equal(downloads[0].name.includes("\\"), false);
+    assert.equal(downloads[0].name, ".._.._বাংলা_invoice_gnp.exe__.png");
+    assert.doesNotMatch(downloads[0].name, /[\u061c\u200e\u200f\u202a-\u202e\u2028\u2029\u2066-\u2069]/u);
     assert.equal(downloads[0].href, "blob:verified-download");
     assert.deepEqual([...new Uint8Array(await blobRef.arrayBuffer())], [0, 255, 137, 80, 78, 71]);
     assert.deepEqual(originals, ["blob:verified-download"]);
