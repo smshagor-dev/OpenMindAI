@@ -52,22 +52,36 @@ export async function saveProjectBinaryCopy(projectId: string, fileId: string) {
   const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
   const blob = new Blob([bytes], { type: file.mimeType || "application/octet-stream" });
   const url = globalThis.URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  // Names are display labels only. This prevents an older corrupted record
-  // from inserting path segments into a browser's suggested download name.
-  link.download = [...file.name].map((character) => {
-    const code = character.charCodeAt(0);
-    return character === "/" || character === "\\" || code < 32 || code === 127
-      ? "_"
-      : character;
-  }).join("") || "project-attachment";
-  link.href = url;
+  let link: HTMLAnchorElement | undefined;
+  let downloadStarted = false;
   try {
+    link = document.createElement("a");
+    // Names are display labels only. Never interpret stored names as paths.
+    link.download = [...file.name].map((character) => {
+      const code = character.charCodeAt(0);
+      return character === "/" || character === "\\" || code < 32 || code === 127
+        ? "_"
+        : character;
+    }).join("") || "project-attachment";
+    link.href = url;
     document.body.appendChild(link);
     link.click();
+    downloadStarted = true;
   } finally {
-    link.remove();
-    // Delay revocation so the browser/WebView has time to hand off the copy.
-    globalThis.setTimeout(() => globalThis.URL.revokeObjectURL(url), 1_000);
+    try {
+      link?.remove();
+    } finally {
+      if (downloadStarted) {
+        // Allow the browser/WebView to hand off the download before revoking.
+        try {
+          globalThis.setTimeout(() => globalThis.URL.revokeObjectURL(url), 1_000);
+        } catch {
+          globalThis.URL.revokeObjectURL(url);
+        }
+      } else {
+        // Failed DOM setup/click must not retain a URL to attachment bytes.
+        globalThis.URL.revokeObjectURL(url);
+      }
+    }
   }
 }
