@@ -178,8 +178,6 @@ export function AppsSettings() {
     });
   }, []);
 
-  const refresh = async () => applyStatuses(await fetchConnectedAppStatuses());
-
   useEffect(() => {
     let active = true;
     void fetchConnectedAppStatuses().then((result) => {

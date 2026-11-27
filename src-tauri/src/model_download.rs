@@ -146,6 +146,18 @@ fn ensure_download_not_cancelled(token: &CancellationToken) -> Result<(), AppErr
     }
 }
 
+/// Preserve the verified partial for resume if cancellation arrives during hashing.
+/// Never expose a cancelled partial as a completed installed model.
+fn publish_verified_partial(
+    part_path: &Path,
+    final_path: &Path,
+    token: &CancellationToken,
+) -> Result<(), AppError> {
+    ensure_download_not_cancelled(token)?;
+    fs::rename(part_path, final_path)?;
+    Ok(())
+}
+
 #[derive(Clone)]
 pub struct ModelDownloadManager {
     root: PortableRootManager,
@@ -163,15 +175,16 @@ fn apply_stop_if_active(
     token: Option<&CancellationToken>,
     requested: DownloadState,
 ) -> bool {
-    if !matches!(requested, DownloadState::Cancelled | DownloadState::PausedInterrupted)
-        || !matches!(
-            status.state,
-            DownloadState::Queued
-                | DownloadState::Resolving
-                | DownloadState::Downloading
-                | DownloadState::Verifying
-        )
-    {
+    if !matches!(
+        requested,
+        DownloadState::Cancelled | DownloadState::PausedInterrupted
+    ) || !matches!(
+        status.state,
+        DownloadState::Queued
+            | DownloadState::Resolving
+            | DownloadState::Downloading
+            | DownloadState::Verifying
+    ) {
         return false;
     }
     let Some(token) = token else {
@@ -319,7 +332,8 @@ impl ModelDownloadManager {
                         || named.nlink() != 1
                     {
                         return Err(AppError::ModelDownloadFailed(
-                            "model install lock path was replaced or has multiple links".to_string(),
+                            "model install lock path was replaced or has multiple links"
+                                .to_string(),
                         ));
                     }
                 }
@@ -346,17 +360,23 @@ impl ModelDownloadManager {
         let _in_flight = self.begin_download()?;
         // Lock the root before changing status, cancellation, or disk files.
         // Keep both guards alive until the install's final state is recorded.
-        let _root_lock = self.begin_root_install()?;
+        // Validate caller-controlled IDs before creating the portable-root lock
+        // file or contending with a different process's legitimate install.
         let entry = entry_by_id(model_id)?;
+        let _root_lock = self.begin_root_install()?;
         tracing::info!(repo = %entry.repo, model_id = %entry.id, "installing AI model package");
         // Publish the cancellation token and Resolving status together under
         // the same lock order as stop_download. Otherwise Cancel can arrive
         // after Resolving becomes visible but before a token exists.
         let token = CancellationToken::new();
         {
-            let mut status = self.status.lock()
+            let mut status = self
+                .status
+                .lock()
                 .map_err(|_| AppError::internal("download status lock poisoned"))?;
-            let mut active_token = self.cancel_token.lock()
+            let mut active_token = self
+                .cancel_token
+                .lock()
                 .map_err(|_| AppError::internal("download cancel lock poisoned"))?;
             activate_download(&mut status, &mut active_token, &entry, token.clone());
         }
@@ -512,7 +532,7 @@ impl ModelDownloadManager {
         match prepare_partial_download(&part_path, metadata.size_bytes, metadata.sha256.as_deref())?
         {
             PartialDownloadState::Complete { verification, .. } => {
-                fs::rename(&part_path, &final_path)?;
+                publish_verified_partial(&part_path, &final_path, token)?;
                 tracing::info!(
                     path = %final_path.display(),
                     "recovered complete verified model partial without re-downloading"
@@ -577,7 +597,7 @@ impl ModelDownloadManager {
             VerificationState::Unverified
         };
 
-        fs::rename(&part_path, &final_path)?;
+        publish_verified_partial(&part_path, &final_path, token)?;
         Ok((final_path, verification))
     }
 
@@ -981,7 +1001,11 @@ mod tests {
         let token = CancellationToken::new();
         let mut status = DownloadStatus::queued(&entry);
         status.state = DownloadState::Resolving;
-        assert!(apply_stop_if_active(&mut status, Some(&token), DownloadState::Cancelled));
+        assert!(apply_stop_if_active(
+            &mut status,
+            Some(&token),
+            DownloadState::Cancelled
+        ));
         assert!(token.is_cancelled());
         assert!(matches!(status.state, DownloadState::Cancelled));
     }
@@ -990,7 +1014,8 @@ mod tests {
     async fn cancelling_pending_metadata_resolution_does_not_wait_for_network() {
         let token = CancellationToken::new();
         token.cancel();
-        let result = cancel_while_resolving(&token, std::future::pending::<Result<(), AppError>>()).await;
+        let result =
+            cancel_while_resolving(&token, std::future::pending::<Result<(), AppError>>()).await;
         assert!(matches!(result, Err(AppError::InferenceCancelled(_))));
     }
 
@@ -1042,7 +1067,11 @@ mod tests {
         ] {
             let mut status = DownloadStatus::queued(&entry);
             status.state = active.clone();
-            assert!(!apply_stop_if_active(&mut status, None, DownloadState::Cancelled));
+            assert!(!apply_stop_if_active(
+                &mut status,
+                None,
+                DownloadState::Cancelled
+            ));
             assert_eq!(status.state, active);
             let token = CancellationToken::new();
             assert!(apply_stop_if_active(
@@ -1310,6 +1339,36 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_verified_partial_is_preserved_for_resume() {
+        let temp = tempfile::tempdir().unwrap();
+        let part = temp.path().join("model.part");
+        let final_path = temp.path().join("model.gguf");
+        fs::write(&part, b"verified model bytes").unwrap();
+        let token = CancellationToken::new();
+        token.cancel();
+
+        assert!(matches!(
+            publish_verified_partial(&part, &final_path, &token),
+            Err(AppError::InferenceCancelled(_))
+        ));
+        assert_eq!(fs::read(&part).unwrap(), b"verified model bytes");
+        assert!(!final_path.exists());
+    }
+
+    #[test]
+    fn active_verified_partial_publishes_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let part = temp.path().join("model.part");
+        let final_path = temp.path().join("model.gguf");
+        fs::write(&part, b"verified model bytes").unwrap();
+        let token = CancellationToken::new();
+
+        publish_verified_partial(&part, &final_path, &token).unwrap();
+        assert!(!part.exists());
+        assert_eq!(fs::read(&final_path).unwrap(), b"verified model bytes");
+    }
+
+    #[test]
     fn independent_download_tokens_do_not_cross_cancel() {
         let first = CancellationToken::new();
         let second = CancellationToken::new();
@@ -1354,10 +1413,48 @@ mod tests {
         assert_ne!(first, key(&root_a, &dir_a, source, "nested_model.gguf"));
     }
 
+    #[tokio::test]
+    async fn unknown_model_id_has_no_portable_root_side_effects() {
+        let temp = tempfile::tempdir().unwrap();
+        let root_path = temp.path().join("new-portable-root");
+        let manager = ModelDownloadManager::new(PortableRootManager::from_root(root_path.clone()));
+        let result = manager.download_catalog_model("not-a-real-catalog-model").await;
+        assert!(result.is_err());
+        assert!(!root_path.exists(), "invalid model IDs must not create the root");
+        assert!(manager.active_download.available_permits() == 1);
+        assert!(manager.cancel_token.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn unknown_model_id_does_not_create_install_lock_in_existing_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = ModelDownloadManager::new(PortableRootManager::from_root(temp.path().to_path_buf()));
+        assert!(manager.download_catalog_model("unknown-model").await.is_err());
+        assert!(!temp.path().join(".openmindai-model-install.lock").exists());
+    }
+
+    #[test]
+    fn unknown_catalog_id_does_not_touch_portable_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("new-root");
+        let manager = ModelDownloadManager::new(PortableRootManager::from_root(path.clone()));
+        let before = manager.status().unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        assert!(runtime.block_on(manager.download_catalog_model("unknown-model-id")).is_err());
+        assert!(!path.exists(), "invalid IDs must not create a portable root");
+        assert_eq!(manager.status().unwrap().state, before.state);
+        assert_eq!(manager.status().unwrap().model_id, before.model_id);
+        assert_eq!(manager.active_download.available_permits(), 1);
+        let lock = manager.begin_root_install().unwrap();
+        assert!(path.join(".openmindai-model-install.lock").is_file());
+        drop(lock);
+    }
+
     #[test]
     fn cancel_does_not_rewrite_queued_status_without_active_permit() {
         let temp = tempfile::tempdir().unwrap();
-        let manager = ModelDownloadManager::new(PortableRootManager::from_root(temp.path().to_path_buf()));
+        let manager =
+            ModelDownloadManager::new(PortableRootManager::from_root(temp.path().to_path_buf()));
         let token = CancellationToken::new();
         *manager.cancel_token.lock().unwrap() = Some(token.clone());
         assert_eq!(manager.cancel().unwrap().state, DownloadState::Queued);
@@ -1367,14 +1464,21 @@ mod tests {
     #[test]
     fn pause_only_applies_while_a_transfer_owns_the_permit() {
         let temp = tempfile::tempdir().unwrap();
-        let manager = ModelDownloadManager::new(PortableRootManager::from_root(temp.path().to_path_buf()));
+        let manager =
+            ModelDownloadManager::new(PortableRootManager::from_root(temp.path().to_path_buf()));
         let permit = manager.active_download.clone().try_acquire_owned().unwrap();
         let token = CancellationToken::new();
         *manager.cancel_token.lock().unwrap() = Some(token.clone());
-        assert_eq!(manager.pause().unwrap().state, DownloadState::PausedInterrupted);
+        assert_eq!(
+            manager.pause().unwrap().state,
+            DownloadState::PausedInterrupted
+        );
         assert!(token.is_cancelled());
         drop(permit);
-        assert_eq!(manager.cancel().unwrap().state, DownloadState::PausedInterrupted);
+        assert_eq!(
+            manager.cancel().unwrap().state,
+            DownloadState::PausedInterrupted
+        );
     }
 
     #[test]
