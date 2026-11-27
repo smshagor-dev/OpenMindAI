@@ -200,8 +200,18 @@ export async function extractPdfText(
           const ocr = await invoke<PdfOcrPageResult[]>("ocr_pdf_pages", { pages: rendered });
           assertNotCancelled(options.signal);
           const allowed = new Set(rendered.map(page => page.pageNumber));
-          for (const result of ocr) {
-            if (!allowed.delete(result.pageNumber) || typeof result.text !== "string") continue;
+          // Native OCR is an external boundary. Never scan an unbounded response:
+          // each dispatch contains at most four pages, and extra entries cannot
+          // provide additional trusted evidence after this inspection budget.
+          // Allow a few malformed/duplicate entries before valid results.
+          const maxResults = Math.min(64, rendered.length * 16);
+          if (!Array.isArray(ocr)) throw new Error("Invalid PDF OCR response.");
+          for (let index = 0; index < Math.min(ocr.length, maxResults); index += 1) {
+            const result = ocr[index];
+            if (!result || typeof result !== "object"
+                || !Number.isSafeInteger(result.pageNumber)
+                || typeof result.text !== "string"
+                || !allowed.delete(result.pageNumber)) continue;
             // Bound native OCR output before trimming or Unicode expansion.
             // The native response can be arbitrarily large even when the
             // remaining prompt budget is tiny.

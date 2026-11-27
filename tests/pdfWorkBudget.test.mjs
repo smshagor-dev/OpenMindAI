@@ -375,3 +375,38 @@ test("PDF cancellation during page text extraction remains fatal", async () => {
   await assert.rejects(extractPdfText(file, { signal: abort.signal }), /PDF import cancelled/);
   fx.assertClean();
 });
+
+test("native OCR skips malformed entries and accepts valid results within bounded inspection", async () => {
+  const fx = fixture(1, () => "", async () => [
+    null, undefined, { pageNumber: "1", text: "invalid" },
+    { pageNumber: 1, text: "Valid OCR evidence after malformed entries" },
+  ]);
+  const result = await extractPdfText(file);
+  assert.match(result.text, /Valid OCR evidence after malformed entries/);
+  assert.deepEqual(result.unreadPages, []);
+  fx.assertClean();
+});
+
+test("native OCR response inspection stops at 16 entries per rendered page", async () => {
+  const entries = Array.from({ length: 100_000 }, () => ({ pageNumber: -1, text: "invalid" }));
+  Object.defineProperty(entries, 16, {
+    get() { throw new Error("OCR must not inspect beyond its response budget"); },
+  });
+  const fx = fixture(1, () => "Readable selectable text before the scanned OCR page.");
+  const pdf = await globalThis.__pdf.task.promise;
+  const originalGetPage = pdf.getPage;
+  pdf.numPages = 2;
+  pdf.getPage = async (number) => {
+    const page = await originalGetPage(number);
+    page.getTextContent = async () => ({ items: [
+      { str: number === 1 ? "Readable selectable text before the scanned OCR page." : "", hasEOL: true },
+    ] });
+    return page;
+  };
+  globalThis.__pdf.ocr = async () => entries;
+  const result = await extractPdfText(file);
+  assert.match(result.text, /Readable selectable text/);
+  assert.deepEqual(result.unreadPages, [2]);
+  assert.equal(result.visionPages.length, 0);
+  fx.assertClean();
+});
