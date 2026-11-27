@@ -45,10 +45,23 @@ export async function attachProjectBinaryFile(projectId: string, file: File) {
 /** A requested, verified, project-scoped copy. Never use stored names as paths. */
 export async function saveProjectBinaryCopy(projectId: string, fileId: string) {
   const file = await api.readProjectBinaryFile(projectId, fileId);
+  if (!file || typeof file !== "object") {
+    throw new Error("Saved attachment has invalid metadata.");
+  }
   // Bound untrusted encoded data before allocating decoded bytes in the WebView.
   if (!Number.isSafeInteger(file.sizeBytes) || file.sizeBytes < 0 ||
       file.sizeBytes > MAX_PROJECT_BINARY_FILE_BYTES) {
     throw new Error("Saved attachment failed size validation.");
+  }
+  // Validate IPC metadata before decoding or creating a browser URL.
+  // Long legacy names remain compatible: the filename loop below reads
+  // at most 255 code points and does not allocate the entire name.
+  if (typeof file.dataBase64 !== "string" ||
+      typeof file.name !== "string" ||
+      (file.mimeType !== null &&
+        (typeof file.mimeType !== "string" || file.mimeType.length > 255 ||
+          /[^\x20-\x7e]/.test(file.mimeType)))) {
+    throw new Error("Saved attachment has invalid metadata.");
   }
   const expectedEncodedLength = 4 * Math.ceil(file.sizeBytes / 3);
   if (file.dataBase64.length !== expectedEncodedLength ||
