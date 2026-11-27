@@ -92,7 +92,7 @@ mod tests {
         std::os::unix::fs::symlink(target, parent).unwrap();
         #[cfg(windows)]
         {
-            let result=std::process::Command::new("pwsh").args(["-NoProfile","-NonInteractive","-Command","New-Item -ItemType Junction -Path $env:TEST_LINK -Target $env:TEST_TARGET -ErrorAction Stop | Out-Null"]).env("TEST_LINK",parent).env("TEST_TARGET",target).output().unwrap();
+            let result=std::process::Command::new("powershell.exe").args(["-NoProfile","-NonInteractive","-Command","New-Item -ItemType Junction -Path $env:TEST_LINK -Target $env:TEST_TARGET -ErrorAction Stop | Out-Null"]).env("TEST_LINK",parent).env("TEST_TARGET",target).output().unwrap();
             assert!(
                 result.status.success(),
                 "{}",

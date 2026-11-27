@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Message } from "./types";
 import { api as local } from "./api_legacy";
 import { describeFailure, ResponsePersistenceError } from "./lib/executionRouting";
+import { userMessageDisplay } from "./lib/chat";
+import { cloudConnectionPromptReason, promptForCloudConnection } from "./lib/cloudConnectionPrompt";
 export type { ExecutionMode } from "./lib/executionRouting";
 
 export type StudioSection = "research-studio" | "3d-studio" | "web-search";
@@ -18,6 +20,14 @@ export type CloudModel = {
   operation?: string;
   supports_vision?: boolean;
 };
+
+export function cloudModelDisplayName(model: CloudModel): string {
+  const identity = `${model.id} ${model.name ?? ""}`.toLowerCase().replace(/[_\s]+/g, "-");
+  if (/openmindai[-.]?super|\bsuper\b/.test(identity)) return "OpenMindAI Super";
+  if (/openmindai[-.]?ultra|\bultra\b/.test(identity)) return "OpenMindAI Ultra";
+  if (/openmindai[-.]?lite|\blite\b/.test(identity)) return "OpenMindAI Lite";
+  return model.name?.trim() || model.id;
+}
 export type StudioJob = {
   id: string;
   status: string;
@@ -26,6 +36,21 @@ export type StudioJob = {
   error?: string | null;
   asset_id?: number | null;
   events?: unknown[];
+};
+export type Studio3DDependencyPlan = {
+  manifestVersion: string;
+  supported: boolean;
+  target: { os: string; architecture: string; python: string; abi: string } | null;
+  basePython: string;
+  state: "ready" | "not_installed" | "repair_required";
+  downloadBytes: number;
+  requiredFreeBytes: number;
+  availableBytes: number;
+  managedEnvironmentPath: string;
+  packages: Array<{ name: string; version: string; size: number; license: string; reason: string }>;
+  installScope: string;
+  systemPythonModified: boolean;
+  gpuDriverInstall: boolean;
 };
 export type ResearchProject = {
   id: number;
@@ -69,7 +94,13 @@ export type QueuedScene = {
 const call = <T>(command: string, args?: Record<string, unknown>) => {
   if (!("__TAURI_INTERNALS__" in window))
     return Promise.reject(new Error("Cloud features require the OpenMindAI desktop application."));
-  return invoke<T>(command, args);
+  return invoke<T>(command, args).catch((error: unknown) => {
+    if (command !== "cloud_disconnect") {
+      const reason = cloudConnectionPromptReason(error);
+      if (reason) promptForCloudConnection(reason);
+    }
+    throw error;
+  });
 };
 
 let oneTimeOutboxRecovery: Promise<void> | null = null;
@@ -133,10 +164,11 @@ export const cloud = {
       data: base64,
       image_preview: preview,
     }),
-  imageToMesh: (uploadId: number) =>
+  imageToMesh: (uploadId: number, prompt = "", requestKey = crypto.randomUUID()) =>
     cloud.request<StudioJob | { asset: { id: number } }>("3d-studio/jobs/image-model", "POST", {
       upload_id: uploadId,
-      request_key: crypto.randomUUID(),
+      prompt: prompt.slice(0, 8000),
+      request_key: requestKey,
     }),
   studioScene: (
     prompt: string,
@@ -153,6 +185,10 @@ export const cloud = {
     call<{ filename: string; data_base64: string }>("cloud_download_mesh", { assetId }),
   startGpu: () => call<{ gpu_active: boolean; gpu?: string; engine?: string }>("local_gpu_start"),
   stopGpu: () => call<void>("local_gpu_stop"),
+  studio3dDependencyPlan: () => call<Studio3DDependencyPlan>("studio3d_dependency_plan"),
+  installStudio3dDependencies: () => call<Record<string, unknown>>("studio3d_install_dependencies", { approved: true }),
+  cancelStudio3dDependencyInstall: () => call<void>("studio3d_cancel_dependency_install"),
+  studio3dNeuralCapabilities: () => call<Record<string, unknown>>("studio3d_neural_capabilities"),
   gpuHealth: () => cloud.gpu<{ gpu_active: boolean; gpu?: string; engine?: string }>("health"),
   gpuScene: (
     prompt: string,
@@ -256,7 +292,9 @@ export async function hostedChat(
     // API key cannot reach (HTTP 403). The powerful hosted model then answers
     // grounded on live results end to end.
     try {
-      const webContext = await local.webSearchContext(prompt, mode);
+      const webMessageId = crypto.randomUUID();
+      const searchQuery = userMessageDisplay(prompt).prompt;
+      const webContext = await local.webSearchContext(searchQuery, mode, conversationId, webMessageId);
       messages.unshift({
         role: "system",
         content:

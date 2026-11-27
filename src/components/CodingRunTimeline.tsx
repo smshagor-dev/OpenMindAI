@@ -31,15 +31,11 @@ export function CodingRunTimeline(props: { conversationIds: string[] }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
+  const readRuns = useCallback(async () => {
+    if (!props.conversationIds.length) return [] as OpenAgentRun[];
     const groups = await Promise.all(
       props.conversationIds.slice(-20).map((id) => api.listOpenAgentRuns(id, 8)),
     );
-    if (!props.conversationIds.length) {
-      setRuns([]);
-      setSelectedId(null);
-      return;
-    }
     const byId = new Map<string, OpenAgentRun>();
     for (const group of groups) {
       for (const run of group) byId.set(run.id, run);
@@ -47,15 +43,25 @@ export function CodingRunTimeline(props: { conversationIds: string[] }) {
     const next = Array.from(byId.values())
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .slice(0, 24);
+    return next;
+  }, [props.conversationIds]);
+
+  const applyRuns = useCallback((next: OpenAgentRun[]) => {
     setRuns(next);
     setSelectedId((current) =>
       current && next.some((run) => run.id === current) ? current : next[0]?.id ?? null,
     );
-  }, [props.conversationIds]);
+  }, []);
+
+  const refresh = useCallback(async () => applyRuns(await readRuns()), [applyRuns, readRuns]);
 
   useEffect(() => {
-    void refresh().catch((caught: unknown) => setError(formatError(caught)));
-  }, [refresh]);
+    let alive = true;
+    void readRuns()
+      .then((next) => { if (alive) applyRuns(next); })
+      .catch((caught: unknown) => { if (alive) setError(formatError(caught)); });
+    return () => { alive = false; };
+  }, [readRuns, applyRuns]);
 
   useEffect(() => {
     if (!selectedId) return;
