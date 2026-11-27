@@ -72,9 +72,9 @@ export const MIN_MAX_OUTPUT_TOKENS = 16;
 export const MAX_MAX_OUTPUT_TOKENS = 8192;
 
 export const TOKEN_LIMIT_MESSAGE =
-  "The model reached the output token limit before producing an answer. Increase openmindai.maxOutputTokens in VS Code settings.";
+  "The local model stopped before finishing this answer. Try a more focused request or increase the context size in OpenMindAI Agent Setup.";
 export const REASONING_ONLY_MESSAGE =
-  "The model finished without producing a final answer. Try again, or increase openmindai.maxOutputTokens in VS Code settings.";
+  "The local model finished without a final answer. Try again with a focused request or increase the context size in OpenMindAI Agent Setup.";
 export const EMPTY_RESPONSE_MESSAGE =
   "OpenMindAI returned no answer content. Check that the selected model is loaded in the OpenMindAI desktop app and try again.";
 
@@ -135,7 +135,7 @@ export function fitOutputBudget(requested: number, contextSize: number, promptTo
 }
 
 export function contextFullMessage(promptTokens: number, contextSize: number): string {
-  return `The request (~${promptTokens} prompt tokens) does not fit the model context window (${contextSize} tokens). Reduce openmindai.maxContextCharacters or start a new chat.`;
+  return `The request (~${promptTokens} prompt tokens) does not fit the available model context (${contextSize} tokens). Close unrelated files or start a new chat, or increase the context size in OpenMindAI Agent Setup.`;
 }
 
 interface ChatCompletionChoice {
