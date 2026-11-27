@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Archive,
-  Database,
-  Globe,
+  Box,
   FolderKanban,
   FolderOpen,
   LibraryBig,
@@ -35,8 +34,8 @@ export function Sidebar(props: {
     | "tools"
     | "projects"
     | "research-studio"
-    | "3d-studio"
-    | "web-search";
+    | "research-run"
+    | "3d-studio";
   userProfile: UserProfile | null;
   width: number;
   onWidthChange: (width: number) => void;
@@ -50,11 +49,9 @@ export function Sidebar(props: {
   onDelete: (id: string) => void;
   onDuplicate: (conversation: Conversation) => void;
   onOpenLibrary: () => void;
-  onOpenModels: () => void;
-  onOpenDatasets: () => void;
   onOpenTools: () => void;
   onOpenProjects: () => void;
-  onOpenStudio: (section: "research-studio" | "3d-studio" | "web-search") => void;
+  onOpenStudio: (section: "research-studio" | "3d-studio") => void;
   onOpenSettings: (section?: string) => void;
 }) {
   const t = (key: Parameters<typeof navigationText>[1]) => navigationText(props.language, key);
@@ -144,12 +141,6 @@ export function Sidebar(props: {
         <button className="nav-button" onClick={props.onOpenLibrary} title={t("library")}>
           <LibraryBig size={18} /> {!props.collapsed ? t("library") : null}
         </button>
-        <button className="nav-button" onClick={props.onOpenModels} title={t("models")}>
-          <Database size={18} /> {!props.collapsed ? t("models") : null}
-        </button>
-        <button className="nav-button" onClick={props.onOpenDatasets} title={t("datasets")}>
-          <TableProperties size={18} /> {!props.collapsed ? t("datasets") : null}
-        </button>
         <button
           className={props.view === "tools" ? "nav-button active" : "nav-button"}
           onClick={props.onOpenTools}
@@ -158,7 +149,7 @@ export function Sidebar(props: {
           <Wrench size={18} /> {!props.collapsed ? t("tools") : null}
         </button>
         <button
-          className={props.view === "research-studio" ? "nav-button active" : "nav-button"}
+          className={props.view === "research-studio" || props.view === "research-run" ? "nav-button active" : "nav-button"}
           onClick={() => props.onOpenStudio("research-studio")}
           title={t("research")}
         >
@@ -169,14 +160,7 @@ export function Sidebar(props: {
           onClick={() => props.onOpenStudio("3d-studio")}
           title={t("studio3d")}
         >
-          <Wrench size={18} /> {!props.collapsed ? t("studio3d") : null}
-        </button>
-        <button
-          className={props.view === "web-search" ? "nav-button active" : "nav-button"}
-          onClick={() => props.onOpenStudio("web-search")}
-          title={t("web")}
-        >
-          <Globe size={18} /> {!props.collapsed ? t("web") : null}
+          <Box size={18} /> {!props.collapsed ? t("studio3d") : null}
         </button>
         <button className="nav-button" onClick={props.onOpenLibrary} title={t("files")}>
           <FolderOpen size={18} /> {!props.collapsed ? t("files") : null}

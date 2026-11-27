@@ -335,6 +335,7 @@ export interface WebResearchProgressEvent {
   total: number;
   sources: number;
   pagesRead: number;
+  domains: string[];
 }
 
 export type ArtifactKind = "text" | "markdown" | "code" | "pdf" | "docx" | "image" | "audio" | "video";

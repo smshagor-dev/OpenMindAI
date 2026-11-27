@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { URL } from "node:url";
 
 const source = readFileSync(new URL("../src/lib/pdf.ts", import.meta.url), "utf8");
 const start = source.indexOf("async function selectablePageText(");
 const end = source.indexOf("\nasync function renderPdfPage(", start);
 assert.ok(start >= 0 && end > start, "production extraction function exists");
-const functionSource = source.slice(start, end).replace("page: PDFPageProxy", "page");
+const functionSource = source.slice(start, end).replace("page: PDFPageProxy", "page").replace(/: string\[\]/g, "");
 const selectablePageText = new Function(
   "MAX_EXTRACTED_CHARS",
   "return (" + functionSource.replace("async function selectablePageText", "async function") + ");",
