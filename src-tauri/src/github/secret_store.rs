@@ -264,7 +264,9 @@ mod platform {
 
     fn status_error(operation: &str, status: i32) -> AppError {
         // Never include credentials or account identifiers in diagnostics.
-        store_error(format!("macOS Keychain could not {operation} (OSStatus {status})"))
+        store_error(format!(
+            "macOS Keychain could not {operation} (OSStatus {status})"
+        ))
     }
 
     fn sizes(slot: &str, secret: Option<&str>) -> Result<(u32, u32, u32), AppError> {
@@ -299,7 +301,9 @@ mod platform {
             return Err(status_error("find a credential", status));
         }
         if item.is_null() {
-            return Err(store_error("macOS Keychain returned an empty item reference"));
+            return Err(store_error(
+                "macOS Keychain returned an empty item reference",
+            ));
         }
         Ok(Some(ItemRef(item)))
     }
@@ -365,7 +369,9 @@ mod platform {
             return Err(status_error("read a credential", status));
         }
         if password_len > 0 && content.0.is_null() {
-            return Err(store_error("macOS Keychain returned an empty password pointer"));
+            return Err(store_error(
+                "macOS Keychain returned an empty password pointer",
+            ));
         }
         let bytes = if password_len == 0 {
             &[][..]
@@ -397,8 +403,13 @@ mod platform {
         #[test]
         fn storing_secrets_never_invokes_a_subprocess() {
             let source = include_str!("secret_store.rs");
-            let implementation = source.split("#[cfg(target_os = \"macos\")]").nth(1).unwrap()
-                .split("    #[cfg(test)]").next().unwrap();
+            let implementation = source
+                .split("#[cfg(target_os = \"macos\")]")
+                .nth(1)
+                .unwrap()
+                .split("    #[cfg(test)]")
+                .next()
+                .unwrap();
             assert!(!implementation.contains("Command::new("));
             assert!(implementation.contains("SecKeychainAddGenericPassword("));
         }
@@ -419,7 +430,10 @@ mod platform {
             set_secret(&slot, secret).unwrap();
             assert_eq!(get_secret(&slot).unwrap().as_deref(), Some(secret));
             set_secret(&slot, "synthetic-keychain-updated").unwrap();
-            assert_eq!(get_secret(&slot).unwrap().as_deref(), Some("synthetic-keychain-updated"));
+            assert_eq!(
+                get_secret(&slot).unwrap().as_deref(),
+                Some("synthetic-keychain-updated")
+            );
             delete_secret(&slot).unwrap();
             assert!(get_secret(&slot).unwrap().is_none());
             delete_secret(&slot).unwrap();
