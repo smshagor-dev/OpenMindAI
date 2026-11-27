@@ -7,8 +7,13 @@
   --s-hover: color-mix(in srgb, var(--text) 9%, var(--bg));
   --s-shadow: 0 12px 32px color-mix(in srgb, #000 24%, transparent);
   display: flex;
-  height: 100%;
+  flex: 1 1 auto;
+  width: 100%;
+  height: auto;
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  container-type: inline-size;
   color: var(--text);
 }
 
@@ -55,6 +60,18 @@
   overflow-y: auto;
 }
 .studio3d-history { display: flex; flex-direction: column; gap: 2px; }
+.studio3d-project-picker { display: grid; gap: 6px; margin: 12px 0 16px; }
+.studio3d-project-picker label { color: var(--muted); font-size: 11px; }
+.studio3d-project-picker select, .studio3d-project-picker button { min-width: 0; padding: 7px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--s-elevated); color: var(--text); font: inherit; font-size: 12px; }
+.studio3d-project-picker button { cursor: pointer; }
+.studio3d-import-progress { color: var(--muted); font-size: 11px; }
+.studio3d-assets { display: grid; gap: 8px; max-height: 250px; overflow: auto; margin: 4px 0 14px; }
+.studio3d-asset { display: grid; gap: 5px; min-width: 0; padding: 8px; border: 1px solid var(--border); border-radius: 9px; background: var(--s-surface); }
+.studio3d-asset > span { overflow: hidden; color: var(--text); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.studio3d-asset small { color: var(--muted); font-size: 10px; }
+.studio3d-asset img { width: 100%; max-height: 110px; object-fit: contain; border-radius: 6px; background: var(--bg); }
+.studio3d-asset button { padding: 5px 7px; border: 1px solid var(--border); border-radius: 7px; background: var(--s-elevated); color: var(--text); font: inherit; font-size: 11px; cursor: pointer; }
+.studio3d-history-title small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
 .studio3d-empty { color: var(--muted); font-size: 13px; line-height: 1.6; }
 .studio3d-history-item {
   display: flex;
@@ -94,10 +111,10 @@
 .studio-shell {
   position: relative;
   box-sizing: border-box;
-  flex: 1;
+  flex: 1 1 0;
   min-width: 0;
   width: 100%;
-  max-width: 960px;
+  max-width: none;
   margin: 0 auto;
   padding: 10px 24px 0;
   display: flex;
@@ -207,9 +224,139 @@
   border-radius: 18px;
   background: var(--s-surface);
 }
-.studio-viewport { height: clamp(320px, 50vh, 600px); position: relative; }
+.studio-viewer:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--bg);
+}
+.studio-viewer:fullscreen .studio-viewport { position: absolute; inset: 0; width: 100%; height: 100%; }
+.studio-viewer:fullscreen .studio-viewer-tools {
+  z-index: 2;
+  max-height: min(40vh, 320px);
+  overflow-y: auto;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(14px);
+}
+.studio-viewer-corner-controls {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.studio-viewer-zoom {
+  display: none;
+  align-items: center;
+  gap: 3px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  color: var(--text);
+  box-shadow: 0 4px 16px color-mix(in srgb, #000 20%, transparent);
+  backdrop-filter: blur(12px);
+}
+.studio-viewer-corner-controls.is-fullscreen .studio-viewer-zoom { display: flex; }
+.studio-viewer-zoom button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 20px;
+  cursor: pointer;
+}
+.studio-viewer-zoom button:hover:not(:disabled) { background: var(--s-hover); }
+.studio-viewer-zoom button:disabled { opacity: .4; cursor: default; }
+.studio-viewer-zoom select {
+  min-width: 72px;
+  height: 32px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--s-elevated);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: center;
+  cursor: pointer;
+}
+.studio-fullscreen-toggle {
+  position: relative;
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  color: var(--text);
+  box-shadow: 0 4px 16px color-mix(in srgb, #000 20%, transparent);
+  cursor: pointer;
+  backdrop-filter: blur(12px);
+}
+.studio-fullscreen-toggle:hover { background: var(--s-elevated); }
+.studio-fullscreen-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.studio-fullscreen-toggle svg { width: 19px; height: 19px; }
+.studio-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 330px);
+  grid-template-rows: minmax(140px, 0.55fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+  height: 100%;
+  min-height: 0;
+}
+.studio-editor > .studio-scene-tree { grid-column: 2; grid-row: 1; overflow: auto; }
+.studio-editor > .studio-viewer { grid-column: 1; grid-row: 1 / span 2; min-height: 0; }
+.studio-editor > .studio-inspector { grid-column: 2; grid-row: 2; min-height: 0; overflow: auto; }
+.studio-scene-tree, .studio-inspector {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--s-surface);
+  color: var(--text);
+  font-size: 12px;
+}
+.studio-scene-tree strong, .studio-inspector strong { display: block; margin: 2px 0 10px; }
+.studio-scene-tree ul { list-style: none; margin: 8px 0 0; padding: 0; max-height: clamp(260px, 48vh, 570px); overflow: auto; }
+.studio-scene-tree li button { width: 100%; overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; padding: 6px 8px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; }
+.studio-scene-tree li button:hover, .studio-scene-tree li button.selected { background: var(--s-hover); color: var(--text); }
+.studio-history-button { margin: 0 4px 4px 0; padding: 4px 7px; border: 1px solid var(--border); border-radius: 7px; background: var(--s-elevated); color: var(--text); cursor: pointer; }
+.studio-history-button:disabled { opacity: .45; cursor: default; }
+.studio-inspector fieldset { display: flex; gap: 5px; margin: 0 0 12px; padding: 7px; border: 1px solid var(--border); border-radius: 9px; }
+.studio-inspector legend { padding: 0 4px; color: var(--muted); text-transform: capitalize; }
+.studio-inspector label { display: grid; gap: 3px; flex: 1; color: var(--muted); font-size: 10px; }
+.studio-inspector input { width: 100%; min-width: 0; padding: 5px 3px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; font-size: 11px; }
+.studio-inspector select { width: 100%; min-width: 0; padding: 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; font-size: 11px; }
+.studio-inspector > textarea[aria-label="AI scene edit instruction"] { width: 100%; min-height: 72px; resize: vertical; box-sizing: border-box; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; font-size: 12px; }
+.studio-inspector .studio-light-actions button:disabled { opacity: .5; cursor: default; }
+.studio-inspector input[type="color"] { height: 30px; padding: 2px; }
+.studio-material-actions { display: flex; gap: 6px; }
+.studio-material-actions button { flex: 1; padding: 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--s-elevated); color: var(--text); font: inherit; font-size: 10px; cursor: pointer; }
+.studio-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+.studio-inspector > button { width: 100%; margin-top: 8px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--s-elevated); color: var(--text); cursor: pointer; }
+.studio-inspector > button:disabled { opacity: .5; cursor: default; }
+.studio-inspector p { color: var(--muted); line-height: 1.5; }
+.studio-viewport { height: 100%; min-height: 0; position: relative; }
 .studio-viewport canvas { display: block; touch-action: none; }
-.studio-viewer-tools { position: absolute; top: 14px; left: 14px; display: flex; gap: 8px; }
+.studio-viewer-tools { position: absolute; top: 14px; left: 14px; right: 14px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .studio-viewer-tools button {
   display: inline-flex;
   align-items: center;
@@ -224,6 +371,16 @@
   cursor: pointer;
 }
 .studio-viewer-tools button:disabled { opacity: 0.5; cursor: not-allowed; }
+.studio-cut-control { display: inline-flex; align-items: center; gap: 7px; padding: 5px 9px; border: 1px solid var(--border); border-radius: 9px; background: var(--s-elevated); color: var(--text); font-size: 11px; }
+.studio-cut-control input[type="range"] { width: 112px; accent-color: var(--accent); }
+.studio-walk-guide { position: absolute; left: 14px; bottom: 14px; padding: 8px 11px; border: 1px solid var(--border); border-radius: 9px; background: var(--s-elevated); color: var(--text); font-size: 11px; pointer-events: none; }
+.studio-timeline { display: flex; align-items: center; gap: 5px; max-width: min(620px, 70vw); padding: 5px; border: 1px solid var(--border); border-radius: 9px; background: var(--s-surface); }
+.studio-timeline input[type="range"] { width: clamp(90px, 16vw, 220px); }
+.studio-timeline select, .studio-timeline button { max-width: 120px; padding: 5px; border: 1px solid var(--border); border-radius: 6px; background: var(--s-elevated); color: var(--text); font-size: 10px; }
+.studio-timeline label { display: flex; align-items: center; gap: 2px; color: var(--muted); font-size: 10px; }
+.studio-light-actions { display: flex; gap: 4px; margin-bottom: 8px; }
+.studio-light-actions button, .studio-inspector fieldset > button { padding: 5px 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--s-elevated); color: var(--text); font-size: 10px; cursor: pointer; }
+.studio-light-position { display: flex; gap: 4px; width: 100%; }
 .studio-preview-error {
   position: absolute;
   top: 60px;
@@ -272,7 +429,7 @@
 .studio-tool-row button:hover { filter: brightness(1.05); }
 
 /* Composer */
-.studio-composer-area { width: 100%; max-width: 768px; margin: 0 auto; }
+.studio-composer-area { width: 100%; max-width: min(1120px, 100%); margin: 0 auto; }
 .studio-shell:not(.is-empty) .studio-composer-area {
   position: sticky;
   bottom: 0;
@@ -326,6 +483,36 @@
   border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
   background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
+.studio3d-attach {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.studio3d-attach:hover { background: var(--s-hover); color: var(--text); }
+.studio3d-attach input { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
+.studio3d-furnishing { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); font-size: 11px; }
+.studio3d-furnishing select { max-width: 145px; min-width: 0; padding: 4px 6px; border: 0; background: transparent; color: var(--text); font: inherit; }
+.studio3d-reference {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.studio3d-reference img { width: 36px; height: 36px; object-fit: cover; border-radius: 6px; }
+.studio3d-reference span { display: inline-flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.studio3d-reference button { display: inline-flex; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
 .studio3d-send {
   display: inline-flex;
   align-items: center;
@@ -387,4 +574,154 @@
 @media (max-width: 760px) {
   .studio3d-sidebar { display: none; }
   .studio-shell { padding: 6px 14px 0; }
+  .studio-editor { grid-template-columns: 1fr; }
+  .studio-scene-tree { max-height: 130px; overflow: auto; }
+  .studio-scene-tree ul { max-height: 70px; }
+}
+
+/* The main app sidebar consumes part of the window, so switch to a stacked
+   editor based on the remaining workspace width rather than the monitor width. */
+@container (max-width: 760px) {
+  .studio-editor { grid-template-columns: minmax(0, 1fr); }
+  .studio-scene-tree { max-height: 180px; overflow: auto; }
+  .studio-scene-tree ul { max-height: 120px; }
+  .studio-viewport { height: clamp(300px, 52vh, 620px); }
+}
+
+@media (max-width: 520px) {
+  .studio-shell { padding: 6px 10px 0; }
+  .studio3d-composer { padding: 10px; border-radius: 14px; }
+  .studio3d-composer textarea { min-height: 48px; font-size: 14px; overflow-wrap: anywhere; }
+  .studio3d-composer-toolbar { align-items: flex-end; }
+  .studio3d-mode-choice { gap: 5px; }
+  .studio3d-mode-choice button, .studio3d-attach { padding: 6px 8px; font-size: 11px; }
+  .studio3d-suggestions { justify-content: stretch; }
+  .studio3d-suggestions button { flex: 1 1 100%; justify-content: flex-start; }
+  .studio3d-processor { align-items: flex-start; flex-wrap: wrap; overflow-wrap: anywhere; }
+  .studio3d-note { overflow-wrap: anywhere; }
+  .studio-tool-row { gap: 7px; }
+  .studio-tool-row button { flex: 1 1 100%; justify-content: center; }
+}
+.studio3d-dependencies {
+  margin: 8px 0;
+  padding: 9px 10px;
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, .22));
+  border-radius: 8px;
+  color: var(--text-secondary, #aab4c4);
+  font-size: 11px;
+}
+.studio3d-dependencies summary { cursor: pointer; font-weight: 600; }
+.studio3d-dependencies dl { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 5px 8px; overflow-wrap: anywhere; }
+.studio3d-dependencies dt { color: var(--text-tertiary, #7f8a9c); }
+.studio3d-dependencies dd { margin: 0; }
+.studio3d-neural-engine { border-top: 1px solid var(--border-subtle, #343b46); padding: 8px 0; }
+.studio3d-neural-engine p { margin: 5px 0; }
+.studio3d-neural-engine a { color: var(--accent, #7db7ff); overflow-wrap: anywhere; }
+
+/* Workbench layout: a wide stage and docked prompt on the left, one coherent
+   scene and editing rail on the right. */
+.studio-shell.has-result {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(290px, 340px);
+  grid-template-rows: auto minmax(0, 1fr) auto minmax(150px, auto);
+  grid-template-areas: "title tools" "stage tools" "actions tools" "prompt tools";
+  gap: 10px 14px;
+  justify-content: stretch;
+  overflow: hidden;
+  padding: 14px 18px 52px;
+}
+.studio-shell.has-result .studio-result,
+.studio-shell.has-result .studio-result > section[aria-label="3D mesh preview"],
+.studio-shell.has-result .studio-editor { display: contents; }
+.studio-shell.has-result .studio-page-header { grid-area: title; min-width: 0; }
+.studio-shell.has-result .studio-page-header h1 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: clamp(19px, 1.8vw, 25px);
+}
+.studio-shell.has-result .studio-viewer { grid-area: stage; min-width: 0; min-height: 0; }
+.studio-shell.has-result .studio-viewport { height: 100%; min-height: 0; }
+.studio-shell.has-result .studio-right-rail {
+  grid-area: tools;
+  display: grid;
+  grid-template-rows: minmax(145px, 0.38fr) minmax(0, 0.62fr);
+  gap: 10px;
+  min-height: 0;
+}
+.studio-shell.has-result .studio-scene-tree,
+.studio-shell.has-result .studio-inspector { min-height: 0; overflow: auto; }
+.studio-shell.has-result .studio-scene-tree ul { max-height: none; overflow: visible; }
+.studio-shell.has-result .studio-tool-row {
+  grid-area: actions;
+  margin: 0;
+  min-width: 0;
+}
+.studio-shell.has-result .studio-composer-area {
+  grid-area: prompt;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  align-self: end;
+  position: sticky;
+  bottom: 0;
+  z-index: 6;
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+}
+.studio-shell.has-result .studio3d-composer textarea { max-height: 112px; overflow-y: auto; }
+.studio-shell.has-result .studio3d-note,
+.studio-shell.has-result .studio3d-dependencies { display: none; }
+.studio-scene-history-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.studio-inspector fieldset { flex-wrap: wrap; align-items: center; }
+.studio-inspector fieldset > label { flex: 1 1 58px; }
+.studio-inspector fieldset > button { flex: 1 1 78px; }
+.studio-shell.has-result > .studio-banner,
+.studio-shell.has-result > .studio3d-note[role="status"] {
+  grid-area: notice;
+  width: 100%;
+  margin: 0;
+  min-width: 0;
+}
+.studio-shell.has-result:has(> .studio-banner) {
+  grid-template-rows: auto auto minmax(0, 1fr) auto minmax(150px, auto);
+  grid-template-areas: "title tools" "notice tools" "stage tools" "actions tools" "prompt tools";
+}
+
+@container (max-width: 760px) {
+  .studio-shell.has-result {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(220px, 1fr) minmax(190px, 0.8fr) auto minmax(140px, auto);
+    grid-template-areas: "title" "stage" "tools" "actions" "prompt";
+    overflow: auto;
+    gap: 8px;
+    padding: 10px 12px 52px;
+  }
+  .studio-shell.has-result .studio-result,
+  .studio-shell.has-result .studio-result > section[aria-label="3D mesh preview"],
+  .studio-shell.has-result .studio-editor { display: contents; }
+  .studio-shell.has-result .studio-viewer { grid-area: stage; min-height: 0; }
+  .studio-shell.has-result .studio-viewport { height: 100%; min-height: 0; }
+  .studio-shell.has-result .studio-right-rail {
+    grid-area: tools;
+    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 8px;
+    min-height: 0;
+  }
+  .studio-shell.has-result .studio-scene-tree,
+  .studio-shell.has-result .studio-inspector { overflow: auto; }
+  .studio-shell.has-result .studio-tool-row { grid-area: actions; margin: 0; }
+  .studio-shell.has-result .studio-composer-area { grid-area: prompt; position: static; }
+  .studio-shell.has-result:has(> .studio-banner) {
+    grid-template-rows: auto auto minmax(220px, 1fr) minmax(190px, 0.8fr) auto minmax(140px, auto);
+    grid-template-areas: "title" "notice" "stage" "tools" "actions" "prompt";
+  }
+}
+
+@media (max-height: 720px) {
+  .studio-shell.has-result { padding-top: 8px; padding-bottom: 52px; gap: 7px 12px; }
+  .studio-shell.has-result .studio3d-composer textarea { max-height: 76px; }
 }

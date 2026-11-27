@@ -288,7 +288,10 @@ fn save_with(
         || relative
             .components()
             .any(|part| !matches!(part, Component::Normal(_)))
-        || relative.components().nth(2).is_some_and(|part| part.as_os_str() == ".text-export-journal")
+        || relative
+            .components()
+            .nth(2)
+            .is_some_and(|part| part.as_os_str() == ".text-export-journal")
     {
         return Err(AppError::internal("invalid text artifact destination"));
     }
@@ -586,16 +589,35 @@ mod tests {
             params![id, input().relative],
         ).unwrap();
         let intent = journal_path.join(format!("{id}.json"));
-        fs::write(&intent, serde_json::to_vec(&Intent {
-            id: id.clone(), relative: input().relative.into(),
-        }).unwrap()).unwrap();
+        fs::write(
+            &intent,
+            serde_json::to_vec(&Intent {
+                id: id.clone(),
+                relative: input().relative.into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
         assert!(recover(&db, root.path()).is_err());
-        assert!(intent.exists(), "do not erase evidence of missing committed data");
-        assert_eq!(db.query_row("SELECT count(*) FROM artifacts WHERE id=?1", [&id], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert!(
+            intent.exists(),
+            "do not erase evidence of missing committed data"
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM artifacts WHERE id=?1", [&id], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            1
+        );
         fs::write(root.path().join(input().relative), input().content).unwrap();
         assert_eq!(recover(&db, root.path()).unwrap(), 1);
         assert!(!intent.exists());
-        assert_eq!(fs::read(root.path().join(input().relative)).unwrap(), input().content);
+        assert_eq!(
+            fs::read(root.path().join(input().relative)).unwrap(),
+            input().content
+        );
     }
 
     #[cfg(unix)]
@@ -610,9 +632,15 @@ mod tests {
             params![id, input().relative],
         ).unwrap();
         let intent = journal_path.join(format!("{id}.json"));
-        fs::write(&intent, serde_json::to_vec(&Intent {
-            id: id.clone(), relative: input().relative.into(),
-        }).unwrap()).unwrap();
+        fs::write(
+            &intent,
+            serde_json::to_vec(&Intent {
+                id: id.clone(),
+                relative: input().relative.into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
         let outside = tempfile::NamedTempFile::new().unwrap();
         fs::write(outside.path(), b"protected").unwrap();
         std::os::unix::fs::symlink(outside.path(), root.path().join(input().relative)).unwrap();
@@ -703,7 +731,7 @@ mod tests {
             request.relative = relative;
             assert!(save(&db, root.path(), request).is_err(), "{relative}");
             assert_eq!(fs::read(journal.join("sentinel")).unwrap(), b"keep journal");
-            assert_empty(&root, &db);
+            assert_empty(root.path(), &db);
         }
     }
     #[test]

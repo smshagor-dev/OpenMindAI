@@ -92,17 +92,14 @@ function FullSetupFlow(props: { pending: PendingSetup | null }) {
     if (step !== "storage") return;
     let cancelled = false;
     const version = ++storageCheckVersion.current;
-    setCheck(null);
-    setStorageCheckError(null);
     if (!path.trim()) {
-      setCheckingStorage(false);
       return () => {
         cancelled = true;
         storageCheckVersion.current += 1;
       };
     }
-    setCheckingStorage(true);
     const timer = window.setTimeout(() => {
+      setCheckingStorage(true);
       void api.checkStorageLocation(path)
         .then((result) => {
           if (cancelled || storageCheckVersion.current !== version) return;
