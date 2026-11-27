@@ -1,0 +1,25 @@
+import { WebSocket } from "ws";
+const port = Number(process.argv[2]);
+const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+const page = pages.filter(t => t.type === "page");
+if (page.length !== 1) throw new Error(`expected 1 page, found ${page.length}: ${page.map(p=>p.url).join(",")}`);
+const socket = new WebSocket(page[0].webSocketDebuggerUrl);
+await new Promise((res, rej) => { socket.once("open", res); socket.once("error", rej); });
+let id = 0; const pending = new Map();
+socket.on("message", raw => { const m = JSON.parse(raw); const w = pending.get(m.id); if (!w) return; pending.delete(m.id); m.error ? w.rej(new Error(JSON.stringify(m.error))) : w.res(m.result); });
+const call = (method, params={}) => new Promise((res, rej) => { const i=++id; pending.set(i,{res,rej}); socket.send(JSON.stringify({id:i,method,params})); });
+const ev = async expr => { const r = await call("Runtime.evaluate",{expression:expr,awaitPromise:true,returnByValue:true}); if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text); return r.result?.value; };
+await call("Runtime.enable");
+const out = await ev(`(async()=>{
+  const invoke=window.__TAURI_INTERNALS__.invoke;
+  const root=await invoke('get_portable_root');
+  const projects=await invoke('list_local_research_projects');
+  const p=projects[0];
+  const outline=await invoke('local_research_outline',{projectId:p.id});
+  const sections=await invoke('list_local_research_sections',{projectId:p.id});
+  const ledger=await invoke('local_research_claim_ledger',{projectId:p.id});
+  const evidence=await invoke('local_research_evidence_facts',{projectId:p.id});
+  return {root,projectId:p.id,projectTitle:p.title,pageTarget:p.manuscript_page_target,outlineSections:outline.entries.length,plannedWords:outline.plannedTotalWords,sectionCount:sections.length,ledgerCount:ledger.length,evidenceDocs:evidence.documents.length,numericFacts:evidence.facts.length,docs:evidence.documents.map(d=>({name:d.name,class:d.sourceClass,facts:d.factCount}))};
+})()`);
+console.log(JSON.stringify(out,null,2));
+socket.close();

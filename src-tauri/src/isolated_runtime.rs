@@ -6,6 +6,9 @@ use std::{
 };
 
 #[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
 use std::time::Duration;
 
 #[cfg(target_os = "windows")]
@@ -24,6 +27,8 @@ use crate::{app_error::AppError, runtime_guards};
 const RUNTIME_CWD_MARKER: &str = "__OPENMIND_RUNTIME_CWD__";
 #[cfg(target_os = "windows")]
 const WINDOWS_SANDBOX_MEMORY_MB: u32 = 4_096;
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const SAFE_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
@@ -723,6 +728,7 @@ fn host_shell_process(command: &str, cwd: &Path) -> Command {
             .arg("-Command")
             .arg(wrapped)
             .current_dir(cwd);
+        process.as_std_mut().creation_flags(CREATE_NO_WINDOW);
         process
     }
 

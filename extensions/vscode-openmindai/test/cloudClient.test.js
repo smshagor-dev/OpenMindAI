@@ -148,7 +148,7 @@ test("listModels keeps rows with a usable id and drops the rest", async () => {
 test("manifest exposes the cloud settings and the API key is never a plain setting", () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
   const properties = manifest.contributes.configuration.properties;
-  assert.equal(properties["openmindai.backend"].default, "auto");
+  assert.equal(properties["openmindai.backend"].default, "local");
   assert.deepEqual(properties["openmindai.backend"].enum, ["auto", "local", "cloud"]);
   assert.equal(properties["openmindai.cloudEndpoint"].default, DEFAULT_CLOUD_ENDPOINT);
   assert.ok("openmindai.cloudModel" in properties);

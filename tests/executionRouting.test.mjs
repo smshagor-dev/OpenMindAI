@@ -139,3 +139,37 @@ test("first-run Cloud/Local/Both choice survives simulated relaunch before downl
     else globalThis.window = originalWindow;
   }
 });
+
+test("hostile Cloud error metadata cannot interrupt permitted Local fallback", async () => {
+  const throwingMessage = Object.defineProperty({}, "message", {
+    get() { throw new Error("accessor exploded"); },
+  });
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+  const throwingCoercion = { message: { toString() { throw new Error("coercion exploded"); } } };
+  for (const error of [throwingMessage, revoked.proxy, throwingCoercion]) {
+    let localCalls = 0;
+    const result = await runWithFallback(
+      { target: "cloud", offline: false, reason: "connected", fallbackAllowed: true },
+      async () => { throw error; },
+      async () => { localCalls++; return "local"; },
+    ).catch((caught) => {
+      assert.equal(caught, error, "unknown failures should propagate unchanged");
+      return null;
+    });
+    assert.equal(result, null);
+    assert.equal(localCalls, 0, "unknown errors must not trigger local replay");
+  }
+});
+
+test("Cloud failure classification safely handles throwing getters and revoked proxies", () => {
+  const getter = Object.defineProperty({}, "message", {
+    get() { throw new Error("private diagnostic"); },
+  });
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+  for (const error of [getter, revoked.proxy, { message: Symbol("private") }]) {
+    assert.equal(isRecoverableCloudFailure(error), false);
+  }
+  assert.equal(isRecoverableCloudFailure({ message: "HTTP 503: unavailable" }), true);
+});

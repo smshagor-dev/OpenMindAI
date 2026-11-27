@@ -50,6 +50,7 @@ export async function ensureCodingAgentReady(
   let info = (await fetchJson(statusUrl, "GET", headers)) as CodingAgentInfo;
   let startRequested = false;
   for (;;) {
+    assertValidStatus(info);
     assertUsable(info);
     const state = info.runtime?.state;
     if (state === "ready" || state === undefined) return info;
@@ -70,6 +71,24 @@ export async function ensureCodingAgentReady(
     }
     await sleep(pollMs);
     info = (await fetchJson(statusUrl, "GET", headers)) as CodingAgentInfo;
+  }
+}
+
+/** Reject unexpected desktop responses instead of interpreting absent state as ready. */
+function assertValidStatus(info: CodingAgentInfo): void {
+  if (info === null || typeof info !== "object" || Array.isArray(info)) {
+    throw new Error("Invalid coding agent status response.");
+  }
+  if (info.service !== "openmindai-coding-agent" ||
+      (info.configured !== undefined && typeof info.configured !== "boolean") ||
+      (info.codingEnabled !== undefined && typeof info.codingEnabled !== "boolean")) {
+    throw new Error("Invalid coding agent status response.");
+  }
+  if (info.runtime !== undefined) {
+    if (info.runtime === null || typeof info.runtime !== "object" ||
+        !["ready", "stopped", "starting", "loadingModel", "error", "notInstalled", "disabled"].includes(info.runtime.state)) {
+      throw new Error("Invalid coding agent status response.");
+    }
   }
 }
 

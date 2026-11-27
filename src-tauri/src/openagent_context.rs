@@ -583,8 +583,14 @@ fn ignored_directory(path: &Path) -> bool {
     )
 }
 
+const MAX_GOAL_TERM_INPUT_CHARS: usize = 4_096;
+
 fn goal_terms(goal: &str) -> HashSet<String> {
-    goal.split(|character: char| {
+    // User-supplied goals may be arbitrarily long. Bound the tokenizer's input
+    // before splitting or allocating normalized tokens; source context is not
+    // changed and the original goal is still used by the caller.
+    let bounded: String = goal.chars().take(MAX_GOAL_TERM_INPUT_CHARS).collect();
+    bounded.split(|character: char| {
         !character.is_alphanumeric() && character != '_' && character != '-'
     })
     .map(str::to_ascii_lowercase)
@@ -618,6 +624,20 @@ fn truncate_chars(value: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_goal_tokenization_is_bounded_and_unicode_safe() {
+        let goal = format!("rust security {} late_unique_term", "界".repeat(100_000));
+        let terms = goal_terms(&goal);
+        assert!(terms.contains("rust"));
+        assert!(terms.contains("security"));
+        assert!(!terms.contains("late_unique_term"));
+        assert!(terms.len() <= 32);
+        let boundary = format!("{}🚀security", "a".repeat(MAX_GOAL_TERM_INPUT_CHARS - 1));
+        let bounded_terms = goal_terms(&boundary);
+        assert!(!bounded_terms.contains("security"));
+        assert!(goal_terms("বাংলা নিরাপত্তা rust").contains("rust"));
+    }
 
     #[test]
     fn directory_iterator_work_is_bounded_even_with_failed_entries() {
@@ -752,7 +772,7 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         fs::write(outside.path().join("secret.rs"), "EXTERNAL_SECRET").unwrap();
         let link = root.path().join("linked");
-        let result = std::process::Command::new("pwsh").args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:TEST_LINK -Target $env:TEST_TARGET -ErrorAction Stop | Out-Null"]).env("TEST_LINK", &link).env("TEST_TARGET", outside.path()).output().unwrap();
+        let result = std::process::Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:TEST_LINK -Target $env:TEST_TARGET -ErrorAction Stop | Out-Null"]).env("TEST_LINK", &link).env("TEST_TARGET", outside.path()).output().unwrap();
         assert!(
             result.status.success(),
             "{}",
@@ -953,3 +973,4 @@ mod tests {
         assert!(!context.contains("outside secret"));
     }
 }
+

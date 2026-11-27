@@ -3,7 +3,6 @@ import { FileCode, FileText, FileType, Folder, Image, Loader2, RefreshCw, Video,
 import type { Artifact, ImageRenderProgress, ImageRenderStage } from "../types";
 import { formatBytes } from "../lib/format";
 import { renderMarkdown } from "../lib/markdown";
-import { artifactMediaDataUrl } from "../lib/media";
 
 const IMAGE_STAGE_LABELS: Record<ImageRenderStage, string> = {
   queued: "Waiting for the current image to finish...",
@@ -82,7 +81,7 @@ export function ArtifactCard(props: {
   useEffect(() => {
     if (!mediaKey) return;
     let cancelled = false;
-    void artifactMediaDataUrl(artifact.id)
+    void import("../lib/media").then(({ artifactMediaDataUrl }) => artifactMediaDataUrl(artifact.id))
       .then((url) => {
         if (!cancelled) setMediaPreview({ key: mediaKey, url, error: null });
       })

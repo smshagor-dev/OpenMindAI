@@ -5,13 +5,18 @@ const BASE64_CHUNK = 16_384;
 
 /** Original bytes, not a filename/path pointer or decoded-text preview. */
 export async function attachProjectBinaryFile(projectId: string, file: File) {
-  if (file.size > MAX_PROJECT_BINARY_FILE_BYTES) {
-    throw new Error("Binary project attachments must be 1.5 MB or smaller.");
+  if (!Number.isSafeInteger(file.size) || file.size < 0 ||
+      file.size > MAX_PROJECT_BINARY_FILE_BYTES) {
+    throw new Error("Binary project attachments must have a valid size of 1.5 MB or smaller.");
   }
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  if (bytes.byteLength !== file.size) {
+  const buffer = await file.arrayBuffer();
+  // Validate the returned buffer before constructing a view or base64-encoding it.
+  // File-like sources may report an incorrect size and return far more bytes.
+  if (!(buffer instanceof ArrayBuffer) || buffer.byteLength !== file.size ||
+      buffer.byteLength > MAX_PROJECT_BINARY_FILE_BYTES) {
     throw new Error("Project attachment changed during import.");
   }
+  const bytes = new Uint8Array(buffer);
   // Use small chunks to avoid JS argument-spread limits for 1.5 MB buffers.
   const segments: string[] = [];
   for (let offset = 0; offset < bytes.length; offset += BASE64_CHUNK) {
@@ -47,28 +52,43 @@ export async function saveProjectBinaryCopy(projectId: string, fileId: string) {
   const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
   const blob = new Blob([bytes], { type: file.mimeType || "application/octet-stream" });
   const url = globalThis.URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  // Names are display labels only. This prevents an older corrupted record
-  // from inserting path segments into a browser's suggested download name.
-  // Stored names are untrusted metadata. Never normalize an arbitrarily
-  // large legacy name into a DOM attribute; stop after 255 Unicode characters.
-  // Iterating code points also keeps supplementary characters intact.
-  const safeName: string[] = [];
-  for (const character of file.name) {
-    if (safeName.length === 255) break;
-    const code = character.charCodeAt(0);
-    safeName.push(character === "/" || character === "\\" || code < 32 || code === 127
-      ? "_"
-      : character);
-  }
-  link.download = safeName.join("") || "project-attachment";
-  link.href = url;
+  let link: HTMLAnchorElement | undefined;
+  let downloadStarted = false;
   try {
+    link = document.createElement("a");
+    // Names are display labels only. Never interpret stored names as paths.
+    const safeName: string[] = [];
+    for (const character of file.name) {
+      if (safeName.length === 255) break;
+      const code = character.charCodeAt(0);
+      safeName.push(character === "/" || character === "\\" || code < 32 || code === 127 ||
+        code === 0x061c || code === 0x200e || code === 0x200f ||
+        (code >= 0x202a && code <= 0x202e) ||
+        (code >= 0x2066 && code <= 0x2069) ||
+        code === 0x2028 || code === 0x2029
+        ? "_"
+        : character);
+    }
+    link.download = safeName.join("") || "project-attachment";
+    link.href = url;
     document.body.appendChild(link);
     link.click();
+    downloadStarted = true;
   } finally {
-    link.remove();
-    // Delay revocation so the browser/WebView has time to hand off the copy.
-    globalThis.setTimeout(() => globalThis.URL.revokeObjectURL(url), 1_000);
+    try {
+      link?.remove();
+    } finally {
+      if (downloadStarted) {
+        // Allow the browser/WebView to hand off the download before revoking.
+        try {
+          globalThis.setTimeout(() => globalThis.URL.revokeObjectURL(url), 1_000);
+        } catch {
+          globalThis.URL.revokeObjectURL(url);
+        }
+      } else {
+        // Failed DOM setup/click must not retain a URL to attachment bytes.
+        globalThis.URL.revokeObjectURL(url);
+      }
+    }
   }
 }
