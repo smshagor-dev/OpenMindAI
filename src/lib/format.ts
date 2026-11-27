@@ -14,9 +14,16 @@ export function formatBytes(value?: number | null) {
 }
 
 export function formatTime(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  // Backend and imported metadata are not guaranteed to respect TypeScript types.
+  if (typeof iso !== "string" || !iso.trim()) return "";
+  try {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  } catch {
+    // A malformed timestamp must not take down the chat/history view.
+    return "";
+  }
 }
 
 export function formatError(caught: unknown): string {
