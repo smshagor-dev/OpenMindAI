@@ -131,6 +131,15 @@ export function isRecoverableCloudFailure(error: unknown): boolean {
     /unreachable|connection (?:lost|refused|reset)|offline|no internet|network(?:error| failure)?|timeout|timed out|failed to fetch|cloud api request failed|cloud returned an empty assistant response|server returned non-json response|temporarily unavailable|service unavailable/i.test(message);
 }
 
+function isPersistenceFailure(error: unknown): boolean {
+  try {
+    return error instanceof ResponsePersistenceError;
+  } catch {
+    // A hostile/revoked Proxy is never a reason to retry locally.
+    return true;
+  }
+}
+
 export class ResponsePersistenceError extends Error {
   constructor(cause: unknown) {
     super("Cloud responded, but saving the reply failed: " + describeFailure(cause));
@@ -156,7 +165,7 @@ export async function runWithFallback<T>(
   try {
     return { result: await remote(), target: "cloud", fallback: false };
   } catch (error) {
-    if (decision.fallbackAllowed !== true || error instanceof ResponsePersistenceError || !isRecoverableCloudFailure(error))
+    if (decision.fallbackAllowed !== true || isPersistenceFailure(error) || !isRecoverableCloudFailure(error))
       throw error;
     // Notification is best-effort: a broken UI callback must not block local recovery.
     try {

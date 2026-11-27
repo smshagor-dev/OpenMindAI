@@ -349,3 +349,36 @@ test("invalid runtime execution selectors defer without contacting either engine
   assert.equal(selectExecutionRoute({ ...valid, preference: "local" }).target, "local");
   assert.equal(selectExecutionRoute({ ...valid, preference: "cloud" }).target, "cloud");
 });
+
+test("hostile Cloud error metadata fails closed without local replay", async () => {
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+  const throwingGetter = Object.defineProperty({}, "message", {
+    get() { throw new Error("metadata getter failed"); },
+  });
+  const throwingCoercion = { message: { toString() { throw new Error("coercion failed"); } } };
+  const decision = { target: "cloud", reason: "auto", offline: false, fallbackAllowed: true };
+  for (const error of [revoked.proxy, throwingGetter, throwingCoercion]) {
+    assert.equal(isRecoverableCloudFailure(error), false);
+    let localCalls = 0;
+    const remote = async () => { throw error; };
+    await assert.rejects(
+      runWithFallback(decision, remote, async () => { localCalls++; return "unsafe replay"; }),
+      (received) => received === error,
+    );
+    assert.equal(localCalls, 0);
+  }
+});
+
+test("normal HTTP 503 still permits exactly one local recovery", async () => {
+  const decision = { target: "cloud", reason: "auto", offline: false, fallbackAllowed: true };
+  let remoteCalls = 0, localCalls = 0;
+  const result = await runWithFallback(
+    decision,
+    async () => { remoteCalls++; throw new Error("HTTP 503 Service Unavailable"); },
+    async () => { localCalls++; return "recovered"; },
+  );
+  assert.deepEqual(result, { result: "recovered", target: "local", fallback: true });
+  assert.equal(remoteCalls, 1);
+  assert.equal(localCalls, 1);
+});
