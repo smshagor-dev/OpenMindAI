@@ -6,7 +6,6 @@ use crate::{
     performance::{PerformanceMode, PerformanceProfile, PerformanceProfileManager},
 };
 
-const ACCELERATOR_FULL_OFFLOAD_HEADROOM_BYTES: u64 = 1024 * 1024 * 1024;
 const DISPLAY_GPU_FULL_OFFLOAD_HEADROOM_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -69,19 +68,7 @@ impl ModelLaunchPlanner {
             .recommended_inference_gpu
             .as_ref()
             .and_then(|id| hardware.gpus.iter().find(|gpu| &gpu.id == id));
-        let backend = selected_gpu
-            .map(|gpu| {
-                if gpu.recommended_backend != BackendKind::Cpu
-                    && gpu.available_backends.contains(&gpu.recommended_backend)
-                {
-                    gpu.recommended_backend.clone()
-                } else if gpu.available_backends.contains(&BackendKind::Vulkan) {
-                    BackendKind::Vulkan
-                } else {
-                    BackendKind::Cpu
-                }
-            })
-            .unwrap_or(BackendKind::Cpu);
+        let backend = BackendKind::Vulkan;
         let dedicated_vram_budget_bytes = selected_gpu
             .and_then(|gpu| gpu.dedicated_vram_bytes)
             .map(safe_dedicated_vram_budget)
@@ -104,47 +91,18 @@ impl ModelLaunchPlanner {
         let total_estimate = estimated_model_bytes
             .saturating_add(estimated_context_bytes)
             .saturating_add(768 * 1024 * 1024);
-        let full_offload_headroom = match backend {
-            BackendKind::Vulkan | BackendKind::Sycl => DISPLAY_GPU_FULL_OFFLOAD_HEADROOM_BYTES,
-            BackendKind::Cuda | BackendKind::Hip | BackendKind::Metal => {
-                ACCELERATOR_FULL_OFFLOAD_HEADROOM_BYTES
-            }
-            BackendKind::Cpu => 0,
-        };
+        let full_offload_headroom = DISPLAY_GPU_FULL_OFFLOAD_HEADROOM_BYTES;
         let full_offload_requirement = total_estimate.saturating_add(full_offload_headroom);
         let partial_vulkan_requirement = estimated_model_bytes
             .saturating_add(estimated_context_bytes / 2)
             .saturating_add(512 * 1024 * 1024);
 
-        let gpu_layers = match (backend.clone(), dedicated_vram_budget_bytes) {
-            (BackendKind::Cuda | BackendKind::Hip | BackendKind::Metal, Some(budget))
-                if budget > full_offload_requirement =>
-            {
-                999
-            }
-            (BackendKind::Cuda | BackendKind::Hip | BackendKind::Metal, Some(budget))
-                if budget > estimated_model_bytes / 2 =>
-            {
-                32
-            }
-            (BackendKind::Cuda | BackendKind::Hip | BackendKind::Metal, Some(_)) => 16,
-            (BackendKind::Vulkan | BackendKind::Sycl, Some(budget))
-                if budget > full_offload_requirement =>
-            {
-                999
-            }
-            (BackendKind::Vulkan | BackendKind::Sycl, Some(budget))
-                if budget > partial_vulkan_requirement =>
-            {
-                32
-            }
-            (BackendKind::Vulkan | BackendKind::Sycl, Some(budget))
-                if budget > estimated_model_bytes / 2 =>
-            {
-                24
-            }
-            (BackendKind::Vulkan | BackendKind::Sycl, Some(_)) => 12,
-            _ => 0,
+        let gpu_layers = match dedicated_vram_budget_bytes {
+            Some(budget) if budget > full_offload_requirement => 999,
+            Some(budget) if budget > partial_vulkan_requirement => 32,
+            Some(budget) if budget > estimated_model_bytes / 2 => 24,
+            Some(_) => 12,
+            None => 1,
         };
         let gpu_layers = match profile.mode {
             PerformanceMode::Eco => gpu_layers.min(12),
@@ -163,12 +121,6 @@ impl ModelLaunchPlanner {
             "Effective performance profile: {:?}; {} CPU threads, {} GPU layers.",
             profile.mode, profile.cpu_threads, gpu_layers,
         ));
-        if backend == BackendKind::Cpu {
-            notes.push(
-                "No supported GPU runtime was selected; this profile uses CPU inference."
-                    .to_string(),
-            );
-        }
         notes.push(format!(
             "Context window selected at {} tokens from model capabilities and available memory.",
             context_size
@@ -186,8 +138,6 @@ impl ModelLaunchPlanner {
                 "Flash attention disabled until llama.cpp/Vulkan capability probe proves support."
                     .to_string(),
             );
-        } else if matches!(backend, BackendKind::Cuda) {
-            notes.push("NVIDIA CUDA backend selected for local model launch.".to_string());
         }
 
         LaunchPlan {
@@ -219,19 +169,14 @@ impl ModelLaunchPlanner {
 /// The loaded model and a system reserve must fit alongside the KV cache.
 /// Restrict the plan to supported native C++ and llama-server context sizes;
 /// never select a larger window just because GGUF advertises one.
-pub(crate) fn choose_context_window(
-    model_limit: u64,
-    model_bytes: u64,
-    available_ram: u64,
-) -> u32 {
+pub(crate) fn choose_context_window(model_limit: u64, model_bytes: u64, available_ram: u64) -> u32 {
     const GIB: u64 = 1024 * 1024 * 1024;
     let supported = model_limit.clamp(4_096, 32_768);
     let context_budget = available_ram
         .saturating_sub(model_bytes)
         .saturating_sub(2 * GIB);
     for candidate in [32_768, 16_384, 8_192, 4_096] {
-        if u64::from(candidate) <= supported
-            && estimate_context_bytes(candidate) <= context_budget
+        if u64::from(candidate) <= supported && estimate_context_bytes(candidate) <= context_budget
         {
             return candidate;
         }
@@ -271,20 +216,20 @@ mod tests {
     }
 
     #[test]
-    fn selected_modes_change_cpu_launch_plan_without_exceeding_hardware() {
+    fn selected_modes_keep_vulkan_backend_without_detected_gpu() {
         let mut hardware = hardware_with_vram(0, 0);
         hardware.gpus.clear();
         hardware.recommended_inference_gpu = None;
         let model = model(2_497_280_256);
         let eco = ModelLaunchPlanner::plan_for_preference(&model, &hardware, "Eco", 8080);
         let balanced = ModelLaunchPlanner::plan_for_preference(&model, &hardware, "Balanced", 8080);
-        let performance = ModelLaunchPlanner::plan_for_preference(&model, &hardware, "Performance", 8080);
+        let performance =
+            ModelLaunchPlanner::plan_for_preference(&model, &hardware, "Performance", 8080);
         let maximum = ModelLaunchPlanner::plan_for_preference(&model, &hardware, "Maximum", 8080);
         for plan in [&eco, &balanced, &performance, &maximum] {
-            assert_eq!(plan.config.backend, BackendKind::Cpu);
-            assert_eq!(plan.config.gpu_layers, 0);
+            assert_eq!(plan.config.backend, BackendKind::Vulkan);
+            assert_eq!(plan.config.gpu_layers, 1);
             assert!(plan.config.threads <= hardware.cpu.logical_threads);
-            assert!(plan.notes.iter().any(|note| note.contains("CPU inference")));
         }
         assert!(eco.config.threads < balanced.config.threads);
         assert!(balanced.config.threads < performance.config.threads);
@@ -306,10 +251,12 @@ mod tests {
         assert!(eco.config.threads < auto.config.threads);
         assert!(maximum.config.threads > auto.config.threads);
         assert!(maximum.config.context_size >= eco.config.context_size);
-        assert!(eco.dedicated_vram_budget_bytes.unwrap()
-            < auto.dedicated_vram_budget_bytes.unwrap());
+        assert!(
+            eco.dedicated_vram_budget_bytes.unwrap() < auto.dedicated_vram_budget_bytes.unwrap()
+        );
         hardware.memory.available_bytes = 4 * 1024 * 1024 * 1024;
-        let low_memory = ModelLaunchPlanner::plan_for_preference(&model, &hardware, "Maximum", 8080);
+        let low_memory =
+            ModelLaunchPlanner::plan_for_preference(&model, &hardware, "Maximum", 8080);
         assert_eq!(low_memory.config.context_size, 4_096);
     }
 
@@ -337,17 +284,17 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_cpu_without_gpu() {
+    fn keeps_vulkan_backend_without_detected_gpu() {
         let mut hardware = hardware_with_vram(0, 0);
         hardware.gpus.clear();
         hardware.recommended_inference_gpu = None;
         let plan = ModelLaunchPlanner::plan(&model(2_497_280_256), &hardware, 8080);
-        assert_eq!(plan.config.backend, BackendKind::Cpu);
-        assert_eq!(plan.config.gpu_layers, 0);
+        assert_eq!(plan.config.backend, BackendKind::Vulkan);
+        assert_eq!(plan.config.gpu_layers, 1);
     }
 
     #[test]
-    fn prefers_cuda_for_nvidia_gpu() {
+    fn uses_vulkan_for_nvidia_gpu() {
         let mut hardware = hardware_with_vram(8 * 1024 * 1024 * 1024, 8 * 1024 * 1024 * 1024);
         hardware.gpus[0].name = "NVIDIA GeForce RTX".to_string();
         hardware.gpus[0].vendor = GpuVendor::Nvidia;
@@ -359,7 +306,7 @@ mod tests {
 
         let plan = ModelLaunchPlanner::plan(&model(2_497_280_256), &hardware, 8080);
 
-        assert_eq!(plan.config.backend, BackendKind::Cuda);
+        assert_eq!(plan.config.backend, BackendKind::Vulkan);
         assert!(plan.config.gpu_layers > 0);
     }
 

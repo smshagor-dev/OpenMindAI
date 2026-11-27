@@ -78,9 +78,21 @@ impl<'a> ChatRepository<'a> {
         cursor: Option<&str>,
         requested_limit: i64,
     ) -> Result<ChatSearchPage, AppError> {
+        // Reject oversized raw input before trim() scans whitespace padding.
+        // 1024 UTF-8 bytes accommodates 256 four-byte Unicode scalars.
+        if query.len() > 1024 {
+            return Err(AppError::internal("chat search query exceeds 1024 bytes"));
+        }
         let query = query.trim();
+        // SQLite text and FTS5 tokenization do not consistently treat embedded NUL
+        // as ordinary searchable text. Reject it before constructing SQL.
+        if query.contains('\0') {
+            return Err(AppError::internal("chat search query contains a NUL character"));
+        }
         if query.chars().count() > 256 {
-            return Err(AppError::internal("chat search query exceeds 256 characters"));
+            return Err(AppError::internal(
+                "chat search query exceeds 256 characters",
+            ));
         }
         let limit = requested_limit.clamp(1, 40);
         // Bind the cursor to the exact search term. A stale cursor from a
@@ -210,6 +222,7 @@ impl<'a> ChatRepository<'a> {
         let title = title
             .filter(|value| !value.trim().is_empty())
             .unwrap_or("New conversation");
+        validate_conversation_title(title)?;
         self.database.connection().execute(
             "INSERT INTO conversations (id, title, created_at, updated_at, pinned)
              VALUES (?1, ?2, ?3, ?4, 0)",
@@ -319,6 +332,7 @@ impl<'a> ChatRepository<'a> {
         if title.is_empty() {
             return Err(AppError::internal("conversation title cannot be empty"));
         }
+        validate_conversation_title(title)?;
         self.touch_conversation_with(
             id,
             "UPDATE conversations SET title = ?1, updated_at = ?2 WHERE id = ?3",
@@ -387,15 +401,20 @@ impl<'a> ChatRepository<'a> {
 
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        self.database.connection().execute(
+        // Both writes represent one logical message append. If the conversation
+        // timestamp update fails, do not leave a persisted turn that callers may
+        // unknowingly duplicate when retrying the failed request.
+        let transaction = self.database.connection().unchecked_transaction()?;
+        transaction.execute(
             "INSERT INTO messages (id, conversation_id, role, content, status, model_id, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![id, conversation_id, role, content, status, model_id, now, now],
         )?;
-        self.database.connection().execute(
+        transaction.execute(
             "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
             params![now, conversation_id],
         )?;
+        transaction.commit()?;
         self.find_message(&id)
     }
 
@@ -411,6 +430,19 @@ impl<'a> ChatRepository<'a> {
         if target.conversation_id != conversation_id || target.role != "assistant" {
             return Err(AppError::internal(
                 "regeneration target must be an assistant in this conversation",
+            ));
+        }
+        // Serialize regeneration candidates within the conversation. The check
+        // and insertion share the SQLite write transaction, including across
+        // independent database connections.
+        let active: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id = ?1 AND status IN ('pending', 'streaming'))",
+            params![conversation_id],
+            |row| row.get(0),
+        )?;
+        if active {
+            return Err(AppError::internal(
+                "stop the active generation before regenerating this conversation",
             ));
         }
         let candidate =
@@ -478,55 +510,53 @@ impl<'a> ChatRepository<'a> {
             Some(_) => PROFILE_CONTEXT_MARKER,
             None => PROJECT_CONTEXT_MARKER,
         };
-        let existing_id: Option<String> = self
-            .database
-            .connection()
-            .query_row(
+        // Reconcile every legacy row for this slot atomically. Updating only
+        // the first match can leave stale private instructions in generation
+        // context after a profile/project refresh or removal.
+        let tx = self.database.connection().unchecked_transaction()?;
+        let ids = {
+            let mut statement = tx.prepare(
                 "SELECT id FROM messages
                  WHERE conversation_id = ?1 AND role = 'system' AND content LIKE ?2
-                 LIMIT 1",
+                 ORDER BY rowid ASC",
+            )?;
+            statement.query_map(
                 params![conversation_id, format!("{marker}%")],
-                |row| row.get(0),
-            )
-            .optional()?;
-
-        match (
-            existing_id,
-            content.filter(|value| !value.trim().is_empty()),
-        ) {
-            (Some(id), Some(content)) => {
-                let stored = if content.trim_start().starts_with(marker) {
-                    content.to_string()
-                } else {
-                    format!("{marker}\n{content}")
-                };
-                self.database.connection().execute(
+                |row| row.get::<_, String>(0),
+            )?.collect::<Result<Vec<_>, _>>()?
+        };
+        let replacement = content.filter(|value| !value.trim().is_empty());
+        if let Some(content) = replacement {
+            let stored = if content.trim_start().starts_with(marker) {
+                content.to_string()
+            } else {
+                format!("{marker}\\n{content}")
+            };
+            if let Some(id) = ids.first() {
+                tx.execute(
                     "UPDATE messages SET content = ?1, status = 'completed', updated_at = ?2 WHERE id = ?3",
                     params![stored, Utc::now().to_rfc3339(), id],
                 )?;
+            } else {
+                let now = Utc::now().to_rfc3339();
+                tx.execute(
+                    "INSERT INTO messages (id, conversation_id, role, content, status, model_id, created_at, updated_at)
+                     VALUES (?1, ?2, 'system', ?3, 'completed', NULL, ?4, ?4)",
+                    params![Uuid::new_v4().to_string(), conversation_id, stored, now],
+                )?;
             }
-            (None, Some(content)) => {
-                let stored = if content.trim_start().starts_with(marker) {
-                    content.to_string()
-                } else {
-                    format!("{marker}\n{content}")
-                };
-                self.add_message(conversation_id, "system", &stored, "completed", None)?;
-            }
-            (Some(id), None) => {
-                self.database
-                    .connection()
-                    .execute("DELETE FROM messages WHERE id = ?1", params![id])?;
-            }
-            (None, None) => {}
         }
+        for id in ids.iter().skip(if replacement.is_some() { 1 } else { 0 }) {
+            tx.execute("DELETE FROM messages WHERE id = ?1", params![id])?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
     pub fn append_message_chunk(&self, message_id: &str, chunk: &str) -> Result<(), AppError> {
         let now = Utc::now().to_rfc3339();
         let changed = self.database.connection().execute(
-            "UPDATE messages SET content = content || ?1, updated_at = ?2 WHERE id = ?3",
+            "UPDATE messages SET content = content || ?1, updated_at = ?2\n             WHERE id = ?3 AND status IN ('pending', 'streaming')",
             params![chunk, now, message_id],
         )?;
         if changed == 0 {
@@ -634,6 +664,13 @@ impl<'a> ChatRepository<'a> {
     }
 }
 
+fn validate_conversation_title(title: &str) -> Result<(), AppError> {
+    if title.chars().take(257).count() > 256 {
+        return Err(AppError::internal("conversation title exceeds 256 characters"));
+    }
+    Ok(())
+}
+
 fn validate_message_role(role: &str) -> Result<(), AppError> {
     if matches!(role, "system" | "user" | "assistant" | "tool") {
         Ok(())
@@ -683,6 +720,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn chat_search_rejects_embedded_nul_without_affecting_valid_queries() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let conversation = repo.create_conversation(Some("Alpha report")).unwrap();
+        repo.add_message(&conversation.id, "user", "quoted \"evidence\"", "completed", None)
+            .unwrap();
+
+        for query in ["a\0", "alp\0ha", "\0alpha", "alpha\0"] {
+            assert!(matches!(
+                repo.search_conversations(query, None, 10),
+                Err(AppError::Internal(_))
+            ), "NUL query must be rejected");
+        }
+
+        let result = repo.search_conversations("Alpha", None, 10).unwrap();
+        assert_eq!(result.conversations.len(), 1);
+        assert_eq!(result.conversations[0].id, conversation.id);
+        let quoted = repo.search_conversations("\"evidence\"", None, 10).unwrap();
+        assert_eq!(quoted.conversations.len(), 1);
+    }
+
+    #[test]
     fn durable_database_deletes_message_indexes_and_retries_after_reopen() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("data/database/openmind_ai.db");
@@ -691,7 +750,9 @@ mod tests {
         let database = Database::open(path.clone()).unwrap();
         let repo = ChatRepository::new(&database);
         let chat = repo.create_conversation(Some("Private images")).unwrap();
-        let user = repo.add_message(&chat.id, "user", "image", "completed", None).unwrap();
+        let user = repo
+            .add_message(&chat.id, "user", "image", "completed", None)
+            .unwrap();
         let index = directory.join(format!("{}.json", user.id));
         std::fs::write(&index, b"private image reference").unwrap();
         repo.delete_message(&user.id).unwrap();
@@ -702,11 +763,29 @@ mod tests {
         let reopened = Database::open(path).unwrap();
         assert!(!index.exists());
         let repo = ChatRepository::new(&reopened);
-        let second = repo.add_message(&chat.id, "user", "image", "completed", None).unwrap();
+        let second = repo
+            .add_message(&chat.id, "user", "image", "completed", None)
+            .unwrap();
         let second_index = directory.join(format!("{}.json", second.id));
         std::fs::write(&second_index, b"private image reference").unwrap();
         repo.delete_conversation(&chat.id).unwrap();
         assert!(!second_index.exists());
+    }
+
+    #[test]
+    fn conversation_title_limit_applies_to_create_and_rename_without_writes() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let valid = "界".repeat(256);
+        let invalid = "界".repeat(257);
+        let created = repo.create_conversation(Some(&valid)).unwrap();
+        assert_eq!(created.title, valid);
+        assert!(repo.create_conversation(Some(&invalid)).is_err());
+        assert_eq!(repo.list_conversations().unwrap().len(), 1);
+        assert!(repo.rename_conversation(&created.id, &invalid).is_err());
+        assert_eq!(repo.find_conversation(&created.id).unwrap().title, valid);
+        repo.rename_conversation(&created.id, "Renamed").unwrap();
+        assert_eq!(repo.find_conversation(&created.id).unwrap().title, "Renamed");
     }
 
     #[test]
@@ -762,6 +841,31 @@ mod tests {
     }
 
     #[test]
+    fn failed_conversation_touch_rolls_back_inserted_message() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let conversation = repo.create_conversation(Some("Atomic append")).unwrap();
+        let original_updated_at = conversation.updated_at.clone();
+
+        // Simulate a failure in the second write after the message INSERT
+        // succeeds. A failed request must not leave a duplicate-prone turn.
+        database.connection().execute_batch(
+            "CREATE TRIGGER reject_conversation_touch
+             BEFORE UPDATE OF updated_at ON conversations
+             BEGIN SELECT RAISE(ABORT, 'simulated timestamp write failure'); END;",
+        ).unwrap();
+        assert!(repo.add_message(&conversation.id, "user", "retry me", "completed", None).is_err());
+        assert!(repo.list_messages(&conversation.id).unwrap().is_empty());
+        assert_eq!(repo.find_conversation(&conversation.id).unwrap().updated_at, original_updated_at);
+
+        database.connection().execute_batch("DROP TRIGGER reject_conversation_touch;").unwrap();
+        repo.add_message(&conversation.id, "user", "retry me", "completed", None).unwrap();
+        let messages = repo.list_messages(&conversation.id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "retry me");
+    }
+
+    #[test]
     fn supports_all_streaming_statuses() {
         let database = Database::in_memory().unwrap();
         let repo = ChatRepository::new(&database);
@@ -791,6 +895,35 @@ mod tests {
                 .unwrap_err(),
             AppError::Internal(_)
         ));
+    }
+
+    #[test]
+    fn regeneration_rejects_overlapping_candidates_without_writing_and_allows_retry() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let conversation = repo.create_conversation(Some("Regenerate")).unwrap();
+        let target = repo
+            .add_message(&conversation.id, "assistant", "original", "completed", None)
+            .unwrap();
+        let first = repo
+            .begin_regeneration(&conversation.id, &target.id, None)
+            .unwrap();
+        assert_eq!(first.status, "streaming");
+        let before = repo.list_messages(&conversation.id).unwrap().len();
+        assert!(matches!(
+            repo.begin_regeneration(&conversation.id, &target.id, None),
+            Err(AppError::Internal(_))
+        ));
+        assert_eq!(repo.list_messages(&conversation.id).unwrap().len(), before);
+        assert_eq!(repo.find_message(&target.id).unwrap().content, "original");
+
+        repo.set_message_status(&first.id, "cancelled").unwrap();
+        let retry = repo
+            .begin_regeneration(&conversation.id, &target.id, None)
+            .unwrap();
+        assert_ne!(retry.id, first.id);
+        assert_eq!(retry.status, "streaming");
+        assert_eq!(repo.list_messages(&conversation.id).unwrap().len(), before + 1);
     }
 
     #[test]
@@ -846,6 +979,37 @@ mod tests {
         repo.set_active_model(&conversation.id, None).unwrap();
         let cleared = repo.find_conversation(&conversation.id).unwrap();
         assert!(cleared.active_model_id.is_none());
+    }
+
+    #[test]
+    fn streaming_chunks_cannot_change_terminal_messages() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let conversation = repo.create_conversation(Some("Late stream")).unwrap();
+
+        for terminal in ["completed", "cancelled", "failed"] {
+            let message = repo
+                .add_message(&conversation.id, "assistant", "saved", terminal, None)
+                .unwrap();
+            assert!(matches!(
+                repo.append_message_chunk(&message.id, " late").unwrap_err(),
+                AppError::Internal(_)
+            ));
+            let persisted = repo.find_message(&message.id).unwrap();
+            assert_eq!(persisted.content, "saved");
+            assert_eq!(persisted.status, terminal);
+        }
+
+        for active in ["pending", "streaming"] {
+            let message = repo
+                .add_message(&conversation.id, "assistant", "first", active, None)
+                .unwrap();
+            repo.append_message_chunk(&message.id, " second").unwrap();
+            assert_eq!(repo.find_message(&message.id).unwrap().content, "first second");
+            repo.set_message_status(&message.id, "completed").unwrap();
+            assert!(repo.append_message_chunk(&message.id, " late").is_err());
+            assert_eq!(repo.find_message(&message.id).unwrap().content, "first second");
+        }
     }
 
     #[test]
@@ -916,6 +1080,43 @@ mod tests {
         );
         assert!(messages.iter().any(|message| message.id == first_user.id));
         assert!(!messages.iter().any(|message| message.id == second_user.id));
+    }
+
+    #[test]
+    fn context_refresh_and_clear_remove_legacy_duplicates_without_touching_profile() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let chat = repo.create_conversation(Some("Context repair")).unwrap();
+        repo.upsert_profile_context(&chat.id, Some("keep private profile")).unwrap();
+        for old in ["old project one", "old project two"] {
+            repo.add_message(
+                &chat.id,
+                "system",
+                &format!("{PROJECT_CONTEXT_MARKER}\\n{old}"),
+                "completed",
+                None,
+            ).unwrap();
+        }
+        repo.upsert_profile_context(
+            &chat.id,
+            Some("[open-mind-ai-project-context]\\nnew project"),
+        ).unwrap();
+        let messages = repo.list_messages(&chat.id).unwrap();
+        assert_eq!(messages.iter().filter(|m| m.content.starts_with(PROJECT_CONTEXT_MARKER)).count(), 1);
+        assert!(messages.iter().any(|m| m.content.contains("new project")));
+        assert!(!messages.iter().any(|m| m.content.contains("old project")));
+        repo.add_message(
+            &chat.id,
+            "system",
+            "[open-mind-ai-project-context]\\nlegacy duplicate",
+            "completed",
+            None,
+        ).unwrap();
+        repo.upsert_profile_context(&chat.id, None).unwrap();
+        let messages = repo.list_messages(&chat.id).unwrap();
+        assert_eq!(messages.iter().filter(|m| m.role == "system").count(), 1);
+        assert!(messages.iter().any(|m| m.content.contains("keep private profile")));
+        assert!(!messages.iter().any(|m| m.content.starts_with(PROJECT_CONTEXT_MARKER)));
     }
 
     #[test]
@@ -1026,22 +1227,35 @@ mod tests {
         assert_eq!(match_page.conversations.len(), 1);
         assert_eq!(match_page.conversations[0].id, oldest);
         assert!(match_page.next_cursor.is_none());
-        let no_match = repo.search_conversations("a-not-existing-token", None, 40).unwrap();
+        let no_match = repo
+            .search_conversations("a-not-existing-token", None, 40)
+            .unwrap();
         assert!(no_match.conversations.is_empty());
-        assert!(repo.search_conversations(&"x".repeat(257), None, 40).is_err());
+        assert!(repo
+            .search_conversations(&"x".repeat(257), None, 40)
+            .is_err());
         assert!(repo
             .search_conversations("", Some("not-a-real-cursor"), 40)
             .is_err());
         let first = repo.search_conversations("ordinary", None, 2).unwrap();
         let cursor = first.next_cursor.expect("multi-page query");
-        assert!(repo.search_conversations("Report", Some(&cursor), 2).is_err(),
-            "a cursor from a different query must not skip valid search hits");
-        assert!(repo.search_conversations("ordinary", Some(&cursor), 2).is_ok(),
-            "the same search query must accept its own continuation");
+        assert!(
+            repo.search_conversations("Report", Some(&cursor), 2)
+                .is_err(),
+            "a cursor from a different query must not skip valid search hits"
+        );
+        assert!(
+            repo.search_conversations("ordinary", Some(&cursor), 2)
+                .is_ok(),
+            "the same search query must accept its own continuation"
+        );
         let mut forged = cursor.clone();
         forged.push_str("|unexpected");
-        assert!(repo.search_conversations("ordinary", Some(&forged), 2).is_err(),
-            "extra cursor fields must not be accepted");
+        assert!(
+            repo.search_conversations("ordinary", Some(&forged), 2)
+                .is_err(),
+            "extra cursor fields must not be accepted"
+        );
     }
 
     #[test]
@@ -1068,7 +1282,8 @@ mod tests {
         );
         // Streaming appends use UPDATE OF content; the trigger must refresh
         // the indexed text for the next search without a manual index pass.
-        repo.append_message_chunk(&original.id, " NEW_STREAM_CHUNK").unwrap();
+        repo.append_message_chunk(&original.id, " NEW_STREAM_CHUNK")
+            .unwrap();
         assert_eq!(
             repo.search_conversations("stream_chunk", None, 40)
                 .unwrap()
@@ -1088,7 +1303,8 @@ mod tests {
                 None,
             )
             .unwrap();
-        repo.append_message_chunk(&assistant.id, " MORE_STREAM_TEXT").unwrap();
+        repo.append_message_chunk(&assistant.id, " MORE_STREAM_TEXT")
+            .unwrap();
         assert!(repo
             .search_conversations("inflight_not_indexed", None, 40)
             .unwrap()
@@ -1129,7 +1345,11 @@ mod tests {
         );
         // FTS syntax and wildcard-looking text must be treated literally.
         assert!(repo.search_conversations("\" or *", None, 40).is_ok());
-        assert!(repo.search_conversations("zz%", None, 40).unwrap().conversations.is_empty());
+        assert!(repo
+            .search_conversations("zz%", None, 40)
+            .unwrap()
+            .conversations
+            .is_empty());
 
         repo.add_message(
             &chat.id,
@@ -1139,7 +1359,8 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(repo.search_conversations("system_only_secret", None, 40)
+        assert!(repo
+            .search_conversations("system_only_secret", None, 40)
             .unwrap()
             .conversations
             .is_empty());
@@ -1153,12 +1374,14 @@ mod tests {
         );
 
         repo.archive_conversation(&chat.id).unwrap();
-        assert!(repo.search_conversations("replaced", None, 40)
+        assert!(repo
+            .search_conversations("replaced", None, 40)
             .unwrap()
             .conversations
             .is_empty());
         repo.delete_conversation(&chat.id).unwrap();
-        assert!(repo.search_conversations("replaced", None, 40)
+        assert!(repo
+            .search_conversations("replaced", None, 40)
             .unwrap()
             .conversations
             .is_empty());
@@ -1783,7 +2006,9 @@ mod tests {
             let db = Database::open(path.clone()).unwrap();
             let repo = ChatRepository::new(&db);
             let chat = repo.create_conversation(Some("Keep me")).unwrap();
-            let message = repo.add_message(&chat.id, "user", "important", "completed", None).unwrap();
+            let message = repo
+                .add_message(&chat.id, "user", "important", "completed", None)
+                .unwrap();
             repo.archive_conversation(&chat.id).unwrap();
             assert!(repo.list_conversations().unwrap().is_empty());
             assert_eq!(repo.list_archived_conversations(10).unwrap()[0].id, chat.id);
@@ -1810,6 +2035,26 @@ mod tests {
         assert_eq!(repo.list_archived_conversations(0).unwrap().len(), 1);
         assert_eq!(repo.list_archived_conversations(500).unwrap().len(), 3);
         assert!(repo.restore_conversation("missing-id").is_err());
+    }
+
+    #[test]
+    fn chat_search_rejects_oversized_raw_input_before_trimming() {
+        let db = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&db);
+        let chat = repo.create_conversation(Some("needle")).unwrap();
+
+        // Whitespace-only input previously bypassed the post-trim character cap.
+        assert!(repo.search_conversations(&" ".repeat(1_000_000), None, 10).is_err());
+        assert!(repo.search_conversations(&format!("{}needle", " ".repeat(1025)), None, 10).is_err());
+
+        // The full 256-scalar limit still accommodates four-byte Unicode.
+        assert!(repo.search_conversations(&"🦀".repeat(256), None, 10).is_ok());
+        assert!(repo.search_conversations(&"🦀".repeat(257), None, 10).is_err());
+
+        // Ordinary whitespace normalization and title search remain supported.
+        let result = repo.search_conversations("  needle  ", None, 10).unwrap();
+        assert_eq!(result.conversations.len(), 1);
+        assert_eq!(result.conversations[0].id, chat.id);
     }
 
 }
