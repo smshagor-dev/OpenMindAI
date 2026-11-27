@@ -20,7 +20,7 @@ use tokio::time::Instant;
 
 use crate::{
     app_error::AppError,
-    hardware::{BackendKind, HardwareProfiler},
+    hardware::HardwareProfiler,
     launch_planner::{estimate_context_bytes, ModelLaunchConfig, ModelLaunchPlanner},
     local_agent,
     model_registry::{ModelRecord, ModelRegistry},
@@ -353,7 +353,7 @@ pub struct Footprint {
 
 impl Footprint {
     pub fn from_config(model_bytes: u64, config: &ModelLaunchConfig) -> Self {
-        let gpu = if config.gpu_layers <= 0 || config.backend == BackendKind::Cpu {
+        let gpu = if config.gpu_layers <= 0 {
             GpuUse::None
         } else if config.gpu_layers >= 999 {
             GpuUse::Full
@@ -373,16 +373,13 @@ impl Footprint {
 #[serde(rename_all = "camelCase")]
 pub struct PlacementDecision {
     pub placement: Placement,
-    /// The agent runs without GPU offload so Core keeps the GPU memory.
-    pub agent_on_cpu: bool,
     pub reason: String,
 }
 
 impl PlacementDecision {
-    fn new(placement: Placement, agent_on_cpu: bool, reason: &str) -> Self {
+    fn new(placement: Placement, reason: &str) -> Self {
         Self {
             placement,
-            agent_on_cpu,
             reason: reason.to_string(),
         }
     }
@@ -402,7 +399,6 @@ pub fn decide_placement(
     if mode == RuntimeMode::Shared {
         return PlacementDecision::new(
             Placement::Shared,
-            false,
             "Shared runtime selected in Agent Setup.",
         );
     }
@@ -413,7 +409,6 @@ pub fn decide_placement(
             } else {
                 Placement::Shared
             },
-            false,
             "OpenMindAI Core is not installed, so the agent does not compete with it.",
         );
     };
@@ -438,33 +433,27 @@ pub fn decide_placement(
     match mode {
         RuntimeMode::Automatic if ram_ok && gpu_ok => PlacementDecision::new(
             Placement::Dedicated,
-            false,
             "Core and OpenAgent both fit in memory, so each keeps its own runtime.",
         ),
         RuntimeMode::Automatic if !ram_ok => PlacementDecision::new(
             Placement::Shared,
-            false,
             "Not enough system memory to keep Core and OpenAgent loaded together, so they share one runtime.",
         ),
         RuntimeMode::Automatic => PlacementDecision::new(
             Placement::Shared,
-            false,
             "Core and OpenAgent do not both fit in GPU memory, so they share one runtime.",
         ),
-        _ if ram_ok && gpu_ok => PlacementDecision::new(
+        RuntimeMode::Dedicated if ram_ok && gpu_ok => PlacementDecision::new(
             Placement::Dedicated,
-            false,
             "Dedicated runtime selected in Agent Setup.",
         ),
-        _ if ram_ok => PlacementDecision::new(
-            Placement::Dedicated,
-            true,
-            "Dedicated runtime selected. GPU memory stays with Core, so OpenAgent runs on the CPU in its own runtime.",
+        RuntimeMode::Dedicated if !ram_ok => PlacementDecision::new(
+            Placement::Shared,
+            "Not enough system memory to keep Core and OpenAgent loaded together, so they share one runtime.",
         ),
         _ => PlacementDecision::new(
             Placement::Shared,
-            false,
-            "Dedicated runtime selected, but there is not enough system memory for two runtimes, so the shared runtime is used.",
+            "A dedicated Vulkan runtime would exceed available memory or GPU capacity, so OpenAgent shares Core's runtime.",
         ),
     }
 }
@@ -490,7 +479,6 @@ pub fn confirm_available_memory(
         Some(available) if available >= needed => decision,
         _ => PlacementDecision::new(
             Placement::Shared,
-            false,
             "A dedicated runtime would fit this computer, but not enough memory is free right now, so the shared runtime is used.",
         ),
     }
@@ -535,7 +523,7 @@ pub fn plan_agent_runtime(app: &AppHandle) -> Result<AgentRuntimeContext, AppErr
         });
     };
     let hardware = HardwareProfiler::for_inference(&state.hardware);
-    let mut config = local_agent::openagent_launch_config(
+    let config = local_agent::openagent_launch_config(
         &model,
         &hardware,
         &preferences,
@@ -573,10 +561,6 @@ pub fn plan_agent_runtime(app: &AppHandle) -> Result<AgentRuntimeContext, AppErr
         available_memory_bytes(),
         agent_resident,
     );
-    if decision.agent_on_cpu {
-        config.gpu_layers = 0;
-        config.backend = BackendKind::Cpu;
-    }
     Ok(AgentRuntimeContext {
         coding_enabled: preferences.coding_enabled,
         mode,
@@ -1328,7 +1312,6 @@ mod tests {
             Some(20 * GIB),
         );
         assert_eq!(decision.placement, Placement::Dedicated);
-        assert!(!decision.agent_on_cpu);
     }
 
     #[test]
@@ -1388,7 +1371,7 @@ mod tests {
     }
 
     #[test]
-    fn forced_dedicated_moves_the_agent_to_cpu_when_the_gpu_is_full() {
+    fn forced_dedicated_shares_when_the_gpu_is_full() {
         let decision = decide_placement(
             RuntimeMode::Dedicated,
             Some(footprint(4, GpuUse::Partial)),
@@ -1396,8 +1379,7 @@ mod tests {
             16 * GIB,
             Some(2 * GIB),
         );
-        assert_eq!(decision.placement, Placement::Dedicated);
-        assert!(decision.agent_on_cpu);
+        assert_eq!(decision.placement, Placement::Shared);
     }
 
     #[test]
@@ -1410,12 +1392,15 @@ mod tests {
             None,
         );
         assert_eq!(decision.placement, Placement::Shared);
-        assert!(decision.reason.contains("not enough system memory"));
+        assert!(decision
+            .reason
+            .to_ascii_lowercase()
+            .contains("not enough system memory"));
     }
 
     #[test]
     fn dedicated_needs_memory_that_is_free_right_now() {
-        let dedicated = PlacementDecision::new(Placement::Dedicated, false, "fits");
+        let dedicated = PlacementDecision::new(Placement::Dedicated, "fits");
         // Enough free memory: keep the dedicated runtime.
         let kept = confirm_available_memory(dedicated.clone(), 4 * GIB, Some(6 * GIB), false);
         assert_eq!(kept.placement, Placement::Dedicated);
@@ -1434,7 +1419,7 @@ mod tests {
             Placement::Dedicated
         );
         // Shared decisions are never upgraded.
-        let shared = PlacementDecision::new(Placement::Shared, false, "gpu");
+        let shared = PlacementDecision::new(Placement::Shared, "gpu");
         assert_eq!(
             confirm_available_memory(shared, 1, Some(64 * GIB), false).placement,
             Placement::Shared
@@ -1494,7 +1479,7 @@ mod tests {
 
 /// Measures model reloads on the real runtime. Run manually:
 /// `OPENMINDAI_REAL_ROOT="G:\portable ai" cargo test --lib real_runtime_switching -- --ignored --nocapture`
-/// Uses CPU-only launches so it does not compete with a running desktop app for the GPU.
+/// Uses Vulkan launches to match production placement behavior.
 #[cfg(test)]
 mod real_runtime {
     use super::*;
@@ -1549,19 +1534,14 @@ mod real_runtime {
         }
     }
 
-    /// GPU placement matches what Automatic chooses on this machine (partial offload,
-    /// shared runtime). CPU is the forced-Dedicated agent placement when the GPU is full.
-    fn config(model_path: &str, on_gpu: bool) -> ModelLaunchConfig {
+    /// Test launch config uses the production Vulkan backend.
+    fn config(model_path: &str) -> ModelLaunchConfig {
         ModelLaunchConfig {
             model_path: model_path.to_string(),
             mmproj_path: None,
-            backend: if on_gpu {
-                BackendKind::Vulkan
-            } else {
-                BackendKind::Cpu
-            },
+            backend: crate::hardware::BackendKind::Vulkan,
             device: None,
-            gpu_layers: if on_gpu { 32 } else { 0 },
+            gpu_layers: 32,
             context_size: 4096,
             threads: 4,
             batch_size: 512,
@@ -1576,8 +1556,6 @@ mod real_runtime {
     }
 
     struct Harness {
-        /// Forced-Dedicated placement on a GPU that cannot hold both models.
-        agent_on_cpu: bool,
         hardware: Arc<HardwareProfile>,
         spawns: Arc<AtomicUsize>,
         log: Vec<Value>,
@@ -1599,7 +1577,7 @@ mod real_runtime {
             let launcher = RealLauncher {
                 runtime: runtime.clone(),
                 hardware: self.hardware.clone(),
-                config: config(model_path, !(self.agent_on_cpu && model_path == AGENT)),
+                config: config(model_path),
                 expected,
                 spawns: self.spawns.clone(),
             };
@@ -1625,7 +1603,6 @@ mod real_runtime {
         let root = PortableRootManager::from_root(root);
         let root_for_concurrency = root.clone();
         let mut harness = Harness {
-            agent_on_cpu: false,
             hardware: Arc::new(crate::hardware::HardwareProfiler::detect()),
             spawns: Arc::new(AtomicUsize::new(0)),
             log: Vec::new(),
@@ -1658,7 +1635,6 @@ mod real_runtime {
         let core_rt = Arc::new(Mutex::new(LlamaRuntimeManager::new(root.clone())));
         let agent_rt = Arc::new(Mutex::new(LlamaRuntimeManager::new(root)));
         let (core_startup, agent_startup) = (AgentStartup::default(), AgentStartup::default());
-        harness.agent_on_cpu = true;
         harness
             .request("dedicated: Core chat", &core_rt, &core_startup, CORE)
             .await;
@@ -1687,7 +1663,6 @@ mod real_runtime {
 
         // Shared runtime, Core chat and a VS Code request arriving together: the later one
         // must wait for the in-progress load (ModelLaunch::Busy) instead of killing it.
-        harness.agent_on_cpu = false;
         let shared = Arc::new(Mutex::new(LlamaRuntimeManager::new(root_for_concurrency)));
         // Observer: samples the runtime every 250 ms to record the model load sequence and the
         // longest time anyone had to wait for the runtime lock (status readers do this).
@@ -1729,7 +1704,7 @@ mod real_runtime {
             tokio::task::spawn_blocking(move || {
                 let started = std::time::Instant::now();
                 let (status, lease) =
-                    crate::runtime::ensure_model_ready(&shared, &hardware, &config(CORE, true))?;
+                    crate::runtime::ensure_model_ready(&shared, &hardware, &config(CORE))?;
                 // Core uses its model for a short chat request before releasing it.
                 std::thread::sleep(Duration::from_secs(3));
                 drop(lease);

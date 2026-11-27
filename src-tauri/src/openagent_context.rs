@@ -474,11 +474,12 @@ fn read_relevance_text(path: &Path) -> Result<Option<String>, AppError> {
     let mut bytes = Vec::with_capacity(metadata.len().min(MAX_RELEVANCE_SCAN_BYTES) as usize);
     let mut limited = fs::File::open(path)?.take(MAX_RELEVANCE_SCAN_BYTES);
     limited.read_to_end(&mut bytes)?;
-    // A byte-limited sample can end inside an otherwise valid UTF-8 scalar.
-    // Keep the valid prefix, but never conceal malformed bytes in the middle.
     match std::str::from_utf8(&bytes) {
         Ok(text) => Ok(Some(text.to_owned())),
-        Err(error) if error.error_len().is_none() => {
+        Err(error) if error.error_len().is_none()
+            && bytes.len() as u64 == MAX_RELEVANCE_SCAN_BYTES
+            && metadata.len() > MAX_RELEVANCE_SCAN_BYTES =>
+        {
             Ok(Some(String::from_utf8(bytes[..error.valid_up_to()].to_vec())
                 .expect("validated UTF-8 prefix")))
         }
@@ -592,8 +593,14 @@ fn ignored_directory(path: &Path) -> bool {
     )
 }
 
+const MAX_GOAL_TERM_INPUT_CHARS: usize = 4_096;
+
 fn goal_terms(goal: &str) -> HashSet<String> {
-    goal.split(|character: char| {
+    // User-supplied goals may be arbitrarily long. Bound the tokenizer's input
+    // before splitting or allocating normalized tokens; source context is not
+    // changed and the original goal is still used by the caller.
+    let bounded: String = goal.chars().take(MAX_GOAL_TERM_INPUT_CHARS).collect();
+    bounded.split(|character: char| {
         !character.is_alphanumeric() && character != '_' && character != '-'
     })
     .map(str::to_ascii_lowercase)
@@ -627,6 +634,20 @@ fn truncate_chars(value: &str, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_goal_tokenization_is_bounded_and_unicode_safe() {
+        let goal = format!("rust security {} late_unique_term", "界".repeat(100_000));
+        let terms = goal_terms(&goal);
+        assert!(terms.contains("rust"));
+        assert!(terms.contains("security"));
+        assert!(!terms.contains("late_unique_term"));
+        assert!(terms.len() <= 32);
+        let boundary = format!("{}🚀security", "a".repeat(MAX_GOAL_TERM_INPUT_CHARS - 1));
+        let bounded_terms = goal_terms(&boundary);
+        assert!(!bounded_terms.contains("security"));
+        assert!(goal_terms("বাংলা নিরাপত্তা rust").contains("rust"));
+    }
 
     #[test]
     fn directory_iterator_work_is_bounded_even_with_failed_entries() {
@@ -761,7 +782,7 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         fs::write(outside.path().join("secret.rs"), "EXTERNAL_SECRET").unwrap();
         let link = root.path().join("linked");
-        let result = std::process::Command::new("pwsh").args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:TEST_LINK -Target $env:TEST_TARGET -ErrorAction Stop | Out-Null"]).env("TEST_LINK", &link).env("TEST_TARGET", outside.path()).output().unwrap();
+        let result = std::process::Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:TEST_LINK -Target $env:TEST_TARGET -ErrorAction Stop | Out-Null"]).env("TEST_LINK", &link).env("TEST_TARGET", outside.path()).output().unwrap();
         assert!(
             result.status.success(),
             "{}",
@@ -919,6 +940,14 @@ mod tests {
     }
 
     #[test]
+    fn relevance_sample_rejects_incomplete_scalar_at_actual_eof() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("incomplete.rs");
+        fs::write(&path, [b"fn refresh_session() {}".as_slice(), &[0xe2]].concat()).unwrap();
+        assert!(read_relevance_text(&path).unwrap().is_none());
+    }
+
+    #[test]
     fn content_relevance_selects_source_even_when_path_is_generic() {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir_all(temp.path().join("src")).unwrap();
@@ -991,3 +1020,4 @@ mod tests {
         assert!(!context.contains("outside secret"));
     }
 }
+

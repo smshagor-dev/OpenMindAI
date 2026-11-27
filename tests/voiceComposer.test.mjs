@@ -46,8 +46,10 @@ test("production Composer ignores transcription after discard/unmount and releas
       builder.onResolve({ filter: /^react(?:\/jsx-runtime)?$/ }, args => ({ path: pathToFileURL(require.resolve(args.path)).href, external: true }));
       builder.onResolve({ filter: /^lucide-react$/ }, () => ({ path: "icons", namespace: "fixture" }));
       builder.onResolve({ filter: /^(\.\.\/api|\.\.\/lib\/media|\.\.\/lib\/chat|\.\/ModelSelector)$/ }, args => ({ path: args.path, namespace: "fixture" }));
+      builder.onResolve({ filter: /^pdfjs-dist\/build\/pdf\.worker\.min\.mjs\?url$/ }, () => ({ path: "pdf-worker", namespace: "fixture" }));
       builder.onLoad({ filter: /.*/, namespace: "fixture" }, ({ path }) => ({ contents: {
-        "icons": "export const FileText=()=>null,FileType=()=>null,Hash=()=>null,Image=()=>null,Loader2=()=>null,Mic=()=>null,MicOff=()=>null,Music2=()=>null,Paperclip=()=>null,Plus=()=>null,Send=()=>null,Square=()=>null,Video=()=>null,Volume2=()=>null,X=()=>null;",
+        "icons": "export const Check=()=>null,ChevronDown=()=>null,FileText=()=>null,FileType=()=>null,Hash=()=>null,Image=()=>null,Loader2=()=>null,Mic=()=>null,MicOff=()=>null,Music2=()=>null,Paperclip=()=>null,Plus=()=>null,Send=()=>null,Square=()=>null,Video=()=>null,Volume2=()=>null,X=()=>null;",
+        "pdf-worker": "export default 'pdf-worker-fixture';",
         "../api": "export const api={checkModelUpdates:async()=>({entries:[]})};",
         "../lib/media": "export const transcribeAudioBlob=(...args)=>globalThis.__voiceTranscribe(...args);",
         "../lib/chat": "export const inferChatMode=()=> 'chat';export const attachmentContextStats=()=>({truncatedCount:0,omittedCount:0});",
