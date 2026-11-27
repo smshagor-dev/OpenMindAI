@@ -123,7 +123,7 @@ test("Save copy returns exact scoped bytes with sanitized filename, and rejects 
     assert.equal(dom.window.document.querySelectorAll("a").length, 0);
 
     globalThis.__projectBinaryApi.readProjectBinaryFile = async () => ({
-      name: "corrupt.bin", mimeType: null, dataBase64: "AA==", sizeBytes: 30, sha256: "x",
+      name: "corrupt.bin", mimeType: null, dataBase64: "AA==", sizeBytes: 2, sha256: "x",
     });
     await assert.rejects(saveProjectBinaryCopy("owner-project", "file-23"), /size validation/);
     assert.equal(downloads.length, 1);

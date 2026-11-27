@@ -262,11 +262,7 @@ function ModelCatalogOverview(props: {
   const primaryStatus = props.downloadStatus?.modelId === props.primary?.entry.id ? props.downloadStatus : null;
   const busy = props.downloadStatus !== null && isActiveDownload(props.downloadStatus);
   const title = props.variant === "setup" ? "Start with the best local model" : "Model library";
-  const hardwareLabel = props.hardware?.backends.cuda
-    ? "NVIDIA CUDA ready"
-    : props.hardware?.recommendedInferenceGpu
-      ? `${props.hardware.recommendedInferenceGpu} ready`
-      : "CPU ready";
+  const hardwareLabel = props.hardware?.backends.vulkan ? "Vulkan ready" : "Vulkan required";
 
   return (
     <section className="model-catalog-overview">
