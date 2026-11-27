@@ -427,7 +427,7 @@ fn split_stem_extension(hint: &str, kind: &str) -> (String, String) {
     let trimmed = hint.trim();
     if let Some(dot_index) = trimmed.rfind('.') {
         let (raw_stem, raw_ext) = trimmed.split_at(dot_index);
-        let ext = sanitize_filename(raw_ext.trim_start_matches('.'));
+        let ext = sanitize_filename_bounded(raw_ext.trim_start_matches('.'), 12);
         if !ext.is_empty() {
             return (
                 sanitize_filename(raw_stem),
@@ -442,8 +442,15 @@ fn split_stem_extension(hint: &str, kind: &str) -> (String, String) {
 }
 
 fn sanitize_filename(name: &str) -> String {
+    sanitize_filename_bounded(name, 40)
+}
+
+/// At most 40 stem scalars and 12 extension scalars: even four-byte UTF-8
+/// characters plus the separator fit inside a 255-byte filename component.
+fn sanitize_filename_bounded(name: &str, max_chars: usize) -> String {
     let cleaned: String = name
         .chars()
+        .take(max_chars)
         .map(|c| {
             if c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ' ') {
                 c
@@ -479,6 +486,25 @@ mod tests {
         assert_eq!(split_stem_extension("script.py", "code"), ("script".into(), "py".into()));
         assert_eq!(split_stem_extension("notes.log", "text"), ("notes".into(), "log".into()));
     }
+
+    #[test]
+    fn artifact_filename_components_fit_portable_byte_limits() {
+        let long_ascii = "a".repeat(100_000);
+        assert_eq!(sanitize_filename(&long_ascii), "a".repeat(40));
+        let long_unicode = "😀".repeat(100_000);
+        let (stem, extension) = split_stem_extension(&format!("{long_unicode}.{}", "😀".repeat(100)), "code");
+        assert_eq!(stem, "");
+        assert_eq!(extension, "txt");
+        // Four-byte letters (rather than emoji punctuation) exercise the
+        // maximum possible UTF-8 bytes retained by sanitization.
+        let long_letters = "𐐀".repeat(100_000);
+        let (stem, ext) = split_stem_extension(&format!("{long_letters}.{}", "𐐀".repeat(100)), "code");
+        assert_eq!(stem.chars().count(), 40);
+        assert_eq!(ext.chars().count(), 12);
+        assert!(format!("{stem}.{ext}").len() <= 255);
+        assert_eq!(split_stem_extension("Report!!.md", "markdown"), ("Report".to_string(), "md".to_string()));
+    }
+
 
     #[test]
     fn deleted_conversation_does_not_leave_a_late_document_output() {
