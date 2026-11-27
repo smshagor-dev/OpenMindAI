@@ -123,11 +123,104 @@ test("Save copy returns exact scoped bytes with sanitized filename, and rejects 
     assert.equal(dom.window.document.querySelectorAll("a").length, 0);
 
     globalThis.__projectBinaryApi.readProjectBinaryFile = async () => ({
-      name: "corrupt.bin", mimeType: null, dataBase64: "AA==", sizeBytes: 30, sha256: "x",
+      name: "corrupt.bin", mimeType: null, dataBase64: "AA==", sizeBytes: 2, sha256: "x",
     });
     await assert.rejects(saveProjectBinaryCopy("owner-project", "file-23"), /size validation/);
     assert.equal(downloads.length, 1);
   } finally {
+    dom.window.HTMLAnchorElement.prototype.click = originalClick;
+    globalThis.document = originalDocument;
+    globalThis.URL = originalURL;
+    globalThis.setTimeout = originalTimer;
+    delete globalThis.__projectBinaryApi;
+    dom.window.close();
+  }
+});
+
+test("binary upload rejects malformed declared sizes and inconsistent returned buffers before native writes", async () => {
+  let reads = 0;
+  let writes = 0;
+  globalThis.__projectBinaryApi = {
+    addProjectBinaryFile: async () => { writes += 1; return { status: "attached" }; },
+  };
+  const fakeFile = (size, buffer) => ({
+    name: "payload.bin", type: "application/octet-stream", size,
+    arrayBuffer: async () => { reads += 1; return buffer; },
+  });
+  try {
+    for (const size of [-1, NaN, Infinity, 1.5, 1_500_001]) {
+      await assert.rejects(attachProjectBinaryFile("project", fakeFile(size, new ArrayBuffer(0))), /valid size/);
+    }
+    assert.equal(reads, 0, "invalid declared sizes must fail before reading");
+    await assert.rejects(
+      attachProjectBinaryFile("project", fakeFile(1, new ArrayBuffer(1_500_001))),
+      /changed during import/,
+    );
+    await assert.rejects(
+      attachProjectBinaryFile("project", fakeFile(4, new ArrayBuffer(3))),
+      /changed during import/,
+    );
+    await assert.rejects(
+      attachProjectBinaryFile("project", fakeFile(1, new Uint8Array([7]))),
+      /changed during import/,
+    );
+    assert.equal(reads, 3);
+    assert.equal(writes, 0, "invalid uploads must never reach native persistence");
+  } finally {
+    delete globalThis.__projectBinaryApi;
+  }
+});
+
+test("failed binary download DOM setup or click immediately revokes its Blob URL", async () => {
+  const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/" });
+  const originalDocument = globalThis.document;
+  const originalURL = globalThis.URL;
+  const originalTimer = globalThis.setTimeout;
+  const revoked = [];
+  const scheduled = [];
+  const originalCreate = dom.window.document.createElement.bind(dom.window.document);
+  const originalClick = dom.window.HTMLAnchorElement.prototype.click;
+  const originalAppend = dom.window.document.body.appendChild.bind(dom.window.document.body);
+  globalThis.document = dom.window.document;
+  globalThis.URL = {
+    createObjectURL: () => "blob:failed-copy",
+    revokeObjectURL: (url) => revoked.push(url),
+  };
+  globalThis.setTimeout = (fn) => { scheduled.push(fn); return 1; };
+  globalThis.__projectBinaryApi = {
+    readProjectBinaryFile: async () => ({
+      name: "test.bin", mimeType: "application/octet-stream",
+      dataBase64: "AQID", sizeBytes: 3, sha256: "fixture",
+    }),
+  };
+  try {
+    dom.window.document.createElement = () => { throw new Error("create failed"); };
+    await assert.rejects(saveProjectBinaryCopy("project", "file"), /create failed/);
+    assert.deepEqual(revoked, ["blob:failed-copy"]);
+    assert.equal(scheduled.length, 0);
+
+    dom.window.document.createElement = originalCreate;
+    dom.window.document.body.appendChild = () => { throw new Error("append failed"); };
+    await assert.rejects(saveProjectBinaryCopy("project", "file"), /append failed/);
+    assert.equal(revoked.length, 2);
+    assert.equal(dom.window.document.querySelectorAll("a").length, 0);
+
+    dom.window.document.body.appendChild = originalAppend;
+    dom.window.HTMLAnchorElement.prototype.click = () => { throw new Error("click failed"); };
+    await assert.rejects(saveProjectBinaryCopy("project", "file"), /click failed/);
+    assert.equal(revoked.length, 3);
+    assert.equal(scheduled.length, 0);
+    assert.equal(dom.window.document.querySelectorAll("a").length, 0);
+
+    dom.window.HTMLAnchorElement.prototype.click = () => {};
+    await saveProjectBinaryCopy("project", "file");
+    assert.equal(revoked.length, 3, "successful click retains URL until handoff");
+    assert.equal(scheduled.length, 1);
+    scheduled[0]();
+    assert.equal(revoked.length, 4);
+  } finally {
+    dom.window.document.createElement = originalCreate;
+    dom.window.document.body.appendChild = originalAppend;
     dom.window.HTMLAnchorElement.prototype.click = originalClick;
     globalThis.document = originalDocument;
     globalThis.URL = originalURL;
