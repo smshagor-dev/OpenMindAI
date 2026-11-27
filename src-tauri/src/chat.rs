@@ -356,11 +356,16 @@ impl<'a> ChatRepository<'a> {
     }
 
     pub fn set_active_model(&self, id: &str, model_id: Option<&str>) -> Result<(), AppError> {
-        self.touch_conversation_with(
-            id,
-            "UPDATE conversations SET active_model_id = ?1, updated_at = ?2 WHERE id = ?3",
+        let changed = self.database.connection().execute(
+            "UPDATE conversations SET active_model_id = ?1, updated_at = ?2
+             WHERE id = ?3 AND active_model_id IS NOT ?1",
             params![model_id, Utc::now().to_rfc3339(), id],
-        )
+        )?;
+        if changed == 0 {
+            // An unchanged model is a successful no-op, but an unknown chat is not.
+            self.find_conversation(id)?;
+        }
+        Ok(())
     }
 
     pub fn archive_conversation(&self, id: &str) -> Result<(), AppError> {
@@ -760,6 +765,43 @@ mod tests {
         assert_eq!(result.conversations[0].id, conversation.id);
         let quoted = repo.search_conversations("\"evidence\"", None, 10).unwrap();
         assert_eq!(quoted.conversations.len(), 1);
+    }
+
+    #[test]
+    fn active_model_selection_preserves_timestamp_when_unchanged() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let conversation = repo.create_conversation(Some("Model selection")).unwrap();
+        let baseline = "2000-01-01T00:00:00+00:00";
+        let reset_timestamp = || {
+            database.connection().execute(
+                "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+                params![baseline, conversation.id],
+            ).unwrap();
+        };
+        let current = || repo.find_conversation(&conversation.id).unwrap();
+
+        reset_timestamp();
+        repo.set_active_model(&conversation.id, None).unwrap();
+        assert_eq!(current().updated_at, baseline);
+
+        repo.set_active_model(&conversation.id, Some("model-a")).unwrap();
+        assert_eq!(current().active_model_id.as_deref(), Some("model-a"));
+        reset_timestamp();
+        repo.set_active_model(&conversation.id, Some("model-a")).unwrap();
+        assert_eq!(current().updated_at, baseline);
+
+        repo.set_active_model(&conversation.id, Some("model-b")).unwrap();
+        assert_eq!(current().active_model_id.as_deref(), Some("model-b"));
+        reset_timestamp();
+        repo.set_active_model(&conversation.id, None).unwrap();
+        assert_eq!(current().active_model_id, None);
+        assert_ne!(current().updated_at, baseline);
+        reset_timestamp();
+        repo.set_active_model(&conversation.id, None).unwrap();
+        assert_eq!(current().updated_at, baseline);
+
+        assert!(repo.set_active_model("missing-conversation", None).is_err());
     }
 
     #[test]
