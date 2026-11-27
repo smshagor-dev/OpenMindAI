@@ -472,11 +472,15 @@ struct StagedImageOutput {
 
 impl StagedImageOutput {
     fn new(final_path: &Path) -> Result<Self, AppError> {
+        Self::new_with_extension(final_path, "png")
+    }
+
+    fn new_with_extension(final_path: &Path, extension: &str) -> Result<Self, AppError> {
         let parent = final_path.parent().ok_or_else(|| {
-            AppError::ArtifactGenerationFailed("image output path has no parent".into())
+            AppError::ArtifactGenerationFailed("render output path has no parent".into())
         })?;
         Ok(Self {
-            path: parent.join(format!(".openmindai-render-{}.png", Uuid::new_v4())),
+            path: parent.join(format!(".openmindai-render-{}.{}", Uuid::new_v4(), extension)),
         })
     }
 
@@ -531,6 +535,45 @@ mod staged_image_output_tests {
         fs::write(&staging, b"replacement").unwrap();
         assert!(stage.publish(&target).is_err());
         assert_eq!(fs::read(&target).unwrap(), b"original");
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn staged_video_publishes_validated_bytes_without_leaving_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("clip.webm");
+        let stage = StagedImageOutput::new_with_extension(&target, "webm").unwrap();
+        let staging = stage.path().to_path_buf();
+        assert_eq!(staging.extension().unwrap(), "webm");
+        fs::write(&staging, b"validated webm").unwrap();
+        stage.publish(&target).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"validated webm");
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn failed_video_publication_preserves_existing_video_and_removes_stage() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("clip.webm");
+        fs::write(&target, b"original webm").unwrap();
+        let stage = StagedImageOutput::new_with_extension(&target, "webm").unwrap();
+        let staging = stage.path().to_path_buf();
+        fs::write(&staging, b"new webm").unwrap();
+        assert!(stage.publish(&target).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"original webm");
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn abandoned_video_stage_does_not_change_existing_video() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("clip.webm");
+        fs::write(&target, b"original webm").unwrap();
+        let stage = StagedImageOutput::new_with_extension(&target, "webm").unwrap();
+        let staging = stage.path().to_path_buf();
+        fs::write(&staging, b"partial").unwrap();
+        drop(stage);
+        assert_eq!(fs::read(&target).unwrap(), b"original webm");
         assert!(!staging.exists());
     }
 
@@ -598,9 +641,8 @@ pub async fn generate_video(
     let runtime = ensure_runtime(root, client, hardware, false).await?;
     let cli_path = root.resolve_relative(&runtime.cli_path)?;
     let profile = video_render_profile(hardware, &runtime.backend);
-    if output_path.exists() {
-        fs::remove_file(output_path)?;
-    }
+    // Render into a private sibling file; preserve any existing output.
+    let staged_output = StagedImageOutput::new_with_extension(output_path, "webm")?;
 
     let mut command = Command::new(&cli_path);
     command
@@ -617,7 +659,7 @@ pub async fn generate_video(
         .arg("-n")
         .arg("worst quality, low quality, blurry, distorted, artifacts, text, watermark, flicker, jitter, temporal inconsistency")
         .arg("-o")
-        .arg(output_path)
+        .arg(staged_output.path())
         .arg("--cfg-scale")
         .arg("6.0")
         .arg("--sampling-method")
@@ -686,7 +728,8 @@ pub async fn generate_video(
         )));
     }
 
-    validate_webm(output_path)?;
+    validate_webm(staged_output.path())?;
+    staged_output.publish(output_path)?;
     tracing::info!(path = %output_path.display(), "local Wan WebM video generated");
     Ok(())
 }
