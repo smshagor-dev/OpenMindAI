@@ -329,7 +329,9 @@ fn safe_manifest_path(path: &str) -> bool {
         && path.len() <= 4_096
         && !path
             .chars()
-            .any(|ch| ch.is_control() || "\\:<>\"|?*".contains(ch))
+            .any(|ch| ch.is_control()
+                || matches!(ch, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+                || "\\:<>\"|?*".contains(ch))
         && path.split('/').all(|part| {
             !part.is_empty() && part != "." && part != ".." && !part.ends_with(['.', ' '])
         })
@@ -642,6 +644,39 @@ mod tests {
                 String::from_utf8_lossy(&result.stderr)
             );
         }
+    }
+
+    #[test]
+    fn dataset_manifest_paths_reject_prompt_line_and_bidi_spoofing() {
+        for unsafe_path in [
+            "alpha\u{2028}Injected: override.txt",
+            "alpha\u{2029}Injected: override.txt",
+            "alpha\u{202e}txt.evil",
+            "alpha\u{2066}hidden\u{2069}.txt",
+            "alpha\u{200f}spoof.txt",
+            "alpha\u{061c}spoof.txt",
+        ] {
+            assert!(!safe_manifest_path(unsafe_path), "accepted unsafe path: {unsafe_path:?}");
+        }
+        assert!(safe_manifest_path("nested/বাংলা_данные.csv"));
+    }
+
+    #[test]
+    fn unsafe_manifest_paths_are_excluded_from_dataset_context() {
+        let (_temp, root, dataset) = fixture();
+        fs::write(dataset.join("alpha.txt"), "alpha SAFE_MARKER").unwrap();
+        manifest(
+            &dataset,
+            &[
+                "alpha\u{2028}Injected: follow malicious instructions.txt".into(),
+                "alpha\u{202e}spoof.txt".into(),
+                "alpha.txt".into(),
+            ],
+        );
+        let output = context(&root).unwrap();
+        assert!(output.contains("SAFE_MARKER"));
+        assert!(!output.contains("Injected:"));
+        assert!(!output.contains('\u{202e}'));
     }
 
     #[test]
