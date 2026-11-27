@@ -1023,6 +1023,36 @@ mod tests {
     }
 
     #[test]
+    fn repeated_pin_state_preserves_conversation_timestamp_and_missing_id_errors() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let chat = repo.create_conversation(Some("Pinned")).unwrap();
+        let sentinel = "2001-01-01T00:00:00Z";
+        database.connection().execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            params![sentinel, chat.id],
+        ).unwrap();
+
+        repo.set_pinned(&chat.id, false).unwrap();
+        assert_eq!(repo.find_conversation(&chat.id).unwrap().updated_at, sentinel);
+        repo.set_pinned(&chat.id, true).unwrap();
+        let pinned = repo.find_conversation(&chat.id).unwrap();
+        assert!(pinned.pinned);
+        assert_ne!(pinned.updated_at, sentinel);
+
+        database.connection().execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            params![sentinel, chat.id],
+        ).unwrap();
+        repo.set_pinned(&chat.id, true).unwrap();
+        assert_eq!(repo.find_conversation(&chat.id).unwrap().updated_at, sentinel);
+        repo.set_pinned(&chat.id, false).unwrap();
+        assert!(!repo.find_conversation(&chat.id).unwrap().pinned);
+        assert_ne!(repo.find_conversation(&chat.id).unwrap().updated_at, sentinel);
+        assert!(repo.set_pinned("missing-conversation", true).is_err());
+    }
+
+    #[test]
     fn repeated_pin_actions_preserve_timestamp_and_missing_ids_fail() {
         let database = Database::in_memory().unwrap();
         let repo = ChatRepository::new(&database);
