@@ -1434,6 +1434,23 @@ mod tests {
     }
 
     #[test]
+    fn unknown_catalog_id_does_not_touch_portable_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("new-root");
+        let manager = ModelDownloadManager::new(PortableRootManager::from_root(path.clone()));
+        let before = manager.status().unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        assert!(runtime.block_on(manager.download_catalog_model("unknown-model-id")).is_err());
+        assert!(!path.exists(), "invalid IDs must not create a portable root");
+        assert_eq!(manager.status().unwrap().state, before.state);
+        assert_eq!(manager.status().unwrap().model_id, before.model_id);
+        assert_eq!(manager.active_download.available_permits(), 1);
+        let lock = manager.begin_root_install().unwrap();
+        assert!(path.join(".openmindai-model-install.lock").is_file());
+        drop(lock);
+    }
+
+    #[test]
     fn cancel_does_not_rewrite_queued_status_without_active_permit() {
         let temp = tempfile::tempdir().unwrap();
         let manager =
