@@ -107,7 +107,7 @@ export function shouldShowCloudModels(
   signedIn: boolean,
   availableModelCount: number,
 ): boolean {
-  return mode !== "local" && online && signedIn &&
+  return (mode === "auto" || mode === "cloud") && online && signedIn &&
     Number.isSafeInteger(availableModelCount) && availableModelCount > 0;
 }
 
