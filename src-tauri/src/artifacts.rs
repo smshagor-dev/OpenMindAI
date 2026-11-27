@@ -420,15 +420,19 @@ fn default_extension(kind: &str) -> &'static str {
 }
 
 fn split_stem_extension(hint: &str, kind: &str) -> (String, String) {
-    // Split the raw hint into stem/extension *before* sanitizing, so the dash-collapsing
-    // in `sanitize_filename` never runs across the extension boundary (it otherwise leaves a
-    // stray trailing dash, e.g. "Report!!.md" -> "Report-.md" instead of "Report.md").
+    // The renderer decides the bytes and MIME type. Never let a caller rename
+    // a generated PDF, document, image, audio or video to a misleading suffix.
+    // Text/code artifacts intentionally retain user-selected extensions.
+    let fixed_extension = matches!(kind, "pdf" | "docx" | "markdown" | "image" | "audio" | "video");
     let trimmed = hint.trim();
     if let Some(dot_index) = trimmed.rfind('.') {
         let (raw_stem, raw_ext) = trimmed.split_at(dot_index);
         let ext = sanitize_filename_bounded(raw_ext.trim_start_matches('.'), 12);
         if !ext.is_empty() {
-            return (sanitize_filename(raw_stem), ext);
+            return (
+                sanitize_filename(raw_stem),
+                if fixed_extension { default_extension(kind).to_string() } else { ext },
+            );
         }
     }
     (
@@ -466,6 +470,22 @@ fn sanitize_filename_bounded(name: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_artifact_extensions_match_their_actual_format() {
+        for (kind, expected) in [
+            ("pdf", "pdf"), ("docx", "docx"), ("markdown", "md"),
+            ("image", "png"), ("audio", "wav"), ("video", "webm"),
+        ] {
+            let (stem, extension) = split_stem_extension("report.exe", kind);
+            assert_eq!(stem, "report");
+            assert_eq!(extension, expected);
+            assert_eq!(split_stem_extension("report", kind).1, expected);
+            assert_eq!(split_stem_extension("report.PDF", kind).1, expected);
+        }
+        assert_eq!(split_stem_extension("script.py", "code"), ("script".into(), "py".into()));
+        assert_eq!(split_stem_extension("notes.log", "text"), ("notes".into(), "log".into()));
+    }
 
     #[test]
     fn artifact_filename_components_fit_portable_byte_limits() {
