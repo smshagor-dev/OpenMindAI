@@ -76,7 +76,11 @@ pub(super) fn validate(source: &mut File) -> Result<(), AppError> {
                     if !parsed.root_element().has_tag_name((RELS, "Relationships")) {
                         return Err("invalid DOCX relationships part".into());
                     }
-                    for relation in parsed.root_element().children().filter(|node| node.is_element()) {
+                    for relation in parsed
+                        .root_element()
+                        .children()
+                        .filter(|node| node.is_element())
+                    {
                         if !relation.has_tag_name((RELS, "Relationship"))
                             || !matches!(relation.attribute("TargetMode"), None | Some("Internal"))
                             || relation.attribute("Target").is_none_or(|target| {
@@ -244,7 +248,10 @@ mod tests {
             entries[1].1 = format!(
                 r#"<Relationships xmlns="{RELS}"><Relationship Id="rId1" Type="{OFFICE}" Target="word/document.xml"/><Relationship Id="rId2" Type="urn:test" Target="{target}" TargetMode="External"/></Relationships>"#
             );
-            assert!(check(&package(entries, zip::CompressionMethod::Deflated)).is_err(), "{target}");
+            assert!(
+                check(&package(entries, zip::CompressionMethod::Deflated)).is_err(),
+                "{target}"
+            );
         }
     }
 

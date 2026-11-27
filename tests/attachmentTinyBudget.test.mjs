@@ -32,3 +32,9 @@ test("serialized context still discloses omitted evidence", () => {
   assert.match(text, /Attachment context limit/);
   assert.match(text, /proof/);
 });
+
+
+test("tiny Unicode budgets never split surrogate pairs", () => {
+  assert.equal(selectAttachmentExcerpt("😀".repeat(100), 1, ""), "");
+  assert.equal(selectAttachmentExcerpt("😀".repeat(100), 3, ""), "😀");
+});

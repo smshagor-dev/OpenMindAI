@@ -149,3 +149,32 @@ test("an older desktop without runtime state is treated as ready", async () => {
   await ensureCodingAgentReady("http://127.0.0.1:9", undefined, () => undefined, desktop.options);
   assert.equal(desktop.calls[0].headers["X-OpenMindAI-Token"], undefined);
 });
+
+test("malformed readiness responses fail closed without starting or returning ready", async () => {
+  const malformed = [
+    null, [], {}, "ready",
+    { service: "unexpected-service", configured: true, runtime: { state: "ready" } },
+    { service: "openmindai-coding-agent", configured: "false", runtime: { state: "ready" } },
+    { service: "openmindai-coding-agent", configured: true, runtime: null },
+    { service: "openmindai-coding-agent", configured: true, runtime: { state: "unknown" } }
+  ];
+  for (const response of malformed) {
+    const desktop = scriptedDesktop([response]);
+    await assert.rejects(
+      ensureCodingAgentReady("http://127.0.0.1:9", undefined, () => undefined, desktop.options),
+      /Invalid coding agent status response/,
+      JSON.stringify(response)
+    );
+    assert.equal(desktop.calls.length, 1, "invalid response must not trigger a start or polling");
+    assert.equal(desktop.calls[0].method, "GET");
+  }
+});
+
+test("malformed response after start cannot be treated as ready", async () => {
+  const desktop = scriptedDesktop([info("stopped")], {});
+  await assert.rejects(
+    ensureCodingAgentReady("http://127.0.0.1:9", undefined, () => undefined, desktop.options),
+    /Invalid coding agent status response/
+  );
+  assert.deepEqual(desktop.calls.map((call) => call.method), ["GET", "POST"]);
+});
