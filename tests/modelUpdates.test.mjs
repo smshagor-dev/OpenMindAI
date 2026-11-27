@@ -46,7 +46,7 @@ before(async () => {
   await build({ entryPoints: [join(repository, "src/api_legacy.ts")], outfile: join(directory, "api.mjs"), bundle: true, platform: "node", format: "esm", external: ["@tauri-apps/api/core"] });
   // Resolve the external native module from this repository's dependencies.
   const { symlink } = await import("node:fs/promises");
-  await symlink(join(repository, "node_modules"), join(directory, "node_modules"), "dir");
+  await symlink(join(repository, "node_modules"), join(directory, "node_modules"), "junction");
   dom = new JSDOM('<!doctype html><div id="root"></div>', { url: "http://localhost/" });
   document = dom.window.document;
   for (const [name, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator, IS_REACT_ACT_ENVIRONMENT: true })) {

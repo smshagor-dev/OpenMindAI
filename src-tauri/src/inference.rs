@@ -1,11 +1,11 @@
 #[path = "inference_legacy.rs"]
 mod legacy;
 
+pub(crate) use legacy::{probe_web_providers, ProviderHealthReport};
 pub use legacy::{
     ActiveGenerations, InferenceMedia, InferenceMode, StreamChunkEvent, StreamDoneEvent,
-    StreamRequest, StreamStartedEvent,
+    StreamRequest, StreamStartedEvent, WebResearchProgressEvent,
 };
-pub(crate) use legacy::{probe_web_providers, ProviderHealthReport};
 
 #[cfg(feature = "native-cxx-llama")]
 pub use legacy::InferenceMetrics;
@@ -16,7 +16,8 @@ mod native_chat_router;
 
 #[cfg(not(feature = "native-cxx-llama"))]
 pub use legacy::stream_chat_completion;
-pub(crate) use legacy::fetch_web_context;
+pub(crate) use legacy::{fetch_research_evidence, StudioResearchSource};
+pub(crate) use legacy::{fetch_web_context_with_progress, ResearchProgress};
 
 #[cfg(feature = "native-cxx-llama")]
 pub async fn stream_chat_completion(

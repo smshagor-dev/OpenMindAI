@@ -1,4 +1,4 @@
-import { FileSearch, FileText, Search } from "lucide-react";
+import { ExternalLink, FileSearch, FileText, Search } from "lucide-react";
 import type { WebResearchProgressEvent } from "../types";
 import "../research-progress.css";
 
@@ -54,6 +54,23 @@ export function ResearchProgress({ progress }: { progress: WebResearchProgressEv
         <span>Sources found: <strong>{progress.sources}</strong></span>
         <span>Pages read: <strong>{progress.pagesRead}</strong></span>
       </div>
+      {progress.domains.length > 0 ? (
+        <div className="research-progress-sites" aria-label="Websites checked">
+          <span className="research-progress-sites-label">{progress.stage === "reading" ? "Checking sites" : "Found sites"}</span>
+          {progress.domains.map((domain) => (
+            <a key={domain} href={`https://${domain}`} target="_blank" rel="noreferrer" title={`Open ${domain}`}>
+              <img
+                src={`https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=32`}
+                alt=""
+                loading="lazy"
+                onError={(event) => { event.currentTarget.style.display = "none"; }}
+              />
+              <span>{domain}</span>
+              <ExternalLink size={11} aria-hidden="true" />
+            </a>
+          ))}
+        </div>
+      ) : null}
     </section>
   );
 }

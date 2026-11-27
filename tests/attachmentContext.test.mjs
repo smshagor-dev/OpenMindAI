@@ -67,3 +67,49 @@ test("no truncation warning on fully included short content", () => {
   assert(!text.includes("omitted text was not analyzed"));
   assert.equal(planAttachmentContext(sources).items.length, 2);
 });
+
+
+test("very long attachment headers cannot overflow the total prompt budget", () => {
+  const sources = Array.from({ length: 8 }, (_, index) => ({
+    name: "long-" + index,
+    header: "[Attachment " + "x".repeat(100_000) + "]",
+    content: "START" + "a".repeat(30_000) + "END",
+  }));
+  const { text, plan } = serializeAttachmentContext(sources, "query");
+  assert(text.length <= 16_000);
+  assert.equal(plan.items.length, 8);
+  assert.equal(plan.truncatedCount, 8);
+  assert(text.includes("omitted text was not analyzed"));
+});
+
+test("more than 64 attachments are disclosed rather than silently overflowing context", () => {
+  const sources = Array.from({ length: 200 }, (_, index) => ({
+    name: "file" + index,
+    header: "[Attachment " + index + "]",
+    content: "content-" + index,
+  }));
+  const { text, plan } = serializeAttachmentContext(sources, "");
+  assert(text.length <= 16_000);
+  assert.equal(plan.items.length, 200);
+  assert.equal(plan.omittedCount, 136);
+  assert(text.includes("[Attachment 63]"));
+  assert(!text.includes("[Attachment 64]"));
+  assert(text.includes("Additional attachments omitted from context"));
+});
+
+test("oversized prompts use bounded relevance terms without losing normal queries", () => {
+  const content = "start " + "x".repeat(4000) + " boundedneedle answer " + "y".repeat(14000);
+  const ordinary = selectAttachmentExcerpt(content, 4000, "find boundedneedle");
+  assert(ordinary.includes("boundedneedle answer"));
+  const oversized = selectAttachmentExcerpt(content, 4000, "unrelated ".repeat(500) + "boundedneedle");
+  assert(!oversized.includes("boundedneedle answer"));
+  assert(oversized.length <= 4000);
+});
+
+test("prompt prefix ending in a high surrogate is handled safely", () => {
+  const content = "start " + "x".repeat(4000) + " unicodeprobe answer " + "y".repeat(14000);
+  const prompt = "unicodeprobe " + " ".repeat(4082) + "\uD83D" + "\uDE00".repeat(10000);
+  const excerpt = selectAttachmentExcerpt(content, 4000, prompt);
+  assert(excerpt.includes("unicodeprobe answer"));
+  assert(excerpt.length <= 4000);
+});

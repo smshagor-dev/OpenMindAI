@@ -80,7 +80,9 @@ impl<'a> ChatRepository<'a> {
     ) -> Result<ChatSearchPage, AppError> {
         let query = query.trim();
         if query.chars().count() > 256 {
-            return Err(AppError::internal("chat search query exceeds 256 characters"));
+            return Err(AppError::internal(
+                "chat search query exceeds 256 characters",
+            ));
         }
         let limit = requested_limit.clamp(1, 40);
         // Bind the cursor to the exact search term. A stale cursor from a
@@ -689,7 +691,9 @@ mod tests {
         let database = Database::open(path.clone()).unwrap();
         let repo = ChatRepository::new(&database);
         let chat = repo.create_conversation(Some("Private images")).unwrap();
-        let user = repo.add_message(&chat.id, "user", "image", "completed", None).unwrap();
+        let user = repo
+            .add_message(&chat.id, "user", "image", "completed", None)
+            .unwrap();
         let index = directory.join(format!("{}.json", user.id));
         std::fs::write(&index, b"private image reference").unwrap();
         repo.delete_message(&user.id).unwrap();
@@ -700,7 +704,9 @@ mod tests {
         let reopened = Database::open(path).unwrap();
         assert!(!index.exists());
         let repo = ChatRepository::new(&reopened);
-        let second = repo.add_message(&chat.id, "user", "image", "completed", None).unwrap();
+        let second = repo
+            .add_message(&chat.id, "user", "image", "completed", None)
+            .unwrap();
         let second_index = directory.join(format!("{}.json", second.id));
         std::fs::write(&second_index, b"private image reference").unwrap();
         repo.delete_conversation(&chat.id).unwrap();
@@ -990,22 +996,35 @@ mod tests {
         assert_eq!(match_page.conversations.len(), 1);
         assert_eq!(match_page.conversations[0].id, oldest);
         assert!(match_page.next_cursor.is_none());
-        let no_match = repo.search_conversations("a-not-existing-token", None, 40).unwrap();
+        let no_match = repo
+            .search_conversations("a-not-existing-token", None, 40)
+            .unwrap();
         assert!(no_match.conversations.is_empty());
-        assert!(repo.search_conversations(&"x".repeat(257), None, 40).is_err());
+        assert!(repo
+            .search_conversations(&"x".repeat(257), None, 40)
+            .is_err());
         assert!(repo
             .search_conversations("", Some("not-a-real-cursor"), 40)
             .is_err());
         let first = repo.search_conversations("ordinary", None, 2).unwrap();
         let cursor = first.next_cursor.expect("multi-page query");
-        assert!(repo.search_conversations("Report", Some(&cursor), 2).is_err(),
-            "a cursor from a different query must not skip valid search hits");
-        assert!(repo.search_conversations("ordinary", Some(&cursor), 2).is_ok(),
-            "the same search query must accept its own continuation");
+        assert!(
+            repo.search_conversations("Report", Some(&cursor), 2)
+                .is_err(),
+            "a cursor from a different query must not skip valid search hits"
+        );
+        assert!(
+            repo.search_conversations("ordinary", Some(&cursor), 2)
+                .is_ok(),
+            "the same search query must accept its own continuation"
+        );
         let mut forged = cursor.clone();
         forged.push_str("|unexpected");
-        assert!(repo.search_conversations("ordinary", Some(&forged), 2).is_err(),
-            "extra cursor fields must not be accepted");
+        assert!(
+            repo.search_conversations("ordinary", Some(&forged), 2)
+                .is_err(),
+            "extra cursor fields must not be accepted"
+        );
     }
 
     #[test]
@@ -1032,7 +1051,8 @@ mod tests {
         );
         // Streaming appends use UPDATE OF content; the trigger must refresh
         // the indexed text for the next search without a manual index pass.
-        repo.append_message_chunk(&original.id, " NEW_STREAM_CHUNK").unwrap();
+        repo.append_message_chunk(&original.id, " NEW_STREAM_CHUNK")
+            .unwrap();
         assert_eq!(
             repo.search_conversations("stream_chunk", None, 40)
                 .unwrap()
@@ -1052,7 +1072,8 @@ mod tests {
                 None,
             )
             .unwrap();
-        repo.append_message_chunk(&assistant.id, " MORE_STREAM_TEXT").unwrap();
+        repo.append_message_chunk(&assistant.id, " MORE_STREAM_TEXT")
+            .unwrap();
         assert!(repo
             .search_conversations("inflight_not_indexed", None, 40)
             .unwrap()
@@ -1093,7 +1114,11 @@ mod tests {
         );
         // FTS syntax and wildcard-looking text must be treated literally.
         assert!(repo.search_conversations("\" or *", None, 40).is_ok());
-        assert!(repo.search_conversations("zz%", None, 40).unwrap().conversations.is_empty());
+        assert!(repo
+            .search_conversations("zz%", None, 40)
+            .unwrap()
+            .conversations
+            .is_empty());
 
         repo.add_message(
             &chat.id,
@@ -1103,7 +1128,8 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(repo.search_conversations("system_only_secret", None, 40)
+        assert!(repo
+            .search_conversations("system_only_secret", None, 40)
             .unwrap()
             .conversations
             .is_empty());
@@ -1117,12 +1143,14 @@ mod tests {
         );
 
         repo.archive_conversation(&chat.id).unwrap();
-        assert!(repo.search_conversations("replaced", None, 40)
+        assert!(repo
+            .search_conversations("replaced", None, 40)
             .unwrap()
             .conversations
             .is_empty());
         repo.delete_conversation(&chat.id).unwrap();
-        assert!(repo.search_conversations("replaced", None, 40)
+        assert!(repo
+            .search_conversations("replaced", None, 40)
             .unwrap()
             .conversations
             .is_empty());
@@ -1747,7 +1775,9 @@ mod tests {
             let db = Database::open(path.clone()).unwrap();
             let repo = ChatRepository::new(&db);
             let chat = repo.create_conversation(Some("Keep me")).unwrap();
-            let message = repo.add_message(&chat.id, "user", "important", "completed", None).unwrap();
+            let message = repo
+                .add_message(&chat.id, "user", "important", "completed", None)
+                .unwrap();
             repo.archive_conversation(&chat.id).unwrap();
             assert!(repo.list_conversations().unwrap().is_empty());
             assert_eq!(repo.list_archived_conversations(10).unwrap()[0].id, chat.id);
