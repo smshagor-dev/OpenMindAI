@@ -19,6 +19,8 @@ const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_TEXT_FILE_BYTES: u64 = 4 * 1024 * 1024;
 // Evidence selection uses a bounded prefix, not a full multi-megabyte allocation.
 const MAX_TEXT_SAMPLE_BYTES: u64 = 256 * 1024;
+// Optional keyword extraction must not normalize arbitrarily large chat prompts.
+const MAX_KEYWORD_PROMPT_CHARS: usize = 8_192;
 const MAX_MANIFEST_FILES: usize = 4_096;
 const MAX_SCAN_ENTRIES: usize = 8_192;
 const MAX_SCAN_DEPTH: usize = 16;
@@ -495,7 +497,9 @@ fn normalize_search_text(text: &str) -> String {
 }
 
 fn prompt_keywords(prompt: &str) -> Vec<String> {
-    let normalized = normalize_search_text(prompt);
+    // Bound work before Unicode normalization/case conversion.
+    let prefix = prompt.chars().take(MAX_KEYWORD_PROMPT_CHARS).collect::<String>();
+    let normalized = normalize_search_text(&prefix);
     let mut words = normalized
         .unicode_words()
         // Retain the existing English noise filter, while permitting short
@@ -1250,4 +1254,19 @@ mod safety_tests {
         assert!(snippets.contains("INSIDE_MARKER"));
         assert!(!snippets.contains("OUTSIDE_MARKER"));
     }
+
+    #[test]
+    fn keyword_normalization_is_bounded_before_unicode_expansion() {
+        let prompt = format!("বাংলা evidence {}latekeyword", "é".repeat(MAX_KEYWORD_PROMPT_CHARS));
+        let keywords = prompt_keywords(&prompt);
+        assert!(keywords.contains(&"বাংলা".to_string()));
+        assert!(keywords.contains(&"evidence".to_string()));
+        assert!(!keywords.contains(&"latekeyword".to_string()));
+        assert!(keywords.len() <= 24);
+        // A multibyte scalar at the limit is never split into invalid UTF-8.
+        let boundary = format!("{}বাংলা", "a".repeat(MAX_KEYWORD_PROMPT_CHARS - 1));
+        assert!(!prompt_keywords(&boundary).contains(&"বাংলা".to_string()));
+        assert!(prompt_keywords("данные বাংলা evidence").contains(&"বাংলা".to_string()));
+    }
+
 }
