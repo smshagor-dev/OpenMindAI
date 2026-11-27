@@ -14,6 +14,7 @@ declare module "lucide-react" {
   export const ArrowUp: LucideIcon;
   export const BookOpenCheck: LucideIcon;
   export const Bot: LucideIcon;
+  export const Box: LucideIcon;
   export const Boxes: LucideIcon;
   export const Brain: LucideIcon;
   export const BriefcaseBusiness: LucideIcon;
@@ -51,6 +52,7 @@ declare module "lucide-react" {
   export const Hash: LucideIcon;
   export const History: LucideIcon;
   export const Image: LucideIcon;
+  export const ImageUp: LucideIcon;
   export const Info: LucideIcon;
   export const Keyboard: LucideIcon;
   export const LibraryBig: LucideIcon;
