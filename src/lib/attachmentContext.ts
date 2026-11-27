@@ -6,9 +6,10 @@ const GAP = "\n[... intervening text omitted ...]\n";
 const MAX_SERIALIZED_SOURCES = 64;
 const MAX_HEADER_CHARS = 128;
 const OMITTED_SOURCES_NOTE = "[Additional attachments omitted from context; attach fewer files to analyze them.]";
-const boundedHeader = (header: string) => header.length > MAX_HEADER_CHARS
-  ? header.slice(0, MAX_HEADER_CHARS - 1) + "…"
-  : header;
+const boundedHeader = (header: string) => {
+  const safe = header.replace(/[\u0000-\u001f\u007f\u0085\u2028\u2029]/g, " ").replace(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, "");
+  return safe.length > MAX_HEADER_CHARS ? safe.slice(0, MAX_HEADER_CHARS - 1) + "…" : safe;
+};
 const OVERALL_NOTE = "[Attachment context limit: only excerpts were sent; omitted text was not analyzed. Ask for a specific passage or attach fewer files.]";
 
 export interface AttachmentContextSource {
@@ -74,12 +75,24 @@ function relevantPosition(source: string, prompt: string, from: number): number 
     .filter(term => !["please", "about", "these", "those", "document", "explain", "summarize", "what", "which", "from", "with"].includes(term)))].slice(0, 16);
   if (!terms.length) return Math.floor(source.length / 2);
   const lower = source.toLowerCase().normalize("NFKC");
+  const normalizedFrom = source.slice(0, from).toLowerCase().normalize("NFKC").length;
   let best = -1;
   for (const term of terms) {
-    const at = lower.indexOf(term, from);
+    const at = lower.indexOf(term, normalizedFrom);
     if (at >= 0 && (best < 0 || at < best)) best = at;
   }
-  return best >= 0 ? best : Math.floor(source.length / 2);
+  if (best < 0) return Math.floor(source.length / 2);
+  // NFKC may expand ligatures or compatibility characters. A normalized index
+  // is not a valid offset into the original attachment used by slice().
+  let lo = 0;
+  let hi = source.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi + 1) / 2);
+    const length = source.slice(0, mid).toLowerCase().normalize("NFKC").length;
+    if (length <= best) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
 }
 
 function safeExcerptSlice(text: string, start: number, end: number): string {
@@ -98,7 +111,8 @@ export function selectAttachmentExcerpt(content: string, limit: number, prompt: 
   if (limit <= 0) return "";
   if (content.length <= limit) return content;
   if (limit <= TRUNCATION_NOTE.length + GAP.length * 2 + 12) {
-    if (limit <= TRUNCATION_NOTE.length) return TRUNCATION_NOTE.slice(0, limit);
+    // Preserve source evidence when the full truncation notice will not fit.
+    if (limit <= TRUNCATION_NOTE.length) return safeExcerptSlice(content, 0, limit);
     return safeExcerptSlice(content, 0, limit - TRUNCATION_NOTE.length) + TRUNCATION_NOTE;
   }
   const usable = limit - TRUNCATION_NOTE.length - GAP.length * 2;
