@@ -9,6 +9,13 @@
 /cache/**
 /temp/**
 /logs/**
+/artifacts/
+/research_artifacts/
+/public/acceptance/
+/test-results/
+/playwright-report/
+/playwright/.cache/
+/installer/
 /generated/**
 /workspaces/**
 /knowledge/**
@@ -92,6 +99,14 @@ SHA256SUMS.txt
 /native-smoke-reports/
 /target-check/
 /scripts/__pycache__/
+**/__pycache__/
+
+# Disposable Rust test roots
+/rust-test-target/
+/.rust-test-target/
+
+# Local model-install coordination state
+/.openmindai-model-install.lock
 
 # Temporary files
 *.tmp
