@@ -46,6 +46,16 @@ pub struct ChatSearchPage {
     pub next_cursor: Option<String>,
 }
 
+const MAX_CHAT_SEARCH_CURSOR_BYTES: usize = 200;
+
+// Reject untrusted cursor input before parsing any of its fields.
+fn validate_chat_search_cursor_size(raw: &str) -> Result<(), AppError> {
+    if raw.len() > MAX_CHAT_SEARCH_CURSOR_BYTES {
+        return Err(AppError::internal("invalid chat search cursor"));
+    }
+    Ok(())
+}
+
 const PROFILE_CONTEXT_MARKER: &str = "[open-mind-ai-profile-context]";
 const PROJECT_CONTEXT_MARKER: &str = "[open-mind-ai-project-context]";
 
@@ -101,14 +111,14 @@ impl<'a> ChatRepository<'a> {
         let query_tag = format!("{:x}", Sha256::digest(query.as_bytes()));
         let cursor = match cursor {
             Some(raw) => {
+                validate_chat_search_cursor_size(raw)?;
                 let mut fields = raw.split('|');
                 let (Some(updated_at), Some(id), Some(tag), None) =
                     (fields.next(), fields.next(), fields.next(), fields.next())
                 else {
                     return Err(AppError::internal("invalid chat search cursor"));
                 };
-                if raw.len() > 200
-                    || tag != query_tag
+                if tag != query_tag
                     || chrono::DateTime::parse_from_rfc3339(updated_at).is_err()
                     || Uuid::parse_str(id).is_err()
                 {
@@ -2298,4 +2308,22 @@ mod tests {
         assert!(repo.search_conversations("\"\"\"", None, 20).is_ok());
     }
 
+}
+
+#[cfg(test)]
+mod chat_search_cursor_bounds_tests {
+    use super::validate_chat_search_cursor_size;
+
+    #[test]
+    fn oversized_cursor_is_rejected_before_field_parsing() {
+        let hostile = format!("{}|id|tag", "x".repeat(1_000_000));
+        assert!(validate_chat_search_cursor_size(&hostile).is_err());
+    }
+
+    #[test]
+    fn cursor_byte_limit_handles_utf8_boundaries() {
+        assert!(validate_chat_search_cursor_size(&"é".repeat(100)).is_ok());
+        assert!(validate_chat_search_cursor_size(&"é".repeat(101)).is_err());
+        assert!(validate_chat_search_cursor_size("").is_ok());
+    }
 }
