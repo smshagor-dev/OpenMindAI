@@ -1,4 +1,4 @@
-//! Native-only Cloud and loopback GPU-worker transports. Tokens never enter a webview request.
+//! Native-only Cloud and loopback 3D-worker transports. Tokens never enter a webview request.
 use crate::app_error::AppError;
 use crate::github::secret_store;
 use base64::Engine;
@@ -49,41 +49,245 @@ fn worker_script(app: &tauri::AppHandle) -> Result<PathBuf, AppError> {
             return Ok(candidate);
         }
     }
-    Err(failure("Bundled local GPU worker is missing"))
+    Err(failure("Bundled local 3D geometry worker is missing"))
 }
 
-fn spawn_python_worker(script: &Path) -> Result<Child, AppError> {
-    #[cfg(windows)]
-    let (python, prefix): (&str, &[&str]) = ("py", &["-3"]);
-    #[cfg(not(windows))]
-    let (python, prefix): (&str, &[&str]) = ("python3", &[]);
-    let mut cmd = Command::new(python);
-    cmd.args(prefix)
-        .arg("-E")
-        .arg(script)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    // Windows: start the worker silently, without flashing a console window
-    // when 3D Studio spins up the local GPU worker.
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+fn dependency_manager_script(app: &tauri::AppHandle) -> Result<PathBuf, AppError> {
+    if let Ok(resource) = app.path().resolve(
+        "local-3d-worker/dependency_manager.py",
+        tauri::path::BaseDirectory::Resource,
+    ) {
+        if resource.is_file() {
+            return Ok(resource);
+        }
     }
-    cmd.spawn().map_err(|_| {
-        failure(
-            "Python 3 was not found. Install Python 3 plus numpy and pyopencl for local GPU meshes",
-        )
-    })
+    let current =
+        std::env::current_dir().map_err(|_| failure("Cannot locate the dependency manager"))?;
+    for candidate in [
+        current.join("services/local-3d-worker/dependency_manager.py"),
+        current.join("../services/local-3d-worker/dependency_manager.py"),
+    ] {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err(failure("Bundled 3D dependency manager is missing"))
+}
+
+fn run_dependency_manager(app: &tauri::AppHandle, action: &str) -> Result<Value, AppError> {
+    if !matches!(action, "inspect" | "install") {
+        return Err(failure("Unsupported dependency manager operation"));
+    }
+    let script = dependency_manager_script(app)?;
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| failure("Cannot locate app-managed storage"))?;
+    let override_python = std::env::var_os("OPENMINDAI_3D_PYTHON");
+    #[cfg(windows)]
+    let candidates: Vec<(std::ffi::OsString, Vec<&str>)> = match override_python {
+        Some(path) => vec![(path, vec![])],
+        // This manifest currently supports exactly CPython 3.13 x64. `py -3`
+        // can select an unsupported free-threaded 3.14 interpreter, so prefer
+        // the pinned ABI and only use the generic launcher for a clear report.
+        None => vec![("py".into(), vec!["-3.13"]), ("py".into(), vec!["-3"])],
+    };
+    #[cfg(not(windows))]
+    let candidates: Vec<(std::ffi::OsString, Vec<&str>)> =
+        vec![(override_python.unwrap_or_else(|| "python3".into()), vec![])];
+    if action == "install" {
+        let managed = app
+            .path()
+            .app_data_dir()
+            .map_err(|_| failure("Cannot locate app-managed storage"))?
+            .join("3d-runtime");
+        std::fs::create_dir_all(&managed)
+            .map_err(|_| failure("Cannot create app-managed dependency storage"))?;
+        let cancel = managed.join("install.cancel");
+        let _ = std::fs::remove_file(&cancel);
+        let _ = cancel;
+    }
+    let mut last_error = None;
+    let mut completed = None;
+    for (python, prefix) in candidates {
+        let mut command = Command::new(python);
+        command
+            .args(prefix)
+            .arg("-E")
+            .arg(&script)
+            .arg(action)
+            .arg(&data_dir);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        match command.output() {
+            Ok(output) => {
+                // A started interpreter that returned a structured status is
+                // authoritative, including the unsupported-ABI response.
+                if String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .any(|line| serde_json::from_str::<Value>(line).is_ok())
+                {
+                    completed = Some(output);
+                    break;
+                }
+                last_error = Some(output);
+            }
+            Err(_) => continue,
+        }
+    }
+    let output = completed
+        .or(last_error)
+        .ok_or_else(|| failure("Python 3 could not launch the 3D dependency manager"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let result = stdout
+        .lines()
+        .rev()
+        .find_map(|line| serde_json::from_str::<Value>(line).ok())
+        .ok_or_else(|| {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            failure(format!(
+                "3D dependency manager returned no status ({})",
+                stderr.trim()
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(failure(
+            result
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("3D dependency manager failed"),
+        ));
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub(crate) fn studio3d_dependency_plan(app: tauri::AppHandle) -> Result<Value, AppError> {
+    run_dependency_manager(&app, "inspect")
+}
+
+#[tauri::command]
+pub(crate) async fn studio3d_install_dependencies(
+    app: tauri::AppHandle,
+    approved: bool,
+) -> Result<Value, AppError> {
+    if !approved {
+        return Err(failure(
+            "Optional dependency installation requires explicit user approval",
+        ));
+    }
+    let result = tokio::task::spawn_blocking(move || run_dependency_manager(&app, "install"))
+        .await
+        .map_err(|_| failure("Dependency installation task stopped unexpectedly"))??;
+    // Restart only the worker process owned by this app so it can pick up the
+    // newly activated interpreter. Never stop a process that owns the port.
+    stop_gpu_worker();
+    Ok(result)
+}
+
+#[tauri::command]
+pub(crate) fn studio3d_cancel_dependency_install(app: tauri::AppHandle) -> Result<(), AppError> {
+    let managed = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| failure("Cannot locate app-managed storage"))?
+        .join("3d-runtime");
+    std::fs::create_dir_all(&managed)
+        .map_err(|_| failure("Cannot access app-managed dependency storage"))?;
+    std::fs::write(managed.join("install.cancel"), b"cancel")
+        .map_err(|_| failure("Could not request dependency installation cancellation"))
+}
+
+fn managed_python(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let root = app.path().app_data_dir().ok()?.join("3d-runtime/active");
+    #[cfg(windows)]
+    let path = root.join("Scripts/python.exe");
+    #[cfg(not(windows))]
+    let path = root.join("bin/python");
+    path.is_file().then_some(path)
+}
+
+fn spawn_python_worker(app: &tauri::AppHandle, script: &Path) -> Result<Child, AppError> {
+    let override_python = std::env::var_os("OPENMINDAI_3D_PYTHON");
+    // An explicitly selected interpreter remains authoritative. Otherwise use
+    // the app-owned isolated environment after it has been atomically activated.
+    if override_python.is_none() {
+        if let Some(python) = managed_python(app) {
+            let mut cmd = Command::new(python);
+            cmd.arg(script)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x0800_0000);
+            }
+            return cmd
+                .spawn()
+                .map_err(|_| failure("Could not start the managed 3D worker"));
+        }
+    }
+    #[cfg(windows)]
+    let candidates: Vec<(std::ffi::OsString, Vec<&str>)> = match override_python {
+        Some(path) => vec![(path, vec![])],
+        None => vec![("py".into(), vec!["-3.13"]), ("py".into(), vec!["-3"])],
+    };
+    #[cfg(not(windows))]
+    let candidates: Vec<(std::ffi::OsString, Vec<&str>)> =
+        vec![(override_python.unwrap_or_else(|| "python3".into()), vec![])];
+    let mut last_error = None;
+    for (python, prefix) in candidates {
+        let mut cmd = Command::new(python);
+        cmd.args(prefix)
+            .arg("-E")
+            .arg(script)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000);
+        }
+        match cmd.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(failure(format!(
+        "Python 3 was not found. Set OPENMINDAI_3D_PYTHON to a Python 3.10+ executable; CPU geometry does not require NumPy or PyOpenCL ({})",
+        last_error.map(|error| error.to_string()).unwrap_or_default()
+    )))
 }
 
 #[tauri::command]
 pub(crate) async fn local_gpu_start(app: tauri::AppHandle) -> Result<Value, AppError> {
     // Avoid duplicate workers; never terminate an unrelated worker on this port.
     if let Ok(status) = local_gpu_health().await {
-        return Ok(status);
+        if status.get("worker_ready").and_then(Value::as_bool) == Some(true) {
+            return Ok(status);
+        }
+        let owned_worker_running = worker_process()
+            .lock()
+            .ok()
+            .and_then(|mut guard| {
+                guard
+                    .as_mut()
+                    .map(|child| child.try_wait().map(|exit| exit.is_none()).unwrap_or(false))
+            })
+            .unwrap_or(false);
+        if !owned_worker_running {
+            // A different process owns this port. Report its health without
+            // stopping it or attempting a competing worker launch.
+            return Ok(status);
+        }
+        // The app-owned worker is alive but failed GPU initialization (for
+        // example, dependencies or a driver were just repaired). Restart it.
+        stop_gpu_worker();
     }
     let script = worker_script(&app)?;
     {
@@ -99,16 +303,28 @@ pub(crate) async fn local_gpu_start(app: tauri::AppHandle) -> Result<Value, AppE
         };
         if !running {
             guard.take();
-            *guard = Some(spawn_python_worker(&script)?);
+            *guard = Some(spawn_python_worker(&app, &script)?);
         }
     }
     for _ in 0..15 {
         tokio::time::sleep(Duration::from_millis(200)).await;
         if let Ok(status) = local_gpu_health().await {
-            return Ok(status);
+            if status.get("worker_ready").and_then(Value::as_bool) == Some(true) {
+                return Ok(status);
+            }
+            let detail = status
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("local geometry worker initialization failed");
+            stop_gpu_worker();
+            return Err(failure(format!(
+                "Local 3D worker started but is not ready: {detail}"
+            )));
         }
     }
-    Err(failure("GPU worker failed to start or did not bind 127.0.0.1:8765. Check OpenCL drivers and Python dependencies."))
+    Err(failure(
+        "Local 3D worker failed to start or did not bind 127.0.0.1:8765",
+    ))
 }
 
 #[tauri::command]
@@ -123,7 +339,7 @@ async fn local_gpu_health() -> Result<Value, AppError> {
         .header("X-OpenMindAI-Desktop", "1")
         .send()
         .await
-        .map_err(|_| failure("Local GPU worker is offline"))?;
+        .map_err(|_| failure("Local geometry worker is offline"))?;
     decode(response).await
 }
 
@@ -131,11 +347,22 @@ fn failure(message: impl Into<String>) -> AppError {
     AppError::Internal(format!("Cloud/Studio: {}", message.into()))
 }
 
+fn cloud_transport_failure(error: reqwest::Error) -> AppError {
+    let detail = if error.is_timeout() {
+        "request timed out"
+    } else if error.is_connect() {
+        "TLS, DNS, or network connection failed"
+    } else {
+        "request could not be sent"
+    };
+    failure(format!("Cloud API is unreachable ({detail})"))
+}
+
 fn client() -> Result<Client, AppError> {
     Client::builder()
         .connect_timeout(Duration::from_secs(8))
         .timeout(Duration::from_secs(35))
-        // Cloud uses OS proxy settings, unlike the loopback GPU worker.
+        // Cloud uses OS proxy settings, unlike the loopback geometry worker.
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| failure("Could not initialize the API connection"))
@@ -194,16 +421,56 @@ fn allowed_gpu_path(method: &Method, path: &str) -> bool {
 }
 
 async fn decode(response: reqwest::Response) -> Result<Value, AppError> {
+    decode_with_limit(response, 2_000_000).await
+}
+
+async fn decode_with_limit(
+    response: reqwest::Response,
+    maximum_bytes: usize,
+) -> Result<Value, AppError> {
     let status = response.status();
+    if response
+        .content_length()
+        .is_some_and(|length| length > maximum_bytes as u64)
+    {
+        return Err(failure(format!(
+            "Response exceeds the {} MB safety limit",
+            maximum_bytes / 1_000_000
+        )));
+    }
+    let upstream_request_id = [
+        "x-request-id",
+        "request-id",
+        "openai-request-id",
+        "x-correlation-id",
+    ]
+    .iter()
+    .find_map(|name| {
+        response
+            .headers()
+            .get(*name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    });
     let bytes = response
         .bytes()
         .await
         .map_err(|_| failure("Response could not be read"))?;
-    if bytes.len() > 2_000_000 {
-        return Err(failure("Response exceeds the 2 MB safety limit"));
+    if bytes.len() > maximum_bytes {
+        return Err(failure(format!(
+            "Response exceeds the {} MB safety limit",
+            maximum_bytes / 1_000_000
+        )));
     }
-    let value: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| failure(format!("Server returned non-JSON response ({status})")))?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|_| {
+        failure(format!(
+            "Server returned non-JSON response ({status}){}",
+            upstream_request_id
+                .as_ref()
+                .map(|id| format!("; upstream request ID: {id}"))
+                .unwrap_or_default()
+        ))
+    })?;
     if !status.is_success() {
         let detail = value
             .get("message")
@@ -212,8 +479,12 @@ async fn decode(response: reqwest::Response) -> Result<Value, AppError> {
             .unwrap_or("Request rejected");
         // Do not echo credentials or unbounded upstream payloads into the UI.
         return Err(failure(format!(
-            "HTTP {status}: {}",
-            detail.chars().take(240).collect::<String>()
+            "HTTP {status}: {}{}",
+            detail.chars().take(240).collect::<String>(),
+            upstream_request_id
+                .as_ref()
+                .map(|id| format!("; upstream request ID: {id}"))
+                .unwrap_or_default()
         )));
     }
     Ok(value)
@@ -242,7 +513,7 @@ async fn validate_credential(token: &str) -> Result<Option<Value>, AppError> {
         .header("Accept", "application/json")
         .send()
         .await
-        .map_err(|_| failure("Cloud API is unreachable"))?;
+        .map_err(cloud_transport_failure)?;
     if me.status().is_success() {
         return Ok(Some(decode(me).await?));
     }
@@ -253,7 +524,7 @@ async fn validate_credential(token: &str) -> Result<Option<Value>, AppError> {
         .header("Accept", "application/json")
         .send()
         .await
-        .map_err(|_| failure("Cloud API is unreachable"))?;
+        .map_err(cloud_transport_failure)?;
     if models.status().is_success() {
         return Ok(None);
     }
@@ -347,10 +618,15 @@ pub(crate) async fn cloud_status() -> Result<CloudConnection, AppError> {
             user: profile,
             message: None,
         }),
+        Err(AppError::Internal(error)) if error.contains("Cloud API is unreachable") => Ok(CloudConnection {
+            connected: false,
+            user: None,
+            message: Some("Cloud API is unreachable. Check your internet connection and retry. Your saved API key has not been removed.".into()),
+        }),
         Err(_) => Ok(CloudConnection {
             connected: false,
             user: None,
-            message: Some("Cloud is unavailable or your session expired. Sign in again.".into()),
+            message: Some("Cloud could not verify this session. It may have expired; reconnect if the problem continues.".into()),
         }),
     }
 }
@@ -428,6 +704,12 @@ fn preferred_coding_model(catalog: &Value) -> Option<String> {
         .filter_map(|item| item.get("id").and_then(Value::as_str))
         .filter(|id| !id.is_empty() && id.len() < 120)
         .collect();
+    if let Some(nemotron) = available
+        .iter()
+        .find(|id| id.to_ascii_lowercase().contains("nemotron"))
+    {
+        return Some((*nemotron).to_string());
+    }
     for id in ["openmindai-super", "openmindai-ultra", "openmindai-lite"] {
         if available.contains(&id) {
             return Some(id.to_string());
@@ -454,6 +736,139 @@ pub(crate) async fn coding_cloud_model() -> Result<String, AppError> {
     .await?;
     preferred_coding_model(&catalog)
         .ok_or_else(|| failure("No hosted chat model is enabled for your Cloud account"))
+}
+
+pub(crate) struct ResearchCloudModel {
+    pub model_id: String,
+    pub developer_gateway: bool,
+}
+
+pub(crate) struct ResearchCloudCompletion {
+    pub data: Value,
+    pub upstream_request_id: Option<String>,
+    pub http_status: u16,
+}
+
+/// Prefers the configured developer model gateway (the credential desktop
+/// users commonly connect with), then accepts the full-account chat catalog.
+/// Catalog reads are preflight only and do not incur inference usage.
+pub(crate) async fn research_cloud_model() -> Result<ResearchCloudModel, AppError> {
+    let token = secret_store::get_secret(CREDENTIAL_SLOT)?
+        .ok_or_else(|| failure("Connect an OpenMindAI API key before using Cloud research"))?;
+    let gateway = client()?
+        .get(format!("{CLOUD_BASE}openmindai/models"))
+        .timeout(Duration::from_secs(12))
+        .bearer_auth(&token)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|_| failure("OpenMindAI model gateway is unreachable"))?;
+    if gateway.status().is_success() {
+        let catalog = decode(gateway).await?;
+        if let Some(model_id) = preferred_gateway_model(&catalog) {
+            return Ok(ResearchCloudModel {
+                model_id,
+                developer_gateway: true,
+            });
+        }
+    }
+    let account = client()?
+        .get(format!("{CLOUD_BASE}mobile/models"))
+        .timeout(Duration::from_secs(12))
+        .bearer_auth(&token)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|_| failure("Cloud model catalog is unreachable"))?;
+    let catalog = decode(account).await?;
+    preferred_coding_model(&catalog)
+        .map(|model_id| ResearchCloudModel {
+            model_id,
+            developer_gateway: false,
+        })
+        .ok_or_else(|| {
+            failure("No enabled hosted chat-completion model is available for this credential")
+        })
+}
+
+fn preferred_gateway_model(catalog: &Value) -> Option<String> {
+    let models = catalog.get("data")?.as_array()?;
+    let available: Vec<&str> = models
+        .iter()
+        .filter(|item| item.get("available").and_then(Value::as_bool) == Some(true))
+        .filter(|item| item.get("operation").and_then(Value::as_str) == Some("chat.completions"))
+        .filter_map(|item| item.get("id").and_then(Value::as_str))
+        .filter(|id| !id.trim().is_empty() && id.len() < 120)
+        .collect();
+    available
+        .iter()
+        .find(|id| id.to_ascii_lowercase().contains("nemotron"))
+        .or_else(|| available.first())
+        .map(|id| (*id).to_string())
+}
+
+/// Exactly one model-gateway or account completion request. A transport error
+/// after submission is ambiguous; Auto must not replay it on a different model.
+pub(crate) async fn research_cloud_completion(
+    model: &ResearchCloudModel,
+    messages: &[Value],
+    max_tokens: i64,
+    client_request_id: &str,
+) -> Result<ResearchCloudCompletion, AppError> {
+    if messages.is_empty() {
+        return Err(failure("Research completion requires messages"));
+    }
+    let token = secret_store::get_secret(CREDENTIAL_SLOT)?
+        .ok_or_else(|| failure("Cloud credential was disconnected before research inference"))?;
+    let body =
+        json!({"model":model.model_id,"messages":messages,"max_tokens":max_tokens,"stream":false});
+    let bytes =
+        serde_json::to_vec(&body).map_err(|_| failure("Invalid research completion payload"))?;
+    if bytes.len() > 512_000 {
+        return Err(failure(
+            "Research prompt exceeds the hosted model gateway limit",
+        ));
+    }
+    let path = if model.developer_gateway {
+        "openmindai/chat/completions"
+    } else {
+        "mobile/chat/completions"
+    };
+    let response = client()?.post(format!("{CLOUD_BASE}{path}"))
+        .timeout(Duration::from_secs(120)).bearer_auth(token)
+        .header("X-OpenMindAI-Request-ID", client_request_id)
+        .header("Content-Type","application/json").header("Accept","application/json")
+        .body(bytes).send().await
+        .map_err(|_| failure("Hosted research completion failed; remote acceptance is unknown and it was not retried"))?;
+    let http_status = response.status().as_u16();
+    let response_id = [
+        "x-request-id",
+        "request-id",
+        "openai-request-id",
+        "x-correlation-id",
+    ]
+    .iter()
+    .find_map(|name| {
+        response
+            .headers()
+            .get(*name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    });
+    let data = decode(response).await?;
+    let upstream_request_id = response_id.or_else(|| {
+        ["request_id", "requestId", "id"].iter().find_map(|key| {
+            data.get(*key)
+                .and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
+                .map(str::to_owned)
+        })
+    });
+    Ok(ResearchCloudCompletion {
+        data,
+        upstream_request_id,
+        http_status,
+    })
 }
 
 /// Exactly one hosted POST. Ambiguous remote timeouts must never trigger a
@@ -515,13 +930,11 @@ pub(crate) async fn local_gpu_request(
                 .header("X-OpenMindAI-Desktop", "1")
                 .send()
                 .await
-                .map_err(|_| failure("Local 3D GPU worker is offline (127.0.0.1:8765)"))?,
+                .map_err(|_| failure("Local 3D geometry worker is offline (127.0.0.1:8765)"))?,
         )
         .await?;
-        if health.get("gpu_active").and_then(Value::as_bool) != Some(true) {
-            return Err(failure(
-                "Local 3D worker has no active GPU. No silent CPU/cloud fallback.",
-            ));
+        if health.get("worker_ready").and_then(Value::as_bool) != Some(true) {
+            return Err(failure("Local 3D geometry worker is not ready"));
         }
     }
     let mut request = http
@@ -537,13 +950,15 @@ pub(crate) async fn local_gpu_request(
             .header("Content-Type", "application/json")
             .body(bytes);
     }
-    decode(
-        request
-            .send()
-            .await
-            .map_err(|_| failure("Local 3D GPU worker is unreachable"))?,
-    )
-    .await
+    let response = request
+        .send()
+        .await
+        .map_err(|_| failure("Local 3D geometry worker is unreachable"))?;
+    if path.ends_with("/mesh") {
+        decode_with_limit(response, 42 * 1_000_000).await
+    } else {
+        decode(response).await
+    }
 }
 
 #[tauri::command]
@@ -598,6 +1013,22 @@ mod tests {
             Some("openmindai-super")
         );
         assert!(preferred_coding_model(&json!({"data": []})).is_none());
+    }
+
+    #[test]
+    fn research_gateway_prefers_available_nemotron_chat_model() {
+        let catalog = json!({"data":[
+            {"id":"openmindai-super","available":true},
+            {"id":"nvidia/nemotron-super","available":true,"operation":"chat.completions"},
+            {"id":"nvidia/nemotron-image","available":true,"operation":"images.generate"},
+            {"id":"nvidia/nemotron-disabled","available":false}
+        ]});
+        assert_eq!(
+            preferred_gateway_model(&catalog).as_deref(),
+            Some("nvidia/nemotron-super")
+        );
+        assert_eq!(preferred_gateway_model(&json!({"data":[{"id":"openmindai-super","available":true,"operation":"chat.completions"}]})).as_deref(), Some("openmindai-super"));
+        assert_eq!(preferred_gateway_model(&json!({"data":[]})), None);
     }
 
     #[test]

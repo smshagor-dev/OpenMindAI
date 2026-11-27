@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Folder } from "lucide-react";
-import type { ArtifactKind, LibraryEntry } from "../types";
+import type { ArtifactKind } from "../types";
 import { api } from "../api";
 import { formatBytes } from "../lib/format";
 import { KindIcon } from "./ArtifactCard";
@@ -18,38 +18,49 @@ const FILTERS: { id: "all" | ArtifactKind; label: string }[] = [
 ];
 
 const PAGE_SIZE = 50;
+type LibraryPage = Awaited<ReturnType<typeof api.listLibraryEntries>>;
 
 export function Library(props: {
   open: boolean;
   onClose: () => void;
   onOpenConversation: (id: string) => void;
 }) {
-  const [entries, setEntries] = useState<LibraryEntry[]>([]);
   const [filter, setFilter] = useState<"all" | ArtifactKind>("all");
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [cursors, setCursors] = useState<(string | null)[]>([null]);
   const [pageIndex, setPageIndex] = useState(0);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const [totalCount, setTotalCount] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [pageState, setPageState] = useState<{ key: string; page: LibraryPage } | null>(null);
+  const [errorState, setErrorState] = useState<{ key: string; message: string } | null>(null);
+  const searchTimer = useRef<number | null>(null);
+  const queryKey = JSON.stringify([props.open, filter, search, cursors[pageIndex] ?? null, pageIndex]);
+  const currentPage = pageState?.key === queryKey ? pageState.page : null;
+  const entries = currentPage?.entries ?? [];
+  const nextCursor = currentPage?.nextCursor ?? null;
+  const totalCount = currentPage?.totalCount ?? 0;
+  const error = errorState?.key === queryKey ? errorState.message : null;
+  const loading = props.open && currentPage === null && error === null;
 
   useEffect(() => {
-    if (!props.open) return;
-    const timer = window.setTimeout(() => {
-      setSearch(searchInput.trim());
+    return () => {
+      if (searchTimer.current !== null) window.clearTimeout(searchTimer.current);
+    };
+  }, []);
+
+  const updateSearchInput = (value: string) => {
+    setSearchInput(value);
+    if (searchTimer.current !== null) window.clearTimeout(searchTimer.current);
+    searchTimer.current = window.setTimeout(() => {
+      setSearch(value.trim());
       setCursors([null]);
       setPageIndex(0);
+      searchTimer.current = null;
     }, 250);
-    return () => window.clearTimeout(timer);
-  }, [props.open, searchInput]);
+  };
 
   useEffect(() => {
     if (!props.open) return;
     let cancelled = false;
-    setLoading(true);
-    setError(null);
     void api
       .listLibraryEntries({
         kind: filter === "all" ? undefined : filter,
@@ -59,24 +70,16 @@ export function Library(props: {
       })
       .then((page) => {
         if (cancelled) return;
-        setEntries(page.entries);
-        setNextCursor(page.nextCursor);
-        setTotalCount(page.totalCount);
+        setPageState({ key: queryKey, page });
       })
       .catch((reason: unknown) => {
         if (cancelled) return;
-        setEntries([]);
-        setNextCursor(null);
-        setTotalCount(0);
-        setError(String(reason));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+        setErrorState({ key: queryKey, message: String(reason) });
       });
     return () => {
       cancelled = true;
     };
-  }, [props.open, filter, search, pageIndex, cursors]);
+  }, [props.open, filter, search, pageIndex, cursors, queryKey]);
 
   useEffect(() => {
     if (!props.open) return;
@@ -125,7 +128,7 @@ export function Library(props: {
             value={searchInput}
             maxLength={256}
             placeholder="Search all saved files..."
-            onChange={(event) => setSearchInput(event.target.value)}
+            onChange={(event) => updateSearchInput(event.target.value)}
           />
         </label>
         <div className="library-list">
