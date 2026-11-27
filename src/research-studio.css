@@ -874,3 +874,22 @@
 .rs-figure-meta { padding: 8px; display: flex; flex-direction: column; gap: 3px; }
 .rs-figure-meta small { color: var(--muted); font-size: 11px; word-break: break-word; }
 .rs-figure-meta button { margin-top: 6px; }
+
+/* Dedicated research conversation: scrollable thread, fixed bottom composer. */
+.rs.rs-main.rs-chat-workspace { display: flex; flex-direction: column; overflow: hidden; min-height: 0; padding: 0 20px calc(58px + env(safe-area-inset-bottom, 0px)); }
+.rs-chat-scroll { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 24px 4px; }
+.rs-create-content > section, .rs-chat-scroll > section { max-width: 920px; margin-inline: auto; }
+.rs-research-thread { display: flex; flex-direction: column; gap: 14px; padding: 0 4px 20px; }
+.rs-chat-user { align-self: flex-end; width: fit-content; max-width: min(85%, 700px); }
+.rs-chat-user small { display: block; text-align: right; color: var(--muted); }
+.rs-chat-user p { white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--border); border-radius: 17px 17px 4px 17px; padding: 12px 16px; background: var(--panel); margin: 4px 0; max-height: 260px; overflow-y: auto; }
+.rs-chat-assistant, .rs-chat-progress-heading { display: flex; gap: 10px; align-items: center; font-weight: 600; }
+.rs-chat-progress-heading strong:last-child { margin-left: auto; color: var(--accent); font-variant-numeric: tabular-nums; }
+.rs-chat-generating { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 18px; border: 1px solid var(--border); border-radius: 16px; background: var(--panel); }
+.rs-chat-generating span, .rs-linked-run { color: var(--muted); font-size: 12px; }
+.rs-change-composer { flex: 0 0 auto; width: min(100%, 920px); margin: 0 auto; padding: 8px 0 0; background: var(--bg); }
+.rs-change-input { display: flex; gap: 10px; align-items: flex-end; border: 1px solid var(--border); border-radius: 18px; background: var(--panel); padding: 8px; }
+.rs-change-input textarea { flex: 1; min-height: 48px; max-height: 120px; resize: none; border: 0; background: transparent; padding: 8px; margin: 0; outline: none; }
+.rs-change-composer small { display: block; color: var(--muted); text-align: center; font-size: 11px; margin-top: 5px; }
+@media (max-width: 700px) { .rs.rs-main.rs-chat-workspace { padding-inline: 8px; } .rs-chat-scroll { padding-top: 12px; } }
+@media (prefers-reduced-motion: reduce) { .rs-chat-workspace .rs-spin { animation: none; } .rs-chat-workspace .rs-progress-bar { transition: none; } }

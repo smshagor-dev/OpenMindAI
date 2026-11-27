@@ -42,7 +42,7 @@ class LocalGpuWorkerTest(unittest.TestCase):
         self.assertEqual(diagnostics["gpu_ready"], backend is not None)
 
     def test_cpu_fallback_builds_cone_and_transforms_without_gpu(self):
-        plan = {"objects": [
+        plan = {"schemaVersion":1,"objects": [
             {"name":"Cone","primitive":"cone","dimensions":[2,3,2],"position":[1,2,3],"rotation":[0,0,0],"color":[0.4,0.5,0.6],"metallic":0.1,"roughness":0.8,"parent":None},
         ]}
         payload, vertices, triangles = worker.make_glb("traffic cone", "object", None, plan)
@@ -56,13 +56,18 @@ class LocalGpuWorkerTest(unittest.TestCase):
         self.assertEqual(accessor["max"], [2.0, 3.5, 4.0])
 
     def test_glb_contains_real_geometry(self):
-        for mode, prompt in [
-            ("object", "Generate a ring-shaped solid object"),
-            ("object", "Generate a sphere"),
-            ("architecture", "Design a four-wall building"),
+        for mode, prompt, primitive, name in [
+            ("object", "Generate a ring-shaped solid object", "wheel", "Ring"),
+            ("object", "Generate a sphere", "sphere", "Sphere"),
+            ("architecture", "Design a server architecture", "box", "API gateway"),
         ]:
             with self.subTest(mode=mode, prompt=prompt):
-                payload, vertices, triangles = worker.make_glb(prompt, mode, MockGpu())
+                plan = {"schemaVersion":1,"objects":[
+                    {"name":name,"primitive":primitive,"dimensions":[2,2,2],
+                     "position":[0,0,0],"rotation":[0,0,0],"color":[0.3,0.5,0.7],
+                     "metallic":0.1,"roughness":0.7,"parent":None}
+                ]}
+                payload, vertices, triangles = worker.make_glb(prompt, mode, MockGpu(), plan)
                 self.assertEqual(payload[:4], b"glTF")
                 self.assertEqual(struct.unpack_from("<I", payload, 4)[0], 2)
                 self.assertEqual(struct.unpack_from("<I", payload, 8)[0], len(payload))
@@ -70,7 +75,7 @@ class LocalGpuWorkerTest(unittest.TestCase):
                 self.assertEqual(magic, b"JSON")
                 doc = json.loads(payload[20:20 + json_size])
                 self.assertEqual(doc["asset"]["version"], "2.0")
-                self.assertGreaterEqual(len(doc["meshes"]), 1)
+                self.assertEqual([mesh["name"] for mesh in doc["meshes"]], [name])
                 self.assertGreater(vertices, 12)
                 self.assertGreater(triangles, 10)
                 for mesh in doc["meshes"]:
@@ -78,6 +83,36 @@ class LocalGpuWorkerTest(unittest.TestCase):
                     self.assertEqual(primitive["mode"], 4)
                     self.assertIn("POSITION", primitive["attributes"])
                     self.assertIn("indices", primitive)
+
+    def test_missing_scene_plan_never_substitutes_generic_geometry(self):
+        for mode, prompt in [("object", "Build a robot"), ("architecture", "Design an AI platform")]:
+            with self.subTest(mode=mode):
+                for invalid in (None, {}, {"schemaVersion":1,"objects":[]}):
+                    with self.assertRaises(RuntimeError):
+                        worker.make_glb(prompt, mode, None, invalid)
+
+    def test_distinct_prompt_specific_plans_produce_distinct_meshes(self):
+        def part(name, primitive, color, position):
+            return {"name":name,"primitive":primitive,"dimensions":[1,1,1],
+                    "position":position,"rotation":[0,0,0],"color":color,
+                    "metallic":0.1,"roughness":0.7,"parent":None}
+        software = {"schemaVersion":1,"objects":[
+            part("Frontend","box",[0.1,0.4,0.9],[0,0,0]),
+            part("API gateway","box",[0.3,0.6,0.9],[2,0,0]),
+            part("Database","cylinder",[0.1,0.8,0.2],[4,0,0]),
+        ]}
+        robot = {"schemaVersion":1,"objects":[
+            part("Robot body","box",[0.9,0.1,0.1],[0,0,0]),
+            part("Wheel","wheel",[0.1,0.1,0.1],[1,0,0]),
+        ]}
+        software_glb, _, _ = worker.make_glb("Frontend, gateway and database", "architecture", None, software)
+        robot_glb, _, _ = worker.make_glb("Red wheeled robot", "object", None, robot)
+        self.assertNotEqual(software_glb, robot_glb)
+        def names(payload):
+            length = struct.unpack_from("<I", payload, 12)[0]
+            return [mesh["name"] for mesh in json.loads(payload[20:20+length])["meshes"]]
+        self.assertEqual(names(software_glb), ["Frontend","API gateway","Database"])
+        self.assertEqual(names(robot_glb), ["Robot body","Wheel"])
 
     def test_ai_room_layout_builds_editable_architecture_with_real_openings(self):
         layout = {"schemaVersion":2,"footprint":[12,10],"storyHeight":3.2,"rooms":[
@@ -185,7 +220,7 @@ class LocalGpuWorkerTest(unittest.TestCase):
         self.assertTrue(all(index in reachable for index in furniture_nodes), "every generated furniture component must be attached to the exported scene graph")
 
     def test_model_scene_spec_builds_separate_editable_pbr_meshes(self):
-        plan = {"objects": [
+        plan = {"schemaVersion":1,"objects": [
             {"name":"Robot body","primitive":"box","dimensions":[2.0,1.0,1.2],"position":[0,0,0],"rotation":[0,0,0],"color":[0.2,0.4,0.8],"metallic":0.7,"roughness":0.25,"parent":None},
             {"name":"Left wheel","primitive":"cylinder","dimensions":[0.5,0.5,0.3],"position":[-0.8,-0.5,0],"rotation":[1.57,0,0],"color":[0.05,0.05,0.05],"metallic":0.1,"roughness":0.9,"parent":"Robot body"},
         ]}
@@ -211,7 +246,7 @@ class LocalGpuWorkerTest(unittest.TestCase):
                 worker.JOBS[job_id] = {
                     "id": job_id, "status": "queued", "error": None, "output": None,
                     "_prompt": "Generate a house", "_mode": "architecture",
-                    "_scene_spec": {"objects":[
+                    "_scene_spec": {"schemaVersion":1,"objects":[
                         {"name":"Building","primitive":"box","dimensions":[2,2,2],"position":[0,0,0],"rotation":[0,0,0],"color":[0.4,0.5,0.6],"metallic":0.2,"roughness":0.7,"parent":None},
                     ]},
                 }
@@ -254,9 +289,18 @@ class LocalGpuWorkerTest(unittest.TestCase):
                 self.assertFalse(data["gpu_active"])
                 self.assertTrue(data["worker_ready"])
                 self.assertTrue(data["cpu_ready"])
+                missing_body = json.dumps({"request_key":"missing-plan","prompt":"A procedural planet sphere","mode":"object"})
+                missing_status, _ = request("POST", "/jobs", body=missing_body,
+                    headers={"X-OpenMindAI-Desktop":"1","Content-Type":"application/json"})
+                self.assertEqual(missing_status, 422)
+                self.assertEqual(len(worker.JOBS), 0)
                 request_body = json.dumps({
                     "request_key":"contract-test","prompt":"A procedural planet sphere",
-                    "mode":"object",
+                    "mode":"object","scene_spec":{"schemaVersion":1,"objects":[
+                        {"name":"Planet","primitive":"sphere","dimensions":[2,2,2],
+                         "position":[0,0,0],"rotation":[0,0,0],"color":[0.1,0.3,0.8],
+                         "metallic":0.0,"roughness":0.7,"parent":None}
+                    ]}
                 })
                 status, result = request("POST", "/jobs", body=request_body,
                     headers={"X-OpenMindAI-Desktop":"1","Content-Type":"application/json"})

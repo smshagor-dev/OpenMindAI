@@ -347,7 +347,7 @@ pub async fn stream_chat_completion<R: Runtime>(
     // Research Studio prompts embed untrusted project/evidence text; a
     // "[Mode: Web Search]" marker inside that data must never trigger a live
     // external request. Research modes are local-only by contract.
-    let local_only_research = request.request_mode.starts_with("research-");
+    let local_only_research = request.request_mode.starts_with("research-") || request.request_mode.starts_with("studio3d-");
     let retrieved_web = if local_only_research {
         RetrievedWebContext::default()
     } else {
@@ -372,15 +372,16 @@ pub async fn stream_chat_completion<R: Runtime>(
     let context = crate::sampling::compact_chat_context(messages, request.context_size)?;
     let omitted_messages = context.omitted_messages;
     let messages = context.messages;
-    let is_architecture_plan = request.request_mode == "studio3d-architecture-planner";
-    let is_scene_plan = is_architecture_plan || request.request_mode == "studio3d-scene-planner";
-    let max_tokens = if is_architecture_plan {
-        640usize.min(request.context_size.saturating_sub(1_536) as usize)
-    } else if is_scene_plan {
-        // A compact scene with up to 16 separate objects needs more than the
-        // small-model chat default. Keep it bounded and leave room for the
-        // prompt in the model context.
-        (request.context_size as usize / 3).clamp(768, 2_048)
+    let is_scene_plan = matches!(
+        request.request_mode,
+        "studio3d-architecture-planner" | "studio3d-scene-planner"
+    );
+    let is_scene_revision = request.request_mode == "studio3d-revision-planner";
+    let is_scene_intent = request.request_mode == "studio3d-intent";
+    let is_scene_review = request.request_mode == "studio3d-review";
+    let max_tokens = if is_scene_plan || is_scene_revision || is_scene_intent || is_scene_review {
+        chat_output_budget(request.request_mode, request.context_size, &messages)
+            .ok_or_else(|| AppError::ContextOverflow("The complete 3D request and reasoning context do not fit the local model. Use a smaller scene or a larger context window.".into()))? as usize
     } else {
         chat_output_budget(request.request_mode, request.context_size, &messages)
         .ok_or_else(|| {
@@ -403,32 +404,7 @@ pub async fn stream_chat_completion<R: Runtime>(
             "enable_thinking": matches!(request.mode, InferenceMode::Thinking)
         }
     });
-    if is_architecture_plan {
-        body["response_format"] = json!({
-            "type":"json_schema",
-            "json_schema":{"name":"openmindai_architecture_layout_v2","strict":true,"schema":{
-                "type":"object","additionalProperties":false,
-                "required":["schemaVersion","footprint","storyHeight","rooms"],
-                "properties":{
-                    "schemaVersion":{"type":"integer","const":2},
-                    "footprint":{"type":"array","items":{"type":"number"},"minItems":2,"maxItems":2},
-                    "storyHeight":{"type":"number","minimum":2.8,"maximum":3.8},
-                        "rooms":{"type":"array","minItems":9,"maxItems":9,"items":{
-                        "type":"object","additionalProperties":false,
-                        "required":["name","floor","x","z","width","depth"],
-                        "properties":{
-                            "name":{"type":"string","minLength":1,"maxLength":80},
-                            "floor":{"type":"string","enum":["ground","upper"]},
-                            "x":{"type":"number","minimum":-6,"maximum":6},
-                            "z":{"type":"number","minimum":-5,"maximum":5},
-                            "width":{"type":"number","minimum":1,"maximum":12},
-                            "depth":{"type":"number","minimum":1,"maximum":10}
-                        }
-                    }}
-                }
-            }}
-        });
-    } else if is_scene_plan {
+    if is_scene_plan || is_scene_revision {
         // llama.cpp 12549's OpenAI-compatible /v1/chat/completions endpoint
         // supports response_format=json_schema and constrains token decoding.
         body["response_format"] = json!({
@@ -443,7 +419,7 @@ pub async fn stream_chat_completion<R: Runtime>(
                     "properties": {
                         "schemaVersion": {"type": "integer", "const": 1},
                         "objects": {
-                            "type": "array", "minItems": 1, "maxItems": 16,
+                            "type": "array", "minItems": 1, "maxItems": 32,
                             "items": {
                                 "type": "object", "additionalProperties": false,
                                 "required": ["name", "primitive", "dimensions", "position", "rotation", "color", "metallic", "roughness", "parent"],
@@ -464,6 +440,49 @@ pub async fn stream_chat_completion<R: Runtime>(
                 }
             }
         });
+        if is_scene_revision {
+            let item = body["response_format"]["json_schema"]["schema"]["properties"]["objects"]["items"].clone();
+            body["response_format"] = json!({"type":"json_schema","json_schema":{
+                "name":"openmindai_scene_revision_v1","strict":true,"schema":{
+                    "type":"object","additionalProperties":false,"required":["upsert","remove"],
+                    "properties":{
+                        "upsert":{"type":"array","maxItems":32,"items":item},
+                        "remove":{"type":"array","maxItems":32,"items":{"type":"string","minLength":1,"maxLength":80}}
+                    }
+                }
+            }});
+        }
+    } else if is_scene_intent {
+        body["response_format"] = json!({"type":"json_schema","json_schema":{
+            "name":"openmindai_scene_intent_v1","strict":true,"schema":{
+                "type":"object","additionalProperties":false,
+                "required":["summary","requirements","assumptions"],
+                "properties":{
+                    "summary":{"type":"string","minLength":1,"maxLength":240},
+                    "requirements":{"type":"array","minItems":1,"maxItems":12,"items":{"type":"string","minLength":1,"maxLength":240}},
+                    "assumptions":{"type":"array","maxItems":6,"items":{"type":"string","minLength":1,"maxLength":160}}
+                }
+            }
+        }});
+    } else if is_scene_review {
+        body["response_format"] = json!({"type":"json_schema","json_schema":{
+            "name":"openmindai_scene_review_v1","strict":true,"schema":{
+                "type":"object","additionalProperties":false,"required":["checks","issues"],
+                "properties":{
+                    "checks":{"type":"array","minItems":1,"maxItems":12,"items":{
+                        "type":"object","additionalProperties":false,
+                        "required":["requirementIndex","satisfied","evidence","reason"],
+                        "properties":{
+                            "requirementIndex":{"type":"integer","minimum":0,"maximum":11},
+                            "satisfied":{"type":"boolean"},
+                            "evidence":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":80}},
+                            "reason":{"type":"string","minLength":1,"maxLength":160}
+                        }
+                    }},
+                    "issues":{"type":"array","maxItems":8,"items":{"type":"string","minLength":1,"maxLength":160}}
+                }
+            }
+        }});
     } else if request.request_mode == "research-section" {
         // Grammar-constrain the manuscript section to the validated shape so
         // the local model returns parseable JSON. Rust still validates every
@@ -495,7 +514,7 @@ pub async fn stream_chat_completion<R: Runtime>(
             }
         });
     }
-    if is_scene_plan || request.request_mode == "research-section" {
+    if is_scene_plan || is_scene_revision || is_scene_intent || is_scene_review || request.request_mode == "research-section" {
         // Manuscript sections must copy the supplied evidence numbers exactly.
         // Greedy decoding minimizes digit hallucination; Rust still rejects any
         // number that is not a verified fact value.

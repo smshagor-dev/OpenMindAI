@@ -2,6 +2,8 @@
 export const MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS = 8_000;
 export const MAX_TOTAL_ATTACHMENT_CONTEXT_CHARS = 16_000;
 const TRUNCATION_NOTE = "\n[Attachment excerpt truncated; omitted text is NOT available to the model]";
+const COMPACT_TRUNCATION_NOTE = "\n[Attachment excerpt truncated; omitted text unavailable]";
+const MINIMAL_TRUNCATION_NOTE = "\n[Attachment excerpt truncated]";
 const GAP = "\n[... intervening text omitted ...]\n";
 const MAX_SERIALIZED_SOURCES = 64;
 const MAX_HEADER_CHARS = 128;
@@ -111,9 +113,12 @@ export function selectAttachmentExcerpt(content: string, limit: number, prompt: 
   if (limit <= 0) return "";
   if (content.length <= limit) return content;
   if (limit <= TRUNCATION_NOTE.length + GAP.length * 2 + 12) {
-    // Preserve source evidence when the full truncation notice will not fit.
-    if (limit <= TRUNCATION_NOTE.length) return safeExcerptSlice(content, 0, limit);
-    return safeExcerptSlice(content, 0, limit - TRUNCATION_NOTE.length) + TRUNCATION_NOTE;
+    // Use a shorter disclosure when the full notice would consume the budget.
+    const note = limit > TRUNCATION_NOTE.length ? TRUNCATION_NOTE
+      : limit >= COMPACT_TRUNCATION_NOTE.length ? COMPACT_TRUNCATION_NOTE
+      : limit >= MINIMAL_TRUNCATION_NOTE.length ? MINIMAL_TRUNCATION_NOTE
+      : "";
+    return safeExcerptSlice(content, 0, limit - note.length) + note;
   }
   const usable = limit - TRUNCATION_NOTE.length - GAP.length * 2;
   const head = Math.max(1, Math.floor(usable * 0.35));

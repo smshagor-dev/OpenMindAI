@@ -75,8 +75,9 @@ function parseSavedLights(value: unknown): StudioLightData[] | null {
   });
 }
 
-export function Studio3DViewport({ dataBase64, onSaveRevision, sceneJson, imageAssets = [], loadTextureAsset }: {
+export function Studio3DViewport({ dataBase64, onSaveRevision, sceneJson, imageAssets = [], loadTextureAsset, onSceneModified }: {
   dataBase64: string;
+  onSceneModified?: () => void;
   onSaveRevision?: (glbBase64: string, sceneJson: Record<string, unknown>) => Promise<void>;
   sceneJson?: Record<string, unknown>;
   imageAssets?: Array<{ id: string; name: string }>;
@@ -147,6 +148,7 @@ export function Studio3DViewport({ dataBase64, onSaveRevision, sceneJson, imageA
   const sceneMetadataRef = useRef(sceneJson);
   const aiEditRecords = useRef<Array<Record<string, unknown>>>(Array.isArray(sceneJson?.aiEdits) ? sceneJson.aiEdits as Array<Record<string, unknown>> : []);
   const pushUndo = (entry: HistoryEntry) => {
+    onSceneModified?.();
     setUndoStack((previous) => [...previous, entry].slice(-100));
   };
   const clearRedo = () => setRedoStack([]);
@@ -162,6 +164,7 @@ export function Studio3DViewport({ dataBase64, onSaveRevision, sceneJson, imageA
     : null;
 
   const updateMaterial = (update: (material: THREE.MeshStandardMaterial) => void) => {
+    onSceneModified?.();
     const target = selectionRef.current;
     if (!(target instanceof THREE.Mesh)) return;
     if (!editedMaterials.current.has(target)) {
@@ -195,6 +198,7 @@ export function Studio3DViewport({ dataBase64, onSaveRevision, sceneJson, imageA
   };
 
   const duplicateMaterial = () => {
+    onSceneModified?.();
     const target = selectionRef.current;
     if (!(target instanceof THREE.Mesh)) return;
     const wasMultiMaterial = Array.isArray(target.material);
@@ -207,6 +211,7 @@ export function Studio3DViewport({ dataBase64, onSaveRevision, sceneJson, imageA
   };
 
   const duplicateObject = () => {
+    onSceneModified?.();
     const target = selectionRef.current;
     if (!target || target === objectRef.current) return;
     const clone = target.clone(true);
@@ -631,6 +636,7 @@ export function Studio3DViewport({ dataBase64, onSaveRevision, sceneJson, imageA
   }, [backgroundAssetId, loadTextureAsset, ready]);
 
   const placeImagePlane = async () => {
+    onSceneModified?.();
     if (!selectedImageAsset || !objectRef.current || !loadTextureAsset) return;
     try {
       const asset = await loadTextureAsset(selectedImageAsset);
@@ -648,6 +654,7 @@ export function Studio3DViewport({ dataBase64, onSaveRevision, sceneJson, imageA
   };
 
   const setBackgroundImage = () => {
+    onSceneModified?.();
     if (!selectedImageAsset) return;
     setBackgroundAssetId(selectedImageAsset);
   };
@@ -1125,6 +1132,7 @@ export function Studio3DViewport({ dataBase64, onSaveRevision, sceneJson, imageA
   };
 
   const addKeyframe = () => {
+    onSceneModified?.();
     const target = selectionRef.current;
     if (!target) return;
     if (!target.name || !target.name.startsWith("OM3D_")) target.name = `OM3D_${crypto.randomUUID().replace(/-/g, "")}`;

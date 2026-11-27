@@ -220,6 +220,134 @@ fn studio3d_cancellations() -> &'static Mutex<HashMap<String, CancellationToken>
     STUDIO3D_CANCELLATIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SceneIntent {
+    summary: String,
+    requirements: Vec<String>,
+    assumptions: Vec<String>,
+}
+
+fn bounded_text(text: &str, max_chars: usize) -> bool {
+    !text.trim().is_empty() && text.chars().count() <= max_chars && !text.chars().any(char::is_control)
+}
+
+pub(crate) fn parse_scene_intent(response: &str) -> Result<SceneIntent, AppError> {
+    if response.len() > 8 * 1024 {
+        return Err(studio_error("3D intent exceeds its size limit"));
+    }
+    let intent: SceneIntent = serde_json::from_str(response.trim())
+        .map_err(|_| studio_error("local AI returned invalid 3D intent JSON"))?;
+    if !bounded_text(&intent.summary, 240)
+        || !(1..=12).contains(&intent.requirements.len())
+        || intent.requirements.iter().any(|text| !bounded_text(text, 240))
+        || intent.assumptions.len() > 6
+        || intent.assumptions.iter().any(|text| !bounded_text(text, 160))
+    {
+        return Err(studio_error("local AI returned an empty or oversized design intent"));
+    }
+    Ok(intent)
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SceneRequirementCheck {
+    requirement_index: usize,
+    satisfied: bool,
+    evidence: Vec<String>,
+    reason: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SceneReview {
+    checks: Vec<SceneRequirementCheck>,
+    issues: Vec<String>,
+}
+
+impl SceneReview {
+    pub(crate) fn is_accepted(&self) -> bool {
+        !self.checks.is_empty() && self.issues.is_empty() && self.checks.iter().all(|check| check.satisfied)
+    }
+}
+
+pub(crate) fn compact_scene_for_review(plan: &Value) -> Vec<Value> {
+    plan["objects"].as_array().into_iter().flatten().map(|object| {
+        serde_json::json!([object["name"], object["primitive"], object["dimensions"],
+            object["position"], object["rotation"], object["color"],
+            object["metallic"], object["roughness"], object["parent"]])
+    }).collect()
+}
+
+pub(crate) fn parse_scene_review(response: &str, intent: &SceneIntent, plan: &Value) -> Result<SceneReview, AppError> {
+    if response.len() > 32 * 1024 {
+        return Err(studio_error("3D fidelity review exceeds its size limit"));
+    }
+    let review: SceneReview = serde_json::from_str(response.trim())
+        .map_err(|_| studio_error("local AI returned invalid fidelity review JSON"))?;
+    let names: std::collections::HashSet<&str> = plan["objects"].as_array().into_iter()
+        .flatten().filter_map(|object| object["name"].as_str()).collect();
+    let mut covered = std::collections::HashSet::new();
+    if review.checks.len() != intent.requirements.len()
+        || review.issues.len() > 8
+        || review.issues.iter().any(|issue| !bounded_text(issue, 160))
+        || review.checks.iter().any(|check| {
+            check.requirement_index >= intent.requirements.len()
+                || !covered.insert(check.requirement_index)
+                || !bounded_text(&check.reason, 160)
+                || check.evidence.len() > 8
+                || check.evidence.iter().any(|name| !names.contains(name.as_str()))
+        })
+    {
+        return Err(studio_error("3D review must cover every requirement exactly once and cite only real scene objects"));
+    }
+    Ok(review)
+}
+
+// Apply only explicit changes to an already validated generated scene. Names
+// not mentioned in the patch retain their complete original object data.
+pub(crate) fn apply_scene_revision(base: &Value, response: &str) -> Result<Value, AppError> {
+    if response.len() > 64 * 1024 {
+        return Err(studio_error("scene revision exceeds its size limit"));
+    }
+    let patch: Value = serde_json::from_str(response.trim())
+        .map_err(|_| studio_error("invalid scene revision JSON"))?;
+    if patch.as_object().is_none_or(|fields| fields.len() != 2 || !fields.contains_key("upsert") || !fields.contains_key("remove")) {
+        return Err(studio_error("scene revision must contain only upsert and remove"));
+    }
+    let updates = patch["upsert"].as_array().filter(|items| items.len() <= 32)
+        .ok_or_else(|| studio_error("invalid scene revision upserts"))?;
+    let removals = patch["remove"].as_array().filter(|items| items.len() <= 32)
+        .ok_or_else(|| studio_error("invalid scene revision removals"))?;
+    let base = validate_scene_spec(base.clone())?;
+    let objects = base["objects"].as_array().unwrap();
+    let mut result = objects.clone();
+    let mut touched = std::collections::HashSet::new();
+    for removal in removals {
+        let name = removal.as_str().ok_or_else(|| studio_error("invalid removed object name"))?;
+        if !touched.insert(name.to_owned()) || !objects.iter().any(|object| object["name"].as_str() == Some(name)) {
+            return Err(studio_error("duplicate or unknown removed object"));
+        }
+        result.retain(|object| object["name"].as_str() != Some(name));
+    }
+    for update in updates {
+        let name = update["name"].as_str().ok_or_else(|| studio_error("missing revised object name"))?;
+        if !touched.insert(name.to_owned()) {
+            return Err(studio_error("duplicate or conflicting scene revision"));
+        }
+        if let Some(index) = result.iter().position(|object| object["name"].as_str() == Some(name)) {
+            result[index] = update.clone();
+        } else {
+            result.push(update.clone());
+        }
+    }
+    let revised = normalize_scene_spec(serde_json::json!({"schemaVersion":1,"objects":result})).and_then(validate_scene_spec)?;
+    if revised == base {
+        return Err(studio_error("scene revision did not change the model"));
+    }
+    Ok(revised)
+}
+
 fn validate_scene_spec(value: Value) -> Result<Value, AppError> {
     if value.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
         return Err(studio_error("scene plan schemaVersion must be 1"));
@@ -236,8 +364,8 @@ fn validate_scene_spec(value: Value) -> Result<Value, AppError> {
     let objects = value
         .get("objects")
         .and_then(Value::as_array)
-        .filter(|items| !items.is_empty() && items.len() <= 16)
-        .ok_or_else(|| studio_error("local model scene plan must contain 1 to 16 objects"))?;
+        .filter(|items| !items.is_empty() && items.len() <= 32)
+        .ok_or_else(|| studio_error("local model scene plan must contain 1 to 32 objects"))?;
     let mut names = std::collections::HashSet::new();
     for object in objects {
         if object.as_object().is_none_or(|fields| {
@@ -358,7 +486,8 @@ fn validate_scene_spec(value: Value) -> Result<Value, AppError> {
     Ok(value)
 }
 
-pub(crate) fn parse_architecture_spec_response(response: &str) -> Result<Value, AppError> {
+#[cfg(test)]
+fn parse_architecture_spec_response(response: &str) -> Result<Value, AppError> {
     if response.len() > 64 * 1024 {
         return Err(studio_error("architectural plan exceeds the 64 KB limit"));
     }
@@ -481,6 +610,7 @@ pub(crate) fn parse_architecture_spec_response(response: &str) -> Result<Value, 
 /// inside the requested envelope. Names, floor assignments and room sizes stay
 /// AI-authored; this bounded placement pass makes its rough coordinates usable
 /// and records every moved room in the durable plan.
+#[cfg(test)]
 fn normalize_architecture_room_layout(mut value: Value) -> Result<Value, AppError> {
     let rooms = value
         .get_mut("rooms")
@@ -2051,9 +2181,9 @@ pub(crate) async fn execute_studio3d_local_job(
             "only queued 3D jobs may be dispatched; uncertain or started jobs are never replayed",
         ));
     }
-    if route != "local" || !matches!(mode.as_str(), "text-to-3d" | "architecture") {
+    if route != "local" || !matches!(mode.as_str(), "text-to-3d" | "architecture" | "scene-edit") {
         return Err(studio_error(
-            "the local procedural adapter only accepts local text or architecture jobs",
+            "the local procedural adapter only accepts local text, architecture or scene revision jobs",
         ));
     }
     let request: Value = serde_json::from_str(&request)
@@ -2067,6 +2197,27 @@ pub(crate) async fn execute_studio3d_local_job(
             "local generation prompt must contain 5 to 8,000 characters",
         ));
     }
+    let base_scene = if mode == "scene-edit" {
+        let ids = request["inputAssetIds"].as_array()
+            .filter(|ids| ids.len() == 1)
+            .ok_or_else(|| studio_error("a scene revision requires exactly one prior generated asset"))?;
+        let asset_id = ids[0].as_str().ok_or_else(|| studio_error("invalid revision asset id"))?;
+        let db = state.database.lock().map_err(|_| studio_error("database lock is unavailable"))?;
+        let previous: String = db.connection().query_row(
+            "SELECT j.recovery_json FROM studio3d_jobs j JOIN studio3d_assets a ON a.id=j.output_asset_id AND a.project_id=j.project_id AND a.content_sha256=j.output_sha256 WHERE j.project_id=?1 AND j.output_asset_id=?2 AND j.status='completed' AND j.inference_route='local' ORDER BY j.completed_at DESC LIMIT 1",
+            params![project_id,asset_id], |row| row.get(0),
+        ).optional()?.ok_or_else(|| studio_error("this asset has no completed local generated scene to revise"))?;
+        let metadata: Value = serde_json::from_str(&previous).map_err(|_| studio_error("invalid source scene metadata"))?;
+        let plan = validate_scene_spec(metadata["sceneSpecification"].clone())
+            .map_err(|_| studio_error("the original editable scene specification is not available; generate a new local scene first"))?;
+        let digest = format!("{:x}", Sha256::digest(plan.to_string().as_bytes()));
+        if metadata["sceneSpecificationSha256"].as_str() != Some(digest.as_str()) {
+            return Err(studio_error("source scene specification checksum mismatch"));
+        }
+        Some(plan)
+    } else {
+        None
+    };
     let token = CancellationToken::new();
     {
         let mut active = studio3d_cancellations()
@@ -2083,6 +2234,7 @@ pub(crate) async fn execute_studio3d_local_job(
         &project_id,
         mode == "architecture",
         prompt,
+        base_scene.as_ref(),
         token.clone(),
         &state,
     )
@@ -2120,6 +2272,7 @@ async fn execute_studio3d_local_job_inner(
     project_id: &str,
     architecture: bool,
     prompt: &str,
+    base_scene: Option<&Value>,
     token: CancellationToken,
     state: &State<'_, AppState>,
 ) -> Result<Studio3DAsset, AppError> {
@@ -2166,15 +2319,10 @@ async fn execute_studio3d_local_job_inner(
     } else {
         "object"
     };
-    let (model_id, scene_spec_text) = tokio::select! {
+    let (model_id, scene_spec, reasoning) = tokio::select! {
         _ = token.cancelled() => return Err(studio_error("3D job cancelled during local model planning")),
-        result = tokio::time::timeout(STUDIO3D_LOCAL_JOB_TIMEOUT, crate::studio3d_local_scene_spec(app, state, prompt, architecture)) =>
-            result.map_err(|_| studio_error("local scene planning timed out"))??,
-    };
-    let scene_spec = if architecture {
-        parse_architecture_spec_response(&scene_spec_text)?
-    } else {
-        parse_scene_spec_response(&scene_spec_text)?
+        result = tokio::time::timeout(STUDIO3D_LOCAL_JOB_TIMEOUT.saturating_sub(started.elapsed()), crate::studio3d_prompt_driven_scene(app, state, job_id, prompt, architecture, base_scene)) =>
+            result.map_err(|_| studio_error("local prompt understanding and scene review timed out"))??,
     };
     let scene_spec_sha256 = format!("{:x}", Sha256::digest(scene_spec.to_string().as_bytes()));
     {
@@ -2182,12 +2330,21 @@ async fn execute_studio3d_local_job_inner(
             .database
             .lock()
             .map_err(|_| studio_error("database lock is unavailable"))?;
-        let planned_count = scene_spec["rooms"]
+        let planned_count = scene_spec["objects"]
             .as_array()
-            .or_else(|| scene_spec["objects"].as_array())
             .map(Vec::len)
             .unwrap_or_default();
-        db.connection().execute("UPDATE studio3d_jobs SET model_id=?1,recovery_json=?2,updated_at=?3 WHERE id=?4 AND status='running'", params![model_id,serde_json::json!({"safeToResume":false,"scheduler":"native","modelProvider":"local-llama.cpp","sceneSpecificationSha256":scene_spec_sha256,"sceneObjectCount":planned_count,"sceneSpecification":scene_spec}).to_string(),Utc::now().to_rfc3339(),job_id])?;
+        // Preserve the full scene and review when they fit the existing bounded
+        // recovery record. Always retain hashes, intent and acceptance metadata.
+        let review_sha256 = format!("{:x}", Sha256::digest(reasoning["review"].to_string().as_bytes()));
+        let mut recovery = serde_json::json!({"safeToResume":false,"scheduler":"native","modelProvider":"local-llama.cpp","sceneSpecificationSha256":scene_spec_sha256,"sceneObjectCount":planned_count,"reasoningPipeline":"intent-plan-review-v1","intent":reasoning["intent"],"planningAttempts":reasoning["planningAttempts"],"reviewKind":reasoning["reviewKind"],"reviewSha256":review_sha256,"reviewAccepted":true});
+        for (key, value) in [("sceneSpecification", &scene_spec), ("review", &reasoning["review"])] {
+            recovery[key] = value.clone();
+            if recovery.to_string().len() > 14 * 1024 {
+                recovery.as_object_mut().unwrap().remove(key);
+            }
+        }
+        db.connection().execute("UPDATE studio3d_jobs SET model_id=?1,recovery_json=?2,updated_at=?3 WHERE id=?4 AND status='running'", params![model_id,recovery.to_string(),Utc::now().to_rfc3339(),job_id])?;
     }
     transition_studio3d_job(
         app.clone(),
@@ -2942,6 +3099,62 @@ mod tests {
         let mut cyclic = valid;
         cyclic["objects"][0]["parent"] = Value::from("Wheel");
         assert!(validate_scene_spec(cyclic).is_err());
+    }
+
+    #[test]
+    fn scene_revision_preserves_untouched_objects_and_rejects_bad_patches() {
+        let part = |name: &str| serde_json::json!({"name":name,"primitive":"box","dimensions":[1,1,1],"position":[0,0,0],"rotation":[0,0,0],"color":[0.2,0.3,0.4],"metallic":0.0,"roughness":0.7,"parent":null});
+        let base = serde_json::json!({"schemaVersion":1,"objects":[part("Body"),part("Wheel")]});
+        let mut changed = part("Body");
+        changed["color"] = serde_json::json!([1,0,0]);
+        let patch = serde_json::json!({"upsert":[changed],"remove":[]});
+        let revised = apply_scene_revision(&base, &patch.to_string()).unwrap();
+        assert_eq!(revised["objects"][0]["color"], serde_json::json!([1,0,0]));
+        assert_eq!(revised["objects"][1], base["objects"][1]);
+        assert!(apply_scene_revision(&base, r#"{"upsert":[],"remove":["Missing"]}"#).is_err());
+        assert!(apply_scene_revision(&base, r#"{"upsert":[],"remove":[]}"#).is_err());
+        assert!(apply_scene_revision(&base, r#"{"upsert":[],"remove":["Body","Wheel"]}"#).is_err());
+        let added = serde_json::json!({"upsert":[part("Camera")],"remove":["Wheel"]});
+        let revised = apply_scene_revision(&base, &added.to_string()).unwrap();
+        assert_eq!(revised["objects"][0], base["objects"][0]);
+        assert_eq!(revised["objects"][1]["name"], "Camera");
+    }
+
+    #[test]
+    fn intent_and_review_require_complete_grounded_checks() {
+        let intent = parse_scene_intent(r#"{"summary":"Red robot","requirements":["Red body","Two wheels"],"assumptions":[]}"#).unwrap();
+        assert!(parse_scene_intent(r#"{"summary":"generic","requirements":[],"assumptions":[]}"#).is_err());
+        let plan = serde_json::json!({"objects":[{"name":"Body"},{"name":"Wheel"}]});
+        let mut review = serde_json::json!({"checks":[
+            {"requirementIndex":0,"satisfied":true,"evidence":["Body"],"reason":"Red body"},
+            {"requirementIndex":1,"satisfied":false,"evidence":["Wheel"],"reason":"Only one wheel"}
+        ],"issues":[]});
+        assert!(!parse_scene_review(&review.to_string(), &intent, &plan).unwrap().is_accepted());
+        review["checks"][1]["satisfied"] = Value::Bool(true);
+        assert!(parse_scene_review(&review.to_string(), &intent, &plan).unwrap().is_accepted());
+        review["checks"][1]["evidence"][0] = Value::from("Missing mesh");
+        assert!(parse_scene_review(&review.to_string(), &intent, &plan).is_err());
+        review["checks"][1]["evidence"][0] = Value::from("Wheel");
+        review["checks"][1]["requirementIndex"] = Value::from(0);
+        assert!(parse_scene_review(&review.to_string(), &intent, &plan).is_err());
+    }
+
+    #[test]
+    fn prompt_driven_scene_accepts_variable_named_components_but_bounds_complexity() {
+        let objects: Vec<Value> = (0..32)
+            .map(|index| serde_json::json!({
+                "name": format!("Service {index}"), "primitive": "box",
+                "dimensions": [1,1,1], "position": [index % 8,0,index / 8],
+                "rotation": [0,0,0], "color": [0.2,0.5,0.8],
+                "metallic": 0.1, "roughness": 0.7, "parent": null
+            }))
+            .collect();
+        let mut scene = serde_json::json!({"schemaVersion":1,"objects":objects});
+        assert!(parse_scene_spec_response(&scene.to_string()).is_ok());
+        let mut extra = scene["objects"][0].clone();
+        extra["name"] = Value::from("Overflow");
+        scene["objects"].as_array_mut().unwrap().push(extra);
+        assert!(parse_scene_spec_response(&scene.to_string()).is_err());
     }
 
     #[test]

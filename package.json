@@ -41,7 +41,7 @@
     "test:project-binary": "node --test tests/projectBinaryAttachments.test.mjs",
     "test:backup-scope": "node --experimental-strip-types --test tests/backupScope.test.mjs",
     "test:setup-storage": "node --test tests/setupStorageValidation.test.mjs",
-    "test:studio3d": "node --experimental-strip-types --test tests/studio3dMeshRoundtrip.test.mjs tests/studio3dIncrementalEdit.test.mjs"
+    "test:studio3d": "node --experimental-strip-types --test tests/studio3dMeshRoundtrip.test.mjs tests/studio3dIncrementalEdit.test.mjs tests/studio3dProgress.test.mjs"
   },
   "allowScripts": {
     "esbuild@0.25.12": true
