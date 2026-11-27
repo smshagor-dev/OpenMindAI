@@ -2,9 +2,14 @@
   "name": "openmindai-vscode",
   "displayName": "OpenMindAI",
   "description": "Use your local OpenMindAI assistant or OpenMindAI Cloud from VS Code.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "openmindai",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/smshagor-dev/OpenMindAI.git",
+    "directory": "extensions/vscode-openmindai"
+  },
   "icon": "media/icon.png",
   "keywords": [
     "openmindai",
@@ -109,20 +114,6 @@
           "minimum": 5000,
           "description": "Timeout for one OpenMindAI response. A full 2048-token answer can take a few minutes on CPU or small GPUs. Coding agent model loading is waited for separately and does not count against this."
         },
-        "openmindai.maxContextCharacters": {
-          "type": "number",
-          "default": 800,
-          "minimum": 200,
-          "maximum": 50000,
-          "description": "Maximum active editor context sent with Ask."
-        },
-        "openmindai.maxOutputTokens": {
-          "type": "integer",
-          "default": 2048,
-          "minimum": 16,
-          "maximum": 8192,
-          "description": "Maximum response tokens requested from the local OpenMindAI endpoint. Increase it for large file edits or long answers. Invalid values fall back to 2048; the native interface fallback also caps it to half of openmindai.nativeContextSize."
-        },
         "openmindai.apiToken": {
           "type": "string",
           "default": "",
@@ -169,7 +160,7 @@
             "Always use the local OpenMindAI runtime or native interface.",
             "Always use OpenMindAI Cloud (a Cloud API key is required)."
           ],
-          "default": "auto",
+          "default": "local",
           "description": "Where OpenMindAI runs chat and coding requests. Switch quickly from the OpenMindAI status bar item."
         },
         "openmindai.cloudEndpoint": {
