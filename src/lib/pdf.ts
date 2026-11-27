@@ -84,8 +84,18 @@ export async function extractPdfText(
   }
 
   assertNotCancelled(options.signal);
-  const bytes = new Uint8Array(await file.arrayBuffer());
+  const buffer = await file.arrayBuffer();
   assertNotCancelled(options.signal);
+  // The advertised File.size is not authoritative for external File-like
+  // providers. Enforce the same bound on bytes actually received before
+  // allocating a typed view or handing data to the PDF decoder.
+  if (buffer.byteLength === 0) {
+    throw new Error("The PDF is empty.");
+  }
+  if (buffer.byteLength > MAX_PDF_BYTES) {
+    throw new Error("PDF is too large for chat ingestion. Maximum supported size is 32 MB.");
+  }
+  const bytes = new Uint8Array(buffer);
   const task = getDocument({ data: bytes, useWorkerFetch: false });
 
   try {
