@@ -82,6 +82,17 @@ jobs:
           python scripts/kokoro-real-smoke.py prepare \
             --root "$OPENMINDAI_ROOT" --download
 
+      - name: Setup Node.js for Tauri frontend
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Build frontend assets for Tauri
+        run: |
+          npm ci
+          npm run build
+
       - name: Invoke actual OpenMindAI Rust/Candle Kokoro synthesis
         env:
           OPENMINDAI_ROOT: ${{ runner.temp }}/openmind-kokoro-smoke
@@ -147,6 +158,17 @@ jobs:
           python scripts/kokoro-real-smoke.py prepare \
             --root "$OPENMINDAI_ROOT" --download
 
+      - name: Setup Node.js for Tauri frontend
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Build frontend assets for Tauri
+        run: |
+          npm ci
+          npm run build
+
       - name: Generate real Kokoro speech using production Rust/Candle
         shell: bash
         env:
@@ -206,6 +228,17 @@ jobs:
 
       - name: Test WAV validation rejects synthetic silence
         run: python scripts/kokoro-real-smoke.py self-test
+
+      - name: Setup Node.js for Tauri frontend
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Build frontend assets for Tauri
+        run: |
+          npm ci
+          npm run build
 
       - name: Install model through real download manager and generate speech
         env:

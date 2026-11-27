@@ -29,7 +29,7 @@
 
 ## OpenMindAI v6.0.0
 
-**Released:** 27 November 2026 · **Current source version:** `6.0.0` · **Previous release:** [v5.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v5.0.0)
+**Released:** 27 November 2026 · **Current source version:** `v6.0.0` · **Previous release:** [v5.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v5.0.0)
 
 OpenMindAI v6.0.0 improves first-run setup, protects existing local databases, recovers previous conversations, simplifies Cloud connection recovery, and brings local 3D Studio workflows into the desktop experience. It continues the project's local-first approach to AI, software development, research, and creative work.
 

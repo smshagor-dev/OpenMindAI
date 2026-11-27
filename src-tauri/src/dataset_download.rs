@@ -11,10 +11,7 @@ use std::{
 use chrono::Utc;
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
-use tokio::{
-    fs as async_fs,
-    sync::{OwnedSemaphorePermit, Semaphore},
-};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use url::form_urlencoded;
 
 use crate::{
