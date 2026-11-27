@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type ReactNode, type SetStateAction } from "react";
+import { Component, useEffect, useRef, useState, type ErrorInfo, type ReactNode, type SetStateAction } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Brain,
+  CheckCircle2,
   Cpu,
   Database,
   Download,
@@ -21,6 +22,7 @@ import {
   Shield,
   SlidersHorizontal,
   StopCircle,
+  TableProperties,
   Trash2,
   User,
   Wrench,
@@ -41,8 +43,10 @@ import type {
   UserProfile,
 } from "../types";
 import { formatBytes, formatError } from "../lib/format";
+import type { CloudConnection } from "../cloudApi";
 import { readImageAsDataUrl } from "../lib/avatar";
 import { ModelsManager } from "./ModelsManager";
+import { DatasetsManager } from "./DatasetsManager";
 import { AppsSettings } from "./AppsSettings";
 import { CloudAccountSection } from "./CloudAccountSection";
 import { MaintenanceCenter } from "./MaintenanceCenter";
@@ -89,6 +93,7 @@ export function SettingsDialog(props: {
   installRuntime: () => void;
   cancelRuntimeInstall: () => void;
   initialSection?: string;
+  onCloudConnectionChange: (connection: CloudConnection) => void;
 }) {
   const [activeSection, setActiveSection] = useState(props.initialSection ?? "general");
   const [preferenceDraft, setPreferenceDraft] = useSyncedDraft<AppPreferences | null>(props.preferences);
@@ -235,6 +240,7 @@ export function SettingsDialog(props: {
     { id: "cloud", label: "Cloud", icon: Cloud },
     { id: "connectors", label: "Apps", icon: Plug },
     { id: "models", label: "Models", icon: Database },
+    { id: "datasets", label: "Datasets", icon: TableProperties },
     { id: "runtime", label: "AI Runtime", icon: Server },
     { id: "hardware", label: "Hardware", icon: Cpu },
     { id: "storage", label: "Storage", icon: HardDrive },
@@ -543,7 +549,9 @@ export function SettingsDialog(props: {
             <p className="muted">
               Web Search tries configured Brave / legacy Google APIs, then DuckDuckGo and Bing
               public search. Deep Research reads multiple public pages and checks independent
-              sources. External web requests only run when those modes are enabled.
+              sources. Auto mode also searches online for factual questions when Web Search is
+              enabled. This sends search queries to external providers; Local mode keeps model
+              inference on this computer.
             </p>
             <ToggleRow
               label="Typing indicators"
@@ -572,7 +580,7 @@ export function SettingsDialog(props: {
 
         {activeSection === "cloud" && (
           <SettingsGroup title="Cloud account">
-            <CloudAccountSection />
+            <CloudAccountSection onConnectionChange={props.onCloudConnectionChange} />
           </SettingsGroup>
         )}
 
@@ -614,7 +622,14 @@ export function SettingsDialog(props: {
           </SettingsGroup>
         )}
 
+        {activeSection === "datasets" && (
+          <SettingsGroup title="Datasets">
+            <DatasetsManager />
+          </SettingsGroup>
+        )}
+
         {activeSection === "runtime" && (
+          <SettingsSectionErrorBoundary>
           <SettingsGroup title="AI Runtime">
             <Info label="Status" value={props.runtimeStatus?.state} />
             <Info
@@ -631,7 +646,7 @@ export function SettingsDialog(props: {
                 portable storage.
               </p>
             ) : null}
-            <div className="button-row">
+            <div className="button-row runtime-install-actions">
               <button
                 type="button"
                 onClick={props.installRuntime}
@@ -673,14 +688,19 @@ export function SettingsDialog(props: {
                 {props.runtimeInstallError ?? props.runtimeInstallStatus?.error}
               </p>
             ) : null}
-            <div className="button-row">
-              <button type="button" onClick={props.refresh} title="Validate">
-                <RefreshCw size={16} />
+            <div className="button-row runtime-control-actions">
+              <button type="button" onClick={props.refresh} title="Refresh runtime status">
+                <RefreshCw size={16} /> Refresh
               </button>
+              {props.runtimeStatus?.state === "ready" || props.runtimeStatus?.state === "running" ? (
+                <span className="runtime-ready-badge" role="status">
+                  <CheckCircle2 size={16} /> Runtime ready
+                </span>
+              ) : null}
               <button
                 type="button"
                 onClick={() => props.startRuntime("restart")}
-                title="Restart Runtime"
+                title={props.runtimeStatus?.state === "ready" || props.runtimeStatus?.state === "running" ? "Restart runtime" : "Start runtime"}
                 disabled={
                   props.runtimeAction !== null ||
                   !props.runtime?.selected ||
@@ -692,22 +712,28 @@ export function SettingsDialog(props: {
                 ) : (
                   <Play size={16} />
                 )}
+                {props.runtimeAction === "start" || props.runtimeAction === "restart"
+                  ? "Starting…"
+                  : props.runtimeStatus?.state === "ready" || props.runtimeStatus?.state === "running"
+                    ? "Restart"
+                    : "Start"}
               </button>
               <button
                 type="button"
                 onClick={props.stopRuntime}
                 title="Stop Runtime"
-                disabled={props.runtimeAction !== null}
+                disabled={props.runtimeAction !== null || (props.runtimeStatus?.state !== "ready" && props.runtimeStatus?.state !== "running" && props.runtimeStatus?.state !== "loadingModel")}
               >
                 {props.runtimeAction === "stop" ? (
                   <LoaderCircle className="spin" size={16} />
                 ) : (
                   <StopCircle size={16} />
-                )}
+                )} Stop
               </button>
             </div>
             <DiffusionRuntimePanel />
           </SettingsGroup>
+          </SettingsSectionErrorBoundary>
         )}
 
         {activeSection === "hardware" && (
@@ -963,6 +989,33 @@ function SettingsGroup(props: { title: string; children: ReactNode }) {
   );
 }
 
+class SettingsSectionErrorBoundary extends Component<
+  { children: ReactNode },
+  { error: Error | null }
+> {
+  state = { error: null as Error | null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("AI Runtime settings failed to render", error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="settings-group" role="alert">
+          <h2>AI Runtime could not load</h2>
+          <p className="setup-warning">{this.state.error.message || "A runtime settings component failed to render."}</p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export function ToggleRow(props: {
   label: string;
   checked: boolean;
@@ -1061,10 +1114,6 @@ function Info(props: { label: string; value?: string | null }) {
 
 function backendLabel(profile: HardwareProfile | null) {
   if (!profile) return undefined;
-  if (profile.backends.cuda) return "CUDA";
   if (profile.backends.vulkan) return "Vulkan";
-  if (profile.backends.sycl) return "SYCL";
-  if (profile.backends.hip) return "HIP";
-  if (profile.backends.metal) return "Metal";
-  return "CPU";
+  return "Vulkan required";
 }

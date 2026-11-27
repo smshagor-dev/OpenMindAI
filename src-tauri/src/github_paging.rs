@@ -9,20 +9,32 @@ use std::collections::HashSet;
 const MAX_PAGE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PAGES: u64 = 10_000;
 
-async fn decode_bounded_page<T: DeserializeOwned>(mut response: Response) -> Result<Vec<T>, AppError> {
-    if response.content_length().is_some_and(|length| length > MAX_PAGE_BYTES as u64) {
-        return Err(AppError::GithubApiError("GitHub list response exceeds 8 MiB limit".into()));
+async fn decode_bounded_page<T: DeserializeOwned>(
+    mut response: Response,
+) -> Result<Vec<T>, AppError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_PAGE_BYTES as u64)
+    {
+        return Err(AppError::GithubApiError(
+            "GitHub list response exceeds 8 MiB limit".into(),
+        ));
     }
     let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|error| AppError::GithubApiError(error.to_string()))? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| AppError::GithubApiError(error.to_string()))?
+    {
         if chunk.len() > MAX_PAGE_BYTES.saturating_sub(body.len()) {
-            return Err(AppError::GithubApiError("GitHub list response exceeds 8 MiB limit".into()));
+            return Err(AppError::GithubApiError(
+                "GitHub list response exceeds 8 MiB limit".into(),
+            ));
         }
         body.extend_from_slice(&chunk);
     }
     serde_json::from_slice(&body).map_err(|error| AppError::GithubApiError(error.to_string()))
 }
-
 
 pub async fn collect<T: DeserializeOwned>(
     client: &Client,
@@ -35,7 +47,9 @@ pub async fn collect<T: DeserializeOwned>(
     let mut page = 1_u64;
     loop {
         if page > MAX_PAGES {
-            return Err(AppError::GithubApiError("GitHub listing exceeds pagination safety limit; narrow the query".into()));
+            return Err(AppError::GithubApiError(
+                "GitHub listing exceeds pagination safety limit; narrow the query".into(),
+            ));
         }
         // Construct requests from the original endpoint, never from an untrusted
         // Link URL that could forward the account token to another destination.

@@ -251,7 +251,7 @@ mod renderer_argument_validation_tests {
     #[test]
     fn rejects_embedded_nul_without_echoing_sensitive_prompt() {
         for kind in ["image prompt", "video prompt"] {
-            let secret = "private-sentinel\\0rest";
+            let secret = "private-sentinel\0rest";
             let error = validate_renderer_prompt(secret, kind).unwrap_err();
             let message = error.to_string();
             assert!(message.contains("NUL"));
@@ -263,7 +263,7 @@ mod renderer_argument_validation_tests {
     #[test]
     fn rejects_nul_in_negative_prompt_before_spawning_renderer() {
         let options = ImageRenderOptions {
-            negative_prompt: Some("private-negative\\0suffix".into()),
+            negative_prompt: Some("private-negative\0suffix".into()),
             ..Default::default()
         };
         let message = options.validate().unwrap_err().to_string();
@@ -472,9 +472,6 @@ struct StagedImageOutput {
 
 impl StagedImageOutput {
     fn new(final_path: &Path) -> Result<Self, AppError> {
-        let parent = final_path.parent().ok_or_else(|| {
-            AppError::ArtifactGenerationFailed("image output path has no parent".into())
-        })?;
         Self::new_with_extension(final_path, "png")
     }
 
@@ -482,10 +479,14 @@ impl StagedImageOutput {
         let parent = final_path.parent().ok_or_else(|| {
             AppError::ArtifactGenerationFailed("render output path has no parent".into())
         })?;
-        Ok(Self { path: parent.join(format!(".openmindai-render-{}.{}", Uuid::new_v4(), extension)) })
+        Ok(Self {
+            path: parent.join(format!(".openmindai-render-{}.{}", Uuid::new_v4(), extension)),
+        })
     }
 
-    fn path(&self) -> &Path { &self.path }
+    fn path(&self) -> &Path {
+        &self.path
+    }
 
     fn publish(self, final_path: &Path) -> Result<(), AppError> {
         // Atomic no-clobber publication on the same filesystem.
@@ -640,8 +641,7 @@ pub async fn generate_video(
     let runtime = ensure_runtime(root, client, hardware, false).await?;
     let cli_path = root.resolve_relative(&runtime.cli_path)?;
     let profile = video_render_profile(hardware, &runtime.backend);
-    // Render into a private sibling file. A failed render must not remove an
-    // existing published video or leave a partial file at the final path.
+    // Render into a private sibling file; preserve any existing output.
     let staged_output = StagedImageOutput::new_with_extension(output_path, "webm")?;
 
     let mut command = Command::new(&cli_path);
