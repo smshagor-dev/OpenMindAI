@@ -21,5 +21,7 @@ test("finite valid byte sizes retain unit conversion and upper-unit bounds", () 
   assert.equal(formatBytes(1024), "1.0 KB");
   assert.equal(formatBytes(1536), "1.5 KB");
   assert.equal(formatBytes(1024 ** 4), "1.0 TB");
-  assert.equal(formatBytes(1024 ** 5), "1024.0 TB");
+  assert.equal(formatBytes(1024 ** 5), "1.0 PB");
+  assert.equal(formatBytes(1024 ** 6), "1.0 EB");
+  assert.equal(formatBytes(1024 ** 7), "1024.0 EB");
 });

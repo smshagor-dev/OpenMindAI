@@ -3,7 +3,7 @@ export function formatBytes(value?: number | null) {
   // Never present corrupted or untrusted byte counts as valid storage usage.
   if (!Number.isFinite(value) || value < 0) return "Unknown size";
   if (value === 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
+  const units = ["B", "KB", "MB", "GB", "TB", "PB", "EB"];
   let size = value;
   let index = 0;
   while (size >= 1024 && index < units.length - 1) {
