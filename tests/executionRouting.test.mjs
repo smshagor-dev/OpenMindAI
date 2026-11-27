@@ -133,6 +133,20 @@ test("mobile-style foreground Cloud recovery checks back off without repeated ge
   assert.equal(cloudProbeDelayMs(false, 1, 1.2), 6000);
 });
 
+test("Cloud health probe retry delays stay finite for malformed telemetry", () => {
+  for (const failures of [NaN, Infinity, -Infinity]) {
+    assert.equal(cloudProbeDelayMs(false, failures), 5000);
+  }
+  for (const jitter of [NaN, Infinity, -Infinity]) {
+    assert.equal(cloudProbeDelayMs(false, 3, jitter), 20000);
+  }
+  assert.equal(cloudProbeDelayMs(false, -12), 5000);
+  assert.equal(cloudProbeDelayMs(false, 2.9), 10000);
+  assert.equal(cloudProbeDelayMs(false, 4, -10), 32000);
+  assert.equal(cloudProbeDelayMs(false, 4, 10), 48000);
+  assert.equal(cloudProbeDelayMs(true, NaN, NaN), 60000);
+});
+
 test("Cloud-only runs no Local fallback even after a network error", async () => {
   const route = selectExecutionRoute({preference:"cloud", task:"chat", online:true, cloudConnected:true});
   assert.equal(route.target,"cloud");
@@ -168,4 +182,38 @@ test("first-run Cloud/Local/Both choice survives simulated relaunch before downl
     if (originalWindow === undefined) delete globalThis.window;
     else globalThis.window = originalWindow;
   }
+});
+
+test("hostile Cloud error metadata cannot interrupt permitted Local fallback", async () => {
+  const throwingMessage = Object.defineProperty({}, "message", {
+    get() { throw new Error("accessor exploded"); },
+  });
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+  const throwingCoercion = { message: { toString() { throw new Error("coercion exploded"); } } };
+  for (const error of [throwingMessage, revoked.proxy, throwingCoercion]) {
+    let localCalls = 0;
+    const result = await runWithFallback(
+      { target: "cloud", offline: false, reason: "connected", fallbackAllowed: true },
+      async () => { throw error; },
+      async () => { localCalls++; return "local"; },
+    ).catch((caught) => {
+      assert.equal(caught, error, "unknown failures should propagate unchanged");
+      return null;
+    });
+    assert.equal(result, null);
+    assert.equal(localCalls, 0, "unknown errors must not trigger local replay");
+  }
+});
+
+test("Cloud failure classification safely handles throwing getters and revoked proxies", () => {
+  const getter = Object.defineProperty({}, "message", {
+    get() { throw new Error("private diagnostic"); },
+  });
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+  for (const error of [getter, revoked.proxy, { message: Symbol("private") }]) {
+    assert.equal(isRecoverableCloudFailure(error), false);
+  }
+  assert.equal(isRecoverableCloudFailure({ message: "HTTP 503: unavailable" }), true);
 });

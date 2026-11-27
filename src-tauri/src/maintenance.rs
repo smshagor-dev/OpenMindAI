@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fs, io::Read};
 
 use chrono::Utc;
 use serde::Serialize;
@@ -228,6 +228,18 @@ pub fn backup_database(
     })
 }
 
+fn snapshot_is_readable(path: &std::path::Path) -> bool {
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+        | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let Ok(connection) = rusqlite::Connection::open_with_flags(path, flags) else {
+        return false;
+    };
+    matches!(
+        connection.query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0)),
+        Ok(result) if result == "ok"
+    )
+}
+
 pub fn list_backups(root: &PortableRootManager) -> Result<Vec<BackupInfo>, AppError> {
     let backups_dir = root.resolve_relative("backups")?;
     if !backups_dir.exists() {
@@ -250,6 +262,13 @@ pub fn list_backups(root: &PortableRootManager) -> Result<Vec<BackupInfo>, AppEr
         if !metadata.is_file() {
             continue;
         }
+        // Check a bounded header before advertising a backup as restorable.
+        if !has_sqlite_snapshot_header(&entry.path(), metadata.len()) {
+            continue;
+        }
+        if !snapshot_is_readable(&entry.path()) {
+            continue;
+        }
         let modified: chrono::DateTime<Utc> = metadata.modified()?.into();
         backups.push(BackupInfo {
             name,
@@ -260,6 +279,24 @@ pub fn list_backups(root: &PortableRootManager) -> Result<Vec<BackupInfo>, AppEr
     }
     backups.sort_by(|left, right| right.created_at.cmp(&left.created_at));
     Ok(backups)
+}
+
+fn has_sqlite_snapshot_header(path: &std::path::Path, size: u64) -> bool {
+    if size < 100 {
+        return false;
+    }
+    let Ok(mut file) = fs::File::open(path) else {
+        return false;
+    };
+    let mut header = [0u8; 100];
+    if file.read_exact(&mut header).is_err() {
+        return false;
+    }
+    let page_size = u16::from_be_bytes([header[16], header[17]]);
+    header.starts_with(b"SQLite format 3\0")
+        && (page_size == 1 || ((512..=32768).contains(&page_size) && page_size.is_power_of_two()))
+        && (1..=2).contains(&header[18])
+        && (1..=2).contains(&header[19])
 }
 
 /// Opens `relative` (resolved under the OpenMindAI root) in the OS file
@@ -339,11 +376,36 @@ mod tests {
     }
 
     #[test]
+    fn backup_listing_skips_corrupt_and_empty_matching_snapshots() {
+        let (_temp, root, database) = setup();
+        let valid = backup_database(&root, &database).unwrap();
+        let dir = root.resolve_relative("backups").unwrap();
+        fs::write(dir.join("openmindai-corrupt.db"), b"not a sqlite database").unwrap();
+        fs::write(dir.join("openmindai-empty.db"), b"").unwrap();
+        let listed = list_backups(&root).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, valid.name);
+    }
+
+    #[test]
+    fn backup_listing_does_not_modify_invalid_snapshot_bytes() {
+        let (_temp, root, _database) = setup();
+        let path = root.resolve_relative("backups/openmindai-invalid.db").unwrap();
+        let bytes = b"broken backup sentinel";
+        fs::write(&path, bytes).unwrap();
+        assert!(list_backups(&root).unwrap().is_empty());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
     fn backup_listing_does_not_label_unmanaged_files_as_database_snapshots() {
         let (_temp, root, database) = setup();
         let created = backup_database(&root, &database).unwrap();
         let backups_dir = root.resolve_relative("backups").unwrap();
         fs::write(backups_dir.join("manual.db"), b"other database").unwrap();
+        fs::write(backups_dir.join("openmindai-empty.db"), b"").unwrap();
+        fs::write(backups_dir.join("openmindai-truncated.db"), b"SQLite format 3").unwrap();
+        fs::write(backups_dir.join("openmindai-fake.db"), vec![b'X'; 256]).unwrap();
         fs::write(backups_dir.join("notes.txt"), b"no snapshot").unwrap();
         fs::write(
             backups_dir.join(".pending-openmindai-stale.db"),
@@ -354,5 +416,25 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, created.name);
         assert_eq!(entries[0].scope, BackupScope::DatabaseOnly);
+    }
+
+    #[test]
+    fn sqlite_snapshot_header_rejects_invalid_page_sizes_and_versions() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("snapshot.db");
+        let mut bytes = [0u8; 100];
+        bytes[..16].copy_from_slice(b"SQLite format 3\0");
+        bytes[16..18].copy_from_slice(&4096u16.to_be_bytes());
+        bytes[18] = 1;
+        bytes[19] = 1;
+        fs::write(&path, bytes).unwrap();
+        assert!(has_sqlite_snapshot_header(&path, 100));
+        bytes[16..18].copy_from_slice(&513u16.to_be_bytes());
+        fs::write(&path, bytes).unwrap();
+        assert!(!has_sqlite_snapshot_header(&path, 100));
+        bytes[16..18].copy_from_slice(&4096u16.to_be_bytes());
+        bytes[18] = 3;
+        fs::write(&path, bytes).unwrap();
+        assert!(!has_sqlite_snapshot_header(&path, 100));
     }
 }
