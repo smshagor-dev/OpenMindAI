@@ -1,12 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { URL } from "node:url";
 
 // Exercise the actual small pure MIME selector from the TypeScript source,
 // rather than reimplementing the allowlist in the test.
-const source = readFileSync(new URL("../src/lib/chat.ts", import.meta.url), "utf8");
-const match = source.match(/function visionMimeType\(file: File\) \{[\s\S]*?\n\}/);
+const source = readFileSync(new URL("../src/lib/visionMimeType.ts", import.meta.url), "utf8");
+const match = source.match(/export function visionMimeType\(file: Pick<File, "name" \| "type">\): "image\/png" \| "image\/jpeg" \| "image\/webp" \| null \{[\s\S]*?\n\}/);
 assert.ok(match, "visionMimeType implementation must exist");
+const selectorSource = match[0]
+  .replace("export function visionMimeType", "function visionMimeType")
+  .replace('file: Pick<File, "name" | "type">', "file")
+  .replace(': "image/png" | "image/jpeg" | "image/webp" | null', "");
+match[0] = selectorSource;
 const selector = new Function(
   "SUPPORTED_VISION_IMAGE_TYPES",
   `return (${match[0].replace("file: File", "file")});`,
