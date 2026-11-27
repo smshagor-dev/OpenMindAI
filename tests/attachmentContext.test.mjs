@@ -137,3 +137,29 @@ test("relevance-aligned middle window and small-limit head remain valid UTF-16",
   }
   assert(selectAttachmentExcerpt(content, 6001, "targetterm").includes("targetterm"));
 });
+
+test("attachment excerpts never split supplementary Unicode at head, middle or tail boundaries", () => {
+  const hasUnpairedSurrogate = text => /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(text);
+  // Shift the same emoji through all possible slice boundaries, including
+  // both ends of the query-selected middle window.
+  for (const offset of Array.from({ length: 220 }, (_, i) => i)) {
+    const content = "a".repeat(1000 + offset) + "😀" + "b".repeat(1700)
+      + "needle" + "c".repeat(1600 + offset) + "🚀" + "d".repeat(1700);
+    for (const limit of [120, 160, 512, 1000, 1500]) {
+      const excerpt = selectAttachmentExcerpt(content, limit, "needle");
+      assert(excerpt.length <= limit);
+      assert(!hasUnpairedSurrogate(excerpt), `broken surrogate at offset ${offset}, limit ${limit}`);
+      assert(excerpt.includes("Attachment excerpt truncated"));
+    }
+  }
+});
+
+test("small attachment budgets preserve valid Unicode while retaining truncation notice", () => {
+  const content = "😀".repeat(200);
+  for (const limit of [70, 71, 72, 73, 90, 110]) {
+    const excerpt = selectAttachmentExcerpt(content, limit, "");
+    assert(excerpt.length <= limit);
+    assert(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(excerpt));
+    assert(excerpt.includes("Attachment excerpt truncated"));
+  }
+});
