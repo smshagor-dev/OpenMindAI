@@ -593,16 +593,20 @@ fn ignored_directory(path: &Path) -> bool {
     )
 }
 
-const MAX_GOAL_TERM_INPUT_CHARS: usize = 4_096;
+const MAX_GOAL_SCAN_BYTES: usize = 4 * 1024;
 
 fn goal_terms(goal: &str) -> HashSet<String> {
-    // User-supplied goals may be arbitrarily long. Bound the tokenizer's input
-    // before splitting or allocating normalized tokens; source context is not
-    // changed and the original goal is still used by the caller.
-    let bounded: String = goal.chars().take(MAX_GOAL_TERM_INPUT_CHARS).collect();
-    bounded.split(|character: char| {
+    // Bound both scanning and allocation before splitting potentially hostile requests.
+    // A UTF-8 boundary is required because user goals may contain multibyte text.
+    let mut end = goal.len().min(MAX_GOAL_SCAN_BYTES);
+    while !goal.is_char_boundary(end) {
+        end -= 1;
+    }
+    goal[..end]
+    .split(|character: char| {
         !character.is_alphanumeric() && character != '_' && character != '-'
     })
+    .take(128)
     .map(str::to_ascii_lowercase)
     .filter(|term| term.chars().count() >= 4)
     .filter(|term| {
@@ -643,10 +647,34 @@ mod tests {
         assert!(terms.contains("security"));
         assert!(!terms.contains("late_unique_term"));
         assert!(terms.len() <= 32);
-        let boundary = format!("{}🚀security", "a".repeat(MAX_GOAL_TERM_INPUT_CHARS - 1));
+        let boundary = format!("{}🚀security", "a".repeat(MAX_GOAL_SCAN_BYTES - 1));
         let bounded_terms = goal_terms(&boundary);
         assert!(!bounded_terms.contains("security"));
         assert!(goal_terms("বাংলা নিরাপত্তা rust").contains("rust"));
+    }
+
+    #[test]
+    fn goal_tokenization_bounds_oversized_ascii_and_unicode_inputs() {
+        let oversized = format!("session {} secret_tail", "a".repeat(2_000_000));
+        let terms = goal_terms(&oversized);
+        assert!(terms.contains("session"));
+        assert!(!terms.contains("secret_tail"));
+        assert!(terms.iter().all(|term| term.len() <= MAX_GOAL_SCAN_BYTES));
+
+        let unicode = format!("{}session_hidden", "😀".repeat(1024));
+        assert!(goal_terms(&unicode).is_empty());
+        assert_eq!(goal_terms("refresh_session alpha-beta project"),
+            HashSet::from(["refresh_session".to_string(), "alpha-beta".to_string()]));
+    }
+
+    #[test]
+    fn goal_tokenization_limits_preprocessed_terms() {
+        let input = (0..10_000).map(|index| format!("token{index:04}"))
+            .collect::<Vec<_>>().join(" ");
+        let terms = goal_terms(&input);
+        assert!(terms.len() <= 32);
+        assert!(terms.contains("token0000"));
+        assert!(!terms.contains("token9999"));
     }
 
     #[test]
