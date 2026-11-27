@@ -279,6 +279,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
   const [revisionAssetId, setRevisionAssetId] = useState<string | null>(null);
   const [isRevising, setIsRevising] = useState(false);
   const threadBottomRef = useRef<HTMLDivElement>(null);
+  const editorModified = useRef(false);
   const [referenceImage, setReferenceImage] = useState<ReferenceImage | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -596,7 +597,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
       return;
     }
     // A revision is based on the last stored generated asset, not unsaved viewport edits.
-    if (revision && !window.confirm("Apply this change to the last generated model? Unsaved manual editor changes are not included. The previous generated asset is kept.")) return;
+    if (revision && editorModified.current && !window.confirm("Apply this change to the last generated model? Unsaved manual editor changes are not included. Save or export them first if needed.")) return;
     const turnId = crypto.randomUUID();
     const nextTurns: SceneTurn[] = [...(forceNew ? [] : turns), { id: turnId, prompt: text, status: "pending" }];
     setTurns(nextTurns);
@@ -752,6 +753,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
       setTurns(completedTurns);
       setActiveId(sceneId);
       setRevisionAssetId(target === "local" ? outputAsset.id : null);
+      editorModified.current = false;
       setSceneTitle(threadTitle);
       succeeded = true;
       setPersistentSceneId(null);
@@ -806,8 +808,9 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
     setPersistentSceneId(null);
     setPersistentSceneJson(undefined);
     setPersistentProjectId(null);
+    editorModified.current = false;
     setTurns(entry.turns ?? [{ id: entry.id, prompt: entry.prompt, status: "ready" }]);
-    setSubmittedPrompt(entry.turns?.at(-1)?.prompt ?? entry.prompt);
+    setSubmittedPrompt(entry.turns?.[entry.turns.length - 1]?.prompt ?? entry.prompt);
     setRevisionAssetId(entry.target === "cloud" ? null : entry.localAssetId ?? entry.id);
     setPrompt("");
     setNativeJob(null);
@@ -861,6 +864,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
   );
 
   const newScene = useCallback(() => {
+    editorModified.current = false;
     setTurns([]);
     setRevisionAssetId(null);
     setSubmittedPrompt(null);
@@ -886,7 +890,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
   const inWorkspace = submittedPrompt !== null || showingResult;
   const activeGenerationJob = nativeJob && nativeJob.id === nativeJobId.current ? nativeJob : null;
   const generationProgress = studio3dProgress(activeGenerationJob?.inferenceRoute ?? jobTarget, activeGenerationJob?.currentStage ?? "preparing", showingResult && !busy);
-  const pendingTurn = turns.at(-1);
+  const pendingTurn = turns[turns.length - 1];
   const displayedTurns = turns.slice(0, -1);
   useEffect(() => {
     threadBottomRef.current?.scrollIntoView({ block: "end", behavior: "auto" });
@@ -1110,6 +1114,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
               <Studio3DViewport
                 key={revisionAssetId ?? activeId ?? mesh.filename}
                 dataBase64={mesh.data_base64}
+                onSceneModified={() => { editorModified.current = true; }}
                 onSaveRevision={studioProjectId || persistentProjectId ? saveProjectRevision : undefined}
                 sceneJson={persistentSceneJson}
                 imageAssets={projectAssets.filter((asset) => asset.kind === "image").map((asset) => ({ id: asset.id, name: asset.originalName }))}
@@ -1258,7 +1263,7 @@ export function Studio3D({ mode, internetAvailable, connection, onConnectCloud }
                   />
                 </label> : null}
               </div>
-              {showingResult ? <span className="studio3d-revision-scope">Change request · current generated scene</span> : inWorkspace ? <span className="studio3d-revision-scope">3D conversation</span> : null}
+              {showingResult ? <span className="studio3d-revision-scope">Change request · last generated scene</span> : inWorkspace ? <span className="studio3d-revision-scope">3D conversation</span> : null}
               <button
                 type="submit"
                 className="studio3d-send"
