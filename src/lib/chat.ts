@@ -4,7 +4,6 @@ import { shouldReadAttachmentAsText } from "./attachmentRouting";
 import { formatBytes } from "./format";
 import { visionMimeType } from "./visionMimeType";
 import { parseDisplayedAttachmentSection } from "./displayAttachmentSection";
-import { analyzeVideoFile, transcribeAudioFile } from "./media";
 import { extractPdfText, type PdfExtractionOptions, type PdfExtractionProgress } from "./pdf";
 import { isImageGenerationIntent } from "./imageGeneration";
 import {
@@ -231,10 +230,12 @@ export async function readAttachment(
         : []),
     ].join(" ") || undefined;
   } else if (kind === "audio") {
+    const { transcribeAudioFile } = await import("./media");
     const transcript = await transcribeAudioFile(file);
     const language = transcript.language ? `, language ${transcript.language}` : "";
     contentPreview = `[Audio transcribed locally with OpenMindAI Hear: ${transcript.durationSeconds.toFixed(1)} seconds${language}]\n\n${transcript.text}`;
   } else if (kind === "video") {
+    const { analyzeVideoFile } = await import("./media");
     const analysis = await analyzeVideoFile(file);
     mediaItems = analysis.frames;
     const transcript = analysis.transcript?.text
