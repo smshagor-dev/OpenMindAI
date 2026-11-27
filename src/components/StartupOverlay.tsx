@@ -53,6 +53,7 @@ export function StartupOverlay() {
   const [bootstrapComplete, setBootstrapComplete] = useState(false);
   const [appReady, setAppReady] = useState(false);
   const [visible, setVisible] = useState(true);
+  const [nativeUnavailable, setNativeUnavailable] = useState(false);
 
   const completed = useMemo(
     () => steps.filter((step) => step.state === "done" || step.state === "warning").length,
@@ -178,6 +179,19 @@ export function StartupOverlay() {
     return () => window.clearTimeout(timer);
   }, [appReady, bootstrapComplete]);
 
+  useEffect(() => {
+    const watchdog = window.setTimeout(() => {
+      setNativeUnavailable(true);
+      setSteps((current) => current.map((step) =>
+        step.state === "done" || step.state === "warning"
+          ? step
+          : { ...step, state: "warning", detail: "Native startup did not respond. The workspace opened in recovery mode." },
+      ));
+      setBootstrapComplete(true);
+    }, 15_000);
+    return () => window.clearTimeout(watchdog);
+  }, []);
+
   if (!visible) return null;
 
   return (
@@ -192,9 +206,11 @@ export function StartupOverlay() {
         </div>
 
         <div className="startup-headline">
-          <h1>{bootstrapComplete ? "OpenMindAI is ready" : activeStep?.label ?? "Starting OpenMindAI"}</h1>
+          <h1>{nativeUnavailable ? "Desktop services need attention" : bootstrapComplete ? "OpenMindAI is ready" : activeStep?.label ?? "Starting OpenMindAI"}</h1>
           <p>
-            {bootstrapComplete
+            {nativeUnavailable
+              ? "The interface opened, but native desktop services did not respond. Check Settings and the local app log, then restart the desktop."
+              : bootstrapComplete
               ? "Your local workspace and default AI are prepared."
               : activeStep?.detail ?? "Preparing your local workspace..."}
           </p>

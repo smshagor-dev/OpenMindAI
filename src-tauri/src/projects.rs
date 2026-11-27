@@ -1,8 +1,8 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::Utc;
-use sha2::{Digest, Sha256};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{app_error::AppError, chat::Conversation, database::Database};
@@ -321,27 +321,32 @@ impl<'a> ProjectRepository<'a> {
     /// Stores original binary bytes with the portable SQLite profile.
     /// No filesystem paths are built from names; database snapshots and
     /// cascading deletes therefore include the exact payload automatically.
-    pub fn add_binary_file(
-        &self,
-        input: &ProjectBinaryFileInput,
-    ) -> Result<ProjectFile, AppError> {
+    pub fn add_binary_file(&self, input: &ProjectBinaryFileInput) -> Result<ProjectFile, AppError> {
         if input.size_bytes < 0 || input.size_bytes as usize > MAX_PROJECT_BINARY_BYTES {
-            return Err(AppError::internal("binary project attachment exceeds 1.5 MB limit"));
+            return Err(AppError::internal(
+                "binary project attachment exceeds 1.5 MB limit",
+            ));
         }
         // Reject overlong payloads *before* decoding to bound IPC allocations.
         const MAX_ENCODED_BYTES: usize = MAX_PROJECT_BINARY_BYTES.div_ceil(3) * 4;
         if input.data_base64.len() > MAX_ENCODED_BYTES {
-            return Err(AppError::internal("encoded project attachment exceeds size limit"));
+            return Err(AppError::internal(
+                "encoded project attachment exceeds size limit",
+            ));
         }
         let bytes = STANDARD
             .decode(&input.data_base64)
             .map_err(|_| AppError::internal("invalid project attachment base64"))?;
         if bytes.len() != input.size_bytes as usize {
-            return Err(AppError::internal("binary attachment length does not match file size"));
+            return Err(AppError::internal(
+                "binary attachment length does not match file size",
+            ));
         }
         let name = sanitize_file_name(&input.name)?;
         if name == "." || name == ".." || name.contains('/') || name.contains('\\') {
-            return Err(AppError::internal("binary attachment name cannot contain path separators"));
+            return Err(AppError::internal(
+                "binary attachment name cannot contain path separators",
+            ));
         }
         let mime_type = sanitize_mime_type(input.mime_type.as_deref())?;
         let digest = format!("{:x}", Sha256::digest(&bytes));
@@ -387,7 +392,15 @@ impl<'a> ProjectRepository<'a> {
                  FROM project_files
                  WHERE id = ?1 AND project_id = ?2 AND status = 'attached'",
                 params![file_id, project_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .optional()?;
         let (name, mime_type, size_bytes, bytes, expected) =
@@ -397,7 +410,9 @@ impl<'a> ProjectRepository<'a> {
             || bytes.len() != size_bytes as usize
             || format!("{:x}", Sha256::digest(&bytes)) != expected
         {
-            return Err(AppError::internal("project attachment failed integrity verification"));
+            return Err(AppError::internal(
+                "project attachment failed integrity verification",
+            ));
         }
         Ok(ProjectBinaryFileDownload {
             name,
@@ -545,7 +560,9 @@ fn sanitize_file_name(name: &str) -> Result<String, AppError> {
         return Err(AppError::internal("project file name cannot be empty"));
     }
     if trimmed.chars().any(char::is_control) {
-        return Err(AppError::internal("project file name contains control characters"));
+        return Err(AppError::internal(
+            "project file name contains control characters",
+        ));
     }
     Ok(take_chars(trimmed, MAX_PROJECT_FILE_NAME_CHARS))
 }
@@ -555,7 +572,9 @@ fn sanitize_mime_type(value: Option<&str>) -> Result<Option<String>, AppError> {
         return Ok(None);
     };
     if value.chars().any(char::is_control) {
-        return Err(AppError::internal("project file MIME type contains control characters"));
+        return Err(AppError::internal(
+            "project file MIME type contains control characters",
+        ));
     }
     Ok(Some(take_chars(value, MAX_PROJECT_MIME_TYPE_CHARS)))
 }
@@ -599,9 +618,7 @@ fn project_file_context(files: &[ProjectFile], prompt: Option<&str>) -> String {
 
     // Stable ordering: relevant older files win, then preserve the file-list's
     // newest-first order when the query does not identify a specific file.
-    candidates.sort_by(|left, right| {
-        right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1))
-    });
+    candidates.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
     if candidates.is_empty() {
         return String::new();
     }
@@ -650,9 +667,8 @@ fn project_file_context(files: &[ProjectFile], prompt: Option<&str>) -> String {
 /// avoid scanning files repeatedly for an unbounded user-supplied query.
 fn project_query_terms(prompt: &str) -> Vec<String> {
     let stop = [
-        "about", "could", "explain", "from", "give", "have", "help",
-        "into", "latest", "need", "please", "project", "show",
-        "tell", "that", "them", "there", "these", "this", "what",
+        "about", "could", "explain", "from", "give", "have", "help", "into", "latest", "need",
+        "please", "project", "show", "tell", "that", "them", "there", "these", "this", "what",
         "when", "where", "which", "with", "your",
     ];
     let mut terms = Vec::new();
@@ -710,7 +726,10 @@ fn project_relevant_excerpt(content: &str, terms: &[String], limit: usize) -> (S
         if needle.is_empty() || needle.len() > lowered.len() {
             continue;
         }
-        if let Some(index) = lowered.windows(needle.len()).position(|window| window == needle) {
+        if let Some(index) = lowered
+            .windows(needle.len())
+            .position(|window| window == needle)
+        {
             first_match = Some(first_match.map_or(index, |previous: usize| previous.min(index)));
         }
     }
@@ -757,14 +776,22 @@ mod tests {
 
     #[test]
     fn project_excerpt_finds_late_evidence_and_keeps_unicode_boundaries() {
-        let text = format!("{}{}{}", "😀".repeat(100), "ROLLBACK_SECRET_MARKER", "é".repeat(100));
+        let text = format!(
+            "{}{}{}",
+            "😀".repeat(100),
+            "ROLLBACK_SECRET_MARKER",
+            "é".repeat(100)
+        );
         let (excerpt, truncated) = project_relevant_excerpt(&text, &["rollback".into()], 48);
         assert!(truncated);
         assert!(excerpt.contains("ROLLBACK_SECRET_MARKER"));
         assert!(excerpt.chars().count() <= 48);
         let (generic, _) = project_relevant_excerpt(&text, &[], 48);
         assert!(!generic.contains("ROLLBACK_SECRET_MARKER"));
-        assert_eq!(project_relevant_excerpt("tiny", &["tiny".into()], 48), ("tiny".into(), false));
+        assert_eq!(
+            project_relevant_excerpt("tiny", &["tiny".into()], 48),
+            ("tiny".into(), false)
+        );
     }
 
     #[test]
@@ -826,7 +853,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(leftovers, 0, "cascading project deletion must remove binary blobs");
+        assert_eq!(
+            leftovers, 0,
+            "cascading project deletion must remove binary blobs"
+        );
         assert!(repo.read_binary_file(&first.id, &record.id).is_err());
     }
 
@@ -845,16 +875,25 @@ mod tests {
         assert!(repo.add_binary_file(&input).is_err());
         input.name = "valid.png".to_string();
         input.size_bytes = 4;
-        assert!(repo.add_binary_file(&input).is_err(), "claimed size mismatch");
+        assert!(
+            repo.add_binary_file(&input).is_err(),
+            "claimed size mismatch"
+        );
         input.size_bytes = 3;
         input.data_base64 = "%%%invalid%%%".to_string();
         assert!(repo.add_binary_file(&input).is_err(), "invalid base64");
         input.size_bytes = MAX_PROJECT_BINARY_BYTES as i64 + 1;
         input.data_base64 = "AA==".to_string();
-        assert!(repo.add_binary_file(&input).is_err(), "oversized declared length");
+        assert!(
+            repo.add_binary_file(&input).is_err(),
+            "oversized declared length"
+        );
         input.size_bytes = 3;
         input.data_base64 = "A".repeat(MAX_PROJECT_BINARY_BYTES.div_ceil(3) * 4 + 1);
-        assert!(repo.add_binary_file(&input).is_err(), "oversized encoded payload");
+        assert!(
+            repo.add_binary_file(&input).is_err(),
+            "oversized encoded payload"
+        );
         assert!(repo.find_project(&project.id).unwrap().files.is_empty());
     }
 
@@ -881,9 +920,8 @@ mod tests {
         // Only the database connection needs explicit closure before moving
         // the portable root; the repository is a lightweight borrowed view.
         drop(database);
-        let new_root = crate::portable_root::PortableRootManager::from_root(
-            dir.path().join("relocated-root"),
-        );
+        let new_root =
+            crate::portable_root::PortableRootManager::from_root(dir.path().join("relocated-root"));
         std::fs::rename(old_root.root(), new_root.root()).unwrap();
         let relocated_database = Database::open(new_root.database_path()).unwrap();
         let copied = ProjectRepository::new(&relocated_database)
@@ -900,7 +938,10 @@ mod tests {
         let restored_copy = ProjectRepository::new(&recovered)
             .read_binary_file(&project.id, &record.id)
             .unwrap();
-        assert_eq!(STANDARD.decode(restored_copy.data_base64).unwrap(), original);
+        assert_eq!(
+            STANDARD.decode(restored_copy.data_base64).unwrap(),
+            original
+        );
     }
 
     #[test]
@@ -915,22 +956,34 @@ mod tests {
             repo.link_conversation(&first.id, id).unwrap();
         }
         for i in 0..4 {
-            database.connection().execute(
-                "INSERT INTO project_files
+            database
+                .connection()
+                .execute(
+                    "INSERT INTO project_files
                  (id, project_id, name, size_bytes, content_text, status, added_at)
                  VALUES (?1, ?2, 'private.txt', 100000, ?3, 'ready', '2026-01-01')",
-                params![Uuid::new_v4().to_string(), first.id, "PRIVATE_DATA".repeat(10_000 + i)],
-            ).unwrap();
+                    params![
+                        Uuid::new_v4().to_string(),
+                        first.id,
+                        "PRIVATE_DATA".repeat(10_000 + i)
+                    ],
+                )
+                .unwrap();
         }
         // Equal timestamps stress stable (updated_at, id) cursor ordering.
-        database.connection().execute(
-            "UPDATE projects SET updated_at = '2026-01-01T00:00:00+00:00'",
-            [],
-        ).unwrap();
+        database
+            .connection()
+            .execute(
+                "UPDATE projects SET updated_at = '2026-01-01T00:00:00+00:00'",
+                [],
+            )
+            .unwrap();
         let first_page = repo.list_projects(None, 1).unwrap();
         assert_eq!(first_page.projects.len(), 1);
         assert!(first_page.next_cursor.is_some());
-        let second_page = repo.list_projects(first_page.next_cursor.as_deref(), 1).unwrap();
+        let second_page = repo
+            .list_projects(first_page.next_cursor.as_deref(), 1)
+            .unwrap();
         assert_eq!(second_page.projects.len(), 1);
         assert!(second_page.next_cursor.is_none());
         let mut all = first_page.projects;
@@ -968,9 +1021,7 @@ mod tests {
         let huge_text = "LARGE_PRIVATE_CONTENT_NOT_FOR_SIDEBAR ".repeat(3_000);
         let mut created_ids = Vec::new();
         for index in 0..125 {
-            let project = repo
-                .create_project(&format!("Project {index:03}"))
-                .unwrap();
+            let project = repo.create_project(&format!("Project {index:03}")).unwrap();
             database
                 .connection()
                 .execute(
@@ -1047,9 +1098,7 @@ mod tests {
             selected.files[0].content_text.as_deref(),
             Some(huge_text.as_str())
         );
-        assert!(repo
-            .list_projects(Some("bad cursor"), 50)
-            .is_err());
+        assert!(repo.list_projects(Some("bad cursor"), 50).is_err());
         assert!(repo
             .list_projects(Some("2026-01-01T00:00:00Z|not-a-uuid"), 50)
             .is_err());
@@ -1113,7 +1162,10 @@ mod tests {
         assert!(alpha.conversation_ids.is_empty());
         assert_eq!(beta.conversation_ids, vec!["move-me"]);
         assert_eq!(
-            repo.project_for_conversation("move-me").unwrap().unwrap().id,
+            repo.project_for_conversation("move-me")
+                .unwrap()
+                .unwrap()
+                .id,
             beta.id
         );
     }
@@ -1126,7 +1178,11 @@ mod tests {
         assert_eq!(project.name.chars().count(), MAX_PROJECT_NAME_CHARS);
 
         let project = repo
-            .update_project(&project.id, &project.name, &"I".repeat(MAX_PROJECT_INSTRUCTIONS_CHARS + 10))
+            .update_project(
+                &project.id,
+                &project.name,
+                &"I".repeat(MAX_PROJECT_INSTRUCTIONS_CHARS + 10),
+            )
             .unwrap();
         assert_eq!(
             project.instructions.chars().count(),
@@ -1245,11 +1301,10 @@ mod tests {
             .unwrap();
         }
         let project = repo.find_project(&project.id).unwrap();
-        let robot = project_context_message_for_prompt(&project, Some("robotics navigation"))
-            .unwrap();
+        let robot =
+            project_context_message_for_prompt(&project, Some("robotics navigation")).unwrap();
         assert!(robot.contains("ROBOTICS_UNIQUE_MARKER"));
-        let data = project_context_message_for_prompt(&project, Some("dataset-9 notes"))
-            .unwrap();
+        let data = project_context_message_for_prompt(&project, Some("dataset-9 notes")).unwrap();
         assert!(data.contains("DATASET_MARKER_9"));
 
         repo.delete_file(&project.id, &first.id).unwrap();
@@ -1322,6 +1377,12 @@ mod tests {
         let project = repo.find_project(&project.id).unwrap();
         let context = project_context_message(&project).unwrap();
         assert!(context.contains("[truncated]"));
-        assert!(context.chars().filter(|character| *character == '🙂').count() <= 4_000);
+        assert!(
+            context
+                .chars()
+                .filter(|character| *character == '🙂')
+                .count()
+                <= 4_000
+        );
     }
 }
