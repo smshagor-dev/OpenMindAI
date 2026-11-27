@@ -313,7 +313,10 @@ fn validate_model_package(
 
     let hashes_checked = integrity == IntegrityPolicy::VerifyContents;
     if validate_installed_dependencies(root, entry, hashes_checked)? {
-        let has_required = download.dependencies.iter().any(|dependency| dependency.required);
+        let has_required = download
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.required);
         checks.push(if !hashes_checked && has_required {
             check(
                 PreflightStatus::Warning,
@@ -949,7 +952,10 @@ mod tests {
             .ensure_ready()
             .unwrap_err()
             .to_string();
-        assert!(primary_error.contains("primary model SHA-256"), "{primary_error}");
+        assert!(
+            primary_error.contains("primary model SHA-256"),
+            "{primary_error}"
+        );
 
         // Restoring the primary must not hide corruption of a required asset.
         fs::write(&primary, primary_bytes).unwrap();
@@ -959,7 +965,10 @@ mod tests {
             .ensure_ready()
             .unwrap_err()
             .to_string();
-        assert!(dependency_error.contains("Dependencies"), "{dependency_error}");
+        assert!(
+            dependency_error.contains("Dependencies"),
+            "{dependency_error}"
+        );
         assert!(dependency_error.contains("corrupt"), "{dependency_error}");
     }
 
