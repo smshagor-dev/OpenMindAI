@@ -109,6 +109,7 @@ export async function extractPdfText(
     const maxPagesRead = Math.min(pdf.numPages, MAX_PDF_PAGES);
     const pageTexts: string[] = [];
     const scannedPages: number[] = [];
+    const failedTextPages: number[] = [];
     let selectableChars = 0;
     let truncated = pdf.numPages > maxPagesRead;
     options.onProgress?.({ phase: "reading", completed: 0, total: maxPagesRead });
@@ -118,13 +119,22 @@ export async function extractPdfText(
     // for a bounded OCR pass because their text precedes later pages.
     for (let pageNumber = 1; pageNumber <= maxPagesRead; pageNumber += 1) {
       assertNotCancelled(options.signal);
-      const page = await pdf.getPage(pageNumber);
-      assertNotCancelled(options.signal);
-      const pageText = await selectablePageText(page);
+      let pageText = "";
+      try {
+        const page = await pdf.getPage(pageNumber);
+        assertNotCancelled(options.signal);
+        pageText = await selectablePageText(page);
+      } catch (error) {
+        assertNotCancelled(options.signal);
+        // A damaged page must not discard readable evidence on later pages.
+        // Keep its position in pageTexts so page numbering remains stable.
+        void error;
+        failedTextPages.push(pageNumber);
+      }
       assertNotCancelled(options.signal);
       pageTexts.push(pageText);
       selectableChars += pageText.length;
-      if (pageText.replace(/\s+/g, "").length < MIN_SELECTABLE_TEXT_CHARS) {
+      if (!failedTextPages.includes(pageNumber) && pageText.replace(/\s+/g, "").length < MIN_SELECTABLE_TEXT_CHARS) {
         scannedPages.push(pageNumber);
       }
       options.onProgress?.({ phase: "reading", completed: pageNumber, total: maxPagesRead });
@@ -200,8 +210,18 @@ export async function extractPdfText(
           const ocr = await invoke<PdfOcrPageResult[]>("ocr_pdf_pages", { pages: rendered });
           assertNotCancelled(options.signal);
           const allowed = new Set(rendered.map(page => page.pageNumber));
-          for (const result of ocr) {
-            if (!allowed.delete(result.pageNumber) || typeof result.text !== "string") continue;
+          // Native OCR is an external boundary. Never scan an unbounded response:
+          // each dispatch contains at most four pages, and extra entries cannot
+          // provide additional trusted evidence after this inspection budget.
+          // Allow a few malformed/duplicate entries before valid results.
+          const maxResults = Math.min(64, rendered.length * 16);
+          if (!Array.isArray(ocr)) throw new Error("Invalid PDF OCR response.");
+          for (let index = 0; index < Math.min(ocr.length, maxResults); index += 1) {
+            const result = ocr[index];
+            if (!result || typeof result !== "object"
+                || !Number.isSafeInteger(result.pageNumber)
+                || typeof result.text !== "string"
+                || !allowed.delete(result.pageNumber)) continue;
             // Bound native OCR output before trimming or Unicode expansion.
             // The native response can be arbitrarily large even when the
             // remaining prompt budget is tiny.
@@ -233,9 +253,12 @@ export async function extractPdfText(
       }
     }
     assertNotCancelled(options.signal);
-    const missing = [...unreadPages, ...deferred].sort((a, b) => a - b);
+    const missing = [...new Set([...unreadPages, ...deferred, ...failedTextPages])].sort((a, b) => a - b);
     const ocrFailures = [...unreadPages].sort((a, b) => a - b);
     const warnings = [
+      ...(failedTextPages.length ? [
+        `PDF text decoding failed on pages ${failedTextPages.join(", ")}. These pages were skipped; the imported document is incomplete.`,
+      ] : []),
       ...(ocrFailures.length ? [
         `OCR incomplete on pages ${ocrFailures.join(", ")}. Only available text is included; image-only content on these pages was not analyzed. Install or repair OpenMindAI Lens for full coverage.`,
       ] : []),
@@ -269,7 +292,7 @@ export async function extractPdfText(
         break;
       }
       if (pageChunk.length > remaining) {
-        chunks.push(pageChunk.slice(0, remaining));
+        chunks.push(slicePdfText(pageChunk, remaining));
         currentLength += remaining;
         truncated = true;
         break;
@@ -277,7 +300,7 @@ export async function extractPdfText(
       chunks.push(pageChunk);
       currentLength += pageChunk.length;
     }
-    if (deferred.length || stoppedForTime || stoppedForTextBudget) truncated = true;
+    if (failedTextPages.length || deferred.length || stoppedForTime || stoppedForTextBudget) truncated = true;
 
     return {
       text: chunks.join("").trim(),
@@ -317,6 +340,18 @@ function boundedOcrText(text: string, maxUnits: number): string {
   return text.slice(start, end).trimEnd();
 }
 
+// Preserve UTF-16 well-formedness when enforcing character budgets.
+function slicePdfText(text: string, maxUnits: number): string {
+  if (maxUnits <= 0) return "";
+  let end = Math.min(text.length, maxUnits);
+  if (end < text.length && end > 0) {
+    const last = text.charCodeAt(end - 1);
+    const next = text.charCodeAt(end);
+    if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end -= 1;
+  }
+  return text.slice(0, end);
+}
+
 async function selectablePageText(page: PDFPageProxy) {
   const textContent = await page.getTextContent();
   const lines: string[] = [];
@@ -329,10 +364,10 @@ async function selectablePageText(page: PDFPageProxy) {
     // even whitespace normalization cannot allocate the full input string.
     const remaining = MAX_EXTRACTED_CHARS - collected - line.length;
     if (remaining <= 0) break;
-    const value = item.str.slice(0, remaining).replace(/\s+/g, " ").trim();
+    const value = slicePdfText(item.str, remaining).replace(/\s+/g, " ").trim();
     if (!value) continue;
     const separator = line ? " " : "";
-    line += separator + value.slice(0, Math.max(0, remaining - separator.length));
+    line += separator + slicePdfText(value, Math.max(0, remaining - separator.length));
     if (item.hasEOL) {
       const finished = line.trim();
       if (finished) {
@@ -343,9 +378,9 @@ async function selectablePageText(page: PDFPageProxy) {
     }
   }
   if (line.trim() && collected < MAX_EXTRACTED_CHARS) {
-    lines.push(line.trim().slice(0, MAX_EXTRACTED_CHARS - collected));
+    lines.push(slicePdfText(line.trim(), MAX_EXTRACTED_CHARS - collected));
   }
-  return lines.filter(Boolean).join("\n").slice(0, MAX_EXTRACTED_CHARS).trim();
+  return slicePdfText(lines.filter(Boolean).join("\n"), MAX_EXTRACTED_CHARS).trim();
 }
 
 async function renderPdfPage(page: PDFPageProxy, signal?: PdfExtractionOptions["signal"]) {
