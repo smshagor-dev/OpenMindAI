@@ -202,6 +202,7 @@ impl<'a> ChatRepository<'a> {
         let title = title
             .filter(|value| !value.trim().is_empty())
             .unwrap_or("New conversation");
+        validate_conversation_title(title)?;
         self.database.connection().execute(
             "INSERT INTO conversations (id, title, created_at, updated_at, pinned)
              VALUES (?1, ?2, ?3, ?4, 0)",
@@ -311,6 +312,7 @@ impl<'a> ChatRepository<'a> {
         if title.is_empty() {
             return Err(AppError::internal("conversation title cannot be empty"));
         }
+        validate_conversation_title(title)?;
         self.touch_conversation_with(
             id,
             "UPDATE conversations SET title = ?1, updated_at = ?2 WHERE id = ?3",
@@ -626,6 +628,13 @@ impl<'a> ChatRepository<'a> {
     }
 }
 
+fn validate_conversation_title(title: &str) -> Result<(), AppError> {
+    if title.chars().take(257).count() > 256 {
+        return Err(AppError::internal("conversation title exceeds 256 characters"));
+    }
+    Ok(())
+}
+
 fn validate_message_role(role: &str) -> Result<(), AppError> {
     if matches!(role, "system" | "user" | "assistant" | "tool") {
         Ok(())
@@ -703,6 +712,22 @@ mod tests {
         std::fs::write(&second_index, b"private image reference").unwrap();
         repo.delete_conversation(&chat.id).unwrap();
         assert!(!second_index.exists());
+    }
+
+    #[test]
+    fn conversation_title_limit_applies_to_create_and_rename_without_writes() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let valid = "界".repeat(256);
+        let invalid = "界".repeat(257);
+        let created = repo.create_conversation(Some(&valid)).unwrap();
+        assert_eq!(created.title, valid);
+        assert!(repo.create_conversation(Some(&invalid)).is_err());
+        assert_eq!(repo.list_conversations().unwrap().len(), 1);
+        assert!(repo.rename_conversation(&created.id, &invalid).is_err());
+        assert_eq!(repo.find_conversation(&created.id).unwrap().title, valid);
+        repo.rename_conversation(&created.id, "Renamed").unwrap();
+        assert_eq!(repo.find_conversation(&created.id).unwrap().title, "Renamed");
     }
 
     #[test]
