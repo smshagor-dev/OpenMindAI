@@ -386,15 +386,20 @@ impl<'a> ChatRepository<'a> {
 
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
-        self.database.connection().execute(
+        // Both writes represent one logical message append. If the conversation
+        // timestamp update fails, do not leave a persisted turn that callers may
+        // unknowingly duplicate when retrying the failed request.
+        let transaction = self.database.connection().unchecked_transaction()?;
+        transaction.execute(
             "INSERT INTO messages (id, conversation_id, role, content, status, model_id, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![id, conversation_id, role, content, status, model_id, now, now],
         )?;
-        self.database.connection().execute(
+        transaction.execute(
             "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
             params![now, conversation_id],
         )?;
+        transaction.commit()?;
         self.find_message(&id)
     }
 
@@ -773,6 +778,31 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[1].content, "world");
         assert_eq!(messages[1].status, "cancelled");
+    }
+
+    #[test]
+    fn failed_conversation_touch_rolls_back_inserted_message() {
+        let database = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&database);
+        let conversation = repo.create_conversation(Some("Atomic append")).unwrap();
+        let original_updated_at = conversation.updated_at.clone();
+
+        // Simulate a failure in the second write after the message INSERT
+        // succeeds. A failed request must not leave a duplicate-prone turn.
+        database.connection().execute_batch(
+            "CREATE TRIGGER reject_conversation_touch
+             BEFORE UPDATE OF updated_at ON conversations
+             BEGIN SELECT RAISE(ABORT, 'simulated timestamp write failure'); END;",
+        ).unwrap();
+        assert!(repo.add_message(&conversation.id, "user", "retry me", "completed", None).is_err());
+        assert!(repo.list_messages(&conversation.id).unwrap().is_empty());
+        assert_eq!(repo.find_conversation(&conversation.id).unwrap().updated_at, original_updated_at);
+
+        database.connection().execute_batch("DROP TRIGGER reject_conversation_touch;").unwrap();
+        repo.add_message(&conversation.id, "user", "retry me", "completed", None).unwrap();
+        let messages = repo.list_messages(&conversation.id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "retry me");
     }
 
     #[test]
