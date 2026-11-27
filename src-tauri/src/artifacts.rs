@@ -383,7 +383,7 @@ impl<'a> ArtifactManager<'a> {
 
         let (directory, reservation) =
             crate::artifact_output::reserve_directory(self.root.root(), Path::new(subdir))?;
-        let filename = format!("{stem}.{extension}");
+        let filename = bounded_artifact_filename(&stem, &extension);
         let path = self
             .root
             .root()
@@ -447,6 +447,35 @@ fn split_stem_extension(hint: &str, kind: &str) -> (String, String) {
     )
 }
 
+// Keep a single filename component within the common 255-byte filesystem limit.
+// Truncate only on UTF-8 scalar boundaries and reserve space for the extension.
+fn bounded_artifact_filename(stem: &str, extension: &str) -> String {
+    const MAX_COMPONENT_BYTES: usize = 255;
+    const MAX_EXTENSION_BYTES: usize = 32;
+    let extension: String = extension
+        .chars()
+        .take_while(|c| c.len_utf8() <= MAX_EXTENSION_BYTES)
+        .scan(0usize, |used, c| {
+            if *used + c.len_utf8() > MAX_EXTENSION_BYTES {
+                None
+            } else {
+                *used += c.len_utf8();
+                Some(c)
+            }
+        })
+        .collect();
+    let available = MAX_COMPONENT_BYTES - extension.len() - 1;
+    let stem = if stem.is_empty() { "artifact" } else { stem };
+    let mut prefix = String::new();
+    for c in stem.chars() {
+        if prefix.len() + c.len_utf8() > available {
+            break;
+        }
+        prefix.push(c);
+    }
+    format!("{prefix}.{extension}")
+}
+
 fn sanitize_filename(name: &str) -> String {
     sanitize_filename_bounded(name, 40)
 }
@@ -491,6 +520,16 @@ mod tests {
         }
         assert_eq!(split_stem_extension("script.py", "code"), ("script".into(), "py".into()));
         assert_eq!(split_stem_extension("notes.log", "text"), ("notes".into(), "log".into()));
+    }
+
+    #[test]
+    fn final_artifact_filename_respects_utf8_byte_limit() {
+        let name = bounded_artifact_filename(&"𐐀".repeat(1000), &"𐐀".repeat(100));
+        assert!(name.len() <= 255);
+        assert!(name.ends_with(&format!(".{}", "𐐀".repeat(8))));
+        assert_eq!(bounded_artifact_filename("", "pdf"), "artifact.pdf");
+        assert_eq!(bounded_artifact_filename("report", "pdf"), "report.pdf");
+        assert!(bounded_artifact_filename(&"a".repeat(1000), "txt").len() <= 255);
     }
 
     #[test]
