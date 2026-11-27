@@ -1,7 +1,7 @@
 //! Search credentials are stored in the existing OS credential backend.
 //! Only presence booleans are returned to the frontend, never secret values.
-use serde::Serialize;
 use crate::{app_error::AppError, github::secret_store};
+use serde::Serialize;
 
 const BRAVE_SLOT: &str = "web-search-brave-key";
 const GOOGLE_KEY_SLOT: &str = "web-search-google-key";
@@ -14,7 +14,9 @@ pub(crate) struct SearchCredentials {
     pub google_engine: Option<String>,
 }
 impl SearchCredentials {
-    pub fn brave_ready(&self) -> bool { self.brave.is_some() }
+    pub fn brave_ready(&self) -> bool {
+        self.brave.is_some()
+    }
     pub fn google_ready(&self) -> bool {
         self.google_key.is_some() && self.google_engine.is_some()
     }
@@ -32,7 +34,8 @@ pub(crate) struct ProviderConfiguration {
 fn optional_value(slot: &str, env: &str) -> Result<Option<String>, AppError> {
     // Credentials from the OS store take precedence over inherited environment
     // variables. Empty values are treated as unconfigured.
-    Ok(secret_store::get_secret(slot)?.filter(|v| !v.trim().is_empty())
+    Ok(secret_store::get_secret(slot)?
+        .filter(|v| !v.trim().is_empty())
         .or_else(|| std::env::var(env).ok().filter(|v| !v.trim().is_empty())))
 }
 pub(crate) fn load_credentials() -> Result<SearchCredentials, AppError> {
@@ -60,10 +63,15 @@ pub(crate) fn update_credential(field: &str, value: &str) -> Result<(), AppError
     };
     let value = value.trim();
     if value.len() > 500 || value.contains('\n') || value.contains('\r') {
-        return Err(AppError::internal("search credential is invalid or too long"));
+        return Err(AppError::internal(
+            "search credential is invalid or too long",
+        ));
     }
-    if value.is_empty() { secret_store::delete_secret(slot) }
-    else { secret_store::set_secret(slot, value) }
+    if value.is_empty() {
+        secret_store::delete_secret(slot)
+    } else {
+        secret_store::set_secret(slot, value)
+    }
 }
 
 pub(crate) fn valid_preference(value: &str) -> bool {

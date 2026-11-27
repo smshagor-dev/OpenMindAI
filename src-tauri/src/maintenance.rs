@@ -370,7 +370,11 @@ mod tests {
         fs::write(backups_dir.join("openmindai-truncated.db"), b"SQLite format 3").unwrap();
         fs::write(backups_dir.join("openmindai-fake.db"), vec![b'X'; 256]).unwrap();
         fs::write(backups_dir.join("notes.txt"), b"no snapshot").unwrap();
-        fs::write(backups_dir.join(".pending-openmindai-stale.db"), b"incomplete").unwrap();
+        fs::write(
+            backups_dir.join(".pending-openmindai-stale.db"),
+            b"incomplete",
+        )
+        .unwrap();
         let entries = list_backups(&root).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, created.name);
