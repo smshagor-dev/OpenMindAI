@@ -18,7 +18,7 @@
 
 <p align="center">
   <img alt="Rust" src="https://img.shields.io/badge/Rust-2021-000000?logo=rust&logoColor=white">
-  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-7-3178C6?logo=typescript&logoColor=white">
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111111">
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white">
   <img alt="Vite" src="https://img.shields.io/badge/Vite-8-646CFF?logo=vite&logoColor=white">
@@ -27,62 +27,45 @@
 
 ---
 
-## OpenMindAI v6.0.0 — Source changes
+## OpenMindAI v6.0.0
 
-This section lists the v6.0.0 source updates and fixes currently on `main`.
+**Released:** 27 November 2026 · **Current source version:** `6.0.0` · **Previous release:** [v5.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v5.0.0)
 
-### Updates and fixes
+OpenMindAI v6.0.0 improves first-run setup, protects existing local databases, recovers previous conversations, simplifies Cloud connection recovery, and brings local 3D Studio workflows into the desktop experience. It continues the project's local-first approach to AI, software development, research, and creative work.
 
-- **Version metadata:** advanced the application, Tauri, native package, portable marker, and platform launcher versions to `6.0.0`.
-- **First-run setup recovery:** fixed setup returning to the profile screen after a restart. Resumed setup now follows its saved progress and marks completion through the native backend.
-- **Existing database protection:** setup no longer opens or migrates an unrelated database when a selected profile name already exists. It asks the user to choose another profile name.
-- **Previous chats restored:** when the configured new default database is empty but the legacy `openmind_ai.db` contains conversations, startup first creates a verified snapshot, then selects the database with the chats. Startup stops if the snapshot cannot be created.
-- **Cloud connection prompts:** Cloud authentication and connection failures now open a dialog to enter or replace an API key. Connect Cloud actions in Chat, Work, and Research Studio use the same dialog. The key is stored using the existing secure native storage flow.
-- **API key access:** the connection dialog links to [api.openmindai.org](https://api.openmindai.org), where users can obtain a key.
-- **Image-to-3D guidance:** when image-based generation is requested without a Cloud connection, 3D Studio explains that Cloud and Online mode are required and opens the connection dialog. The reference image stays local until the user explicitly confirms a Cloud upload.
+### Download OpenMindAI v6.0.0
 
-See the [v6.0.0 release notes](.github/releases/v6.0.0.txt) for Windows build status and release limitations. The local v6.0.0 installers are not published downloads.
+**[Download latest release](https://github.com/smshagor-dev/OpenMindAI/releases/latest)** · **[v6.0.0 release assets](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v6.0.0)**
 
-## OpenMindAI v5.0.0
-
-**Current source version:** `v6.0.0`  
-**Release documentation:** [v6.0.0 notes](.github/releases/v6.0.0.txt)  
-**Previous release:** [v4.0.0](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v4.0.0)
-
-v5.0.0 focuses on reliable first-run setup and native build compatibility. It fixes installations that previously reached the chat screen without a usable local llama.cpp runtime and restores compilation after dependency updates. OpenMindAI remains a local-first AI desktop application.
-
-### Download OpenMindAI v5.0.0
-
-**[Latest release](https://github.com/smshagor-dev/OpenMindAI/releases/latest)** · **[v5.0.0 release notes & assets](https://github.com/smshagor-dev/OpenMindAI/releases/tag/v5.0.0)**
-
-The following downloads are **verified as uploaded assets of the published v5.0.0 GitHub release** (18 November 2026). Choose the installer for your platform.
+The following seven files are listed as uploaded assets of the published v6.0.0 GitHub release.
 
 | Platform | Format | Direct download |
 | --- | --- | --- |
-| Windows 64-bit | EXE installer (recommended) | [`OpenMindAI_5.0.0_x64-setup.exe`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/OpenMindAI_5.0.0_x64-setup.exe) |
-| Windows 64-bit | MSI installer | [`OpenMindAI_5.0.0_x64_en-US.msi`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/OpenMindAI_5.0.0_x64_en-US.msi) |
-| Windows 32-bit | EXE installer | [`OpenMindAI_5.0.0_x86-setup.exe`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/OpenMindAI_5.0.0_x86-setup.exe) |
-| Windows 32-bit | MSI installer | [`OpenMindAI_5.0.0_x86_en-US.msi`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/OpenMindAI_5.0.0_x86_en-US.msi) |
-| Linux | Bootstrap shell script | [`openmindai-setup.sh`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/openmindai-setup.sh) |
-| macOS | Bootstrap command script | [`OpenMindAI-Setup.command`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/OpenMindAI-Setup.command) |
-| Windows | Bootstrap batch script | [`OpenMindAI-Setup.bat`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/OpenMindAI-Setup.bat) |
+| Windows 64-bit | EXE installer (recommended) | [`OpenMindAI_6.0.0_x64-setup.exe`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v6.0.0/OpenMindAI_6.0.0_x64-setup.exe) |
+| Windows 64-bit | MSI installer | [`OpenMindAI_6.0.0_x64_en-US.msi`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v6.0.0/OpenMindAI_6.0.0_x64_en-US.msi) |
+| Windows 32-bit | EXE installer | [`OpenMindAI_6.0.0_x86-setup.exe`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v6.0.0/OpenMindAI_6.0.0_x86-setup.exe) |
+| Windows 32-bit | MSI installer | [`OpenMindAI_6.0.0_x86_en-US.msi`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v6.0.0/OpenMindAI_6.0.0_x86_en-US.msi) |
+| Linux | Bootstrap shell script | [`openmindai-setup.sh`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v6.0.0/openmindai-setup.sh) |
+| macOS | Bootstrap command script | [`OpenMindAI-Setup.command`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v6.0.0/OpenMindAI-Setup.command) |
+| Windows | Bootstrap batch script | [`OpenMindAI-Setup.bat`](https://github.com/smshagor-dev/OpenMindAI/releases/download/v6.0.0/OpenMindAI-Setup.bat) |
 
-**Installer notes:** Windows x64 EXE is the default choice for most 64-bit Windows PCs; MSI is also available. Linux and macOS downloads above are **bootstrap scripts**, not prebuilt AppImage/DEB/DMG installers. Review the script and its prerequisites before executing it. Only use files from the official GitHub release.
+Windows x64 EXE is the usual choice for a 64-bit Windows PC. MSI packages are also available. Linux and macOS downloads are bootstrap scripts, not prebuilt AppImage, DEB or DMG installers; review their prerequisites before executing them.
 
-**Integrity:** [Download v5.0.0 SHA256SUMS.txt](https://github.com/smshagor-dev/OpenMindAI/releases/download/v5.0.0/SHA256SUMS.txt) and verify checksums for assets listed there. Availability of an uploaded file does not by itself establish installation testing, code signing, or notarization.
+> **Release integrity and limitations:** GitHub lists v6.0.0 as published, but the build notes report missing updater signing keys, unsigned Windows packages and no completed installer acceptance test. No updater signatures, `latest.json` or standalone `SHA256SUMS.txt` are listed among the v6.0.0 assets. Do not treat this publication as a verified signed updater release. GitHub provides SHA-256 asset digests on the release API; compare these with the downloaded files. The [build notes](.github/releases/v6.0.0.txt) reflect the earlier build state and predate publication.
 
-**Android companion app:** [Google Play](https://play.google.com/store/apps/details?id=com.openmindai.mobile) · [RuStore](https://www.rustore.ru/catalog/app/com.openmindai.mobile). Mobile store versions are separate from the desktop v5.0.0 release. No v5.0.0 Android APK or iOS IPA is listed among this release's published assets.
+**Android companion app:** [Google Play](https://play.google.com/store/apps/details?id=com.openmindai.mobile) · [RuStore](https://www.rustore.ru/catalog/app/com.openmindai.mobile). Mobile versions are independent of the desktop release; no Android APK or iOS IPA is listed among these v6.0.0 assets.
 
-### What's new in v5.0.0
+### What's new in v6.0.0
 
-- **First-run setup recovery:** interrupted provisioning is resumed instead of incorrectly treating the installation as complete when only the data root has been created.
-- **Runtime readiness:** the setup is considered complete only when the authoritative `setupState` reaches `Completed`, reducing the risk of starting chat without a usable local llama.cpp runtime.
-- **Legacy installation compatibility:** installations created before `setupState` was introduced continue to load.
-- **Native build fixes:** retains API-compatible `sha2` and `sysinfo` versions, aligns the iOS `llama-cpp-2` pin with desktop/Android, updates SQLite row reads for `rusqlite` 0.42, and improves runtime ZIP-reader compatibility.
-- **Version consistency:** synchronizes application, native, Tauri, and packaging metadata to `5.0.0`.
-- **Release validation:** preserves CI, native ABI, updater signature, checksum, clean-install, and v4.0.0 → v5.0.0 upgrade requirements.
+- **Reliable setup:** interrupted first-run setup resumes from saved progress, with completion recorded by the native backend.
+- **Database protection:** an existing profile database cannot be opened or migrated by unrelated setup; only the exact pending setup can resume.
+- **Conversation recovery:** startup creates a verified snapshot before restoring a populated legacy chat database when the configured default is empty. Recovery stops if snapshot creation fails.
+- **Cloud connection recovery:** Chat, Work and Research Studio share a connection dialog to enter or replace API keys using existing secure native storage. Keys are available at [api.openmindai.org](https://api.openmindai.org).
+- **Local 3D Studio:** generate editable procedural GLB meshes from validated local-model scene specifications; import supported mesh formats and work with project-scoped assets. Optional OpenCL acceleration requires a compatible device and driver; CPU geometry remains available.
+- **Image-to-3D guidance:** Cloud image generation requires Online mode and an active connection. Reference images remain local until the user explicitly confirms an upload.
+- **Version consistency:** desktop application, Tauri, Rust package, portable marker and platform launcher metadata are synchronized to 6.0.0.
 
-See [full v5.0.0 release notes](.github/releases/v5.0.0.txt). The release notes describe the release scope and validation gates; the download table above lists currently published assets.
+See the [local 3D worker documentation](services/local-3d-worker/README.md) for runtime requirements and limitations, and the [v6.0.0 build notes](.github/releases/v6.0.0.txt) for release validation details.
 
 ## Why OpenMindAI
 
@@ -106,6 +89,7 @@ The project is built around five practical goals:
 | **Projects & local coding agent** | Attach folders, manage project context, inspect/edit files, and run approved commands with scoped permissions. |
 | **Connected apps** | Connect supported Google Workspace, GitHub, Microsoft 365, Slack, Notion, Dropbox, and MCP integrations when configured. |
 | **Documents & media** | Manage conversation artifacts including code, Markdown, PDF, DOCX, images, audio, and supported video workflows. Availability depends on installed local models and hardware. |
+| **3D Studio** | Create editable procedural GLB meshes using local model scene specifications, import supported mesh assets, and use optional Cloud generation when connected. |
 | **Local storage & portability** | Keep chats, models, workspaces, caches, and generated files in a selected local data root or portable drive. |
 | **Privacy & permission controls** | Local SQLite chat history, explicit project/terminal approvals, constrained agent operations, and credential separation. |
 | **Hardware-aware operation** | Detect hardware and plan local language model inference with the Vulkan runtime. |
@@ -252,6 +236,10 @@ Media capability depends on the required local model/runtime being installed and
 
 Generated artifacts are tracked in the local library and can be opened or revealed from the desktop application.
 
+### 3D Studio
+
+Desktop 3D Studio includes a Three.js viewport and native Rust-managed project jobs. The local geometry worker turns bounded scene specifications into editable GLB meshes with separate nodes and PBR materials. CPU geometry requires Python 3.10+; optional OpenCL transforms require additional dependencies and compatible hardware. This is procedural geometry, not local neural image-to-3D reconstruction. See [Local 3D Geometry Worker](services/local-3d-worker/README.md).
+
 ## Architecture
 
 OpenMindAI uses a web-based desktop interface with a native Rust backend.
@@ -278,7 +266,7 @@ OpenMindAI uses a web-based desktop interface with a native Rust backend.
 | --- | --- |
 | Desktop shell | Tauri 2 |
 | Native backend | Rust 2021 |
-| Frontend | React 19 + TypeScript 7 |
+| Frontend | React 19 + TypeScript 5.9 |
 | Build tooling | Vite 8 |
 | Local database | SQLite via `rusqlite` |
 | Async/runtime work | Tokio |
@@ -428,7 +416,7 @@ The main CI workflow validates both the web frontend and native Rust application
 ### Frontend
 
 - clean dependency installation with `npm ci`;
-- release-version consistency check;
+- application version consistency check;
 - ESLint;
 - TypeScript compilation;
 - Vite production build.
@@ -438,11 +426,11 @@ The main CI workflow validates both the web frontend and native Rust application
 - Linux, Windows, and macOS runners;
 - `rustfmt` check;
 - Clippy with warnings treated as errors;
-- Rust test suite with all features enabled.
+- locked Rust test suite and focused regression crates; native feature validation runs in dedicated workflows.
 
 See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
-Additional workflows cover project-workspace preflight, local-agent checks, release readiness, security, and release packaging.
+Additional workflows cover project-workspace preflight, local-agent checks, native inference and security. Release Readiness is manually dispatched, separate from normal push and pull-request CI. Tagged release packaging remains separate.
 
 ## Security
 
@@ -476,13 +464,13 @@ Tagged releases use the dedicated release workflow in [`.github/workflows/releas
 
 The release path checks version consistency, application builds, installer output, updater configuration, release metadata, and other release-readiness requirements. Signing and trust requirements are handled by the production release workflow rather than being embedded in source code or committed secrets.
 
-For v5.0.0 release expectations and validation scope, see [`.github/releases/v5.0.0.txt`](.github/releases/v5.0.0.txt).
+For v6.0.0 build results and validation limitations, see [`.github/releases/v6.0.0.txt`](.github/releases/v6.0.0.txt). Run [Release Readiness](.github/workflows/release-readiness.yml) manually before preparing a signed release.
 
 ## Platform Notes
 
 ### Windows
 
-Windows x64 is the primary release-validation platform for v5.0.0. The desktop release uses a Tauri NSIS installer. Language model inference requires the managed Vulkan runtime and compatible graphics hardware.
+Windows x64 is the primary release-validation target for v6.0.0. The published desktop assets include Tauri NSIS and MSI packages for x64 and x86; successful installation and signing are not implied by upload. Language model inference requires the managed Vulkan runtime and compatible graphics hardware.
 
 ### Linux
 
