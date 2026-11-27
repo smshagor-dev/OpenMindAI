@@ -141,6 +141,7 @@ impl<'a> ChatRepository<'a> {
                 WHERE chat_message_fts MATCH ?2 AND m.role != 'system'
              )"
         };
+        // FTS5 phrase literals escape a quote by doubling it, not with a backslash.
         let fts_query = format!("\"{}\"", query.replace('"', "\"\""));
         let (cursor_time, cursor_id) = match cursor {
             Some((time, id)) => (Some(time), Some(id)),
@@ -2243,6 +2244,28 @@ mod tests {
         assert!(repo.archive_conversation("missing-conversation").is_err());
         repo.restore_conversation(&chat.id).unwrap();
         repo.archive_conversation(&chat.id).unwrap();
+    }
+
+
+    #[test]
+    fn chat_search_treats_embedded_quotes_as_literal_fts_text() {
+        let db = Database::in_memory().unwrap();
+        let repo = ChatRepository::new(&db);
+        let chat = repo.create_conversation(Some("Unrelated title")).unwrap();
+        repo.add_message(
+            &chat.id,
+            "user",
+            "Please retain the \"quoted\" phrase verbatim",
+            "completed",
+            None,
+        )
+        .unwrap();
+
+        let matches = repo.search_conversations("the \"quoted\" phrase", None, 20).unwrap();
+        assert_eq!(matches.conversations.len(), 1);
+        assert_eq!(matches.conversations[0].id, chat.id);
+        assert!(repo.search_conversations("the \"missing\" phrase", None, 20).unwrap().conversations.is_empty());
+        assert!(repo.search_conversations("\"\"\"", None, 20).is_ok());
     }
 
 }
