@@ -6,6 +6,36 @@ import {
 } from "../src/lib/executionRouting.ts";
 import { beginSetupPreparation, setupExecutionMode, setupPreparationPending, completeSetupPreparation } from "../src/lib/setupExecutionMode.ts";
 
+test("invalid runtime execution selectors defer without reaching either engine", async () => {
+  const base = { preference: "auto", task: "chat", online: true, cloudConnected: true, cloudModelReady: true };
+  for (const overrides of [
+    { preference: "local-only" }, { preference: "" }, { preference: null },
+    { preference: 1 }, { preference: {} }, { task: "image" },
+    { task: "" }, { task: null }, { task: 42 }, { task: {} },
+  ]) {
+    const decision = selectExecutionRoute({ ...base, ...overrides });
+    assert.equal(decision.target, "deferred", JSON.stringify(overrides));
+    assert.equal(decision.fallbackAllowed, false);
+    let cloudCalls = 0, localCalls = 0;
+    await assert.rejects(runWithFallback(decision,
+      async () => { cloudCalls++; return "cloud"; },
+      async () => { localCalls++; return "local"; }), /Invalid execution mode or task/);
+    assert.equal(cloudCalls, 0);
+    assert.equal(localCalls, 0);
+  }
+});
+
+test("all declared execution modes and tasks retain their existing routing contract", () => {
+  for (const task of ["chat", "vision", "search", "research", "scene3d", "image-to-3d"]) {
+    assert.equal(selectExecutionRoute({
+      preference: "cloud", task, online: true, cloudConnected: true, cloudModelReady: true,
+    }).target, "cloud", task);
+    assert.equal(selectExecutionRoute({
+      preference: "local", task, online: true, cloudConnected: true,
+    }).target, task === "image-to-3d" ? "deferred" : "local", task);
+  }
+});
+
 test("auto routing prefers Cloud when authenticated and online", () => {
   assert.equal(selectExecutionRoute({preference:"auto",task:"chat",online:true,cloudConnected:true,cloudModelReady:true}).target,"cloud");
   assert.equal(selectExecutionRoute({preference:"auto",task:"research",online:true,cloudConnected:true}).target,"cloud");
