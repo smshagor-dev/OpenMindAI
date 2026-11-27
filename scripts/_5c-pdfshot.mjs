@@ -1,0 +1,13 @@
+import fs from "node:fs"; import { Buffer } from "node:buffer"; import { WebSocket } from "ws";
+const port=Number(process.argv[2]); const out=process.argv[3];
+const targets=await(await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+const pdf=targets.find(t=>t.type==='page'&&t.url.includes('.pdf'));
+if(!pdf) throw new Error('no pdf target');
+const s=new WebSocket(pdf.webSocketDebuggerUrl); await new Promise((r,j)=>{s.once("open",r);s.once("error",j);});
+let id=0;const p=new Map();s.on("message",raw=>{const m=JSON.parse(raw);const w=p.get(m.id);if(!w)return;p.delete(m.id);m.error?w.rej(new Error(JSON.stringify(m.error))):w.res(m.result);});
+const call=(m,pr={})=>new Promise((r,j)=>{const i=++id;p.set(i,{res:r,rej:j});s.send(JSON.stringify({id:i,method:m,params:pr}));});
+await call("Page.enable"); await new Promise(r=>setTimeout(r,2500));
+const r=await call("Page.captureScreenshot",{format:"png"});
+fs.writeFileSync(out,Buffer.from(r.data,"base64"));
+console.log("saved",out,"bytes",Buffer.from(r.data,"base64").length);
+s.close();
