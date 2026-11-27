@@ -382,3 +382,23 @@ test("normal HTTP 503 still permits exactly one local recovery", async () => {
   assert.equal(remoteCalls, 1);
   assert.equal(localCalls, 1);
 });
+
+test("malformed runtime connectivity metadata cannot authorize Cloud or Local", () => {
+  const valid = { preference: "auto", task: "chat", online: true,
+    cloudConnected: true, cloudModelReady: true, localAvailable: true };
+  assert.equal(selectExecutionRoute(valid).target, "cloud");
+  for (const [field, invalid] of [
+    ["online", "false"], ["online", null], ["cloudConnected", "false"],
+    ["cloudConnected", undefined], ["cloudModelReady", "false"],
+    ["localAvailable", "false"], ["forceLocal", "false"],
+    ["forceLocal", 1],
+  ]) {
+    const route = selectExecutionRoute({ ...valid, [field]: invalid });
+    assert.equal(route.target, "deferred", field + ": " + String(invalid));
+    assert.equal(route.offline, true);
+    assert.equal(route.fallbackAllowed, false);
+  }
+  assert.equal(selectExecutionRoute({ ...valid, forceLocal: true }).target, "local");
+  assert.equal(selectExecutionRoute({ ...valid, cloudConnected: false }).target, "local");
+  assert.equal(selectExecutionRoute({ ...valid, localAvailable: false }).target, "cloud");
+});
