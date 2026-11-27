@@ -194,3 +194,31 @@ test("sanitized headers remain inside total context budget", () => {
   assert.equal(plan.truncatedCount, 8);
   assert(!text.includes("\nh"));
 });
+
+test("bidi formatting controls cannot spoof attachment header identity", () => {
+  const controls = "\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069";
+  const item = {
+    name: "report.txt",
+    header: "[Attachment: report" + controls + ".txt]",
+    content: "Body \u202e remains unchanged.",
+  };
+  const { text, plan } = serializeAttachmentContext([item], "");
+  assert(text.includes("[Attachment: report.txt]"));
+  assert(!text.slice(0, text.indexOf("\n")).includes("\u202e"));
+  assert(text.includes("Body \u202e remains unchanged."));
+  assert.equal(plan.truncatedCount, 0);
+});
+
+test("bidi-heavy headers use their serialized length in the shared budget", () => {
+  const controls = "\u202e\u2066\u2069".repeat(1000);
+  const items = Array.from({ length: 3 }, (_, index) => ({
+    name: "file" + index,
+    header: "[Attachment " + index + controls + "]",
+    content: "x".repeat(20000),
+  }));
+  const { text, plan } = serializeAttachmentContext(items, "");
+  assert(text.length <= 16000);
+  assert(!/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(text));
+  assert.equal(plan.truncatedCount, 3);
+  for (let i = 0; i < 3; i += 1) assert(text.includes("[Attachment " + i + "]"));
+});

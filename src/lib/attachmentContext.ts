@@ -7,7 +7,7 @@ const MAX_SERIALIZED_SOURCES = 64;
 const MAX_HEADER_CHARS = 128;
 const OMITTED_SOURCES_NOTE = "[Additional attachments omitted from context; attach fewer files to analyze them.]";
 const boundedHeader = (header: string) => {
-  const safe = header.replace(/[\u0000-\u001f\u007f\u0085\u2028\u2029]/g, " ");
+  const safe = header.replace(/[\u0000-\u001f\u007f\u0085\u2028\u2029]/g, " ").replace(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/gu, "");
   return safe.length > MAX_HEADER_CHARS ? safe.slice(0, MAX_HEADER_CHARS - 1) + "…" : safe;
 };
 const OVERALL_NOTE = "[Attachment context limit: only excerpts were sent; omitted text was not analyzed. Ask for a specific passage or attach fewer files.]";
