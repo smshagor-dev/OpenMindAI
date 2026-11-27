@@ -297,6 +297,42 @@ impl<'a> ModelRegistry<'a> {
     }
 }
 
+pub(crate) fn validate_scene_planner(
+    root: &PortableRootManager,
+    path: &str,
+) -> Result<bool, AppError> {
+    let path = resolve_model_path(root, path)?;
+    validate_gguf_header(&path, root)?;
+    let Some(manifest) = read_model_manifest(&path) else {
+        return Ok(false);
+    };
+    let Some(expected) = manifest.sha256.as_deref() else {
+        return Ok(false);
+    };
+    if manifest.verification != VerificationState::Verified
+        || path.file_name().and_then(|name| name.to_str()) != Some(manifest.filename.as_str())
+        || fs::metadata(&path)?.len() != manifest.size_bytes
+        || !manifest
+            .actual_sha256
+            .as_deref()
+            .is_some_and(|hash| hash.eq_ignore_ascii_case(expected))
+    {
+        return Ok(false);
+    }
+    let actual = crate::model_download::sha256_file(&path)?;
+    if !actual.eq_ignore_ascii_case(expected) {
+        return Ok(false);
+    }
+    if let Some(entry) = crate::model_catalog::load_catalog()?
+        .models
+        .into_iter()
+        .find(|entry| entry.repo == manifest.repo)
+    {
+        return validate_installed_dependencies(root, &entry, true);
+    }
+    Ok(true)
+}
+
 fn read_model_manifest(model_path: impl AsRef<Path>) -> Option<QwenModelManifest> {
     let manifest_path = model_path.as_ref().parent()?.join("model-manifest.json");
     let content = fs::read_to_string(manifest_path).ok()?;
@@ -432,6 +468,65 @@ mod tests {
         let mut file = fs::File::create(path).unwrap();
         file.write_all(b"GGUF").unwrap();
         file.set_len(33 * 1024 * 1024).unwrap();
+    }
+
+    #[test]
+    fn scene_planner_rechecks_stale_registry_after_file_deletion_and_relocation() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let database = Database::in_memory().unwrap();
+        let registry = ModelRegistry::new(&database, &root);
+        let path = root.models_dir().join("planner.gguf");
+        write_sparse_gguf(&path);
+        let original = registry.discover_gguf_models().unwrap().remove(0);
+        assert!(!validate_scene_planner(&root, &original.path).unwrap());
+
+        let moved = root.models_dir().join("moved.gguf");
+        fs::rename(&path, &moved).unwrap();
+        let models = registry.discover_gguf_models().unwrap();
+        let stale = models.iter().find(|model| model.id == original.id).unwrap();
+        assert!(!stale.enabled);
+        assert_eq!(stale.state, ModelLifecycleState::NotInstalled);
+        assert!(models.iter().any(|model| model.path == "models/moved.gguf"));
+        assert!(validate_scene_planner(&root, &original.path).is_err());
+
+        fs::remove_file(&moved).unwrap();
+        assert!(registry
+            .list_models()
+            .unwrap()
+            .iter()
+            .all(|model| !model.enabled && model.state == ModelLifecycleState::NotInstalled));
+    }
+
+    #[test]
+    fn scene_planner_rejects_same_size_replacement_with_stale_verified_manifest() {
+        use std::io::{Seek, SeekFrom, Write};
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = PortableRootManager::from_root(temp.path().join("OpenMindAI"));
+        root.ensure_directories().unwrap();
+        let path = root.models_dir().join("planner.gguf");
+        write_sparse_gguf(&path);
+        let digest = crate::model_download::sha256_file(&path).unwrap();
+        fs::write(
+            path.with_file_name("model-manifest.json"),
+            serde_json::json!({
+                "repo": "fixture/scene-planner", "quantization": "Q4_K_M",
+                "filename": "planner.gguf", "sizeBytes": fs::metadata(&path).unwrap().len(),
+                "sha256": digest, "actualSha256": digest, "verification": "verified",
+                "chatTemplateAvailable": true, "sourceUrl": "", "installedAt": ""
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(validate_scene_planner(&root, "models/planner.gguf").unwrap());
+
+        let mut file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.seek(SeekFrom::End(-1)).unwrap();
+        file.write_all(&[1]).unwrap();
+        drop(file);
+        assert!(!validate_scene_planner(&root, "models/planner.gguf").unwrap());
     }
 
     #[test]

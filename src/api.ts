@@ -11,7 +11,6 @@ import type {
   GoogleWorkspaceStatus,
   IntegrationStatus,
 } from "./lib/connectedActions";
-import { createSoundscapeArtifact } from "./lib/media";
 import { api as legacyApi } from "./api_legacy";
 
 const isTauri = "__TAURI_INTERNALS__" in window;
@@ -300,6 +299,7 @@ export const api = {
     }
 
     if (mode === "sound" && isTauri) {
+      const { createSoundscapeArtifact } = await import("./lib/media");
       await createSoundscapeArtifact(
         conversationId,
         assistant.id,
@@ -359,6 +359,7 @@ export const api = {
     }
 
     if (resolvedMode === "sound" && isTauri) {
+      const { createSoundscapeArtifact } = await import("./lib/media");
       await createSoundscapeArtifact(conversationId, assistant.id, assistant.content.trim());
     }
     return assistant;
@@ -372,6 +373,7 @@ export const api = {
     imageOptions?: ImageGenerationOptions,
   ): Promise<Artifact> => {
     if (kind === "voice" && isTauri && (await messageUsesSoundscape(conversationId, messageId))) {
+      const { createSoundscapeArtifact } = await import("./lib/media");
       return createSoundscapeArtifact(conversationId, messageId, prompt);
     }
     return legacyApi.createGenerationArtifact(conversationId, messageId, kind, prompt, useCpu, imageOptions);

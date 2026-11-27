@@ -3,6 +3,12 @@ export const MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS = 8_000;
 export const MAX_TOTAL_ATTACHMENT_CONTEXT_CHARS = 16_000;
 const TRUNCATION_NOTE = "\n[Attachment excerpt truncated; omitted text is NOT available to the model]";
 const GAP = "\n[... intervening text omitted ...]\n";
+const MAX_SERIALIZED_SOURCES = 64;
+const MAX_HEADER_CHARS = 128;
+const OMITTED_SOURCES_NOTE = "[Additional attachments omitted from context; attach fewer files to analyze them.]";
+const boundedHeader = (header: string) => header.length > MAX_HEADER_CHARS
+  ? header.slice(0, MAX_HEADER_CHARS - 1) + "…"
+  : header;
 const OVERALL_NOTE = "[Attachment context limit: only excerpts were sent; omitted text was not analyzed. Ask for a specific passage or attach fewer files.]";
 
 export interface AttachmentContextSource {
@@ -25,11 +31,15 @@ export interface AttachmentContextPlan {
 
 /** Distribute prompt context fairly. Reserve one header and warning capacity per file. */
 export function planAttachmentContext(sources: AttachmentContextSource[]): AttachmentContextPlan {
-  const joinedHeaders = sources.reduce((used, source) => used + source.header.length + (source.content ? 1 : 0), 0)
-    + Math.max(0, sources.length - 1) * 2;
+  const included = sources.slice(0, MAX_SERIALIZED_SOURCES);
+  const joinedHeaders = included.reduce((used, source) => used + boundedHeader(source.header).length + (source.content ? 1 : 0), 0)
+    + Math.max(0, included.length - 1) * 2;
+  const omittedNoteReserve = sources.length > included.length ? OMITTED_SOURCES_NOTE.length + 2 : 0;
   // Keep space for the final disclosure, even if every file needs its maximum share.
-  let left = Math.max(0, MAX_TOTAL_ATTACHMENT_CONTEXT_CHARS - joinedHeaders - OVERALL_NOTE.length - 2);
-  const wanted = sources.map(source => Math.min(MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS, source.content?.length ?? 0));
+  let left = Math.max(0, MAX_TOTAL_ATTACHMENT_CONTEXT_CHARS - joinedHeaders - OVERALL_NOTE.length - 2 - omittedNoteReserve);
+  const wanted = sources.map((source, index) => index < MAX_SERIALIZED_SOURCES
+    ? Math.min(MAX_SINGLE_ATTACHMENT_CONTEXT_CHARS, source.content?.length ?? 0)
+    : 0);
   const budgets = sources.map(() => 0);
   let live = wanted.map((count, index) => count > 0 ? index : -1).filter(index => index >= 0);
   while (left > 0 && live.length > 0) {
@@ -57,7 +67,10 @@ export function planAttachmentContext(sources: AttachmentContextSource[]): Attac
 }
 
 function relevantPosition(source: string, prompt: string, from: number): number {
-  const terms = [...new Set((prompt.toLowerCase().normalize("NFKC").match(/[\p{L}\p{N}]{4,}/gu) ?? [])
+  // Only the first 4 Ki UTF-16 units can influence relevance. Avoid normalizing
+  // or tokenizing arbitrarily large user prompts just to select 16 terms.
+  const prefix = prompt.slice(0, 4096).replace(/[\uD800-\uDBFF]$/, "");
+  const terms = [...new Set((prefix.toLowerCase().normalize("NFKC").match(/[\p{L}\p{N}]{4,}/gu) ?? [])
     .filter(term => !["please", "about", "these", "those", "document", "explain", "summarize", "what", "which", "from", "with"].includes(term)))].slice(0, 16);
   if (!terms.length) return Math.floor(source.length / 2);
   const lower = source.toLowerCase().normalize("NFKC");
@@ -69,13 +82,24 @@ function relevantPosition(source: string, prompt: string, from: number): number 
   return best >= 0 ? best : Math.floor(source.length / 2);
 }
 
+function safeExcerptSlice(text: string, start: number, end: number): string {
+  // Move the start forward and the end backward, never expanding the budget.
+  if (start > 0 && start < text.length &&
+      /[\uDC00-\uDFFF]/.test(text[start]) &&
+      /[\uD800-\uDBFF]/.test(text[start - 1])) start++;
+  if (end > start && end < text.length &&
+      /[\uD800-\uDBFF]/.test(text[end - 1]) &&
+      /[\uDC00-\uDFFF]/.test(text[end])) end--;
+  return text.slice(start, end);
+}
+
 /** Includes start, a query-relevant mid-document window, and the ending. */
 export function selectAttachmentExcerpt(content: string, limit: number, prompt: string): string {
   if (limit <= 0) return "";
   if (content.length <= limit) return content;
   if (limit <= TRUNCATION_NOTE.length + GAP.length * 2 + 12) {
     if (limit <= TRUNCATION_NOTE.length) return TRUNCATION_NOTE.slice(0, limit);
-    return content.slice(0, limit - TRUNCATION_NOTE.length) + TRUNCATION_NOTE;
+    return safeExcerptSlice(content, 0, limit - TRUNCATION_NOTE.length) + TRUNCATION_NOTE;
   }
   const usable = limit - TRUNCATION_NOTE.length - GAP.length * 2;
   const head = Math.max(1, Math.floor(usable * 0.35));
@@ -83,17 +107,19 @@ export function selectAttachmentExcerpt(content: string, limit: number, prompt: 
   const middle = usable - head - tail;
   const hit = relevantPosition(content, prompt, head);
   const start = Math.max(head, Math.min(content.length - tail - middle, hit - Math.floor(middle / 2)));
-  const text = content.slice(0, head) + GAP + content.slice(start, start + middle) + GAP + content.slice(-tail) + TRUNCATION_NOTE;
-  return text.slice(0, limit);
+  const text = safeExcerptSlice(content, 0, head) + GAP + safeExcerptSlice(content, start, start + middle) + GAP + safeExcerptSlice(content, content.length - tail, content.length) + TRUNCATION_NOTE;
+  return text;
 }
 
 export function serializeAttachmentContext(sources: AttachmentContextSource[], prompt: string) {
   const plan = planAttachmentContext(sources);
-  const parts = sources.map((source, index) => {
+  const parts = sources.slice(0, MAX_SERIALIZED_SOURCES).map((source, index) => {
     const excerpt = selectAttachmentExcerpt(source.content ?? "", plan.budgets[index], prompt);
-    return excerpt ? source.header + "\n" + excerpt : source.header;
+    const header = boundedHeader(source.header);
+    return excerpt ? header + "\n" + excerpt : header;
   });
   if (plan.truncatedCount || plan.omittedCount) parts.push(OVERALL_NOTE);
+  if (sources.length > MAX_SERIALIZED_SOURCES) parts.push(OMITTED_SOURCES_NOTE);
   const text = parts.join("\n\n");
   return { text, plan };
 }

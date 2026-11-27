@@ -134,9 +134,15 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
   }, [section, online, connection?.connected, mode]);
 
   useEffect(() => {
-    if ((online && connection?.connected) || (!online && mode !== "cloud" && section === "3d-studio")) {
-      void refresh().catch((caught: unknown) => setError(explain(caught)));
-    }
+    if (!((online && connection?.connected) || (!online && mode !== "cloud" && section === "3d-studio"))) return;
+    let active = true;
+    void (async () => {
+      // Let the effect finish before kicking off a refresh that updates UI
+      // state, avoiding a synchronous effect-to-render cascade.
+      await Promise.resolve();
+      if (active) await refresh();
+    })().catch((caught: unknown) => { if (active) setError(explain(caught)); });
+    return () => { active = false; };
   }, [refresh, online, section, connection?.connected, mode]);
 
   // Poll only an actual saved job. Stop when the server reports a terminal status.
@@ -201,7 +207,7 @@ export function StudioHub({ section, mode, internetAvailable, connection, onConn
         }
         const encoded = await encodeReference(referenceImage);
         const upload = await cloud.uploadStudioImage(referenceImage.name, encoded.data, encoded.preview);
-        const created = await cloud.imageToMesh(upload.id);
+        const created = await cloud.imageToMesh(upload.id, prompt);
         if ("asset" in created) {
           setDirectAsset(created.asset.id);
           setJobTarget("cloud");
