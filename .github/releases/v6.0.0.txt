@@ -1,0 +1,3 @@
+# OpenMindAI v6.0.0
+
+Application version metadata has been advanced to 6.0.0 across the package manifests, native application configuration, portable marker, and platform launchers. This version update does not establish feature scope, release validation, or distribution status.
