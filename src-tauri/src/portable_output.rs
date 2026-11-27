@@ -10,11 +10,19 @@ use std::{
 };
 
 fn relative(path: &Path) -> Result<(), AppError> {
-    if path
-        .components()
-        .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
-    {
-        return Err(AppError::internal("portable path traversal rejected"));
+    // A portable *output* must name a descendant, never the storage root.
+    // Empty paths and dot-only paths previously passed the component filter
+    // and resolved to the root itself.
+    let mut has_name = false;
+    for part in path.components() {
+        match part {
+            Component::Normal(_) => has_name = true,
+            Component::CurDir => {}
+            _ => return Err(AppError::internal("portable path traversal rejected")),
+        }
+    }
+    if !has_name {
+        return Err(AppError::internal("portable output path must name a child"));
     }
     Ok(())
 }
@@ -116,8 +124,11 @@ mod tests {
             resolve(&root, Path::new("generated/new/file.txt")).unwrap(),
             root.join("generated/new/file.txt")
         );
-        for path in ["../outside", "/outside", "generated/../../outside"] {
+        for path in ["", ".", "./.", "../outside", "/outside", "generated/../../outside"] {
             assert!(resolve(&root, Path::new(path)).is_err());
+        }
+        for path in ["", ".", "./."] {
+            assert!(write_new(&root, Path::new(path), b"unsafe").is_err());
         }
         fs::create_dir_all(root.join("generated/new")).unwrap();
         write_new(&root, Path::new("generated/new/file.txt"), b"first").unwrap();
@@ -182,7 +193,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         let link = root.path().join("junction");
-        let result = Command::new("pwsh").args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:TEST_LINK -Target $env:TEST_TARGET -ErrorAction Stop | Out-Null"]).env("TEST_LINK", &link).env("TEST_TARGET", outside.path()).output().unwrap();
+        let result = Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:TEST_LINK -Target $env:TEST_TARGET -ErrorAction Stop | Out-Null"]).env("TEST_LINK", &link).env("TEST_TARGET", outside.path()).output().unwrap();
         assert!(
             result.status.success(),
             "junction fixture failed: {}",

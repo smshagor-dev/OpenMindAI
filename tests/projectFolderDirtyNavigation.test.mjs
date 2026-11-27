@@ -6,10 +6,10 @@ import { readFileSync } from "node:fs";
 const source = readFileSync(new URL("../src/components/ProjectLocalWorkspace.tsx", import.meta.url), "utf8");
 
 test("root tabs reject dirty navigation before invalidating directory selection", () => {
-  const start = source.indexOf('Discard unsaved editor changes and switch attached folders?');
+  const start = source.indexOf('"switch attached folders"');
   const selection = source.indexOf("directoryGate.current.select(props.projectId, root.id);", start);
   assert.ok(start > 0 && selection > start);
-  assert.match(source.slice(start - 100, selection), /editorDirty && !window\.confirm/);
+  assert.match(source.slice(start - 100, selection), /confirmWorkspaceDiscard\(editorDirty, "switch attached folders"\)/);
 });
 
 test("attaching and detaching folders require consent for unsaved editor changes", () => {
