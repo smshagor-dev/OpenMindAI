@@ -65,9 +65,13 @@ export function cloudProbeDelayMs(
   jitter = 1,
 ): number {
   if (connected) return 60_000;
-  const attempts = Math.max(1, Math.floor(consecutiveFailures));
+  // Invalid telemetry must never produce NaN timer delays or disable recovery.
+  const attempts = Number.isFinite(consecutiveFailures)
+    ? Math.max(1, Math.floor(consecutiveFailures))
+    : 1;
+  const boundedJitter = Number.isFinite(jitter) ? jitter : 1;
   const seconds = Math.min(60, 5 * 2 ** Math.min(4, attempts - 1));
-  return Math.round(seconds * 1000 * Math.max(0.8, Math.min(1.2, jitter)));
+  return Math.round(seconds * 1000 * Math.max(0.8, Math.min(1.2, boundedJitter)));
 }
 
 /** Mirrors Mobile's explicit offline/local-only privacy override. */

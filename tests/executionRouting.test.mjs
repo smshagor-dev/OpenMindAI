@@ -103,6 +103,20 @@ test("mobile-style foreground Cloud recovery checks back off without repeated ge
   assert.equal(cloudProbeDelayMs(false, 1, 1.2), 6000);
 });
 
+test("Cloud health probe retry delays stay finite for malformed telemetry", () => {
+  for (const failures of [NaN, Infinity, -Infinity]) {
+    assert.equal(cloudProbeDelayMs(false, failures), 5000);
+  }
+  for (const jitter of [NaN, Infinity, -Infinity]) {
+    assert.equal(cloudProbeDelayMs(false, 3, jitter), 20000);
+  }
+  assert.equal(cloudProbeDelayMs(false, -12), 5000);
+  assert.equal(cloudProbeDelayMs(false, 2.9), 10000);
+  assert.equal(cloudProbeDelayMs(false, 4, -10), 32000);
+  assert.equal(cloudProbeDelayMs(false, 4, 10), 48000);
+  assert.equal(cloudProbeDelayMs(true, NaN, NaN), 60000);
+});
+
 test("Cloud-only runs no Local fallback even after a network error", async () => {
   const route = selectExecutionRoute({preference:"cloud", task:"chat", online:true, cloudConnected:true});
   assert.equal(route.target,"cloud");
