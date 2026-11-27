@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # OpenMindAI universal macOS bootstrap launcher.
-# Version: 5.0.0
+# Version: 6.0.0
 # Double-click in Finder, or run: chmod +x OpenMindAI-Setup.command && ./OpenMindAI-Setup.command
 # Kept intentionally small -- real logic lives in bootstrap/macos/bootstrap.sh.
 set -u

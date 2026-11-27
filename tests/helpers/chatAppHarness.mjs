@@ -101,7 +101,7 @@ export async function createChatAppHarness() {
               socket:
                 "export const io=()=>{throw Error('Unexpected socket connection in draft test');};",
               icons:
-                "export const Archive=()=>null,Check=()=>null,Pencil=()=>null,Pin=()=>null,PinOff=()=>null,Trash2=()=>null;",
+              "export const Archive=()=>null,Check=()=>null,Cpu=()=>null,Globe=()=>null,Pencil=()=>null,Pin=()=>null,PinOff=()=>null,Trash2=()=>null;",
               notify: "export const notifyUser=async()=>{};",
               chat: `export const attachmentMedia=items=>items.flatMap(item=>item.mediaItems),buildMessageContent=content=>content,
               inferChatMode=()=>globalThis.__chatDraftHarness.mode,isUntitledConversation=()=>false,attachmentContextStats=()=>({truncatedCount:0,omittedCount:0}),

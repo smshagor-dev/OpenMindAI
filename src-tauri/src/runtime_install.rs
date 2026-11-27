@@ -79,29 +79,14 @@ struct GithubAsset {
     digest: Option<String>,
 }
 
-/// Maps `(target OS, architecture, backend)` to official llama.cpp release
-/// asset patterns. The stable release can be metadata-only, so resolution is
-/// performed across recent releases instead of assuming `/releases/latest`
-/// contains platform binaries.
+/// Maps `(target OS, architecture)` to the Vulkan-only llama.cpp release
+/// asset. The stable release can be metadata-only, so resolution is performed
+/// across recent releases instead of assuming `/releases/latest` contains
+/// platform binaries.
 fn catalog_pattern(os: &str, arch: &str, backend: &BackendKind) -> Option<&'static str> {
     match (os, arch, backend) {
-        ("windows", "x86_64", BackendKind::Cpu) => Some("llama-*-bin-win-cpu-x64.zip"),
         ("windows", "x86_64", BackendKind::Vulkan) => Some("llama-*-bin-win-vulkan-x64.zip"),
-        // Windows CUDA builds are published per CUDA version (12.4/13.3/13.4);
-        // BackendKind only has one `Cuda` variant, so we standardize on 12.4
-        // for broad driver compatibility.
-        ("windows", "x86_64", BackendKind::Cuda) => Some("llama-*-bin-win-cuda-12.4-x64.zip"),
-        ("windows", "x86_64", BackendKind::Sycl) => Some("llama-*-bin-win-sycl-x64.zip"),
-        ("windows", "x86_64", BackendKind::Hip) => Some("llama-*-bin-win-rocm-*-x64.zip"),
-        ("linux", "x86_64", BackendKind::Cpu) => Some("llama-*-bin-ubuntu-x64.tar.gz"),
         ("linux", "x86_64", BackendKind::Vulkan) => Some("llama-*-bin-ubuntu-vulkan-x64.tar.gz"),
-        ("linux", "x86_64", BackendKind::Sycl) => Some("llama-*-bin-ubuntu-sycl-fp32-x64.tar.gz"),
-        ("macos", "aarch64", BackendKind::Cpu | BackendKind::Metal) => {
-            Some("llama-*-bin-macos-arm64.tar.gz")
-        }
-        ("macos", "x86_64", BackendKind::Cpu | BackendKind::Metal) => {
-            Some("llama-*-bin-macos-x64.tar.gz")
-        }
         _ => None,
     }
 }
@@ -267,20 +252,21 @@ impl RuntimeInstaller {
 
         let os = target_os();
         let arch = target_arch();
-        let releases = match cancelable(&token, fetch_recent_releases(&self.client)).await {
-            Ok(releases) => releases,
-            Err(error) => {
-                *self.cancel_token.lock().map_err(|_| {
-                    AppError::internal("runtime install cancel lock poisoned")
-                })? = None;
-                if token.is_cancelled() {
-                    self.set_state(RuntimeInstallState::Cancelled, None)?;
-                } else {
-                    self.set_state(RuntimeInstallState::Failed, Some(error.to_string()))?;
+        let releases =
+            match cancelable(&token, fetch_recent_releases(&self.client)).await {
+                Ok(releases) => releases,
+                Err(error) => {
+                    *self.cancel_token.lock().map_err(|_| {
+                        AppError::internal("runtime install cancel lock poisoned")
+                    })? = None;
+                    if token.is_cancelled() {
+                        self.set_state(RuntimeInstallState::Cancelled, None)?;
+                    } else {
+                        self.set_state(RuntimeInstallState::Failed, Some(error.to_string()))?;
+                    }
+                    return Err(error);
                 }
-                return Err(error);
-            }
-        };
+            };
         let mut last_error: Option<AppError> = None;
         for backend in preferred_backend_order(hardware) {
             let Some(pattern) = catalog_pattern(os, arch, &backend) else {
@@ -333,7 +319,10 @@ impl RuntimeInstaller {
 
     /// Publish terminal success and retire the token as one critical section,
     /// so a late Cancel cannot overwrite the Completed state.
-    fn finish_completed(&self, token: &CancellationToken) -> Result<RuntimeInstallStatus, AppError> {
+    fn finish_completed(
+        &self,
+        token: &CancellationToken,
+    ) -> Result<RuntimeInstallStatus, AppError> {
         let mut guard = self
             .cancel_token
             .lock()
@@ -750,8 +739,7 @@ fn validate_runtime_zip_archive<R: std::io::Read + std::io::Seek>(
         }
         if !safe_runtime_zip_mode(entry.unix_mode(), entry.is_dir()) {
             return Err(AppError::RuntimeInstallFailed(
-                "runtime ZIP archive contains a link, special entry or privileged mode"
-                    .to_string(),
+                "runtime ZIP archive contains a link, special entry or privileged mode".to_string(),
             ));
         }
         unpacked = unpacked.checked_add(entry.size()).ok_or_else(|| {
@@ -821,27 +809,42 @@ mod tests {
     #[test]
     fn late_cancel_does_not_change_completed_runtime_status() {
         let dir = tempfile::tempdir().unwrap();
-        let installer = RuntimeInstaller::new(PortableRootManager::from_root(dir.path().to_path_buf()));
+        let installer =
+            RuntimeInstaller::new(PortableRootManager::from_root(dir.path().to_path_buf()));
         let token = CancellationToken::new();
         *installer.cancel_token.lock().unwrap() = Some(token.clone());
-        installer.set_state(RuntimeInstallState::Extracting, None).unwrap();
+        installer
+            .set_state(RuntimeInstallState::Extracting, None)
+            .unwrap();
         let completed = installer.finish_completed(&token).unwrap();
         assert_eq!(completed.state, RuntimeInstallState::Completed);
-        assert_eq!(installer.cancel().unwrap().state, RuntimeInstallState::Completed);
+        assert_eq!(
+            installer.cancel().unwrap().state,
+            RuntimeInstallState::Completed
+        );
         assert!(!token.is_cancelled());
     }
 
     #[test]
     fn cancellation_before_completion_prevents_terminal_success() {
         let dir = tempfile::tempdir().unwrap();
-        let installer = RuntimeInstaller::new(PortableRootManager::from_root(dir.path().to_path_buf()));
+        let installer =
+            RuntimeInstaller::new(PortableRootManager::from_root(dir.path().to_path_buf()));
         let token = CancellationToken::new();
         *installer.cancel_token.lock().unwrap() = Some(token.clone());
-        installer.set_state(RuntimeInstallState::Extracting, None).unwrap();
-        assert_eq!(installer.cancel().unwrap().state, RuntimeInstallState::Cancelled);
+        installer
+            .set_state(RuntimeInstallState::Extracting, None)
+            .unwrap();
+        assert_eq!(
+            installer.cancel().unwrap().state,
+            RuntimeInstallState::Cancelled
+        );
         assert!(token.is_cancelled());
         assert!(installer.finish_completed(&token).is_err());
-        assert_eq!(installer.status().unwrap().state, RuntimeInstallState::Cancelled);
+        assert_eq!(
+            installer.status().unwrap().state,
+            RuntimeInstallState::Cancelled
+        );
     }
 
     #[tokio::test]
@@ -954,33 +957,14 @@ mod tests {
     }
 
     #[test]
-    fn catalog_is_architecture_aware_and_covers_macos() {
-        for backend in [
-            BackendKind::Cpu,
-            BackendKind::Cuda,
-            BackendKind::Vulkan,
-            BackendKind::Sycl,
-            BackendKind::Hip,
-        ] {
-            assert!(
-                catalog_pattern("windows", "x86_64", &backend).is_some(),
-                "expected a windows asset pattern for {backend:?}"
-            );
-        }
-        assert!(catalog_pattern("linux", "x86_64", &BackendKind::Cpu).is_some());
+    fn catalog_is_vulkan_only_and_architecture_aware() {
+        assert!(catalog_pattern("windows", "x86_64", &BackendKind::Vulkan).is_some());
         assert!(catalog_pattern("linux", "x86_64", &BackendKind::Vulkan).is_some());
-        assert!(catalog_pattern("linux", "x86_64", &BackendKind::Sycl).is_some());
+        assert!(catalog_pattern("windows", "x86_64", &BackendKind::Cpu).is_none());
         assert!(catalog_pattern("linux", "x86_64", &BackendKind::Cuda).is_none());
         assert!(catalog_pattern("linux", "x86_64", &BackendKind::Hip).is_none());
-        assert_eq!(
-            catalog_pattern("macos", "aarch64", &BackendKind::Metal),
-            Some("llama-*-bin-macos-arm64.tar.gz")
-        );
-        assert_eq!(
-            catalog_pattern("macos", "x86_64", &BackendKind::Cpu),
-            Some("llama-*-bin-macos-x64.tar.gz")
-        );
-        assert!(catalog_pattern("windows", "aarch64", &BackendKind::Cpu).is_none());
+        assert!(catalog_pattern("macos", "aarch64", &BackendKind::Vulkan).is_none());
+        assert!(catalog_pattern("windows", "aarch64", &BackendKind::Vulkan).is_none());
     }
 
     #[test]
@@ -1067,34 +1051,49 @@ mod tests {
     fn runtime_zip_rejects_entry_count_and_expanded_size_limits() {
         let temp = tempfile::tempdir().unwrap();
         let archive_path = temp.path().join("runtime.zip");
-        zip_with(&archive_path, &[
-            ("bin/llama-server.exe", b"server"),
-            ("bin/ggml.dll", b"library"),
-        ]);
-        let open = || {
-            zip::ZipArchive::new(fs::File::open(&archive_path).unwrap()).unwrap()
-        };
+        zip_with(
+            &archive_path,
+            &[
+                ("bin/llama-server.exe", b"server"),
+                ("bin/ggml.dll", b"library"),
+            ],
+        );
+        let open = || zip::ZipArchive::new(fs::File::open(&archive_path).unwrap()).unwrap();
         assert!(validate_runtime_zip_archive(&mut open(), 2, 13).is_ok());
         let count_error = validate_runtime_zip_archive(&mut open(), 1, 100)
-            .unwrap_err().to_string();
+            .unwrap_err()
+            .to_string();
         assert!(count_error.contains("too many entries"), "{count_error}");
         let size_error = validate_runtime_zip_archive(&mut open(), 2, 12)
-            .unwrap_err().to_string();
-        assert!(size_error.contains("uncompressed size limit"), "{size_error}");
+            .unwrap_err()
+            .to_string();
+        assert!(
+            size_error.contains("uncompressed size limit"),
+            "{size_error}"
+        );
     }
 
     #[test]
     fn runtime_archive_is_staged_then_moved_into_place() {
         let temp = tempfile::tempdir().unwrap();
         let archive = temp.path().join("runtime.zip");
-        zip_with(&archive, &[("bin/llama-server.exe", b"server"), ("bin/ggml.dll", b"lib")]);
+        zip_with(
+            &archive,
+            &[
+                ("bin/llama-server.exe", b"server"),
+                ("bin/ggml.dll", b"lib"),
+            ],
+        );
         let staging = temp.path().join("temp/runtime.zip.extract");
         let install = temp.path().join("runtimes/llama/vulkan/b1");
 
         install_runtime_archive(&archive, &staging, &install, &CancellationToken::new()).unwrap();
 
         assert!(install.join("bin/llama-server.exe").is_file());
-        assert!(!staging.exists(), "staging directory must not be left behind");
+        assert!(
+            !staging.exists(),
+            "staging directory must not be left behind"
+        );
     }
 
     #[test]
@@ -1106,7 +1105,8 @@ mod tests {
         let install = temp.path().join("runtimes/llama/vulkan/b1");
 
         assert!(
-            install_runtime_archive(&archive, &staging, &install, &CancellationToken::new()).is_err()
+            install_runtime_archive(&archive, &staging, &install, &CancellationToken::new())
+                .is_err()
         );
         assert!(!install.exists());
         assert!(!staging.exists());
@@ -1116,13 +1116,17 @@ mod tests {
     fn archive_without_runtime_executable_is_rejected() {
         let temp = tempfile::tempdir().unwrap();
         let archive = temp.path().join("runtime.zip");
-        zip_with(&archive, &[("README.md", b"docs only"), ("bin/ggml.dll", b"lib")]);
+        zip_with(
+            &archive,
+            &[("README.md", b"docs only"), ("bin/ggml.dll", b"lib")],
+        );
         let staging = temp.path().join("staging");
         let install = temp.path().join("runtimes/llama/vulkan/b1");
 
-        let error = install_runtime_archive(&archive, &staging, &install, &CancellationToken::new())
-            .unwrap_err()
-            .to_string();
+        let error =
+            install_runtime_archive(&archive, &staging, &install, &CancellationToken::new())
+                .unwrap_err()
+                .to_string();
 
         assert!(error.contains("did not contain llama-server"), "{error}");
         assert!(!install.exists());
@@ -1136,7 +1140,9 @@ mod tests {
         zip_with(&archive, &[("bin/llama-cli.exe", b"cli")]);
         let target = temp.path().join("runtimes/llama/cpu/b1");
         let staged = temp.path().join("staged");
-        assert!(install_runtime_archive(&archive, &staged, &target, &CancellationToken::new()).is_err());
+        assert!(
+            install_runtime_archive(&archive, &staged, &target, &CancellationToken::new()).is_err()
+        );
         assert!(!target.exists());
         assert!(!staged.exists());
     }
@@ -1203,7 +1209,10 @@ mod tests {
         assert_eq!(status.state, RuntimeInstallState::Completed);
         let version = status.version.clone().unwrap();
         let backend = status.backend.clone().unwrap();
-        println!("installed llama.cpp {version} ({backend:?}) into {}", root.root().display());
+        println!(
+            "installed llama.cpp {version} ({backend:?}) into {}",
+            root.root().display()
+        );
         let manifest = root
             .resolve_relative(format!(
                 "runtimes/llama/manifests/llama-{}-{version}.json",
@@ -1211,16 +1220,24 @@ mod tests {
             ))
             .unwrap();
         assert!(manifest.is_file(), "{}", manifest.display());
-        assert!(fs::read_dir(root.resolve_relative("temp/downloads").unwrap())
-            .unwrap()
-            .next()
-            .is_none(), "download/staging files must be cleaned up");
+        assert!(
+            fs::read_dir(root.resolve_relative("temp/downloads").unwrap())
+                .unwrap()
+                .next()
+                .is_none(),
+            "download/staging files must be cleaned up"
+        );
 
         let inventory = crate::runtime::LlamaRuntimeManager::new(root.clone())
             .inventory(&hardware)
             .unwrap();
-        let selected = inventory.selected.expect("installed runtime is discoverable");
-        println!("discovered: {} / {:?}", selected.message, selected.version_output);
+        let selected = inventory
+            .selected
+            .expect("installed runtime is discoverable");
+        println!(
+            "discovered: {} / {:?}",
+            selected.message, selected.version_output
+        );
         assert!(selected.usable, "{}", selected.message);
         assert!(selected.server_exists);
     }
