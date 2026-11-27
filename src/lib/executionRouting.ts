@@ -76,6 +76,9 @@ export function cloudProbeDelayMs(
 
 /** Mirrors Mobile's explicit offline/local-only privacy override. */
 export function requestsLocalOnly(prompt: string): boolean {
+  // Explicit device-retention instructions are privacy constraints, not Cloud preferences.
+  // Keep the wildcard bounded so unrelated prose cannot accidentally trigger the override.
+  if (/\b(?:keep|store|process|run)\s+(?:(?:this|my|the|everything|all data|all files)\s+)?(?:only\s+)?on\s+(?:my|this|the)\s+(?:device|computer|machine|pc)\b|\bnever\s+(?:send|upload|share)\b.{0,40}\b(?:cloud|server|internet)\b/i.test(prompt)) return true;
   return /\b(offline[ -]only|local[ -]only|on[ -]device only|without internet|no cloud|do not (use|send|upload|share).{0,25}(cloud|internet|server)|don['’]?t (use|send|upload|share).{0,25}(cloud|internet|server)|only (use )?(local|offline))\b|শুধু\s*(লোকাল|অফলাইন)|ইন্টারনেট\s*ছা[ড়ড]া|ক্লাউডে\s*পাঠা(?:বে\s*না|বেন\s*না)|без\s+интернета|только\s+локально|не\s+отправл.{0,20}облак/i.test(prompt);
 }
 

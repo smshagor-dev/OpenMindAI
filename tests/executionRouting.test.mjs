@@ -217,3 +217,34 @@ test("Cloud failure classification safely handles throwing getters and revoked p
   }
   assert.equal(isRecoverableCloudFailure({ message: "HTTP 503: unavailable" }), true);
 });
+
+test("explicit device retention and never-upload instructions override Cloud routing", () => {
+  const privatePrompts = [
+    "Keep this on my device, please.",
+    "Store everything on this computer.",
+    "Process this only on my machine.",
+    "Run on my PC, not remotely.",
+    "Never upload this document to the cloud.",
+    "Never share my data with a server.",
+  ];
+  for (const prompt of privatePrompts) {
+    assert.equal(requestsLocalOnly(prompt), true, prompt);
+    const decision = selectExecutionRoute({
+      preference: "auto", task: "chat", online: true, cloudConnected: true,
+      cloudModelReady: true, forceLocal: requestsLocalOnly(prompt),
+    });
+    assert.equal(decision.target, "local", prompt);
+  }
+  for (const prompt of [
+    "How do I store a file on my device?",
+    "Explain cloud servers and on-device AI.",
+    "Never upload a file without validating its format.",
+    "Run a benchmark on a remote machine.",
+  ]) {
+    assert.equal(requestsLocalOnly(prompt), false, prompt);
+  }
+  assert.equal(selectExecutionRoute({
+    preference: "auto", task: "image-to-3d", online: true, cloudConnected: true,
+    forceLocal: requestsLocalOnly("Keep this on my device"),
+  }).target, "deferred", "Private requests must not silently use Cloud when local capability is absent");
+});
