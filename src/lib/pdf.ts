@@ -293,7 +293,7 @@ export async function extractPdfText(
       }
       if (pageChunk.length > remaining) {
         chunks.push(slicePdfText(pageChunk, remaining));
-        currentLength += remaining;
+        currentLength += chunks[chunks.length - 1].length;
         truncated = true;
         break;
       }

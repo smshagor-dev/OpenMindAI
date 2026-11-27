@@ -94,4 +94,28 @@ test("rejects an empty actual PDF buffer despite nonzero metadata", async () => 
   const inconsistent = { ...file, arrayBuffer: async () => new ArrayBuffer(0) };
   await assert.rejects(readAttachment(inconsistent), /PDF is empty/);
 });
+test("PDF selectable text never emits a dangling high surrogate at the page budget", async () => {
+  const cleanup = fixture(["A".repeat(19999) + "😀" + "tail"], async () => []);
+  const result = await readAttachment(file);
+  assert.equal(result.contentPreview.includes("\uFFFD"), false);
+  assert.equal(/[\uD800-\uDBFF]$/.test(result.contentPreview), false);
+  assert.equal(result.contentPreview.includes("😀"), false);
+  cleanup();
+});
+test("PDF final prompt budget preserves an emoji that fits and excludes a split pair", async () => {
+  const prefix = "--- Page 1 ---\n";
+  const cleanup = fixture(["A".repeat(20000 - prefix.length - 1) + "😀"], async () => []);
+  const result = await readAttachment(file);
+  assert.equal(result.contentPreview.includes("😀"), false);
+  assert.equal(/[\uD800-\uDBFF]$/.test(result.contentPreview), false);
+  assert.equal(result.contentPreview.includes("\uFFFD"), false);
+  cleanup();
+});
+test("PDF final prompt budget retains a supplementary character when both units fit", async () => {
+  const prefix = "--- Page 1 ---\n";
+  const cleanup = fixture(["A".repeat(20000 - prefix.length - 2) + "😀"], async () => []);
+  const result = await readAttachment(file);
+  assert(result.contentPreview.endsWith("😀"));
+  cleanup();
+});
 test.after(async () => { globalThis.document = originalDocument; delete globalThis.__pdf; await rm(dir, { recursive: true, force: true }); });
