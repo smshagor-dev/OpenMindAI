@@ -3,6 +3,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   FileText,
   FileType,
+  Check,
+  ChevronDown,
   Hash,
   Image,
   Loader2,
@@ -22,10 +24,9 @@ import type { ImageGenerationOptions, ModelRecord, RuntimeInventory } from "../t
 import { formatBytes } from "../lib/format";
 import { attachmentContextStats, inferChatMode, type AttachmentDraft } from "../lib/chat";
 import type { PdfExtractionProgress } from "../lib/pdf";
-import { transcribeAudioBlob } from "../lib/media";
 import { api } from "../api";
 import { ModelSelector } from "./ModelSelector";
-import type { CloudModel } from "../cloudApi";
+import { cloudModelDisplayName, type CloudModel } from "../cloudApi";
 import type { ExecutionMode } from "../lib/executionRouting";
 
 export function Composer({ composerRef: textareaRef, ...props }: {
@@ -184,7 +185,7 @@ export function Composer({ composerRef: textareaRef, ...props }: {
           type: recorder.mimeType || chunks[0].type || "audio/webm",
         });
         setTranscribing(true);
-        void transcribeAudioBlob(blob, "microphone")
+        void import("../lib/media").then(({ transcribeAudioBlob }) => transcribeAudioBlob(blob, "microphone"))
           .then((result) => {
             if (!alive.current || !target.append(result.text)) return;
             window.setTimeout(() => {
@@ -492,27 +493,29 @@ export function Composer({ composerRef: textareaRef, ...props }: {
               >
                 Connect Cloud
               </button>
-            ) : props.executionMode === "cloud" ? (
-              <span className="composer-cloud-pill" title="Running on OpenMindAI Cloud">
-                Cloud
-              </span>
             ) : (
               <span className="composer-model-group">
-                <ModelSelector
-                  models={props.models}
-                  activeModelId={props.activeModelId}
-                  runtime={props.runtime}
-                  switching={props.modelSwitching}
-                  disabled={props.backgroundBusy || props.streaming || props.submitting}
-                  switchError={props.modelSwitchError}
-                  onSelect={props.onSelectModel}
-                />
-                {props.executionMode === "auto" ? (
-                  <span
-                    className="composer-auto-hint"
-                    title="Auto: runs on this computer first, falls back to OpenMindAI Cloud"
-                  >
-                    → Cloud
+                {props.executionMode === "local" ? (
+                  <ModelSelector
+                    models={props.models}
+                    activeModelId={props.activeModelId}
+                    runtime={props.runtime}
+                    switching={props.modelSwitching}
+                    disabled={props.backgroundBusy || props.streaming || props.submitting}
+                    switchError={props.modelSwitchError}
+                    onSelect={props.onSelectModel}
+                  />
+                ) : null}
+                {props.executionMode === "cloud" && props.showCloudModels && props.cloudModels?.length ? (
+                  <CloudModelSelector
+                    models={props.cloudModels}
+                    activeModelId={props.activeCloudModelId ?? ""}
+                    onSelect={props.onSelectCloudModel ?? (() => undefined)}
+                    disabled={props.backgroundBusy || props.streaming || props.submitting}
+                  />
+                ) : props.executionMode === "cloud" ? (
+                  <span className="composer-cloud-pill" title="Running on OpenMindAI Cloud">
+                    Cloud
                   </span>
                 ) : null}
               </span>
@@ -566,6 +569,73 @@ export function Composer({ composerRef: textareaRef, ...props }: {
         <p className="composer-note">{props.note}</p>
       ) : null}
     </form>
+  );
+}
+
+function CloudModelSelector(props: {
+  models: CloudModel[];
+  activeModelId: string;
+  onSelect: (modelId: string) => void;
+  disabled: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const selected = props.models.find((model) => model.id === props.activeModelId);
+  const selectedLabel = selected ? cloudModelDisplayName(selected) : "Select a model";
+
+  useEffect(() => {
+    if (!open) return;
+    const onClickOutside = (event: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", onClickOutside);
+    return () => window.removeEventListener("mousedown", onClickOutside);
+  }, [open]);
+
+  return (
+    <div className="model-selector composer-cloud-selector" ref={containerRef}>
+      <button
+        type="button"
+        className="model-selector-trigger"
+        onClick={() => setOpen((value) => !value)}
+        disabled={props.disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title={selectedLabel}
+      >
+        <span>{selectedLabel}</span>
+        <ChevronDown size={14} />
+      </button>
+      {open ? (
+        <div className="model-selector-menu" role="listbox" aria-label="Cloud models">
+          {props.models.map((model) => {
+            const isSelected = model.id === props.activeModelId;
+            return (
+              <button
+                type="button"
+                role="option"
+                aria-selected={isSelected}
+                disabled={props.disabled}
+                key={model.id}
+                className="model-selector-item"
+                onClick={() => {
+                  props.onSelect(model.id);
+                  setOpen(false);
+                }}
+              >
+                <div className="model-selector-item-text">
+                  <strong>{cloudModelDisplayName(model)}</strong>
+                  {model.name && model.name !== model.id ? <small>{model.id}</small> : null}
+                </div>
+                {isSelected ? <Check size={15} className="model-selector-check" /> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
